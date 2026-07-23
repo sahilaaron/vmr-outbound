@@ -7,9 +7,11 @@ outreach actions. Later phases add API surfaces behind feature switches.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
 from app import __version__
@@ -61,6 +63,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     app.include_router(api_router)
+
+    # Operator workbench (server-rendered pages). Mounted only when the feature
+    # switch is on, so the UI stays fully disabled until deliberately enabled
+    # for local operation (FND-007 pattern).
+    if settings.features.workbench:
+        from app.web.routes import router as web_router
+
+        app.mount(
+            "/static",
+            StaticFiles(directory=str(Path(__file__).parent / "web" / "static")),
+            name="static",
+        )
+        app.include_router(web_router)
+
     return app
 
 

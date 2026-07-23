@@ -22,6 +22,9 @@ class FeatureFlags(BaseModel):
 
     # Phase 1 — Data & Campaigns
     csv_import: bool = False
+    # Operator workbench UI (server-rendered pages). Off by default so the UI
+    # stays disabled until it is deliberately enabled for local operation.
+    workbench: bool = False
     normalization: bool = False
     deduplication: bool = False
     suppressions: bool = False

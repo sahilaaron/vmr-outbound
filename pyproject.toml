@@ -13,6 +13,10 @@ dependencies = [
     "psycopg[binary]>=3.1,<3.3",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
+    # Operator workbench (server-rendered UI) and spreadsheet imports.
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+    "openpyxl>=3.1",
 ]
 
 [project.optional-dependencies]
@@ -21,6 +25,7 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.10",
     "httpx>=0.27",
+    "types-openpyxl>=3.1",
 ]
 
 [build-system]
@@ -43,6 +48,11 @@ select = ["E", "F", "I", "UP", "B", "W"]
 # default, which B008 (function call in default argument) flags. This is the
 # framework-sanctioned pattern, not a bug.
 "app/api/routes.py" = ["B008"]
+# Same FastAPI Depends(...) idiom on the workbench page routes.
+"app/web/routes.py" = ["B008"]
+# The synthetic fixture literals (CSV text, sample rows) exceed the line limit
+# by nature; wrapping them would corrupt the fixture content.
+"app/services/devtools.py" = ["E501"]
 
 [tool.mypy]
 python_version = "3.11"

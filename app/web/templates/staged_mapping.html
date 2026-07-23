@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div class="crumbs"><a href="/imports">Imports</a><span>/</span>{{ staged.filename }}</div>
+  <h1>Map columns</h1>
+  <div class="sub">Step 2 of 4 — tell the system which source columns correspond to which contact fields. Required fields: <code>first_name</code>, <code>last_name</code>, <code>company_name</code>, <code>company_domain</code>.</div>
+</div>
+
+<div class="steps" aria-label="Import steps">
+  <span class="step done"><span class="n">1</span>Upload</span>
+  <span class="step current"><span class="n">2</span>Sheets &amp; mapping</span>
+  <span class="step"><span class="n">3</span>Preview &amp; validate</span>
+  <span class="step"><span class="n">4</span>Confirm</span>
+</div>
+
+{% if mapping_problems %}
+<div class="notice err" role="alert">
+  <div><strong>The mapping is not usable yet.</strong>
+    <ul style="margin:6px 0 0; padding-left:18px">
+      {% for p in mapping_problems %}<li>{{ p.message }}</li>{% endfor %}
+    </ul>
+  </div>
+</div>
+{% endif %}
+
+<div class="grid-2">
+  <form method="post" action="/imports/staged/{{ staged.id }}/mapping">
+    <div class="card">
+      <div class="card-head"><h2>Column mapping</h2>
+        <span class="hint">{{ header | length }} source columns{% if staged.source_format == "xlsx" %} across the selected sheet(s){% endif %}</span></div>
+      <div class="card-body tight">
+        <table>
+          <thead><tr><th>Source column</th><th>Maps to</th></tr></thead>
+          <tbody>
+            {% for column in header %}
+            <tr>
+              <td class="mono">{{ column }}</td>
+              <td>
+                <label class="sr-only" for="map-{{ loop.index }}">Mapping for {{ column }}</label>
+                <select id="map-{{ loop.index }}" name="map__{{ column }}">
+                  <option value="">— ignore this column —</option>
+                  {% for target in system_fields %}
+                  <option value="{{ target }}" {{ "selected" if current_mapping.get(column) == target }}>
+                    {{ target }}{{ " (required)" if target in required_fields }}
+                  </option>
+                  {% endfor %}
+                </select>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div style="margin-top:16px">
+      <button class="btn" type="submit">Validate &amp; preview</button>
+      {% if staged.source_format == "xlsx" %}<a class="btn secondary" href="/imports/staged/{{ staged.id }}/sheets">Back to sheets</a>{% endif %}
+      <a class="btn secondary" href="/imports">Cancel</a>
+    </div>
+  </form>
+
+  <div class="table-wrap">
+    <div class="toolbar"><strong class="small">Sample rows (first {{ sample_rows | length }})</strong></div>
+    <table>
+      <thead><tr>{% for column in header %}<th>{{ column }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        {% for row in sample_rows %}
+        <tr>{% for column in header %}<td class="small wrap">{{ row.raw.get(column, "") }}</td>{% endfor %}</tr>
+        {% else %}
+        <tr><td colspan="{{ header | length }}" class="muted-text small">No data rows in the selection.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

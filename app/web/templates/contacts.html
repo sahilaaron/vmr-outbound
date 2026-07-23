@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% from "_macros.html" import pager %}
+{% block content %}
+<div class="page-head">
+  <h1>Contacts</h1>
+  <div class="sub">Canonical, normalized person records. Original imported values, provenance, and suppression state live on each contact's detail page.</div>
+</div>
+
+<div class="table-wrap">
+  <div class="toolbar">
+    <form method="get" action="/contacts">
+      <label class="sr-only" for="q">Search contacts</label>
+      <input type="search" id="q" name="q" value="{{ q or '' }}" placeholder="Search name, email, company, domain…">
+      <label class="sr-only" for="f-campaign">Campaign</label>
+      <select id="f-campaign" name="campaign_id">
+        <option value="">All campaigns</option>
+        {% for row in campaigns %}
+        <option value="{{ row.campaign.id }}" {{ "selected" if campaign_filter == row.campaign.id | string }}>{{ row.campaign.name }}</option>
+        {% endfor %}
+      </select>
+      <label class="sr-only" for="f-state">Workflow state</label>
+      <select id="f-state" name="state">
+        <option value="">Any state</option>
+        {% for state in workflow_states %}
+        <option value="{{ state.value }}" {{ "selected" if state_filter == state.value }}>{{ state.value.replace("_", " ") }}</option>
+        {% endfor %}
+      </select>
+      <label class="sr-only" for="f-email">Email presence</label>
+      <select id="f-email" name="has_email">
+        <option value="">Email: any</option>
+        <option value="yes" {{ "selected" if has_email_filter == "yes" }}>has email</option>
+        <option value="no" {{ "selected" if has_email_filter == "no" }}>no email</option>
+      </select>
+      <button class="btn small" type="submit">Filter</button>
+      {% if q or campaign_filter or state_filter or has_email_filter %}<a class="chip" href="/contacts">Clear</a>{% endif %}
+    </form>
+  </div>
+  {% if contacts %}
+  <table>
+    <thead><tr><th>Name</th><th>Email</th><th>Company</th><th>Title</th><th>Country</th><th>Created</th></tr></thead>
+    <tbody>
+      {% for c in contacts %}
+      <tr>
+        <td><a href="/contacts/{{ c.id }}">{{ c.first_name }} {{ c.last_name }}</a></td>
+        <td class="mono">{{ c.email or "—" }}</td>
+        <td>{{ c.company_name }}<div class="small muted-text mono">{{ c.company_domain }}</div></td>
+        <td class="small">{{ c.title or "—" }}</td>
+        <td class="small">{{ c.country or "—" }}</td>
+        <td class="small muted-text">{{ c.created_at | dt }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {{ pager(page, pages, total, filter_url, "contacts") }}
+  {% else %}
+  <div class="empty">
+    <div class="empty-title">{% if q or campaign_filter or state_filter or has_email_filter %}No contacts match these filters{% else %}No contacts yet{% endif %}</div>
+    <p>{% if q or campaign_filter or state_filter or has_email_filter %}Broaden the search or clear the filters.{% else %}Contacts appear here after your first confirmed import.{% endif %}</p>
+    {% if not (q or campaign_filter or state_filter or has_email_filter) %}<a class="btn" href="/imports/new">Start an import</a>{% endif %}
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

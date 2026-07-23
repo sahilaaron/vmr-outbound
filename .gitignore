@@ -32,3 +32,6 @@ htmlcov/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Local staged uploads (preview -> confirm import flow)
+var/

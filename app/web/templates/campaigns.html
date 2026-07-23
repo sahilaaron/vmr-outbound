@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% from "_macros.html" import campaign_badge %}
+{% block content %}
+<div class="page-head">
+  <div class="head-row">
+    <div>
+      <h1>Campaigns</h1>
+      <div class="sub">A campaign is the container an authorized contact batch is imported into. Targeting, offer, and sending settings arrive in a later slice.</div>
+    </div>
+  </div>
+</div>
+
+<div class="grid-2">
+  <div class="table-wrap">
+    <div class="toolbar"><strong class="small">All campaigns</strong></div>
+    {% if campaigns %}
+    <table>
+      <thead><tr><th>Name</th><th>Status</th><th class="num">Contacts</th><th class="num">Imports</th><th>Created</th></tr></thead>
+      <tbody>
+        {% for row in campaigns %}
+        <tr>
+          <td><a href="/campaigns/{{ row.campaign.id }}">{{ row.campaign.name }}</a>
+            {% if row.campaign.description %}<div class="small muted-text">{{ row.campaign.description | truncate(90) }}</div>{% endif %}
+          </td>
+          <td>{{ campaign_badge(row.campaign.status) }}</td>
+          <td class="num">{{ row.contact_count }}</td>
+          <td class="num">{{ row.import_count }}</td>
+          <td class="small muted-text">{{ row.campaign.created_at | dt }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty">
+      <div class="empty-title">No campaigns yet</div>
+      <p>Create your first campaign, then import a contact file into it.</p>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Create a campaign</h2></div>
+    <div class="card-body">
+      <form method="post" action="/campaigns/create">
+        <div class="field">
+          <label for="c-name">Name</label>
+          <input type="text" id="c-name" name="name" required maxlength="255"
+                 placeholder="e.g. Cement plants — EU pilot" value="{{ form_name | default('') }}">
+          <div class="help">Must be unique. You can archive a campaign later; you cannot reuse an existing name.</div>
+        </div>
+        <div class="field">
+          <label for="c-desc">Description <span class="opt">(optional)</span></label>
+          <textarea id="c-desc" name="description" maxlength="2000"
+                    placeholder="What this campaign targets and why.">{{ form_description | default('') }}</textarea>
+        </div>
+        <div class="field">
+          <label for="c-status">Status</label>
+          <select id="c-status" name="status">
+            <option value="draft" selected>draft — being prepared</option>
+            <option value="active">active — receiving imports</option>
+          </select>
+        </div>
+        <button class="btn" type="submit">Create campaign</button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

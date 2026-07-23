@@ -1,0 +1,44 @@
+{# Shared display macros: status badges and pagination. #}
+
+{% macro batch_badge(batch) -%}
+  {%- if batch.status.value == "completed" -%}<span class="badge ok">completed</span>
+  {%- elif batch.status.value == "failed" -%}<span class="badge err">failed</span>
+  {%- elif batch.status.value == "validating" -%}<span class="badge info">validating</span>
+  {%- else -%}<span class="badge muted">{{ batch.status.value }}</span>{%- endif -%}
+{%- endmacro %}
+
+{% macro outcome_badge(outcome) -%}
+  {%- set v = outcome.value if outcome.__class__.__name__ == "ImportRowOutcome" else outcome -%}
+  {%- if v == "accepted" -%}<span class="badge ok">accepted</span>
+  {%- elif v == "rejected" -%}<span class="badge err">rejected</span>
+  {%- elif v == "duplicate" -%}<span class="badge info">duplicate</span>
+  {%- elif v == "suppressed" -%}<span class="badge muted">suppressed</span>
+  {%- elif v == "ambiguous" -%}<span class="badge warn">ambiguous</span>
+  {%- else -%}<span class="badge muted">{{ v }}</span>{%- endif -%}
+{%- endmacro %}
+
+{% macro state_badge(state) -%}
+  {%- set v = state.value -%}
+  {%- if v == "imported" -%}<span class="badge ok">imported</span>
+  {%- elif v == "awaiting_verification" -%}<span class="badge info">awaiting verification</span>
+  {%- elif v == "suppressed" -%}<span class="badge muted">suppressed</span>
+  {%- elif v == "excluded" -%}<span class="badge muted">excluded</span>
+  {%- else -%}<span class="badge muted">{{ v }}</span>{%- endif -%}
+{%- endmacro %}
+
+{% macro campaign_badge(status) -%}
+  {%- set v = status.value -%}
+  {%- if v == "active" -%}<span class="badge ok">active</span>
+  {%- elif v == "draft" -%}<span class="badge info">draft</span>
+  {%- else -%}<span class="badge muted">{{ v }}</span>{%- endif -%}
+{%- endmacro %}
+
+{% macro pager(page, pages, total, base_url, label="records") -%}
+<div class="pager">
+  <span>{{ total }} {{ label }} · page {{ page }} of {{ pages if pages else 1 }}</span>
+  <span class="links">
+    {% if page > 1 %}<a class="chip" href="{{ base_url }}{{ '&' if '?' in base_url else '?' }}page={{ page - 1 }}">&larr; Previous</a>{% endif %}
+    {% if page < pages %}<a class="chip" href="{{ base_url }}{{ '&' if '?' in base_url else '?' }}page={{ page + 1 }}">Next &rarr;</a>{% endif %}
+  </span>
+</div>
+{%- endmacro %}

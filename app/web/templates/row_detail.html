@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% from "_macros.html" import outcome_badge %}
+{% block content %}
+<div class="page-head">
+  <div class="crumbs"><a href="/imports">Imports</a><span>/</span><a href="/imports/{{ batch.id }}">{{ batch.filename or batch.id }}</a><span>/</span>Row {{ row.row.row_number }}</div>
+  <h1>Row {{ row.row.row_number }}{% if row.row.sheet_name %} · sheet “{{ row.row.sheet_name }}”{% endif %}
+    {% if row.validation %}{{ outcome_badge(row.validation.outcome) }}{% endif %}</h1>
+  <div class="sub">Original values are immutable — exactly what the file contained. Normalized values are what the system derived from them{% if batch.column_mapping %} after applying the confirmed column mapping{% endif %}.</div>
+</div>
+
+{% if row.errors %}
+<div class="notice err">
+  <div><strong>Validation errors</strong>
+    <ul style="margin:6px 0 0; padding-left:18px">{% for e in row.errors %}<li>{{ e.message }}</li>{% endfor %}</ul>
+  </div>
+</div>
+{% endif %}
+{% if row.validation and row.validation.note %}
+<div class="notice {{ 'warn' if row.validation.outcome.value == 'ambiguous' else 'info' }}">
+  <div>{{ row.validation.note }}</div>
+</div>
+{% endif %}
+
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Original vs normalized</strong></div>
+  <table>
+    <thead><tr><th>Field</th><th>Original value (verbatim)</th><th>Normalized value</th></tr></thead>
+    <tbody>
+      {% for field, original, normalized, changed in comparison %}
+      <tr>
+        <td class="mono">{{ field }}</td>
+        <td class="wrap">{{ original if original not in (none, "") else "—" }}</td>
+        <td class="wrap">
+          {% if normalized in (none, "") %}<span class="muted-text">—</span>
+          {% elif changed %}<span class="diff-changed">{{ normalized }}</span>
+          {% else %}<span class="diff-same">{{ normalized }}</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if unmapped_columns %}
+<div class="card">
+  <div class="card-head"><h2>Unmapped source columns</h2><span class="hint">Preserved verbatim, not imported into contact fields</span></div>
+  <div class="card-body">
+    <dl class="kv">
+      {% for column, value in unmapped_columns %}
+      <dt class="mono">{{ column }}</dt><dd>{{ value or "—" }}</dd>
+      {% endfor %}
+    </dl>
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-body small">
+    {% if row.validation and row.validation.contact_id %}
+    This row {{ "created" if row.validation.outcome.value == "accepted" else "matched" }} contact
+    <a href="/contacts/{{ row.validation.contact_id }}">open the contact record</a>.
+    {% elif row.validation and row.validation.outcome.value == "ambiguous" %}
+    <strong>No contact was created.</strong> {{ row.validation.note }} Decide manually which existing
+    record this person is — or correct the source data (adding an email disambiguates) and re-import.
+    {% elif row.validation and row.validation.outcome.value == "rejected" %}
+    No contact was created. Fix the listed errors in the source file and import the corrected file.
+    {% else %}
+    No contact is linked to this row.
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

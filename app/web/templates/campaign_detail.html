@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% from "_macros.html" import campaign_badge, batch_badge, state_badge, pager %}
+{% block content %}
+<div class="page-head">
+  <div class="crumbs"><a href="/campaigns">Campaigns</a><span>/</span>{{ overview.campaign.name }}</div>
+  <div class="head-row">
+    <div>
+      <h1>{{ overview.campaign.name }} {{ campaign_badge(overview.campaign.status) }}</h1>
+      {% if overview.campaign.description %}<div class="sub">{{ overview.campaign.description }}</div>{% endif %}
+    </div>
+    <a class="btn" href="/imports/new?campaign_id={{ overview.campaign.id }}">Import contacts</a>
+  </div>
+</div>
+
+<div class="stat-grid">
+  <div class="stat accent"><div class="label">Contacts</div><div class="value">{{ overview.contact_count }}</div></div>
+  <div class="stat accent"><div class="label">Imports</div><div class="value">{{ overview.import_count }}</div></div>
+  {% for state, count in overview.state_counts.items() %}
+  <div class="stat"><div class="label">{{ state.replace("_", " ") }}</div><div class="value">{{ count }}</div></div>
+  {% endfor %}
+</div>
+
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Linked imports</strong></div>
+  {% if imports %}
+  <table>
+    <thead><tr><th>File</th><th>Status</th><th class="num">Total</th><th class="num">Accepted</th><th class="num">Rejected</th><th class="num">Duplicates</th><th class="num">Ambiguous</th><th class="num">Suppressed</th><th>When</th></tr></thead>
+    <tbody>
+      {% for b in imports %}
+      <tr>
+        <td><a href="/imports/{{ b.id }}">{{ b.filename or "(unnamed upload)" }}</a>
+          <div class="small muted-text">{{ b.source_format.value | upper }}</div></td>
+        <td>{{ batch_badge(b) }}</td>
+        <td class="num">{{ b.total_rows }}</td>
+        <td class="num">{{ b.accepted_rows }}</td>
+        <td class="num">{{ b.rejected_rows }}</td>
+        <td class="num">{{ b.duplicate_rows }}</td>
+        <td class="num">{{ b.ambiguous_rows }}</td>
+        <td class="num">{{ b.suppressed_rows }}</td>
+        <td class="small muted-text">{{ b.created_at | dt }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">
+    <div class="empty-title">No imports yet</div>
+    <p>This campaign has not received a contact file.</p>
+    <a class="btn" href="/imports/new?campaign_id={{ overview.campaign.id }}">Start an import</a>
+  </div>
+  {% endif %}
+</div>
+
+<div class="table-wrap">
+  <div class="toolbar">
+    <strong class="small">Contacts in this campaign</strong>
+    <div class="filter-chips" role="group" aria-label="Filter by state">
+      <a class="chip {{ 'on' if not state_filter }}" href="/campaigns/{{ overview.campaign.id }}">All</a>
+      {% for state in workflow_states %}
+      <a class="chip {{ 'on' if state_filter == state.value }}" href="/campaigns/{{ overview.campaign.id }}?state={{ state.value }}">{{ state.value.replace("_", " ") }}</a>
+      {% endfor %}
+    </div>
+  </div>
+  {% if members %}
+  <table>
+    <thead><tr><th>Contact</th><th>Email</th><th>Company</th><th>State</th><th>Added</th></tr></thead>
+    <tbody>
+      {% for membership, contact in members %}
+      <tr>
+        <td><a href="/contacts/{{ contact.id }}">{{ contact.first_name }} {{ contact.last_name }}</a></td>
+        <td class="mono">{{ contact.email or "—" }}</td>
+        <td>{{ contact.company_name }}<div class="small muted-text mono">{{ contact.company_domain }}</div></td>
+        <td>{{ state_badge(membership.state) }}</td>
+        <td class="small muted-text">{{ membership.created_at | dt }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {{ pager(page, pages, total_members, "/campaigns/" ~ overview.campaign.id ~ ("?state=" ~ state_filter if state_filter else ""), "contacts") }}
+  {% else %}
+  <div class="empty">
+    <div class="empty-title">No contacts{{ " in this state" if state_filter else "" }}</div>
+    <p>{% if state_filter %}Try a different state filter.{% else %}Import a contact file to populate this campaign.{% endif %}</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
