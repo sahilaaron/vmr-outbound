@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<!-- A visible security-challenge / checkpoint state. Extraction must HALT with
+     status "challenge_detected" and capture nothing, even though there is text
+     on the page. -->
+<html lang="en">
+  <head><meta charset="UTF-8" /><title>Security Verification</title></head>
+  <body>
+    <main>
+      <div class="challenge-dialog">
+        <h1>Let's do a quick security check</h1>
+        <p>We've noticed some unusual activity on your account. Please complete
+           this security check to continue.</p>
+        <iframe src="https://www.linkedin.com/challenge/captcha-internal"></iframe>
+      </div>
+    </main>
+  </body>
+</html>

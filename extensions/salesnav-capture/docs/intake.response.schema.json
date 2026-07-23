@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vmr.local/schemas/salesnav-capture/intake.response.json",
+  "title": "Sales Navigator capture — intake staging response",
+  "type": "object",
+  "required": ["staging_id", "client_batch_id", "record_count", "warnings", "already_received"],
+  "properties": {
+    "staging_id": { "type": "string" },
+    "client_batch_id": { "type": "string" },
+    "record_count": { "type": "integer", "minimum": 0 },
+    "warnings": { "type": "array", "items": { "type": "object" } },
+    "received_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": "string", "format": "date-time" },
+    "operator_workbench_url": { "type": "string" },
+    "already_received": { "type": "boolean" }
+  }
+}

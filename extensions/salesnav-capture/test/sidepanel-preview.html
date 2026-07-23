@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<!--
+  Visual preview harness for the side panel UI. It stubs the chrome.* messaging
+  API with an in-page mock backed by the REAL shared modules and synthetic
+  fixtures, then loads the REAL sidepanel scripts + stylesheet, so the rendered
+  panel is exactly what ships. For screenshots / manual visual review only.
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=400, initial-scale=1.0" />
+    <title>Side panel preview</title>
+    <link rel="stylesheet" href="../src/sidepanel/sidepanel.css" />
+    <style>body { max-width: 380px; }</style>
+  </head>
+  <body>
+    <header class="app-header">
+      <h1>Sales Navigator Capture</h1>
+      <p class="subtitle">VMR Outbound Agent · staging intake</p>
+    </header>
+    <section class="card" id="detect-card">
+      <div class="row space-between"><span class="step-label">1 · Page</span><button id="refresh-detect" class="btn btn-ghost" type="button">Refresh</button></div>
+      <div id="detect-status" class="status status-neutral">Checking active tab…</div>
+      <div id="detect-detail" class="muted small"></div>
+    </section>
+    <section class="card">
+      <div class="row space-between"><span class="step-label">2 · Capture</span><span id="page-badge" class="badge badge-muted">page ?</span></div>
+      <button id="capture-btn" class="btn btn-primary full" type="button" disabled>Capture visible records</button>
+      <div id="capture-feedback" class="small muted"></div>
+    </section>
+    <section class="card">
+      <div class="row space-between"><span class="step-label">3 · Review batch</span><button id="clear-btn" class="btn btn-ghost danger" type="button">Clear batch</button></div>
+      <div id="summary" class="summary-grid"></div>
+      <div class="row wrap gap" id="filter-row"><label class="checkbox small"><input type="checkbox" id="only-issues" /> Only records with warnings</label></div>
+      <div id="records" class="records" aria-live="polite"></div>
+    </section>
+    <section class="card">
+      <span class="step-label">4 · Campaign</span>
+      <div class="row gap"><select id="campaign-select" class="grow"><option value="">— none selected —</option></select><button id="fetch-campaigns" class="btn btn-ghost" type="button">Fetch</button></div>
+      <label class="small muted" for="campaign-manual">Or enter a campaign ID manually</label>
+      <input id="campaign-manual" class="input" type="text" placeholder="campaign id" />
+    </section>
+    <section class="card">
+      <span class="step-label">5 · Send to VMR or export</span>
+      <div class="row gap wrap"><button id="export-json" class="btn" type="button">Download JSON</button><button id="export-csv" class="btn" type="button">Download CSV</button></div>
+      <div class="send-target row gap wrap"><label class="small">Target</label><select id="send-target"><option value="mock">Mock receiver (test)</option><option value="backend">Local VMR backend</option></select><button id="send-btn" class="btn btn-primary" type="button">Send batch</button></div>
+      <div id="send-state" class="send-state" aria-live="polite"></div>
+      <div id="send-actions" class="row gap"></div>
+    </section>
+    <details class="card" id="settings" open>
+      <summary class="step-label">Settings</summary>
+      <label class="small muted" for="backend-url">Local backend base URL</label>
+      <input id="backend-url" class="input" type="text" />
+      <label class="small muted" for="mock-url">Mock receiver URL</label>
+      <input id="mock-url" class="input" type="text" />
+      <label class="small muted" for="max-records">Max records per batch</label>
+      <input id="max-records" class="input" type="number" min="1" max="500" />
+      <button id="save-settings" class="btn btn-ghost" type="button">Save settings</button>
+    </details>
+
+    <script src="../src/common/constants.js"></script>
+    <script src="../src/common/normalize.js"></script>
+    <script src="../src/common/extraction.js"></script>
+    <script src="../src/common/dedupe.js"></script>
+    <script src="../src/common/schema.js"></script>
+    <script>
+      // ---- chrome.* stub backed by real modules + fixtures ----
+      const { extraction, dedupe, schema, constants } = self.SNCapture;
+      const SUPPORTED = "https://www.linkedin.com/sales/search/people?keywords=head%20of%20operations&page=2";
+      let BATCH = null;
+
+      async function buildBatch() {
+        const load = async (n) => {
+          const html = await (await fetch("fixtures/" + n)).text();
+          const doc = new DOMParser().parseFromString(html, "text/html");
+          return extraction.extractPage(doc, { sourceSearchUrl: SUPPORTED, capturedAt: "2026-07-23T09:15:04.000Z" }).records;
+        };
+        const recs = dedupe.mergeBatch(await load("results-normal.html"), await load("results-duplicates.html")).records;
+        BATCH = { clientBatchId: "6f9619ff-8b86-d011-b42d-00cf4fc964ff", createdAt: "2026-07-23T09:15:04.000Z", lastSearchUrl: SUPPORTED, pagesCaptured: [2, 3], statuses: [], records: recs };
+      }
+      function view() {
+        return { clientBatchId: BATCH.clientBatchId, createdAt: BATCH.createdAt, lastSearchUrl: BATCH.lastSearchUrl, pagesCaptured: BATCH.pagesCaptured, statuses: [], summary: dedupe.summarize(BATCH.records), records: BATCH.records };
+      }
+      window.chrome = {
+        runtime: {
+          lastError: undefined,
+          sendMessage(msg, cb) {
+            let resp = { ok: true };
+            switch (msg.type) {
+              case "GET_STATE": resp = { ok: true, prefs: constants.DEFAULT_PREFERENCES, batchView: view() }; break;
+              case "DETECT_ACTIVE_PAGE": resp = { ok: true, page: { supported: true, challengeDetected: false, visibleCount: 5, url: SUPPORTED } }; break;
+              case "CAPTURE_ACTIVE_PAGE": resp = { ok: true, captureStatus: constants.CAPTURE_STATUS.OK, added: 3, collapsed: 1, uncertain: 1, pageWarnings: [], batchView: view() }; break;
+              case "TOGGLE_EXCLUDE": { const r = msg.stableKey ? BATCH.records.find(x => x._stableKey === msg.stableKey) : BATCH.records[msg.index]; if (r) r._excluded = !r._excluded; resp = { ok: true, batchView: view() }; break; }
+              case "CLEAR_BATCH": BATCH.records = []; resp = { ok: true, batchView: view() }; break;
+              case "SET_PREFS": resp = { ok: true, prefs: Object.assign({}, constants.DEFAULT_PREFERENCES, msg.prefs) }; break;
+              case "FETCH_CAMPAIGNS": resp = { ok: true, campaigns: [{ id: "camp_demo_001", name: "Pilot — Q3 SaaS Ops", status: "draft" }] }; break;
+              case "EXPORT_BATCH": resp = { ok: true, filename: "salesnav_capture.json", records: BATCH.records.length }; break;
+              case "SEND_BATCH": resp = { ok: true, status: 201, body: { staging_id: "stg_6f9619ff", record_count: BATCH.records.filter(r=>!r._excluded).length, warnings: [], expires_at: "2026-07-24T09:15:06Z", operator_workbench_url: "http://127.0.0.1:8000/workbench/imports/stg_6f9619ff", already_received: false } }; break;
+            }
+            setTimeout(() => cb(resp), 0);
+          },
+        },
+      };
+      // Build the batch, THEN load the real sidepanel controller.
+      buildBatch().then(() => {
+        const s = document.createElement("script");
+        s.src = "../src/sidepanel/sidepanel.js";
+        document.body.appendChild(s);
+        // sidepanel.js waits for DOMContentLoaded which already fired; nudge it.
+        s.onload = () => document.dispatchEvent(new Event("DOMContentLoaded"));
+      });
+    </script>
+  </body>
+</html>

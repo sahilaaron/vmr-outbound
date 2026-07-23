@@ -1,0 +1,8 @@
+{
+  "error": "validation_failed",
+  "status": 422,
+  "details": [
+    "records[3].salesNavLeadUrl must be a string or null",
+    "records[3] has no name or URL (empty record not allowed)"
+  ]
+}

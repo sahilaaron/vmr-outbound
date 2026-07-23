@@ -1,0 +1,55 @@
+{
+  "schema_version": "salesnav-capture/1.0.0",
+  "client_batch_id": "6f9619ff-8b86-d011-b42d-00cf4fc964ff",
+  "campaign_id": "camp_demo_001",
+  "captured_at": "2026-07-23T09:15:04.000Z",
+  "source": "chrome-extension:salesnav-capture",
+  "current_search_url": "https://www.linkedin.com/sales/search/people?keywords=head%20of%20operations&page=2",
+  "extraction_metadata": {
+    "extension_version": "1.0.0",
+    "pages_captured": 2,
+    "record_count": 2,
+    "capture_statuses": ["ok", "ok"],
+    "warnings_summary": { "missing_field": 1 }
+  },
+  "records": [
+    {
+      "firstName": "Dana",
+      "lastName": "Whitfield",
+      "rawFullName": "Dana Whitfield",
+      "title": "Head of Operations",
+      "companyName": "Northwind Logistics",
+      "location": "Greater Chicago Area",
+      "linkedinProfileUrl": null,
+      "salesNavLeadUrl": "https://www.linkedin.com/sales/lead/ACwAAAB1x9k",
+      "companyLinkedInUrl": null,
+      "salesNavCompanyUrl": "https://www.linkedin.com/sales/company/1234567",
+      "visibleCompanyMetadata": ["Logistics & Supply Chain"],
+      "sourceSearchUrl": "https://www.linkedin.com/sales/search/people?keywords=head%20of%20operations&page=2",
+      "sourcePageNumber": 2,
+      "sourcePosition": 1,
+      "capturedAt": "2026-07-23T09:15:04.000Z",
+      "warnings": [
+        { "code": "missing_field", "field": "linkedinProfileUrl" }
+      ]
+    },
+    {
+      "firstName": "大角",
+      "lastName": "知也",
+      "rawFullName": "大角 知也",
+      "title": "事業開発マネージャー",
+      "companyName": "Sakura Robotics",
+      "location": "Tokyo, Japan",
+      "linkedinProfileUrl": "https://www.linkedin.com/in/tomoya-okaku",
+      "salesNavLeadUrl": "https://www.linkedin.com/sales/lead/ACwAAAC9zzz",
+      "companyLinkedInUrl": "https://www.linkedin.com/company/sakura-robotics",
+      "salesNavCompanyUrl": null,
+      "visibleCompanyMetadata": null,
+      "sourceSearchUrl": "https://www.linkedin.com/sales/search/people?keywords=head%20of%20operations&page=2",
+      "sourcePageNumber": 2,
+      "sourcePosition": 2,
+      "capturedAt": "2026-07-23T09:15:04.000Z",
+      "warnings": []
+    }
+  ]
+}

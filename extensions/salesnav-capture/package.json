@@ -1,0 +1,14 @@
+{
+  "name": "vmr-salesnav-capture",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Operator-driven Sales Navigator capture Chrome extension for the VMR Outbound Agent (dev/test tooling only; the extension itself ships zero runtime dependencies).",
+  "type": "commonjs",
+  "scripts": {
+    "test": "node --test",
+    "mock-receiver": "node tools/mock-receiver.js"
+  },
+  "devDependencies": {
+    "jsdom": "^25.0.0"
+  }
+}

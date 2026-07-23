@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<!-- Rows with fields missing: no title, no company, no location. Extraction must
+     emit explicit nulls + missing_field warnings, never guesses. -->
+<html lang="en">
+  <head><meta charset="UTF-8" /><title>Sales Navigator — Results</title></head>
+  <body>
+    <main>
+      <ol class="artdeco-list search-results-container">
+        <!-- missing title AND company -->
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <a href="/sales/lead/ACwAAAE1nom,NAME_SEARCH,aa">
+                <span data-anonymize="person-name">Jordan Field</span>
+              </a>
+            </div>
+            <div class="artdeco-entity-lockup__caption">
+              <span data-anonymize="location">Remote</span>
+            </div>
+          </div>
+        </li>
+
+        <!-- missing location, single-token name (no last name) -->
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <a href="/sales/lead/ACwAAAE2xyz,NAME_SEARCH,bb">
+                <span data-anonymize="person-name">Madonna</span>
+              </a>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="title">Founder</span>
+              at
+              <a data-anonymize="company-name" href="/sales/company/999">Solo Ventures</a>
+            </div>
+          </div>
+        </li>
+
+        <!-- selector failure: a result container with NO person-name node -->
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="title">Ghost Row (no name)</span>
+            </div>
+          </div>
+        </li>
+      </ol>
+    </main>
+  </body>
+</html>

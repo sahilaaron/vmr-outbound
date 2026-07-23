@@ -1,0 +1,10 @@
+{
+  "staging_id": "stg_6f9619ff",
+  "client_batch_id": "6f9619ff-8b86-d011-b42d-00cf4fc964ff",
+  "record_count": 2,
+  "warnings": [],
+  "received_at": "2026-07-23T09:15:06.120Z",
+  "expires_at": "2026-07-24T09:15:06.120Z",
+  "operator_workbench_url": "http://127.0.0.1:8000/workbench/imports/stg_6f9619ff",
+  "already_received": false
+}

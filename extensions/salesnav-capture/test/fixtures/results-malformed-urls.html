@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<!-- Malformed / non-LinkedIn URLs. Extraction must flag malformed_url and NOT
+     "repair" or fabricate a URL. The record is still captured (name/title kept),
+     with the bad URL surfaced as null + warning. -->
+<html lang="en">
+  <head><meta charset="UTF-8" /><title>Sales Navigator — Results</title></head>
+  <body>
+    <main>
+      <ol class="artdeco-list search-results-container">
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <a href="javascript:void(0)">
+                <span data-anonymize="person-name">Broken Link Person</span>
+              </a>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="title">Analyst</span> at
+              <a data-anonymize="company-name" href="not a url at all">Mystery Corp</a>
+            </div>
+          </div>
+        </li>
+
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <a href="https://evil.example.com/in/phish">
+                <span data-anonymize="person-name">Off Platform</span>
+              </a>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="title">Consultant</span> at
+              <a data-anonymize="company-name" href="/sales/company/333">Real Company</a>
+            </div>
+          </div>
+        </li>
+      </ol>
+    </main>
+  </body>
+</html>

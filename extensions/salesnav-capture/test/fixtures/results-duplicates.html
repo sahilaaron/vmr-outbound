@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<!-- Duplicate + uncertain-identity cases:
+     - rows 1 and 3 are the SAME lead (same /sales/lead id, different search
+       suffix) -> must collapse to one on stable-key dedup.
+     - row 4 has NO lead/profile URL -> uncertain identity, must be KEPT + flagged,
+       never silently dropped. -->
+<html lang="en">
+  <head><meta charset="UTF-8" /><title>Sales Navigator — Results</title></head>
+  <body>
+    <main>
+      <ol class="artdeco-list search-results-container">
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <a href="/sales/lead/ACwAAAH1dup,NAME_SEARCH,page1">
+                <span data-anonymize="person-name">Chris Alvarez</span>
+              </a>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="title">COO</span> at
+              <a data-anonymize="company-name" href="/sales/company/111">Delta Manufacturing</a>
+            </div>
+          </div>
+        </li>
+
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <a href="/sales/lead/ACwAAAH2uniq,NAME_SEARCH,page1">
+                <span data-anonymize="person-name">Wei Zhang</span>
+              </a>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="title">Plant Manager</span> at
+              <a data-anonymize="company-name" href="/sales/company/222">Delta Manufacturing</a>
+            </div>
+          </div>
+        </li>
+
+        <!-- same lead as row 1, different volatile suffix -->
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <a href="/sales/lead/ACwAAAH1dup,NAME_SEARCH,page2DIFFERENT">
+                <span data-anonymize="person-name">Chris Alvarez</span>
+              </a>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="title">COO</span> at
+              <a data-anonymize="company-name" href="/sales/company/111">Delta Manufacturing</a>
+            </div>
+          </div>
+        </li>
+
+        <!-- no URL anywhere -> uncertain identity -->
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <span data-anonymize="person-name">Anonymous Prospect</span>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="title">Head of Supply Chain</span>
+            </div>
+          </div>
+        </li>
+      </ol>
+    </main>
+  </body>
+</html>

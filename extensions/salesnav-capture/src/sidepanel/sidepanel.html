@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VMR Sales Navigator Capture</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <h1>Sales Navigator Capture</h1>
+      <p class="subtitle">VMR Outbound Agent · staging intake</p>
+    </header>
+
+    <!-- 1. Page detection -->
+    <section class="card" id="detect-card">
+      <div class="row space-between">
+        <span class="step-label">1 · Page</span>
+        <button id="refresh-detect" class="btn btn-ghost" type="button">Refresh</button>
+      </div>
+      <div id="detect-status" class="status status-neutral">Checking active tab…</div>
+      <div id="detect-detail" class="muted small"></div>
+    </section>
+
+    <!-- 2. Capture -->
+    <section class="card">
+      <div class="row space-between">
+        <span class="step-label">2 · Capture</span>
+        <span id="page-badge" class="badge badge-muted">page ?</span>
+      </div>
+      <button id="capture-btn" class="btn btn-primary full" type="button" disabled>
+        Capture visible records
+      </button>
+      <div id="capture-feedback" class="small muted"></div>
+    </section>
+
+    <!-- 3. Review batch -->
+    <section class="card">
+      <div class="row space-between">
+        <span class="step-label">3 · Review batch</span>
+        <button id="clear-btn" class="btn btn-ghost danger" type="button">Clear batch</button>
+      </div>
+      <div id="summary" class="summary-grid"></div>
+      <div class="row wrap gap" id="filter-row">
+        <label class="checkbox small">
+          <input type="checkbox" id="only-issues" /> Only records with warnings
+        </label>
+      </div>
+      <div id="records" class="records" aria-live="polite"></div>
+    </section>
+
+    <!-- 4. Campaign -->
+    <section class="card">
+      <span class="step-label">4 · Campaign</span>
+      <div class="row gap">
+        <select id="campaign-select" class="grow">
+          <option value="">— none selected —</option>
+        </select>
+        <button id="fetch-campaigns" class="btn btn-ghost" type="button">Fetch</button>
+      </div>
+      <label class="small muted" for="campaign-manual">Or enter a campaign ID manually</label>
+      <input id="campaign-manual" class="input" type="text" placeholder="campaign id" />
+    </section>
+
+    <!-- 5. Send / export -->
+    <section class="card">
+      <span class="step-label">5 · Send to VMR or export</span>
+      <div class="row gap wrap">
+        <button id="export-json" class="btn" type="button">Download JSON</button>
+        <button id="export-csv" class="btn" type="button">Download CSV</button>
+      </div>
+      <div class="send-target row gap wrap">
+        <label class="small">Target</label>
+        <select id="send-target">
+          <option value="mock">Mock receiver (test)</option>
+          <option value="backend">Local VMR backend</option>
+        </select>
+        <button id="send-btn" class="btn btn-primary" type="button">Send batch</button>
+      </div>
+      <div id="send-state" class="send-state" aria-live="polite"></div>
+      <div id="send-actions" class="row gap"></div>
+    </section>
+
+    <!-- 6. Settings (collapsible) -->
+    <details class="card" id="settings">
+      <summary class="step-label">Settings</summary>
+      <label class="small muted" for="backend-url">Local backend base URL</label>
+      <input id="backend-url" class="input" type="text" placeholder="http://127.0.0.1:8000" />
+      <label class="small muted" for="mock-url">Mock receiver URL</label>
+      <input id="mock-url" class="input" type="text" placeholder="http://127.0.0.1:8787/…" />
+      <label class="small muted" for="max-records">Max records per batch</label>
+      <input id="max-records" class="input" type="number" min="1" max="500" />
+      <button id="save-settings" class="btn btn-ghost" type="button">Save settings</button>
+      <p class="tiny muted">
+        Only loopback origins are permitted. No credentials, cookies, or tokens
+        are ever stored or sent. Nothing is transmitted without pressing “Send”.
+      </p>
+    </details>
+
+    <footer class="tiny muted">
+      Operator-driven capture only · no unattended scraping · no login automation
+    </footer>
+
+    <script src="../common/constants.js"></script>
+    <script src="../common/normalize.js"></script>
+    <script src="../common/dedupe.js"></script>
+    <script src="../common/schema.js"></script>
+    <script src="sidepanel.js"></script>
+  </body>
+</html>
