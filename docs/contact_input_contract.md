@@ -9,14 +9,20 @@ manual and compliant.
 
 ## Source and authorization
 
-- Contacts are supplied as an **authorized spreadsheet** — **CSV or XLSX** — for
-  the first launch, exported by a human operator from an authorized source (e.g.
-  a manual Sales Navigator export the operator is licensed to use, or another
-  explicitly permitted list). Legacy `.xls`, Google Sheets direct import, and
-  other spreadsheet formats are out of scope until explicitly approved. (The
-  DAT-001 schema is prepared for XLSX — source format, MIME type, parser/mapper
-  version, and per-sheet row identity — but XLSX parsing itself is a later slice;
-  the implemented importer is CSV today.)
+- Contacts arrive through one of two **authorized acquisition paths**, both
+  feeding the same staged-import pipeline:
+  1. An **authorized spreadsheet** — **CSV or XLSX** (both parse through one
+     shared pipeline since the workbench slice) — exported by a human operator
+     from an authorized source (e.g. a manual Sales Navigator export the
+     operator is licensed to use, or another explicitly permitted list).
+  2. An **operator-driven capture batch** from the Sales Navigator capture
+     extension (`extensions/salesnav-capture/`): the operator browses and
+     authenticates themselves, the extension reads only visible pages, the
+     operator reviews the batch, and it is handed over as a JSON/CSV export or
+     via a narrow intake endpoint. No unattended pagination, credential
+     storage, or undocumented APIs.
+- Legacy `.xls`, Google Sheets direct import, and other spreadsheet formats are
+  out of scope until explicitly approved.
 - The system does **not** perform unattended scraping, anti-bot evasion, CAPTCHA
   solving, or platform-limit bypasses (GOAL.md non-goals; CLAUDE.md). The
   acquisition method is deliberately kept outside and replaceable behind the

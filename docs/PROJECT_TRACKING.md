@@ -35,29 +35,32 @@ Sheets. Summarize their operational consequence and link to GitHub for evidence.
 The operating loop is deliberately split so the builder does not certify its
 own work:
 
-1. **Claude builds and operates GitHub.** Claude works only within the
-   authorized phase; creates the branch; commits and pushes changes; creates
-   and maintains the pull request; runs checks; applies review corrections;
-   and, after the required verdict, merges, closes linked issues, and safely
-   cleans up the branch.
-2. **ChatGPT verifies.** ChatGPT inspects the actual branch, diff, checks,
+1. **Claude builds and prepares.** Claude works only within the authorized
+   phase; creates the branch; commits and verifies changes (delivering the
+   branch to the local repository when the session cannot push); and supplies
+   a factual handoff and proposed tracker payload.
+2. **Sahil bridges and decides.** When Claude cannot authenticate to GitHub,
+   Sahil pushes the prepared local branch through CMD or GitHub Desktop. Sahil
+   also resolves material product, operating, risk, cost, and scope choices and
+   explicitly approves consequential actions such as merging.
+3. **ChatGPT operates GitHub.** Once a branch is remote, ChatGPT creates or
+   updates the PR; writes PR, issue, review, and closing content; manages issue
+   and project state; and verifies the exact remote SHA after every push.
+4. **ChatGPT verifies.** ChatGPT inspects the actual branch, diff, checks,
    migrations, tests, and phase exit conditions. Claude's handoff is a claim,
    not proof.
-3. **ChatGPT records.** After issuing a formal verdict, ChatGPT updates the
+5. **ChatGPT records.** After issuing a formal verdict, ChatGPT updates the
    Roadmap and relevant phase tab when the verified evidence materially changes
    readiness, blockers, decisions, or forecast.
-4. **Sahil decides.** Sahil resolves material product, operating, risk, cost,
-   and scope choices. Claude executes the resulting GitHub actions.
 
 Claude does not require Google Sheets access. Its handoff must contain the exact
 proposed management update, but ChatGPT owns the official entry. Sahil should
 not have to copy development status between systems manually.
 
-Sahil is not responsible for pushing, creating or updating pull requests,
-merging, closing issues, or branch cleanup. Claude should use code or
-authenticated GitHub tooling first and its browser capability where required.
-Only authentication, protected-action approval, or a material decision should
-be escalated to Sahil.
+ChatGPT owns routine remote GitHub administration after the branch is available
+there. Sahil's routine technical step is limited to pushing an unpushed local
+branch when Claude lacks credentials. Claude owns product code and commits;
+ChatGPT does not replace Claude as the implementation agent.
 
 ## Tracking Workbook
 
@@ -320,20 +323,25 @@ Track these outcomes at minimum.
 
 After a meaningful build:
 
-1. Claude opens or updates the pull request and supplies its structured handoff
-   and proposed tracker payload.
-2. ChatGPT verifies the actual GitHub build and relevant phase exit condition.
-3. ChatGPT issues `PASS`, `PASS WITH CONDITIONS`, `FAIL`, or `BLOCKED`.
-4. ChatGPT identifies which operational deliverable changed.
-5. ChatGPT updates only the relevant phase tab and the Roadmap if the overall
+1. Claude supplies its structured handoff and proposed tracker payload.
+2. If required, Sahil pushes the prepared local branch and reports the CMD or
+   GitHub Desktop result.
+3. ChatGPT verifies the remote head SHA and creates or updates the pull request.
+4. ChatGPT verifies the actual GitHub build and relevant phase exit condition.
+5. ChatGPT issues `PASS`, `PASS WITH CONDITIONS`, `FAIL`, or `BLOCKED`.
+6. Claude prepares any requested code correction; Sahil pushes it only when
+   Claude still lacks remote credentials; ChatGPT verifies the new SHA.
+7. After a passing verdict and Sahil's explicit approval, ChatGPT merges and
+   reconciles linked issues and project state.
+8. ChatGPT identifies which operational deliverable changed.
+9. ChatGPT updates only the relevant phase tab and the Roadmap if the overall
    launch answer changed.
-6. ChatGPT updates the phase summary when status, blockers, ETA, confidence,
+10. ChatGPT updates the phase summary when status, blockers, ETA, confidence,
    decisions, or go-live readiness changed.
-7. ChatGPT updates or adds the affected deliverable row and appends one
+11. ChatGPT updates or adds the affected deliverable row and appends one
    update-log entry.
-8. ChatGPT confirms that the build or PR link and verification date are correct.
-9. Claude merges after the required review gate is satisfied and any named
-   Sahil decision or approval has been recorded.
+12. ChatGPT confirms that the build or PR link and verification date are
+   correct.
 
 If nothing operationally changed, do not manufacture a spreadsheet update.
 

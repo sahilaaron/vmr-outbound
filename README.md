@@ -11,10 +11,15 @@ AI collaboration boundary.
 
 ## Status
 
-Phase 0 — Foundation. The repository provides a minimal, safe application shell,
-typed configuration, an audit model, feature switches (all off), dry-run mode
-(on by default), Alembic migrations proven on local Postgres, and CI (ruff,
-mypy, pytest, migration checks). No outreach capability is enabled.
+Phase 1 — Data & Campaigns (in progress). On top of the Phase 0 foundation
+(typed configuration, audit model, feature switches all off, dry-run on by
+default, Alembic migrations, CI), the repository now provides the core DAT-001
+schema, staged CSV/XLSX import with the local operator workbench
+(preview-then-confirm, ambiguous-row outcomes), the suppression ledger, and the
+operator-driven Sales Navigator capture extension. Operator identity resolution
+(DAT-004) is built and under review. No verification, scoring, research,
+drafting, or sending behaviour exists; those feature switches remain off, and
+no outreach capability is enabled.
 
 ## Quick start
 
