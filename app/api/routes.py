@@ -32,6 +32,7 @@ from app.services.imports.salesnav_intake import (
     PayloadTooLargeError,
     SalesNavIntakeError,
     UnauthorizedError,
+    record_intake_failure,
     stage_salesnav_batch,
 )
 
@@ -80,6 +81,20 @@ def _intake_error_response(exc: SalesNavIntakeError, origin: str | None) -> JSON
     )
 
 
+def _fail_intake(
+    db: Session, exc: SalesNavIntakeError, origin: str | None, payload: object = None
+) -> JSONResponse:
+    """Record a safe failure audit (best-effort) and return the error response.
+
+    Auditing is deterministic and PII-free (see ``record_intake_failure``); it
+    never changes the client-facing status or body, and a failed audit write is
+    swallowed so a client error is never masked by an unrelated 500.
+    """
+
+    record_intake_failure(db, error=exc, payload=payload)
+    return _intake_error_response(exc, origin)
+
+
 @router.options(SALESNAV_INTAKE_PATH, include_in_schema=False)
 async def salesnav_stage_preflight(request: Request) -> Response:
     """CORS preflight for the capture extension. Reflects an allowed origin only."""
@@ -116,47 +131,47 @@ async def salesnav_stage_route(request: Request, db: Session = Depends(get_db)) 
     # 2. Local-only guard: the endpoint has no authentication and must never
     #    serve a non-local environment (same rule as the operator workbench).
     if settings.app_env.lower() != "local":
-        return _intake_error_response(
+        return _fail_intake(
+            db,
             UnauthorizedError("the Sales Navigator intake endpoint is available only locally"),
             origin,
         )
 
     # 3. Origin guard: only the extension or a loopback origin may post here.
     if not _origin_allowed(origin):
-        return _intake_error_response(
-            UnauthorizedError(f"origin {origin!r} is not allowed"), origin
-        )
+        return _fail_intake(db, UnauthorizedError(f"origin {origin!r} is not allowed"), origin)
 
     # 4. Payload-size guard: reject an oversized body before reading/parsing it.
     limit = settings.salesnav_intake_max_bytes
     declared = request.headers.get("content-length")
     if declared is not None and declared.isdigit() and int(declared) > limit:
-        return _intake_error_response(
-            PayloadTooLargeError(f"request body exceeds the {limit}-byte intake limit"), origin
+        return _fail_intake(
+            db, PayloadTooLargeError(f"request body exceeds the {limit}-byte intake limit"), origin
         )
     body = await request.body()
     if len(body) > limit:
-        return _intake_error_response(
-            PayloadTooLargeError(f"request body exceeds the {limit}-byte intake limit"), origin
+        return _fail_intake(
+            db, PayloadTooLargeError(f"request body exceeds the {limit}-byte intake limit"), origin
         )
 
     # 5. JSON parse: a malformed body is a deterministic 400.
     try:
         payload = json.loads(body)
     except (json.JSONDecodeError, UnicodeDecodeError):
-        return _intake_error_response(InvalidJsonError("request body was not valid JSON"), origin)
+        return _fail_intake(db, InvalidJsonError("request body was not valid JSON"), origin)
     if not isinstance(payload, dict):
-        return _intake_error_response(
-            InvalidJsonError("request body must be a JSON object"), origin
-        )
+        return _fail_intake(db, InvalidJsonError("request body must be a JSON object"), origin)
 
     # 6. Stage. All contract validation and persistence live in the service.
     try:
         result = stage_salesnav_batch(
-            db, payload=payload, operator_base_url=settings.operator_base_url
+            db,
+            payload=payload,
+            operator_base_url=settings.operator_base_url,
+            timeout_seconds=settings.salesnav_intake_timeout_seconds,
         )
     except SalesNavIntakeError as exc:
-        return _intake_error_response(exc, origin)
+        return _fail_intake(db, exc, origin, payload)
 
     return JSONResponse(
         status_code=result.http_status, content=result.to_body(), headers=_cors_headers(origin)

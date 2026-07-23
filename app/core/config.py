@@ -85,6 +85,17 @@ class Settings(BaseSettings):
         gt=0,
         description="Maximum Sales Navigator intake body size in bytes (default 2 MB).",
     )
+    # Wall-clock budget for a single intake staging operation. Enforced
+    # cooperatively inside the synchronous service (deadline checks) and, as a
+    # database-side backstop, via PostgreSQL ``statement_timeout``. On breach the
+    # staging transaction is rolled back and the request returns 504. Staging a
+    # <=500-record batch takes milliseconds locally, so 15 s is conservative
+    # without being flaky on a cold database.
+    salesnav_intake_timeout_seconds: float = Field(
+        default=15.0,
+        gt=0,
+        description="Wall-clock budget in seconds for one intake staging operation (default 15).",
+    )
 
     features: FeatureFlags = Field(default_factory=FeatureFlags)
 

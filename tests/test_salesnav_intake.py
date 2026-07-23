@@ -28,8 +28,12 @@ from app.models.enums import ImportBatchStatus, ImportSourceFormat
 from app.models.import_batch import ImportBatch, ImportRow, ImportRowValidation
 from app.models.provenance import ProvenanceRecord
 from app.services.campaigns import create_campaign
+from app.services.imports import salesnav_intake as sni
 from app.services.imports.salesnav_intake import (
+    FAILURE_AUDIT_ACTION,
+    SUCCESS_AUDIT_ACTION,
     IdempotencyConflictError,
+    IntakeTimeoutError,
     SalesNavIntakeError,
     stage_salesnav_batch,
 )
@@ -461,3 +465,263 @@ def test_service_conflict_raises_typed_error(db_session: Session) -> None:
         stage_salesnav_batch(db_session, payload=changed, operator_base_url=LOOPBACK_ORIGIN)
     assert isinstance(excinfo.value, SalesNavIntakeError)
     assert excinfo.value.http_status == 409
+
+
+# --- Failure auditing (correction 1) -----------------------------------------
+
+
+def _failure_events(db_session: Session) -> list[AuditEvent]:
+    return list(
+        db_session.scalars(
+            select(AuditEvent).where(AuditEvent.action == FAILURE_AUDIT_ACTION)
+        ).all()
+    )
+
+
+def _one_failure_event(db_session: Session) -> AuditEvent:
+    events = _failure_events(db_session)
+    assert len(events) == 1, f"expected exactly one failure audit, got {len(events)}"
+    return events[0]
+
+
+def _assert_safe_context(event: AuditEvent) -> None:
+    """Every failure audit must be a stable, PII-free record."""
+
+    ctx = event.context or {}
+    assert event.entity_type == "salesnav_intake"
+    assert event.entity_id is None
+    assert ctx["route"] == INTAKE_URL
+    assert ctx["source"] == "salesnav_intake"
+    assert isinstance(ctx["error_code"], str)
+    assert isinstance(ctx["http_status"], int)
+    # Keys are restricted to the safe allow-list.
+    assert set(ctx).issubset(
+        {
+            "error_code",
+            "http_status",
+            "route",
+            "source",
+            "client_batch_id_present",
+            "client_batch_id_fingerprint",
+            "record_count",
+        }
+    )
+    serialized = json.dumps(
+        {"reason": event.reason, "context": ctx, "new_state": event.new_state}
+    ).lower()
+    for banned in ("cookie", "authorization", "password", "secret", "token", "li_at", "session"):
+        assert banned not in serialized
+
+
+@pytest.mark.usefixtures("enable_salesnav_intake")
+def test_failure_audit_malformed_json(client: TestClient, db_session: Session) -> None:
+    resp = client.post(
+        INTAKE_URL,
+        content=b"{not json",
+        headers={"content-type": "application/json", "origin": LOOPBACK_ORIGIN},
+    )
+    assert resp.status_code == 400
+    event = _one_failure_event(db_session)
+    assert (event.context or {})["error_code"] == "invalid_json"
+    assert (event.context or {})["client_batch_id_present"] is False
+    _assert_safe_context(event)
+
+
+@pytest.mark.usefixtures("enable_salesnav_intake")
+def test_failure_audit_unsupported_version(client: TestClient, db_session: Session) -> None:
+    campaign = _make_campaign(db_session, "SN fail version")
+    payload = _payload(str(campaign.id))
+    payload["schema_version"] = "salesnav-capture/2.0.0"
+    assert _post(client, payload).status_code == 422
+    event = _one_failure_event(db_session)
+    assert (event.context or {})["error_code"] == "validation_failed"
+    _assert_safe_context(event)
+
+
+@pytest.mark.usefixtures("enable_salesnav_intake")
+def test_failure_audit_unauthorized_origin(client: TestClient, db_session: Session) -> None:
+    campaign = _make_campaign(db_session, "SN fail origin")
+    assert (
+        _post(client, _payload(str(campaign.id)), origin="https://evil.example").status_code == 403
+    )
+    event = _one_failure_event(db_session)
+    assert (event.context or {})["error_code"] == "unauthorized"
+    assert (event.context or {})["http_status"] == 403
+    _assert_safe_context(event)
+
+
+@pytest.mark.usefixtures("enable_salesnav_intake")
+def test_failure_audit_non_local_environment(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    campaign = _make_campaign(db_session, "SN fail env")
+    monkeypatch.setenv("APP_ENV", "staging")
+    get_settings.cache_clear()
+    assert _post(client, _payload(str(campaign.id))).status_code == 403
+    event = _one_failure_event(db_session)
+    assert (event.context or {})["error_code"] == "unauthorized"
+    _assert_safe_context(event)
+
+
+@pytest.mark.usefixtures("enable_salesnav_intake")
+def test_failure_audit_oversized(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    campaign = _make_campaign(db_session, "SN fail oversized")
+    monkeypatch.setenv("SALESNAV_INTAKE_MAX_BYTES", "200")
+    get_settings.cache_clear()
+    assert _post(client, _payload(str(campaign.id))).status_code == 413
+    event = _one_failure_event(db_session)
+    assert (event.context or {})["error_code"] == "payload_too_large"
+    _assert_safe_context(event)
+
+
+@pytest.mark.usefixtures("enable_salesnav_intake")
+def test_failure_audit_invalid_campaign(client: TestClient, db_session: Session) -> None:
+    assert _post(client, _payload(str(uuid.uuid4()))).status_code == 409
+    event = _one_failure_event(db_session)
+    assert (event.context or {})["error_code"] == "campaign_invalid"
+    _assert_safe_context(event)
+
+
+@pytest.mark.usefixtures("enable_salesnav_intake")
+def test_failure_audit_idempotency_conflict(client: TestClient, db_session: Session) -> None:
+    campaign = _make_campaign(db_session, "SN fail conflict")
+    payload = _payload(str(campaign.id))
+    assert _post(client, payload).status_code == 201
+    changed = copy.deepcopy(payload)
+    changed["records"] = changed["records"][:1]
+    assert _post(client, changed).status_code == 409
+    event = _one_failure_event(db_session)
+    assert (event.context or {})["error_code"] == "client_batch_id_conflict"
+    _assert_safe_context(event)
+    # Success audit for the first request still recorded; batch not duplicated.
+    assert db_session.scalar(select(func.count(ImportBatch.id))) == 1
+
+
+@pytest.mark.usefixtures("enable_salesnav_intake")
+def test_failure_audit_context_is_pii_free(client: TestClient, db_session: Session) -> None:
+    """The rich example payload's names/URLs must never reach the audit trail."""
+
+    payload = _payload(str(uuid.uuid4()))  # unknown campaign -> 409 after schema pass
+    assert _post(client, payload).status_code == 409
+    event = _one_failure_event(db_session)
+    ctx = event.context or {}
+    blob = json.dumps({"reason": event.reason, "context": ctx})
+    # None of the captured record content or sensitive URLs may appear.
+    assert "Whitfield" not in blob
+    assert "大角" not in blob
+    assert "linkedin.com" not in blob
+    assert "sales/lead" not in blob
+    assert payload["current_search_url"] not in blob
+    assert payload["client_batch_id"] not in blob  # raw id never stored
+    # But safe, useful fields are present.
+    assert ctx["client_batch_id_present"] is True
+    assert len(ctx["client_batch_id_fingerprint"]) == 16
+    assert ctx["record_count"] == 2
+    _assert_safe_context(event)
+
+
+@pytest.mark.usefixtures("enable_salesnav_intake")
+def test_failure_audit_leaves_no_batch_or_rows(client: TestClient, db_session: Session) -> None:
+    assert _post(client, _payload(str(uuid.uuid4()))).status_code == 409
+    assert db_session.scalar(select(func.count(ImportBatch.id))) == 0
+    assert db_session.scalar(select(func.count(ImportRow.id))) == 0
+    assert db_session.scalar(select(func.count(Contact.id))) == 0
+    assert len(_failure_events(db_session)) == 1
+
+
+@pytest.mark.usefixtures("enable_salesnav_intake")
+def test_success_records_success_audit_not_failure(client: TestClient, db_session: Session) -> None:
+    campaign = _make_campaign(db_session, "SN success audit")
+    assert _post(client, _payload(str(campaign.id))).status_code == 201
+    assert (
+        db_session.scalar(
+            select(func.count(AuditEvent.id)).where(AuditEvent.action == SUCCESS_AUDIT_ACTION)
+        )
+        == 1
+    )
+    assert _failure_events(db_session) == []
+
+
+@pytest.mark.usefixtures("enable_salesnav_intake")
+def test_audit_write_failure_does_not_become_500(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("audit backend unavailable")
+
+    monkeypatch.setattr(sni, "record_audit_event", _boom)
+    resp = _post(client, _payload(str(uuid.uuid4())))  # unknown campaign -> 409
+    # The intended client error is preserved; the audit failure is swallowed.
+    assert resp.status_code == 409
+    assert resp.json()["error"] == "campaign_invalid"
+
+
+# --- Timeout handling (correction 2) -----------------------------------------
+
+
+def _clock_tripping_after(ok_reads: int):
+    """A clock that returns 0.0 for the first ``ok_reads`` reads, then a huge value."""
+
+    state = {"n": 0}
+
+    def clock() -> float:
+        state["n"] += 1
+        return 0.0 if state["n"] <= ok_reads else 1e9
+
+    return clock
+
+
+@pytest.mark.usefixtures("enable_salesnav_intake")
+def test_route_timeout_returns_504_and_audits(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    campaign = _make_campaign(db_session, "SN timeout route")
+    # Trip the deadline at the first check (before any write).
+    monkeypatch.setattr(sni, "_CLOCK_OVERRIDE", _clock_tripping_after(1))
+
+    resp = _post(client, _payload(str(campaign.id)))
+    assert resp.status_code == 504
+    assert resp.json() == {"error": "timeout", "status": 504}
+
+    # Nothing staged; a safe timeout failure audit is recorded.
+    assert db_session.scalar(select(func.count(ImportBatch.id))) == 0
+    assert db_session.scalar(select(func.count(ImportRow.id))) == 0
+    assert db_session.scalar(select(func.count(Contact.id))) == 0
+    event = _one_failure_event(db_session)
+    assert (event.context or {})["error_code"] == "timeout"
+    _assert_safe_context(event)
+
+
+@pytest.mark.usefixtures("enable_salesnav_intake")
+def test_service_timeout_after_partial_write_rolls_back(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    campaign = _make_campaign(db_session, "SN timeout partial")
+    payload = _payload(str(campaign.id))
+    # Pass the pre-write check, then trip after the rows are written.
+    monkeypatch.setattr(sni, "_CLOCK_OVERRIDE", _clock_tripping_after(2))
+
+    with pytest.raises(IntakeTimeoutError):
+        stage_salesnav_batch(
+            db_session,
+            payload=payload,
+            operator_base_url=LOOPBACK_ORIGIN,
+            timeout_seconds=15.0,
+        )
+
+    # The partially written batch and rows are rolled back — nothing survives.
+    assert db_session.scalar(select(func.count(ImportBatch.id))) == 0
+    assert db_session.scalar(select(func.count(ImportRow.id))) == 0
+
+
+@pytest.mark.usefixtures("enable_salesnav_intake")
+def test_timeout_not_triggered_on_normal_request(client: TestClient, db_session: Session) -> None:
+    """With the real clock, a normal request stages successfully (no false 504)."""
+
+    campaign = _make_campaign(db_session, "SN no timeout")
+    resp = _post(client, _payload(str(campaign.id)))
+    assert resp.status_code == 201
+    assert _failure_events(db_session) == []
+    assert db_session.scalar(select(func.count(ImportBatch.id))) == 1
