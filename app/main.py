@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from sqlalchemy import text
 
 from app import __version__
+from app.api.routes import router as api_router
 from app.core.config import Settings, get_settings
 from app.db.session import engine
 
@@ -59,6 +60,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "detail": detail,
         }
 
+    app.include_router(api_router)
     return app
 
 

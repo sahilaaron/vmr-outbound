@@ -7,8 +7,9 @@ credentials in source).
 
 from logging.config import fileConfig
 
-# Import all models so Base.metadata is fully populated for autogenerate.
-import app.models.audit_event  # noqa: E402, F401
+# Importing the declarative base registers every model on Base.metadata (base.py
+# imports all model modules), so autogenerate sees the full schema.
+import app.db.base  # noqa: E402, F401
 from alembic import context
 from app.core.config import get_settings
 from app.db.base import Base

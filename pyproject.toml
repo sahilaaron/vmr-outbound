@@ -38,6 +38,12 @@ src = ["app", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "W"]
 
+[tool.ruff.lint.per-file-ignores]
+# FastAPI's dependency-injection idiom uses `Depends(...)` as an argument
+# default, which B008 (function call in default argument) flags. This is the
+# framework-sanctioned pattern, not a bug.
+"app/api/routes.py" = ["B008"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true

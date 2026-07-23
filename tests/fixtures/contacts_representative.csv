@@ -1,0 +1,13 @@
+First_Name,Last_Name,Company_Name,Company_Domain,Title,Email,LinkedIn_URL,Country,Industry,Company_Size,Source_Name,Source_Reference,Exported_By,Exported_At,Notes
+Ada,Lovelace,Analytical Engines,https://www.AnalyticalEngines.example/,Chief Analyst,ada@analyticalengines.example,https://www.linkedin.com/in/ada-lovelace,GB,Software,51-200,Sales Navigator export - 2026-07,saved-search-42,operator@vmr.example,2026-07-01,warm intro
+  grace  , HOPPER ,Compiler Corp,COMPILERCORP.EXAMPLE,Rear Admiral,GRACE@Compilercorp.Example ,linkedin.com/in/grace-hopper,us,Software,1001-5000,Sales Navigator export - 2026-07,saved-search-42,operator@vmr.example,2026-07-01,messy caps and spacing
+Ada,Lovelace,Analytical Engines,analyticalengines.example,Chief Analyst,ada@ANALYTICALENGINES.example,https://www.linkedin.com/in/ada-lovelace,GB,Software,51-200,Sales Navigator export - 2026-07,saved-search-42,operator@vmr.example,2026-07-01,exact email duplicate of row 1
+Alan,Turing,Bombe Ltd,,Cryptanalyst,alan@bombe.example,,GB,Hardware,11-50,Sales Navigator export - 2026-07,,operator@vmr.example,2026-07-01,missing company_domain
+Katherine,Johnson,Orbital Mechanics,not a domain!!,Mathematician,katherine@orbital.example,,US,Aerospace,201-500,Sales Navigator export - 2026-07,,operator@vmr.example,2026-07-01,invalid domain
+Charles,Babbage,Difference Engines,diffeng.example,Inventor,charles[at]diffeng.example,,GB,Hardware,11-50,Sales Navigator export - 2026-07,,operator@vmr.example,2026-07-01,invalid email
+Blocked,Person,DoNotContact Inc,donotcontact.example,Director,optout@donotcontact.example,,US,Finance,51-200,Sales Navigator export - 2026-07,,operator@vmr.example,2026-07-01,suppressed by email opt-out
+Rivalry,Lead,Rival Co,rival.example,VP Sales,info@rival.example,,US,Software,51-200,Sales Navigator export - 2026-07,,operator@vmr.example,2026-07-01,suppressed by domain competitor
+Margaret,Hamilton,Apollo Software,apollosw.example,Director of Software,,,US,Aerospace,201-500,Sales Navigator export - 2026-07,,operator@vmr.example,2026-07-01,valid with no email
+margaret,hamilton,Apollo Software,apollosw.example,Director,,,US,Aerospace,201-500,Sales Navigator export - 2026-07,,operator@vmr.example,2026-07-01,natural-key duplicate of Margaret Hamilton
+
+John,Von Neumann,Institute Study,ias.example,Professor,john@ias.example,,US,Research,201-500,Sales Navigator export - 2026-07,,operator@vmr.example,2026-07-01,distinct valid contact
