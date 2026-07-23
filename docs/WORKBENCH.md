@@ -35,11 +35,20 @@ commit step of an import (the wizard's earlier steps work without it, but
 confirm refuses).
 
 There is **no live RDS deployment** of the workbench. It is a local operator
-tool; the guarded reset controls additionally refuse any non-loopback database.
+tool, and it is hard-locked to local development: if `FEATURES__WORKBENCH=true`
+while `APP_ENV` is anything other than `local`, the application **refuses to
+start** with a clear configuration error (the workbench has no authentication,
+so a silent misconfiguration must be impossible to miss). The guarded reset
+controls additionally refuse any non-loopback database, independently of this
+startup guard.
 
 ## Supported and unsupported formats
 
-Supported: `.csv` (UTF-8, header row) and `.xlsx`.
+Supported: `.csv` (UTF-8, header row) and `.xlsx`. Uploads are limited to a
+configurable maximum size (`MAX_UPLOAD_BYTES`, default 25 MB); an oversized
+file is rejected with a clear message before it is parsed or staged, and no
+staged bytes or metadata are written for it. The upload is read in bounded
+chunks, so an oversized file is never held fully in memory.
 Not supported (rejected visibly at upload): legacy `.xls`, Google Sheets links,
 and every other format. Malformed or empty workbooks are rejected with an
 actionable message; an unreadable file confirmed through the API path becomes a

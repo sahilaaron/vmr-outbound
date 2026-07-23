@@ -20,10 +20,31 @@ from app.core.config import Settings, get_settings
 from app.db.session import engine
 
 
+class WorkbenchConfigurationError(RuntimeError):
+    """Raised at startup when the workbench is enabled outside local development.
+
+    The operator workbench has no authentication: it is a local, single-operator
+    tool and must never be exposed from a non-local environment. Refusing to
+    start makes the misconfiguration impossible to miss (a silent skip could be
+    overlooked and later mistaken for a deployment problem).
+    """
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Application factory."""
 
     settings = settings or get_settings()
+
+    # Hard guard: the workbench mounts ONLY in local development. Any other
+    # environment combined with FEATURES__WORKBENCH=true is a configuration
+    # error and refuses startup outright.
+    if settings.features.workbench and settings.app_env.lower() != "local":
+        raise WorkbenchConfigurationError(
+            "FEATURES__WORKBENCH=true is only permitted when APP_ENV=local: the "
+            f"operator workbench has no authentication and APP_ENV is {settings.app_env!r}. "
+            "Unset FEATURES__WORKBENCH (or set APP_ENV=local on a development machine) "
+            "and start the app again."
+        )
     app = FastAPI(
         title=settings.app_name,
         version=__version__,

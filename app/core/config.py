@@ -61,6 +61,13 @@ class Settings(BaseSettings):
         default="var/staged_uploads",
         description="Directory for short-lived staged uploads (preview -> confirm flow).",
     )
+    # Maximum accepted spreadsheet upload size. Oversized files are rejected
+    # before parsing or staging. Conservative default: 25 MB.
+    max_upload_bytes: int = Field(
+        default=25 * 1024 * 1024,
+        gt=0,
+        description="Maximum spreadsheet upload size in bytes (default 25 MB).",
+    )
 
     features: FeatureFlags = Field(default_factory=FeatureFlags)
 

@@ -52,6 +52,9 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 PAGE_SIZE = 50
 PREVIEW_ROWS_SHOWN = 50
 SAMPLE_ROWS_SHOWN = 5
+# Uploads are read in bounded chunks so an oversized file is rejected without
+# ever being held fully in memory.
+_UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 _UNAVAILABLE_SECTIONS: dict[str, str] = {
     "verification": "Email Verification",
@@ -285,6 +288,7 @@ def import_new_page(request: Request, db: Session = Depends(get_db)) -> HTMLResp
         {
             "campaigns": list_campaigns(db),
             "preselect_campaign": request.query_params.get("campaign_id"),
+            "max_upload_bytes": get_settings().max_upload_bytes,
             "active_nav": "imports",
             "page_title": "New import",
         },
@@ -301,7 +305,26 @@ async def import_upload(
         return _redirect("/imports/new", err="Choose an existing campaign to import into.")
 
     filename = (file.filename or "").strip()
-    content = await file.read()
+
+    # Size gate FIRST — before any parsing or staging. The upload is read in
+    # bounded chunks and abandoned as soon as it exceeds the configured limit,
+    # so an oversized file is never held fully in memory, parsed, or staged.
+    limit_bytes = get_settings().max_upload_bytes
+    chunks: list[bytes] = []
+    received = 0
+    while True:
+        chunk = await file.read(_UPLOAD_CHUNK_BYTES)
+        if not chunk:
+            break
+        received += len(chunk)
+        if received > limit_bytes:
+            try:
+                staging.enforce_upload_size(received, limit_bytes, filename=filename)
+            except staging.UploadTooLargeError as exc:
+                return _redirect(f"/imports/new?campaign_id={campaign_id}", err=str(exc))
+        chunks.append(chunk)
+    content = b"".join(chunks)
+
     try:
         file_format = parsing.detect_format(filename)
         parsed = parsing.parse_file(content, filename)

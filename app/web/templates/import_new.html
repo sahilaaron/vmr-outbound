@@ -34,7 +34,8 @@
         <div class="field">
           <label for="i-file">Contact file (.csv or .xlsx)</label>
           <input type="file" id="i-file" name="file" accept=".csv,.xlsx" required>
-          <div class="help">The original file is kept verbatim for audit; nothing is imported until you confirm at step 4.</div>
+          <div class="help">Maximum size: {{ (max_upload_bytes / 1048576) | round(1) | int if max_upload_bytes % 1048576 == 0 else (max_upload_bytes / 1048576) | round(1) }} MB.
+            The original file is kept verbatim for audit; nothing is imported until you confirm at step 4.</div>
         </div>
       </div>
       <hr class="sep">

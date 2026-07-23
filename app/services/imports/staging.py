@@ -40,6 +40,37 @@ class StagedUploadNotFound(Exception):
     """Raised when a staged upload does not exist or has expired."""
 
 
+class UploadTooLargeError(Exception):
+    """Raised when an upload exceeds the configured maximum size.
+
+    Enforced before any parsing or staging happens, so an oversized file never
+    leaves bytes or metadata behind in the staging area.
+    """
+
+    def __init__(self, size_bytes: int, limit_bytes: int, filename: str | None = None) -> None:
+        self.size_bytes = size_bytes
+        self.limit_bytes = limit_bytes
+        name = f"“{filename}” " if filename else ""
+        super().__init__(
+            f"The file {name}is larger than the configured upload limit "
+            f"({_format_size(limit_bytes)}). Split the spreadsheet into smaller "
+            "files and import them one at a time."
+        )
+
+
+def _format_size(size_bytes: int) -> str:
+    if size_bytes % (1024 * 1024) == 0:
+        return f"{size_bytes // (1024 * 1024)} MB"
+    return f"{size_bytes} bytes"
+
+
+def enforce_upload_size(size_bytes: int, limit_bytes: int, *, filename: str | None = None) -> None:
+    """Reject an upload larger than *limit_bytes* (a file AT the limit passes)."""
+
+    if size_bytes > limit_bytes:
+        raise UploadTooLargeError(size_bytes, limit_bytes, filename)
+
+
 @dataclass
 class StagedUpload:
     """One staged upload awaiting inspection, mapping, preview, or confirm."""

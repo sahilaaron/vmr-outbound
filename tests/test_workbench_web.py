@@ -296,15 +296,20 @@ def test_upload_rejects_unsupported_and_malformed_files(
     assert malformed.status_code == 303 and "err=" in malformed.headers["location"]
 
 
-# --- Local tools guards -------------------------------------------------------------
+# --- Upload size limit ---------------------------------------------------------
 
 
-def test_local_tools_require_local_environment(
+@pytest.fixture()
+def small_limit_client(
     db_session: Session, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+) -> Iterator[tuple[TestClient, Path]]:
+    """Workbench client with a tiny configured upload limit (200 bytes)."""
+
+    staged_dir = tmp_path / "staged"
     monkeypatch.setenv("FEATURES__WORKBENCH", "true")
-    monkeypatch.setenv("APP_ENV", "staging")
-    monkeypatch.setenv("STAGED_UPLOADS_DIR", str(tmp_path / "staged"))
+    monkeypatch.setenv("FEATURES__CSV_IMPORT", "true")
+    monkeypatch.setenv("STAGED_UPLOADS_DIR", str(staged_dir))
+    monkeypatch.setenv("MAX_UPLOAD_BYTES", "200")
     get_settings.cache_clear()
     app = create_app()
 
@@ -312,15 +317,115 @@ def test_local_tools_require_local_environment(
         yield db_session
 
     app.dependency_overrides[get_db] = _override
+    with TestClient(app) as test_client:
+        yield test_client, staged_dir
+    app.dependency_overrides.clear()
+    get_settings.cache_clear()
+
+
+def _upload_bytes(client: TestClient, db_session: Session, payload: bytes, name: str) -> object:
+    campaign = create_campaign(db_session, name=f"Size limit {name}")
+    db_session.commit()
+    return client.post(
+        "/imports/upload",
+        data={"campaign_id": str(campaign.id)},
+        files={"file": (name, payload, "text/csv")},
+        follow_redirects=False,
+    )
+
+
+def _csv_of_size(size: int) -> bytes:
+    base = (
+        b"first_name,last_name,company_name,company_domain\nAda,Lovelace,Engines,engines.example\n"
+    )
+    assert size >= len(base), "test sizes must fit a parseable CSV"
+    return base + b"x" * (size - len(base))
+
+
+def test_upload_below_limit_is_staged(
+    small_limit_client: tuple[TestClient, Path], db_session: Session
+) -> None:
+    client, _staged_dir = small_limit_client
+    response = _upload_bytes(client, db_session, _csv_of_size(150), "below.csv")
+    assert response.status_code == 303
+    assert "/mapping" in response.headers["location"]
+
+
+def test_upload_exactly_at_limit_is_staged(
+    small_limit_client: tuple[TestClient, Path], db_session: Session
+) -> None:
+    client, _staged_dir = small_limit_client
+    payload = _csv_of_size(200)
+    assert len(payload) == 200
+    response = _upload_bytes(client, db_session, payload, "at-limit.csv")
+    assert response.status_code == 303
+    assert "/mapping" in response.headers["location"]
+
+
+def test_upload_above_limit_is_rejected_before_staging(
+    small_limit_client: tuple[TestClient, Path], db_session: Session
+) -> None:
+    client, staged_dir = small_limit_client
+    payload = _csv_of_size(201)
+    assert len(payload) == 201
+    response = _upload_bytes(client, db_session, payload, "too-big.csv")
+    assert response.status_code == 303
+    location = response.headers["location"]
+    assert "err=" in location and "larger+than" in location.replace("%20", "+")
+    # Nothing was staged for the rejected file: no bytes, no metadata.
+    assert not staged_dir.exists() or not any(staged_dir.iterdir())
+
+
+# --- Workbench local-only startup guard ------------------------------------------
+
+
+def test_workbench_enabled_outside_local_refuses_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.main import WorkbenchConfigurationError
+
+    monkeypatch.setenv("FEATURES__WORKBENCH", "true")
+    monkeypatch.setenv("APP_ENV", "staging")
+    get_settings.cache_clear()
     try:
+        with pytest.raises(WorkbenchConfigurationError, match="APP_ENV"):
+            create_app()
+    finally:
+        get_settings.cache_clear()
+
+
+def test_workbench_enabled_locally_mounts_ui(client: TestClient) -> None:
+    # The `client` fixture is APP_ENV=local (default) + workbench enabled.
+    assert client.get("/").status_code == 200
+    assert client.get("/contacts").status_code == 200
+
+
+def test_workbench_disabled_never_raises_regardless_of_env(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("APP_ENV", "staging")
+    monkeypatch.delenv("FEATURES__WORKBENCH", raising=False)
+    get_settings.cache_clear()
+    try:
+        app = create_app()  # no error: the guard only fires when the switch is on
+
+        def _override() -> Iterator[Session]:
+            yield db_session
+
+        app.dependency_overrides[get_db] = _override
         with TestClient(app) as staging_client:
+            assert staging_client.get("/").status_code == 404
             assert staging_client.get("/local-tools").status_code == 404
-            blocked = staging_client.post("/local-tools/clear", data={"confirm": "RESET"})
-            assert blocked.status_code in (303, 200)
-            assert "local development" in blocked.headers.get("location", "") + blocked.text
     finally:
         app.dependency_overrides.clear()
         get_settings.cache_clear()
+
+
+# --- Local tools guards -------------------------------------------------------------
+# The Local Tools safeguards are independent of the startup guard and unchanged:
+# route-level 404 outside APP_ENV=local (now unreachable anyway, since the whole
+# workbench refuses to start outside local) plus the service-level environment
+# and loopback-database refusals proven in tests/test_devtools.py.
 
 
 def test_local_reset_requires_typed_confirmation(client: TestClient) -> None:
