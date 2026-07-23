@@ -1,257 +1,269 @@
 ## Project
 
-This repository builds the first working version of an agent-assisted outbound
-sales operating system. It is a semi-automated workflow with deterministic
-software, selective AI judgment, and explicit human approval before outreach.
+This repository builds the first working version of the **VMR Outbound Agent**:
+a private, agent-assisted outbound sales operating system.
 
-The immediate objective is a safe, observable first campaign—not a fully
-autonomous sales agent or a general-purpose sales platform.
+The immediate objective is one safe, observable, human-approved pilot campaign.
+It is not a fully autonomous sales agent, public SaaS product, or general CRM.
 
-## Read Order
+The system combines:
 
-Before changing code, read:
+- deterministic backend services for facts, rules, state changes, and integrations;
+- bounded AI judgment for research, classification, scoring support, and drafting;
+- explicit human approval before any outreach is scheduled.
 
-1. `GOAL.md` for the current milestone, acceptance criteria, and non-goals.
-2. This file for repository-wide engineering and safety rules.
-3. `CLAUDE.md` when Claude is doing scoring, research, drafting, or MCP work.
-4. `docs/PROJECT\_TRACKING.md` before planning a phase, reporting build progress,
-or updating the management tracker.
+## Required Read Order
 
-If documents conflict, use this priority:
+Before changing the repository, read:
 
-1. The user's latest explicit instruction
+1. `GOAL.md` — current authorized milestone, acceptance criteria, and non-goals.
+2. `AGENTS.md` — permanent repository-wide engineering and safety rules.
+3. `CLAUDE.md` — Claude-specific working and judgment rules.
+4. `docs/PROJECT_TRACKING.md` — project-management and handoff rules.
+5. Documents explicitly referenced by the current goal.
+
+Do not load every project document without a task-specific reason.
+
+When instructions conflict, use this priority:
+
+1. Sahil’s latest explicit instruction
 2. `GOAL.md`
 3. `AGENTS.md`
 4. `CLAUDE.md`
-5. `docs/PROJECT\_TRACKING.md`
+5. `docs/PROJECT_TRACKING.md`
 6. Existing implementation conventions
 
-## System Boundaries
+## Source-of-Truth Boundaries
 
-Use these ownership rules:
+### GitHub
 
-* RDS is the system of record for campaigns, contacts, evidence, scores,
-verification results, approvals, sends, replies, and audit events.
-* Python services own deterministic work: imports, normalization, deduplication,
-identity matching, email candidate generation, cache policy, state
-transitions, and integrations.
-* MillionVerifier supplies external mailbox verification.
-* Claude supplies bounded judgment: evidence classification, scoring support,
-personalization, and draft generation.
-* Saleshandy owns campaign execution, mailbox rotation, warm-up features, and
-delivery operations. Sync relevant events back to RDS.
-* The dashboard is a control and review surface. It must call backend services;
-it must not contain business rules that exist only in the browser.
+GitHub owns:
 
-External systems are adapters, not sources of truth.
+- source code;
+- issues and technical backlog;
+- branches, commits, and pull requests;
+- tests and CI;
+- migrations;
+- engineering decisions;
+- release evidence.
 
-## Project Records
+### Google Sheets
 
-Use GitHub as the development command center and engineering source of truth.
-Issues, pull requests, commits, checks, and release evidence belong there.
+The project Google Sheet owns:
 
-Use the project Google Sheet as the management source of truth for operational
-readiness, forecast, blockers, owners, decisions, and the current answer to
-"When can we go live?" Follow `docs/PROJECT\_TRACKING.md` for the required tabs,
-fields, update triggers, and status definitions.
+- operational readiness;
+- deliverables and owners;
+- blockers and decisions;
+- forecast confidence;
+- the current answer to “When can we go live?”
 
-Use this operating loop:
+The Sheet must not become a second technical backlog.
 
-1. Claude builds the authorized phase and owns the complete GitHub workflow:
-branch creation, commits, pushes, pull-request creation and updates, checks,
-review corrections, merge, linked-issue closure, and branch cleanup.
-2. ChatGPT independently reviews the repository evidence and issues a
-`PASS`, `PASS WITH CONDITIONS`, `FAIL`, or `BLOCKED` verdict.
-3. ChatGPT updates the relevant Google Sheets phase tab and Roadmap when the
-verified evidence materially changes readiness, blockers, decisions, or the
-forecast.
-4. Sahil makes material product, risk, cost, and scope decisions. Claude
-performs the resulting GitHub actions after the review gate is satisfied.
+Claude proposes tracker updates in build handoffs. ChatGPT independently verifies
+the build and makes the official Sheet update.
 
-Claude does not need Google Sheets access and must not grade its own work.
-Claude must include a concise proposed tracker update in every meaningful build
-handoff: what became usable, what remains, blockers, decisions required, the
-claimed phase status, and GitHub evidence. ChatGPT owns verification and the
-official tracker entry.
+### Database
 
-Sahil is not the GitHub operator. Do not instruct him to run Git commands,
-create or update pull requests, merge, close issues, or delete branches. Use
-authenticated Git commands, GitHub tooling, or Claude's browser access as
-needed. Ask Sahil only for a decision, approval, authentication step, or
-permission that cannot safely be completed on his behalf.
+The application database owns operational records, including:
 
-Never invent completion, dates, owners, metrics, or readiness. A phase is not
-officially complete until ChatGPT has reconciled the tracker with the verified
-GitHub build.
+- campaigns and contacts;
+- import batches and provenance;
+- suppressions;
+- verification evidence;
+- scores and research evidence;
+- draft versions and approvals;
+- external-provider events;
+- audit history.
+
+External systems are adapters, not authoritative sources of truth.
+
+## System Responsibilities
+
+- **Backend services** own validation, normalization, reconciliation, deduplication,
+  eligibility, suppressions, scoring, workflow transitions, and integrations.
+- **The browser UI** is a control and review surface. It must not contain
+  authoritative business rules that exist only in client code.
+- **Claude** may provide bounded judgment but may not bypass backend rules,
+  approve drafts, verify an email by assertion, or schedule outreach.
+- **MillionVerifier** provides exact-address verification evidence.
+- **Saleshandy** owns scheduling, mailbox rotation, warm-up, sending, and delivery
+  operations. Relevant outcomes must return to the application database.
+- **Sales Navigator and source adapters** may collect authorized prospect data,
+  but must send it through the same staged import and reconciliation pipeline.
+
+## Development Operating Loop
+
+1. Sahil authorizes the scope and makes product, cost, risk, and launch decisions.
+2. Claude builds the authorized slice and owns the complete GitHub workflow.
+3. Claude provides a build handoff with branch, commit, PR, tests, evidence,
+   limitations, and a proposed tracker update.
+4. ChatGPT independently inspects the repository and issues one verdict:
+   `PASS`, `PASS WITH CONDITIONS`, `FAIL`, or `BLOCKED`.
+5. Claude performs approved corrections, merge, issue updates, and branch cleanup.
+6. ChatGPT reconciles the official Google Sheets tracker.
+
+Claude must not grade its own work or declare a phase officially complete.
+
+Sahil is not the routine GitHub operator. Claude should use Git, GitHub tooling,
+or browser access for branch creation, commits, pushes, PRs, merges, issue
+updates, and cleanup. Ask Sahil only when authentication, approval, or a decision
+cannot safely be completed on his behalf.
+
+Never invent completion, dates, evidence, owners, metrics, or readiness.
 
 ## First-Launch Workflow
 
-Preserve this sequence and its audit trail:
+Preserve this operating sequence:
 
-1. A human creates a campaign and defines targeting.
-2. Contacts are imported from an authorized source.
-3. Records are normalized, deduplicated, and checked against suppressions.
-4. Email candidates are generated deterministically.
-5. The internal database is checked for exact-address and domain-pattern
-evidence.
-6. MillionVerifier is called when the exact-address cache is absent or stale.
-7. Hard eligibility gates are applied.
-8. An Initial Fit Score is calculated.
-9. Contacts scoring at least 85/100 may enter insights research.
-10. Company and contact evidence is collected with provenance.
-11. An Outreach Readiness Score and personalized draft are produced.
-12. A human reviews the exact draft version.
-13. Only an approved version may be scheduled in Saleshandy.
-14. Delivery, reply, bounce, unsubscribe, and campaign events return to RDS.
+1. A human defines a campaign and targeting rules.
+2. Contacts enter through an authorized source adapter or import.
+3. Data is staged and raw source values are retained.
+4. Records are validated, normalized, reconciled, and deduplicated.
+5. Suppressions and hard eligibility rules are enforced.
+6. Email candidates are generated deterministically.
+7. Exact-address verification evidence is obtained or reused under versioned rules.
+8. Eligible contacts receive an explainable Initial Fit Score.
+9. Contacts meeting the configured threshold may enter research.
+10. Research evidence is stored with provenance.
+11. Outreach readiness is assessed.
+12. A personalized draft is created as an immutable version.
+13. A human approves one exact draft version.
+14. Eligibility is checked again before scheduling.
+15. Only approved and currently eligible contacts may be scheduled in Saleshandy.
+16. Outcomes return to the database and update workflow and suppression state.
 
-Do not interpret Ã¢â‚¬Å“top 85%Ã¢â‚¬Â as a percentile. The launch rule is a configurable
-score threshold initially set to 85/100.
+The initial research threshold is an absolute score of **85/100**, not the top
+85 percent of contacts.
 
 ## Non-Negotiable Guardrails
 
-* Never send or schedule an email without explicit approval of that exact draft
-version.
-* Editing an approved draft invalidates its approval.
-* Never contact an unsubscribed, suppressed, hard-bounced, or legally excluded
-address.
-* Never fabricate an insight, source, verification result, score input, or
-personalization claim.
-* Store source URL, retrieval time, evidence excerpt or summary, and confidence
-for externally derived insights.
-* Treat a catch-all domain as uncertainty, not proof that a mailbox exists.
-* A verified email pattern for one employee may rank candidates for the same
-domain; it does not prove that another employee's mailbox exists.
-* Never expose unrestricted SQL, arbitrary code execution, suppression deletion,
-mailbox-limit changes, or bulk-send actions through an agent tool.
-* Do not bypass access controls, CAPTCHAs, platform limits, or terms of use.
-Sales Navigator acquisition must be manual or use an explicitly authorized
-and compliant method. Keep acquisition replaceable behind an interface.
-* Do not add paid model APIs or pay-per-token dependencies without explicit
-approval. The intended judgment surface is the user's Claude subscription.
-* Keep secrets out of source, prompts, logs, screenshots, fixtures, and client
-code. Use environment variables or the chosen secret manager.
+- Never send or schedule outreach without explicit approval of the exact draft version.
+- Editing an approved draft invalidates that approval.
+- Never contact an opted-out, suppressed, hard-bounced, or legally excluded address.
+- Never fabricate evidence, sources, verification outcomes, scores, or claims.
+- Catch-all means uncertainty; it does not prove a mailbox exists.
+- A domain email pattern may rank candidates but cannot verify a different mailbox.
+- AI output is advisory until validated by deterministic rules and stored evidence.
+- Never expose unrestricted SQL, arbitrary code execution, suppression deletion,
+  mailbox-limit changes, approval bypasses, or bulk-send authority to an agent.
+- Never bypass login controls, CAPTCHAs, platform limits, or access restrictions.
+- Do not automate unattended Sales Navigator scraping or use undocumented APIs.
+- Do not add paid model APIs or pay-per-token dependencies without explicit approval.
+- Keep secrets out of source, prompts, logs, screenshots, fixtures, browser code,
+  documentation, and Git history.
+- Do not connect source adapters, browser extensions, or AI agents directly to RDS.
 
-## Email Intelligence Rules
+## Data and Evidence Rules
 
-Separate these facts in the schema:
+Keep these concepts structurally distinct:
 
-* `exact\_email\_verification`: evidence about one full email address
-* `domain\_pattern\_observation`: evidence about a naming pattern at a domain
-* `domain\_mail\_state`: MX/provider/catch-all observations about a domain
+- exact-address verification evidence;
+- domain email-pattern observations;
+- mail-domain and catch-all observations.
 
-For the first campaign, use safe verification mode:
+Historical or imported data must:
 
-* Reuse a recent result only for the same normalized full email address.
-* Use domain patterns to order generated candidates, never to auto-mark them
-valid.
-* Verify each new unique candidate selected for outreach.
-* Make TTLs configurable and store `checked\_at`, provider, result, reason, and
-raw provider reference.
-* Suggested initial TTLs: valid 15Ã¢â‚¬â€œ30 days, invalid 30 days, catch-all 7Ã¢â‚¬â€œ15
-days, unknown 1Ã¢â‚¬â€œ3 days. Confirm final values against provider guidance before
-production.
-* A hard bounce creates a suppression event. An opt-out does not expire.
+- enter through staging;
+- retain source provenance and observation time;
+- preserve original values;
+- pass through current normalization and reconciliation rules;
+- never silently overwrite newer or stronger evidence.
 
-Historical data must enter through staging with source provenance, import
-timestamps, normalization, deduplication, and confidence. It must never silently
-overwrite newer live evidence.
+Every externally derived insight must retain:
 
-## Scoring Rules
-
-Apply hard gates before a numerical score. Initial gates include invalid or
-suppressed email, wrong geography/company/industry/role, former employee,
-existing customer, competitor, and campaign contact saturation.
-
-Keep the score deterministic and explainable. Initial weighting:
-
-* Company fit: 25
-* Contact fit: 25
-* Evidence of need: 20
-* Timing: 15
-* Personalization material: 10
-* Data confidence: 5
-
-Maintain two distinct scores:
-
-* Initial Fit Score: computed before deep research
-* Outreach Readiness Score: computed after evidence collection
-
-Store component scores, rule version, evidence references, and a concise reason.
-Claude may classify evidence or recommend component values; backend rules own
-the final calculation and eligibility decision.
+- source URL;
+- retrieval time;
+- evidence excerpt or summary;
+- subject;
+- confidence;
+- freshness information where relevant.
 
 ## Engineering Rules
 
-* Build the smallest vertical slice that satisfies `GOAL.md`.
-* Prefer boring, reversible, testable code over premature infrastructure.
-* Preserve user changes and avoid unrelated refactors.
-* Put business logic in services with typed inputs and outputs.
-* Make integrations idempotent and retry-safe. Store external IDs and webhook
-event IDs.
-* Use explicit workflow states; reject illegal transitions.
-* Every automated mutation must record actor, timestamp, previous state, new
-state, and reason.
-* Use database migrations. Never rely on manual production schema edits.
-* Add fixtures with synthetic data only.
-* Validate all imports and external payloads at the boundary.
-* Paginate bulk work and persist resumable cursors.
-* Rate-limit external calls and make cost/usage visible.
-* Design for one organization and one operating team first. Do not add
-multi-tenancy unless `GOAL.md` changes.
+- Build the smallest complete vertical slice authorized by `GOAL.md`.
+- Prefer simple, reversible, typed, and testable code.
+- Do not broaden the current scope opportunistically.
+- Preserve user work and avoid unrelated refactors.
+- Put authoritative rules in backend services.
+- Validate imports and external payloads at system boundaries.
+- Use explicit workflow states and reject illegal transitions.
+- Make integrations idempotent and retry-safe.
+- Store stable external IDs and reject duplicate external events.
+- Record meaningful automated mutations in the audit trail.
+- Use committed database migrations; never rely on manual schema changes.
+- Use synthetic data only in tests and fixtures.
+- Paginate bulk work and make long-running operations resumable.
+- Make external usage, failures, and cost visible.
+- Design for one organization and one operating team until scope changes.
+- Local-only tools must fail safely against non-local environments and databases.
+- Uploaded files must have explicit type and size limits.
+- Client-side code must escape untrusted source data.
+- New source adapters must converge on the shared staged-import pipeline.
 
-## Minimum Tests
+## Testing Expectations
 
-Every relevant change must cover:
+Relevant changes must include tests for:
 
-* Unit tests for normalization, email generation, cache policy, scoring, and
-state transitions
-* Integration tests for database persistence and adapter contracts
-* Contract fixtures for MillionVerifier and Saleshandy payloads/webhooks
-* An end-to-end dry run that cannot send real email
-* Negative tests for suppression, stale approvals, duplicate webhooks, invalid
-imports, catch-all handling, and retries
+- normal operation;
+- empty and malformed input;
+- duplicate and ambiguous input;
+- suppression and eligibility enforcement;
+- repeated submission and idempotency;
+- interrupted work and retry;
+- invalid state transitions;
+- stale approvals or evidence;
+- unauthorized environments;
+- failure visibility and recovery;
+- secret and production-safety boundaries.
 
-No production send credential may be used in automated tests.
+No automated test may use production sending credentials or real prospect data.
+
+For visual or interactive work, test the actual browser experience and provide
+reproducible evidence.
 
 ## Definition of Done
 
 A change is done only when:
 
-* It directly supports an acceptance criterion in `GOAL.md`.
-* Tests pass and the relevant dry-run path works.
-* Failure and retry behavior are defined.
-* User-visible states and errors are understandable.
-* Audit data is stored.
-* Documentation and configuration examples are updated.
-* The handoff contains the proposed management update, and ChatGPT has
-reconciled the official tracker after independent review when the change
-materially affects deliverables, blockers, forecast, or launch readiness.
-* No non-goal was introduced indirectly.
+- it directly satisfies the authorized goal;
+- tests and required quality checks pass;
+- failure, retry, and recovery behaviour are defined;
+- user-visible states and errors are understandable;
+- relevant audit evidence is produced;
+- migrations and configuration examples are current;
+- documentation reflects what is actually implemented;
+- no non-goal was introduced indirectly;
+- the handoff contains repository evidence and a proposed tracker update;
+- ChatGPT has independently reviewed material readiness changes.
 
-When a useful idea falls outside the launch scope, add it to a short backlog
-note or issue; do not implement it opportunistically.
+A useful idea outside the current scope should become a GitHub issue or short
+backlog note, not an opportunistic implementation.
 
-## Attribution and Generated-By Text
+## GitHub and Attribution
 
-Do not add assistant attribution, tool attribution, or promotional signatures to any repository output.
+Commits must use the repository owner or developer identity already configured
+in Git.
 
-Never include phrases such as:
+Do not add Claude, Anthropic, ChatGPT, OpenAI, tool, or assistant attribution to:
 
-- "Generated by Claude"
-- "Generated by Claude Cowork"
-- "Generated with AI"
-- "Co-authored by Claude"
-- "Created by an AI assistant"
+- commit authors or committers;
+- commit messages;
+- `Co-authored-by` trailers;
+- pull-request titles or descriptions;
+- issue comments;
+- source files;
+- code comments;
+- documentation;
+- release notes;
+- tracker-update payloads;
+- generated repository output.
 
-This applies to:
+Do not include phrases such as:
 
-- Pull request titles
-- Pull request descriptions
-- Commit messages
-- GitHub issue comments
-- Code comments
-- Documentation
-- Release notes
-- Tracker-update payloads
+- “Generated by Claude”
+- “Generated with AI”
+- “Co-authored by Claude”
+- “Created by an AI assistant”
 
-The work should be written as project work, not as assistant-branded output.
+An unsigned or GitHub “Unverified” commit is acceptable unless Sahil explicitly
+introduces a signed-commit policy.
