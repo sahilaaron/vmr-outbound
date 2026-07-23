@@ -130,3 +130,46 @@ test("unsupported page URL: reported, nothing captured", () => {
   assert.equal(r.status, CAPTURE_STATUS.UNSUPPORTED_PAGE);
   assert.equal(r.count, 0);
 });
+
+// ---- supported-page detection (PR #121 correction) ----------------------
+
+test("supported detection: only people/lead search result routes match", () => {
+  assert.equal(ex.isSupportedResultsUrl("https://www.linkedin.com/sales/search/people?page=2"), true);
+  assert.equal(ex.isSupportedResultsUrl("https://www.linkedin.com/sales/search/people/"), true);
+  assert.equal(ex.isSupportedResultsUrl("https://www.linkedin.com/sales/search/results/people"), true);
+  // No broad /search/ fallback anymore:
+  assert.equal(ex.isSupportedResultsUrl("https://www.linkedin.com/sales/search/company?page=1"), false);
+  assert.equal(ex.isSupportedResultsUrl("https://www.linkedin.com/sales/search/accounts"), false);
+  assert.equal(ex.isSupportedResultsUrl("https://www.linkedin.com/sales/home"), false);
+  assert.equal(ex.isSupportedResultsUrl("https://www.linkedin.com/feed/"), false);
+  assert.equal(ex.isSupportedResultsUrl("https://evil.example.com/sales/search/people"), false);
+});
+
+test("rejected-surface detection flags account/company explicitly", () => {
+  assert.equal(ex.isRejectedSalesSurface("https://www.linkedin.com/sales/search/company"), true);
+  assert.equal(ex.isRejectedSalesSurface("https://www.linkedin.com/sales/search/accounts"), true);
+  assert.equal(ex.isRejectedSalesSurface("https://www.linkedin.com/sales/company/123"), true);
+  assert.equal(ex.isRejectedSalesSurface("https://www.linkedin.com/sales/search/people"), false);
+  assert.equal(ex.isRejectedSalesSurface("https://www.linkedin.com/feed/"), false);
+});
+
+test("unsupported: account search page is rejected with a clear reason, nothing captured", () => {
+  const r = capture("results-account-search.html", "https://www.linkedin.com/sales/search/company?page=1");
+  assert.equal(r.status, CAPTURE_STATUS.UNSUPPORTED_PAGE);
+  assert.equal(r.count, 0);
+  assert.equal(r.pageWarnings[0].reason, "rejected_sales_surface");
+});
+
+test("unsupported: company page is rejected, nothing captured", () => {
+  const r = capture("results-account-search.html", "https://www.linkedin.com/sales/company/1234567");
+  assert.equal(r.status, CAPTURE_STATUS.UNSUPPORTED_PAGE);
+  assert.equal(r.count, 0);
+  assert.equal(r.pageWarnings[0].reason, "rejected_sales_surface");
+});
+
+test("unsupported: generic Sales Navigator page is not captured", () => {
+  const r = capture("results-normal.html", "https://www.linkedin.com/sales/home");
+  assert.equal(r.status, CAPTURE_STATUS.UNSUPPORTED_PAGE);
+  assert.equal(r.count, 0);
+  assert.equal(r.pageWarnings[0].reason, "not_people_search");
+});

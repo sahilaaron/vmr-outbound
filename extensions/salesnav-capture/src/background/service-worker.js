@@ -16,10 +16,11 @@ importScripts(
   "../common/constants.js",
   "../common/normalize.js",
   "../common/dedupe.js",
-  "../common/schema.js"
+  "../common/schema.js",
+  "../common/permissions.js"
 );
 
-const { constants, dedupe, schema } = self.SNCapture;
+const { constants, dedupe, schema, permissions } = self.SNCapture;
 const { STORAGE, DEFAULT_PREFERENCES, LIMITS, CAPTURE_STATUS, ALLOWED_BACKEND_ORIGIN_PATTERNS, INTAKE_PATH } =
   constants;
 
@@ -254,6 +255,23 @@ function isAllowedBackendOrigin(urlStr) {
   }
 }
 
+/**
+ * Whether the loopback host permission for `url` has already been granted.
+ * The worker never *requests* (no user gesture here) — the side panel requests
+ * before sending. This is a defensive gate so a send fails clearly if the
+ * optional permission was declined or revoked.
+ */
+async function hasHostPermission(url) {
+  const pattern = permissions.originPatternForUrl(url);
+  if (!pattern) return { ok: false, pattern: null };
+  try {
+    const granted = await chrome.permissions.contains({ origins: [pattern] });
+    return { ok: granted, pattern };
+  } catch (_e) {
+    return { ok: false, pattern };
+  }
+}
+
 async function sendBatch(explicitTarget) {
   const { payload, records } = await buildCurrentPayload();
 
@@ -288,6 +306,16 @@ async function sendBatch(explicitTarget) {
       ok: false,
       error: "origin_not_allowed",
       message: `Refusing to send to ${url}. Only loopback origins are permitted.`,
+    };
+  }
+
+  const perm = await hasHostPermission(url);
+  if (!perm.ok) {
+    return {
+      ok: false,
+      error: "permission_denied",
+      originPattern: perm.pattern,
+      message: `Loopback access not granted for ${perm.pattern || url}. Approve the permission prompt, then send again.`,
     };
   }
 
@@ -329,6 +357,10 @@ async function fetchCampaigns() {
   const url = base + "/api/campaigns?fields=id,name,status";
   if (!isAllowedBackendOrigin(url)) {
     return { ok: false, error: "origin_not_allowed" };
+  }
+  const perm = await hasHostPermission(url);
+  if (!perm.ok) {
+    return { ok: false, error: "permission_denied", originPattern: perm.pattern };
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);

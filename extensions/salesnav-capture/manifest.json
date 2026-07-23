@@ -5,11 +5,7 @@
   "description": "Operator-driven capture of visible Sales Navigator records for the VMR Outbound Agent intake. No scraping automation, no credentials stored.",
   "minimum_chrome_version": "116",
   "permissions": ["storage", "sidePanel", "downloads", "activeTab", "scripting"],
-  "host_permissions": [
-    "https://www.linkedin.com/sales/*",
-    "http://127.0.0.1/*",
-    "http://localhost/*"
-  ],
+  "host_permissions": ["https://www.linkedin.com/sales/*"],
   "optional_host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
   "background": {
     "service_worker": "src/background/service-worker.js"

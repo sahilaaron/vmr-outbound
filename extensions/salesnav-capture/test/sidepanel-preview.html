@@ -63,6 +63,7 @@
     <script src="../src/common/extraction.js"></script>
     <script src="../src/common/dedupe.js"></script>
     <script src="../src/common/schema.js"></script>
+    <script src="../src/common/permissions.js"></script>
     <script>
       // ---- chrome.* stub backed by real modules + fixtures ----
       const { extraction, dedupe, schema, constants } = self.SNCapture;
@@ -81,7 +82,18 @@
       function view() {
         return { clientBatchId: BATCH.clientBatchId, createdAt: BATCH.createdAt, lastSearchUrl: BATCH.lastSearchUrl, pagesCaptured: BATCH.pagesCaptured, statuses: [], summary: dedupe.summarize(BATCH.records), records: BATCH.records };
       }
+      // Simulated optional-permission grant. window.__DENY_PERM__ forces the
+      // denied path (for capturing the denied-state evidence screenshot).
+      let permGranted = false;
       window.chrome = {
+        permissions: {
+          contains: () => Promise.resolve(permGranted),
+          request: () => {
+            if (window.__DENY_PERM__) return Promise.resolve(false);
+            permGranted = true;
+            return Promise.resolve(true);
+          },
+        },
         runtime: {
           lastError: undefined,
           sendMessage(msg, cb) {

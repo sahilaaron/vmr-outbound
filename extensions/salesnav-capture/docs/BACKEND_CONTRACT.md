@@ -124,9 +124,11 @@ The extension additionally handles transport failures locally: `timeout`
 
 - The extension talks only to **loopback** origins (`127.0.0.1`, `localhost`,
   `[::1]`). It refuses any non-loopback target and never embeds a remote URL.
-- The extension holds `host_permissions` for `http://127.0.0.1/*` and
-  `http://localhost/*`, so the service worker can POST cross-origin without a CORS
-  preflight grant. For robustness (and browser-page testing), the backend should
+- The loopback hosts (`http://127.0.0.1/*`, `http://localhost/*`) are declared as
+  **optional** host permissions and are requested at runtime (with a user gesture)
+  before the first send / campaign fetch. Once granted, the service worker can POST
+  cross-origin without a CORS preflight grant. For robustness (and browser-page
+  testing), the backend should
   still answer `OPTIONS` preflight and reflect the request origin with
   `Access-Control-Allow-Methods: POST, GET, OPTIONS` and allow the
   `Content-Type, Idempotency-Key, X-Client-Batch-Id` headers. The mock receiver

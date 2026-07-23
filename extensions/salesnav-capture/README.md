@@ -58,18 +58,28 @@ Minimum Chrome version: 116 (side panel API).
 | `sidePanel` | The review/controls UI |
 | `downloads` | JSON / CSV export |
 | `activeTab` + `scripting` | Inject the reader into the current SN tab if needed |
-| host `https://www.linkedin.com/sales/*` | Read the results page the operator opened (read-only) |
-| host `http://127.0.0.1/*`, `http://localhost/*` | POST the batch to the local VMR backend / mock receiver only |
+| host `https://www.linkedin.com/sales/*` (required) | Read the results page the operator opened (read-only), narrowly scoped |
+| host `http://127.0.0.1/*`, `http://localhost/*` (**optional**) | POST the batch to the local VMR backend / mock receiver only |
 
-No `history`, no broad `<all_urls>`, no analytics, no third-party hosts. LinkedIn
-is a read surface; the extension never POSTs to it.
+The loopback hosts are declared as **optional** host permissions and are
+**requested explicitly, with a user gesture, before the first backend/mock send**
+(and before fetching campaigns). If the operator declines, the send is blocked
+with a clear message and a Retry — nothing is transmitted. See the granted vs
+denied evidence in `docs/screenshots/` (`02_side_panel.png`,
+`03_side_panel_permission_denied.png`). No `history`, no broad `<all_urls>`, no
+analytics, no third-party hosts. LinkedIn is a read surface; the extension never
+POSTs to it.
 
 ## Supported Sales Navigator surfaces
 
-Lead/people **search results** pages under `https://www.linkedin.com/sales/...`
-(`/search/people`, results lists). Account/company result capture and profile
-pages are out of scope for this slice (the notebook's account path was enrichment
--heavy). Unsupported pages are reported, not silently processed.
+**Only** Sales Navigator lead/people **search results** routes:
+`/sales/search/people` and `/sales/search/results/people`. There is no broad
+`/search/` fallback. Account/company **search** pages
+(`/sales/search/company`, `/sales/search/accounts`), company pages
+(`/sales/company/...`), and every other Sales Navigator surface are **explicitly
+rejected** and captured from never (see `isRejectedSalesSurface`). Unsupported
+pages are reported with a reason (`rejected_sales_surface` vs `not_people_search`),
+not silently processed.
 
 ## Operating instructions
 

@@ -222,6 +222,13 @@
 
   async function fetchCampaigns() {
     const sel = $("campaign-select");
+    // Requesting campaigns is also a backend call — request loopback access first.
+    const base = String((currentPrefs || {}).backendBaseUrl || "").replace(/\/$/, "");
+    const perm = await ensureHostPermission(base + "/api/campaigns");
+    if (!perm.granted) {
+      sel.title = "Grant loopback access to fetch campaigns, or enter an ID manually.";
+      return;
+    }
     const r = await send({ type: "FETCH_CAMPAIGNS" });
     if (!r || !r.ok) {
       sel.title = "Could not fetch campaigns (" + ((r && r.error) || "error") + "). Enter an ID manually.";
@@ -243,6 +250,30 @@
 
   // ---- export / send ------------------------------------------------------
 
+  /** Compute the loopback target URL for a given send target from saved prefs. */
+  function targetUrl(target) {
+    const p = currentPrefs || {};
+    if (target === "mock") return p.mockReceiverUrl || "";
+    return String(p.backendBaseUrl || "").replace(/\/$/, "") + constants.INTAKE_PATH;
+  }
+
+  /**
+   * Ensure the OPTIONAL loopback host permission is granted before a backend/mock
+   * call. Requests it (with the current click gesture) if not already held.
+   */
+  async function ensureHostPermission(url) {
+    const pattern = self.SNCapture.permissions.originPatternForUrl(url);
+    if (!pattern) return { granted: false, pattern: null, reason: "not_loopback" };
+    try {
+      const has = await chrome.permissions.contains({ origins: [pattern] });
+      if (has) return { granted: true, pattern };
+      const granted = await chrome.permissions.request({ origins: [pattern] });
+      return { granted, pattern };
+    } catch (e) {
+      return { granted: false, pattern, reason: String(e && e.message) };
+    }
+  }
+
   async function doExport(format) {
     const state = $("send-state");
     const r = await send({ type: "EXPORT_BATCH", format });
@@ -255,6 +286,19 @@
     const actions = $("send-actions");
     actions.textContent = "";
     const target = $("send-target").value;
+    // Request loopback access up front, within this click gesture.
+    const perm = await ensureHostPermission(targetUrl(target));
+    if (!perm.granted) {
+      setStatus(
+        state,
+        "status-err",
+        perm.pattern
+          ? `Loopback access to ${perm.pattern} was not granted. Approve it to send.`
+          : "Send target must be a loopback (127.0.0.1 / localhost) URL."
+      );
+      actions.appendChild(el("button", { class: "btn btn-ghost", text: "Retry", on: { click: doSend } }));
+      return;
+    }
     setStatus(state, "status-neutral", "Sending…");
     const r = await send({ type: "SEND_BATCH", target });
     if (r && r.ok) {

@@ -51,6 +51,9 @@
         ["results-unicode.html", S.OK, SUPPORTED, "raw unicode preserved"],
         ["results-challenge.html", S.CHALLENGE_DETECTED, SUPPORTED, "halts on challenge"],
         ["results-normal.html", S.UNSUPPORTED_PAGE, "https://www.linkedin.com/feed/", "unsupported url"],
+        ["results-account-search.html", S.UNSUPPORTED_PAGE, "https://www.linkedin.com/sales/search/company?page=1", "account search rejected"],
+        ["results-account-search.html", S.UNSUPPORTED_PAGE, "https://www.linkedin.com/sales/company/123", "company page rejected"],
+        ["results-normal.html", S.UNSUPPORTED_PAGE, "https://www.linkedin.com/sales/home", "generic SN page rejected"],
       ];
 
       async function parseFixture(name, url) {

@@ -37,13 +37,61 @@
 
   // ---- Page classification ------------------------------------------------
 
-  /** True if the URL is a Sales Navigator LEAD/people search results surface. */
+  function isSalesNavHost(u) {
+    return /(^|\.)linkedin\.com$/.test(u.hostname);
+  }
+
+  // Known lead/people search RESULT routes (path only; filters are query params).
+  const PEOPLE_RESULT_ROUTES = [
+    /^\/sales\/search\/people$/,
+    /^\/sales\/search\/results\/people$/,
+  ];
+
+  // Sales Navigator surfaces that are explicitly NOT people search results and
+  // must be rejected (account/company search + company pages/lists).
+  const REJECTED_SALES_ROUTES = [
+    /^\/sales\/search\/company$/,
+    /^\/sales\/search\/companies$/,
+    /^\/sales\/search\/accounts$/,
+    /^\/sales\/search\/results\/company$/,
+    /^\/sales\/company(\/|$)/,
+    /^\/sales\/lists\/company(\/|$)/,
+  ];
+
+  /**
+   * True ONLY for a Sales Navigator lead/people search RESULT page. There is no
+   * broad `/search/` fallback: account/company search and every other Sales
+   * Navigator surface are unsupported.
+   */
   function isSupportedResultsUrl(url) {
     if (!url) return false;
-    return (
-      /linkedin\.com\/sales\//.test(url) &&
-      /\/search\/people|\/search\/results\/people|\/lead-list|\/search\//.test(url)
-    );
+    let u;
+    try {
+      u = new URL(url);
+    } catch (_e) {
+      return false;
+    }
+    if (!isSalesNavHost(u)) return false;
+    const path = u.pathname.replace(/\/+$/, "") || "/";
+    return PEOPLE_RESULT_ROUTES.some((re) => re.test(path));
+  }
+
+  /**
+   * True for a Sales Navigator surface we explicitly reject (account/company
+   * search, company pages). Exposed so callers/tests can distinguish "wrong SN
+   * surface" from "not Sales Navigator at all". Both are unsupported for capture.
+   */
+  function isRejectedSalesSurface(url) {
+    if (!url) return false;
+    let u;
+    try {
+      u = new URL(url);
+    } catch (_e) {
+      return false;
+    }
+    if (!isSalesNavHost(u)) return false;
+    const path = u.pathname.replace(/\/+$/, "") || "/";
+    return REJECTED_SALES_ROUTES.some((re) => re.test(path));
   }
 
   /**
@@ -381,10 +429,20 @@
     }
 
     if (!isSupportedResultsUrl(sourceSearchUrl)) {
+      const rejected = isRejectedSalesSurface(sourceSearchUrl);
       return {
         status: CAPTURE_STATUS.UNSUPPORTED_PAGE,
         records: [],
-        pageWarnings: [{ code: "unsupported_page", url: sourceSearchUrl }],
+        pageWarnings: [
+          {
+            code: "unsupported_page",
+            url: sourceSearchUrl,
+            reason: rejected ? "rejected_sales_surface" : "not_people_search",
+            message: rejected
+              ? "Account/company Sales Navigator surfaces are not supported; only people/lead search results are captured."
+              : "Not a supported Sales Navigator people/lead search results page.",
+          },
+        ],
         sourcePageNumber,
         sourceSearchUrl,
         capturedAt,
@@ -442,6 +500,7 @@
 
   return {
     isSupportedResultsUrl,
+    isRejectedSalesSurface,
     detectChallenge,
     detectNoResults,
     findResultContainers,
