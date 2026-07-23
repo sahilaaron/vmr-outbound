@@ -950,21 +950,25 @@ def _apply_merge(
             # holds an active membership. Leaving it would keep the tombstoned
             # identity visible and operable in campaign counts and member reads.
             #
-            # Only SUPPRESSED carries over — NOT EXCLUDED. EXCLUDED is a
-            # campaign-specific exclusion, distinct from identity-level
-            # suppression; relabelling the survivor SUPPRESSED because the loser
-            # was merely excluded would erase that distinction. (Ledger-based
-            # suppression is handled separately, up front, from both identities.)
+            # A terminal loser state is carried over to the survivor by its EXACT
+            # value: SUPPRESSED -> SUPPRESSED, EXCLUDED -> EXCLUDED. Both keep the
+            # merged identity ineligible for this campaign, but the distinction
+            # matters — EXCLUDED is a campaign-specific exclusion, SUPPRESSED is
+            # identity-level suppression. Collapsing EXCLUDED into SUPPRESSED (or,
+            # worse, dropping it and leaving the survivor IMPORTED) would let the
+            # merged identity become eligible again in a campaign it was excluded
+            # from. Only carried over when the survivor is not already terminal;
+            # ledger-based suppression is handled separately, up front.
             if (
-                membership.state == ContactWorkflowState.SUPPRESSED
+                membership.state in _TERMINAL_STATES
                 and survivor_membership.state not in _TERMINAL_STATES
             ):
                 transition_contact_state(
                     session,
                     survivor_membership,
-                    target=ContactWorkflowState.SUPPRESSED,
+                    target=membership.state,
                     actor=actor,
-                    reason="suppression preserved from merged duplicate",
+                    reason=f"{membership.state.value} preserved from merged duplicate",
                 )
             session.delete(membership)
             session.flush()

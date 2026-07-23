@@ -898,14 +898,16 @@ def test_row_merge_requires_reason_through_resolve_row(db_session: Session, enab
     assert loser.merged_into_id == survivor.id
 
 
-def test_merge_collision_excluded_loser_does_not_suppress_survivor(
+def test_merge_collision_excluded_loser_preserves_exclusion_on_survivor(
     db_session: Session, enabled: None
 ) -> None:
-    """Regression 2: an EXCLUDED loser membership must not relabel the survivor.
+    """A collision with an EXCLUDED loser preserves the campaign-specific exclusion.
 
-    EXCLUDED is a campaign-specific exclusion, distinct from identity-level
-    suppression. Only SUPPRESSED carries over on a collision; an excluded loser
-    leaves the survivor's IMPORTED membership unchanged.
+    The exclusion must carry over to the survivor as EXCLUDED (not dropped to keep
+    the survivor IMPORTED, and not converted to SUPPRESSED): both would erase the
+    distinction, and dropping it would let the merged identity become eligible
+    again in a campaign it was excluded from. The survivor must remain ineligible
+    for that campaign after the merge.
     """
 
     campaign = create_campaign(db_session, name="Excluded Collision")
@@ -941,9 +943,27 @@ def test_merge_collision_excluded_loser_does_not_suppress_survivor(
             CampaignContact.contact_id == survivor.id,
         )
     ).first()
-    # Survivor stays IMPORTED — NOT relabelled SUPPRESSED by the excluded loser.
+    # The exclusion is preserved as EXCLUDED — not dropped to IMPORTED, and not
+    # escalated to SUPPRESSED — so the merged identity stays ineligible here.
     assert survivor_membership is not None
-    assert survivor_membership.state == ContactWorkflowState.IMPORTED
+    assert survivor_membership.state == ContactWorkflowState.EXCLUDED
+    assert survivor_membership.state in {
+        ContactWorkflowState.EXCLUDED,
+        ContactWorkflowState.SUPPRESSED,
+    }  # a terminal, ineligible state
+    # The merged identity is not eligible in this campaign (no active membership).
+    assert (
+        db_session.scalar(
+            select(func.count(CampaignContact.id)).where(
+                CampaignContact.campaign_id == campaign.id,
+                CampaignContact.contact_id == survivor.id,
+                CampaignContact.state.notin_(
+                    [ContactWorkflowState.SUPPRESSED, ContactWorkflowState.EXCLUDED]
+                ),
+            )
+        )
+        == 0
+    )
     # The loser's redundant membership is coalesced away.
     assert (
         db_session.scalar(
