@@ -115,9 +115,11 @@ integration hub or the system of record.
 
 Targeting criteria and Sales Navigator result URLs are created by the user.
 Do not implement unattended scraping, anti-bot evasion, CAPTCHA solving, or
-platform-limit bypasses. Use manual export or another explicitly authorized,
-licensed acquisition path. Keep the downstream import contract independent of
-the acquisition method.
+platform-limit bypasses. Authorized acquisition paths are manual export and
+operator-driven capture of visible pages via the Sales Navigator capture
+extension (`extensions/salesnav-capture/`); both feed the same staged import
+pipeline. Keep the downstream import contract independent of the acquisition
+method.
 
 For public-web research, obey source access restrictions and store provenance.
 Do not collect sensitive personal data that is unnecessary for legitimate B2B
@@ -139,11 +141,12 @@ unless the goal file is updated.
 
 ## Project Tracking Behavior
 
-GitHub is the development command center. After a meaningful build, open
-or update the GitHub pull request and provide a structured handoff containing:
+GitHub is the development command center. After a meaningful build, provide a
+structured handoff containing:
 
 - Authorized phase and issues
-- Branch, pull request, commits, and check results
+- Branch and commits, including whether the branch is actually on GitHub
+- Local check results and reproducible evidence
 - What became usable
 - What remains incomplete
 - Known failures, risks, and recovery behavior
@@ -152,35 +155,43 @@ or update the GitHub pull request and provide a structured handoff containing:
 - A concise proposed tracker update
 
 Do not claim that Claude's own tests or handoff constitute independent
-acceptance. Sahil decides material scope, risk, cost, and product
-questions. Claude performs the GitHub actions after the review gate is
-satisfied.
+acceptance. Sahil decides material scope, risk, cost, and product questions.
+ChatGPT operates the remote GitHub workflow and independently verifies the
+build.
 
-## GitHub Ownership
+## GitHub Division of Labour
 
-Claude owns the repository's routine operating work from start to finish:
+Claude builds; Sahil bridges; ChatGPT operates and reviews.
 
-- Create and switch branches.
-- Commit intentional changes with clear messages.
-- Push branches and tags when authorized by the current goal.
-- Create, edit, and update pull requests.
-- Link and maintain the relevant issues.
-- Monitor checks and inspect failures.
-- Apply corrections requested by ChatGPT's review.
-- Re-run checks and update the pull request evidence.
-- Merge only after ChatGPT issues the required passing verdict and Sahil has
-  resolved any named decision or approval.
-- Close linked issues and remove merged branches when safe.
+Claude owns the product implementation:
 
-Prefer code and authenticated GitHub tooling. Use Claude's browser capability
-when a GitHub action cannot be completed reliably through code or when the site
-requires visible user interaction.
+- Create branches and commit intentional changes with clear messages.
+- Deliver the branch to the local repository (git bundle handoff) when the
+  session cannot push directly.
+- Supply a factual handoff that ChatGPT can verify against the repository.
+- Inspect check failures and prepare correction commits for ChatGPT's review
+  findings.
+- Identify which authorized issues and acceptance criteria the build addresses.
 
-Do not delegate routine GitHub actions to Sahil and do not give him commands to
-copy and run. Ask him only for a material decision, explicit approval,
-authentication, or an access change that cannot be completed safely on his
-behalf. If authentication requires Sahil, pause at the login or approval step;
-after he completes it, resume and finish the GitHub action yourself.
+Sahil owns only the bridge and decision points:
+
+- Push a prepared branch through CMD or GitHub Desktop when Claude cannot
+  authenticate to GitHub.
+- Resolve material scope, cost, risk, product, and launch decisions.
+- Explicitly approve a merge or other consequential GitHub action when asked.
+
+Once the branch is on GitHub, ChatGPT owns remote administration:
+
+- Open or update PRs and write PR descriptions, issue comments, review verdicts,
+  labels, project status, and closing notes.
+- Inspect the actual diff and CI rather than relying on Claude's handoff.
+- Request corrections from Claude and verify each correction commit.
+- Merge only after a passing verdict and Sahil's explicit approval.
+- Close or update linked issues and clean up remote branches where appropriate.
+
+Do not ask Sahil to author GitHub content or perform web administration that
+ChatGPT can perform. When a local push is unavoidable, provide the shortest
+exact CMD or GitHub Desktop step and verify the resulting remote SHA.
 
 Do not produce tracker noise for every commit. Do not invent dates, confidence,
 owners, completion, or metrics.

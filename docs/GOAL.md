@@ -15,7 +15,9 @@ completeness or full autonomy.
 
 1. Create a campaign with targeting rules, scoring threshold, offer, tone, and
 sending configuration reference.
-2. Import a CSV contact batch and see row-level validation errors.
+2. Import a contact batch — an authorized CSV/XLSX upload or an
+operator-driven Sales Navigator capture-extension batch — and see row-level
+validation errors.
 3. Normalize and deduplicate contacts; match them to companies and existing
 historical records.
 4. Apply suppressions and hard eligibility gates.
@@ -80,7 +82,7 @@ valid.
 * Recent exact-address verifications are reused; stale or absent results call
 MillionVerifier according to policy.
 * Catch-all and unknown outcomes remain visibly uncertain and cannot silently
-become Ã¢â‚¬Å“valid.Ã¢â‚¬Â
+become "valid."
 * Suppressed, opted-out, hard-bounced, invalid, and ineligible contacts cannot
 reach scheduling.
 * Every score shows components, rule version, evidence, and reason.
@@ -104,15 +106,17 @@ contacts. A target of 5,000 contacts per month is a later operating milestone,
 not the first launch test.
 
 Project tracking is delivery evidence, not application functionality. Follow
-`docs/PROJECT\_TRACKING.md` for the management tracker contract; do not build
+`docs/PROJECT_TRACKING.md` for the management tracker contract; do not build
 Google Sheets integration into the product unless this goal is explicitly
 changed.
 
-Claude owns all routine GitHub execution for this project, including branches,
-commits, pushes, pull requests, review corrections, merging after the required
-verdict, linked-issue closure, and safe branch cleanup. Sahil supplies material
-decisions and approvals; he is not responsible for running Git commands or
-operating GitHub.
+Claude builds and maintains the product, including branches, tests, migrations,
+commits, correction commits, and factual build handoffs. When Claude cannot
+authenticate to GitHub, Sahil pushes the prepared local branch through CMD or
+GitHub Desktop. Once the branch is remote, ChatGPT operates GitHub: it creates
+and updates PRs, writes review and issue content, independently verifies the
+build, manages issue state, and merges only after a passing verdict and Sahil's
+explicit approval. ChatGPT also owns the official project-tracking Sheet.
 
 ## Build Order
 
@@ -131,15 +135,18 @@ suppressions
 
 Complete and verify each step before widening the next. A thin vertical path may
 be wired early, but unfinished later phases must remain disabled. After each
-meaningful build, Claude must publish the GitHub evidence and handoff. ChatGPT
-then independently reviews it and updates the relevant phase tab as defined in
-`docs/PROJECT\_TRACKING.md`.
+meaningful build, Claude prepares the commit and handoff, Sahil performs the
+push bridge only when required, and ChatGPT runs the remote GitHub review and
+administration loop and updates the relevant phase tab as defined in
+`docs/PROJECT_TRACKING.md`.
 
 ## Explicitly Out of Scope
 
 Do not build these for the first campaign:
 
 * Fully autonomous prospect acquisition or unattended Sales Navigator scraping
+(operator-driven capture of visible pages via the extension, feeding the staged
+import pipeline, is the authorized exception)
 * CAPTCHA solving, anti-bot evasion, or terms-of-use circumvention
 * Economy verification that extrapolates one mailbox result to unverified people
 * Automatic sending or scheduling without exact-draft human approval
@@ -164,4 +171,3 @@ works
 A feature enters the launch scope only when it is necessary to satisfy an
 acceptance criterion or mitigate a launch-blocking safety risk. Update this file
 before implementing any newly approved scope.
-

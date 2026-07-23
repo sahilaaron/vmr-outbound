@@ -16,20 +16,24 @@ The system combines:
 
 Before changing the repository, read:
 
-1. `GOAL.md` — current authorized milestone, acceptance criteria, and non-goals.
-2. `AGENTS.md` — permanent repository-wide engineering and safety rules.
-3. `CLAUDE.md` — Claude-specific working and judgment rules.
+1. `docs/GOAL.md` — current authorized milestone, acceptance criteria, and
+   non-goals.
+2. `docs/AGENTS.md` — permanent repository-wide engineering and safety rules.
+3. `docs/CLAUDE.md` — Claude-specific working and judgment rules.
 4. `docs/PROJECT_TRACKING.md` — project-management and handoff rules.
 5. Documents explicitly referenced by the current goal.
+
+The root `CLAUDE.md` is a condensed pointer into these documents; it never
+overrides them.
 
 Do not load every project document without a task-specific reason.
 
 When instructions conflict, use this priority:
 
 1. Sahil’s latest explicit instruction
-2. `GOAL.md`
-3. `AGENTS.md`
-4. `CLAUDE.md`
+2. `docs/GOAL.md`
+3. `docs/AGENTS.md`
+4. `docs/CLAUDE.md`
 5. `docs/PROJECT_TRACKING.md`
 6. Existing implementation conventions
 
@@ -94,20 +98,31 @@ External systems are adapters, not authoritative sources of truth.
 ## Development Operating Loop
 
 1. Sahil authorizes the scope and makes product, cost, risk, and launch decisions.
-2. Claude builds the authorized slice and owns the complete GitHub workflow.
-3. Claude provides a build handoff with branch, commit, PR, tests, evidence,
+2. Claude builds and verifies the authorized slice: code, tests, migrations,
+   and commits on a branch. When the session cannot push, Claude delivers the
+   branch to the local repository (git bundle) ready to publish.
+3. Claude provides a build handoff with branch, commits, tests, evidence,
    limitations, and a proposed tracker update.
-4. ChatGPT independently inspects the repository and issues one verdict:
+4. If Claude cannot authenticate to GitHub, Sahil performs the bridge step only:
+   push the prepared local branch through CMD or GitHub Desktop.
+5. Once the branch is on GitHub, ChatGPT operates the GitHub workflow: creates
+   or updates the PR, writes PR and issue content, reconciles issue and project
+   status, and requests or performs the appropriate checks.
+6. ChatGPT independently inspects the repository and issues one verdict:
    `PASS`, `PASS WITH CONDITIONS`, `FAIL`, or `BLOCKED`.
-5. Claude performs approved corrections, merge, issue updates, and branch cleanup.
-6. ChatGPT reconciles the official Google Sheets tracker.
+7. Claude prepares requested code corrections and commits them; Sahil repeats
+   only the push bridge when required.
+8. After a passing verdict and Sahil's explicit approval, ChatGPT merges the PR,
+   closes or updates linked issues, cleans up remote state where appropriate,
+   and reconciles the official Google Sheets tracker.
 
 Claude must not grade its own work or declare a phase officially complete.
 
-Sahil is not the routine GitHub operator. Claude should use Git, GitHub tooling,
-or browser access for branch creation, commits, pushes, PRs, merges, issue
-updates, and cleanup. Ask Sahil only when authentication, approval, or a decision
-cannot safely be completed on his behalf.
+Claude owns product code, tests, migrations, maintenance, and local commits.
+ChatGPT owns GitHub administration and independent review after a branch reaches
+the remote repository. Sahil is responsible for the push bridge only when
+Claude's environment lacks GitHub credentials, plus material decisions and
+explicit approval for consequential GitHub actions such as merging.
 
 Never invent completion, dates, evidence, owners, metrics, or readiness.
 
