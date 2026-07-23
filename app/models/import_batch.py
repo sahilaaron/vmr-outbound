@@ -83,6 +83,9 @@ class ImportBatch(Base):
     mime_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
     parser_version: Mapped[str | None] = mapped_column(String(50), nullable=True)
     mapper_version: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # The operator-confirmed column mapping (source column -> system field) that
+    # was applied to this batch, so a batch's interpretation is reproducible.
+    column_mapping: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
     # --- Batch-level provenance (contact-input contract) ---------------------
     source_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
@@ -96,6 +99,9 @@ class ImportBatch(Base):
     rejected_rows: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     duplicate_rows: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     suppressed_rows: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    ambiguous_rows: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     contacts_created: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)

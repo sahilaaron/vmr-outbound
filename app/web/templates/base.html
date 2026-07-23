@@ -1,0 +1,86 @@
+{# Application shell: persistent rail navigation + main work surface.
+   Later-phase areas are listed but disabled ("soon") — they lead to one clean
+   unavailable-state page and never to simulated screens. #}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ page_title | default("Workbench") }}{% endblock %} — VMR Outbound</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}">
+</head>
+<body>
+<div class="layout">
+  <nav class="rail" aria-label="Primary">
+    <div class="rail-brand">
+      VMR Outbound
+      <small>Operator Workbench</small>
+    </div>
+    <div class="rail-nav">
+      <div class="rail-section">Operate</div>
+      <a href="/" class="{{ 'active' if active_nav == 'overview' else '' }}">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+        Overview
+      </a>
+      <a href="/campaigns" class="{{ 'active' if active_nav == 'campaigns' else '' }}">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 11l18-7-7 18-2.5-7.5L3 11z"/></svg>
+        Campaigns
+      </a>
+      <a href="/imports" class="{{ 'active' if active_nav == 'imports' else '' }}">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+        Imports
+      </a>
+      <a href="/contacts" class="{{ 'active' if active_nav == 'contacts' else '' }}">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.5 3.4-5.5 6.5-5.5s5.7 2 6.5 5.5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8"/><path d="M17.5 14.7c2.2.7 3.6 2.5 4 5.3"/></svg>
+        Contacts
+      </a>
+      {% if local_env %}
+      <a href="/local-tools" class="local-only {{ 'active' if active_nav == 'local-tools' else '' }}">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6L14 13l-3-3 3.7-3.7z"/></svg>
+        Local Tools
+        <span class="tag">local</span>
+      </a>
+      {% endif %}
+
+      <div class="rail-section">Pipeline (later phases)</div>
+      {% for item in [
+        ("verification", "Email Verification"),
+        ("scoring", "Scoring"),
+        ("research", "Research"),
+        ("drafts", "Drafts &amp; Approval"),
+        ("sequences", "Sequences"),
+        ("activity", "Activity"),
+      ] %}
+      <a href="/{{ item[0] }}" class="soon {{ 'active' if active_nav == item[0] else '' }}">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+        {{ item[1] | safe }}
+        <span class="tag">soon</span>
+      </a>
+      {% endfor %}
+
+      <div class="rail-section">System</div>
+      <a href="/settings" class="soon {{ 'active' if active_nav == 'settings' else '' }}">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1.2l2-1.6-2-3.4-2.4 1a7 7 0 0 0-2-1.2L14 3h-4l-.4 2.6a7 7 0 0 0-2 1.2l-2.5-1-2 3.4 2 1.6a7 7 0 0 0 0 2.4l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 2 1.2L10 21h4l.4-2.6a7 7 0 0 0 2-1.2l2.5 1 2-3.4-2-1.6c.1-.4.1-.8.1-1.2z"/></svg>
+        Settings
+        <span class="tag">soon</span>
+      </a>
+    </div>
+    <div class="rail-foot">
+      <span class="env-chip">
+        <span class="db-dot {{ 'db-ok' if database_ok else 'db-bad' }}" aria-hidden="true"></span>
+        {{ app_env | upper }} · {{ "DB connected" if database_ok else "DB unavailable" }}
+      </span>
+      Local development environment.<br>No live sending; dry-run is on.
+    </div>
+  </nav>
+
+  <main class="main">
+    <div class="main-inner">
+      {% if flash_ok %}<div class="notice ok" role="status"><div>{{ flash_ok }}</div></div>{% endif %}
+      {% if flash_err %}<div class="notice err" role="alert"><div>{{ flash_err }}</div></div>{% endif %}
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+</div>
+</body>
+</html>

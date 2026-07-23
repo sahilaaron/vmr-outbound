@@ -97,3 +97,28 @@ file shapes (DAT-008), company-contact saturation controls (CMP-004), batch
 stage actions and stage-count surfaces (CMP-005), and the dashboard build-out.
 No verification, scoring, insights, drafting, or Saleshandy behaviour is
 included; those feature switches remain off.
+
+## Operator-workbench slice (this branch)
+
+Adds the local operator workbench described in `docs/WORKBENCH.md`: a
+server-rendered FastAPI + Jinja2 shell (no SPA, no Node build) with functional
+Overview / Campaigns / Imports / Contacts areas, later-phase areas disabled
+behind one clean unavailable state, and guarded local-only fixture/reset tools.
+
+Pipeline changes in this slice:
+
+* **XLSX parsing** (openpyxl) unified with CSV behind one shared pipeline
+  (`app/services/imports/parsing.py`); workbook filename, sheet name/index and
+  per-sheet row numbers preserved; malformed/empty workbooks fail visibly.
+* **Two-step import**: staged upload → sheet selection → operator-confirmed
+  column mapping (stored on the batch with mapper/parser versions) → true
+  dry-run preview (writes nothing) → idempotent confirm. The DAT-002 API route
+  is unchanged.
+* **Ambiguous outcome** (`import_row_outcome = ambiguous`, DAT-004-compatible):
+  an uncertain identity match creates no contact and no membership, records
+  why, and is reviewable in the workbench. Migration `a7c2f1d40e88` (enum value
+  + `import_batches.ambiguous_rows` + `import_batches.column_mapping`).
+
+Evidence: `tests/test_parsing.py`, `tests/test_mapping.py`,
+`tests/test_staging.py`, `tests/test_preview_and_xlsx_import.py`,
+`tests/test_devtools.py`, `tests/test_workbench_web.py`.

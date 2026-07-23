@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% from "_macros.html" import batch_badge, pager %}
+{% block content %}
+<div class="page-head">
+  <div class="head-row">
+    <div>
+      <h1>Imports</h1>
+      <div class="sub">Every contact file enters through a staged, two-step flow: preview and validate first, then deliberately confirm. Nothing is written until you confirm.</div>
+    </div>
+    <a class="btn" href="/imports/new">New import</a>
+  </div>
+</div>
+
+{% if staged %}
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">In progress (staged, not yet imported)</strong>
+    <span class="hint">Staged uploads expire automatically after {{ staged_ttl_hours }} hours.</span></div>
+  <table>
+    <thead><tr><th>File</th><th>Format</th><th>Campaign</th><th>Uploaded</th><th>Continue</th></tr></thead>
+    <tbody>
+      {% for s, campaign_name in staged %}
+      <tr>
+        <td>{{ s.filename }}</td>
+        <td><span class="badge accent plain">{{ s.source_format | upper }}</span></td>
+        <td>{{ campaign_name or "—" }}</td>
+        <td class="small muted-text">{{ s.uploaded_at | dt }}</td>
+        <td>
+          <a class="btn small secondary" href="/imports/staged/{{ s.id }}/{{ 'sheets' if s.source_format == 'xlsx' else 'mapping' }}">Resume</a>
+          <form class="inline" method="post" action="/imports/staged/{{ s.id }}/discard">
+            <button class="btn small secondary" type="submit">Discard</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Import batches</strong></div>
+  {% if batches %}
+  <table>
+    <thead><tr><th>File</th><th>Campaign</th><th>Status</th><th class="num">Total</th><th class="num">Accepted</th><th class="num">Rejected</th><th class="num">Dup.</th><th class="num">Ambig.</th><th class="num">Suppr.</th><th>When</th></tr></thead>
+    <tbody>
+      {% for b, campaign in batches %}
+      <tr>
+        <td><a href="/imports/{{ b.id }}">{{ b.filename or "(unnamed upload)" }}</a>
+          <div class="small muted-text">{{ b.source_format.value | upper }}</div></td>
+        <td><a href="/campaigns/{{ campaign.id }}">{{ campaign.name }}</a></td>
+        <td>{{ batch_badge(b) }}</td>
+        <td class="num">{{ b.total_rows }}</td>
+        <td class="num">{{ b.accepted_rows }}</td>
+        <td class="num">{{ b.rejected_rows }}</td>
+        <td class="num">{{ b.duplicate_rows }}</td>
+        <td class="num">{{ b.ambiguous_rows }}</td>
+        <td class="num">{{ b.suppressed_rows }}</td>
+        <td class="small muted-text">{{ b.created_at | dt }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {{ pager(page, pages, total, "/imports", "batches") }}
+  {% else %}
+  <div class="empty">
+    <div class="empty-title">No imports yet</div>
+    <p>Upload a CSV or XLSX contact file to get started. You will preview and validate it before anything is written.</p>
+    <a class="btn" href="/imports/new">Start an import</a>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

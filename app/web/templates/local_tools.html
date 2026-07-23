@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <h1>Local Tools <span class="badge accent plain">local development only</span></h1>
+  <div class="sub">Safe controls for exercising the workbench with synthetic data. These tools refuse to run unless the app environment is <code>local</code> <em>and</em> the database host is a loopback address — a live or remote database (including RDS) can never be touched.</div>
+</div>
+
+<div class="grid-2">
+  <div class="card">
+    <div class="card-head"><h2>Load fixtures</h2><span class="hint">Synthetic data only — no real people or companies</span></div>
+    <div class="card-body">
+      <p class="small muted-text mt-0">Each fixture imports into its own demo campaign and demonstrates every row outcome
+      (accepted, rejected, duplicate, suppressed). Loading a fixture twice is idempotent.</p>
+      <form method="post" action="/local-tools/load-csv" style="margin-bottom:10px">
+        <button class="btn secondary" type="submit">Load representative CSV fixture</button>
+        <span class="small muted-text">10 rows, one invalid, one duplicate, one suppressed</span>
+      </form>
+      <form method="post" action="/local-tools/load-xlsx">
+        <button class="btn secondary" type="submit">Load representative XLSX fixture</button>
+        <span class="small muted-text">multi-sheet workbook with mapped column names</span>
+      </form>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Reset local data</h2><span class="hint">Destructive — local database only</span></div>
+    <div class="card-body">
+      <p class="small muted-text mt-0">Clearing removes <strong>all</strong> campaigns, contacts, imports, suppressions, and
+      audit history from the local database (the schema and migration state survive). A fresh audit event records the reset.
+      Type <code>RESET</code> to confirm.</p>
+      <form method="post" action="/local-tools/clear" style="margin-bottom:14px">
+        <div class="field">
+          <label for="confirm-clear">Confirmation</label>
+          <input type="text" id="confirm-clear" name="confirm" placeholder="Type RESET to confirm" autocomplete="off" required>
+        </div>
+        <button class="btn danger" type="submit">Clear all local test data</button>
+      </form>
+      <hr class="sep">
+      <p class="small muted-text">Reset to a known demo state = clear everything, then load both fixtures.</p>
+      <form method="post" action="/local-tools/demo-reset">
+        <div class="field">
+          <label for="confirm-demo">Confirmation</label>
+          <input type="text" id="confirm-demo" name="confirm" placeholder="Type RESET to confirm" autocomplete="off" required>
+        </div>
+        <button class="btn danger" type="submit">Reset to demo state</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-body small muted-text">
+    Guard rails: these actions call <code>ensure_local_database()</code>, which raises unless
+    <code>APP_ENV=local</code> and the configured database host is 127.0.0.1 / localhost / ::1.
+    They are absent from the navigation and return 404 outside local development. Fixture loads and
+    resets write audit events, so the local audit trail shows what happened.
+  </div>
+</div>
+{% endblock %}

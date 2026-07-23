@@ -32,9 +32,14 @@ class ImportBatchStatus(enum.StrEnum):
 class ImportRowOutcome(enum.StrEnum):
     """Per-row outcome after staged validation.
 
-    ``PENDING`` is the state at raw capture, before validation runs. The four
+    ``PENDING`` is the state at raw capture, before validation runs. The five
     terminal outcomes are mutually exclusive and together account for every
     imported row, so no malformed row is ever silently dropped (DAT-002).
+
+    ``AMBIGUOUS`` marks a row whose identity match is uncertain (several existing
+    contacts share its natural key). Such a row is neither merged nor silently
+    accepted: no contact is created, the reason is recorded, and the row waits
+    for human review in the workbench (DAT-004).
     """
 
     PENDING = "pending"
@@ -42,6 +47,7 @@ class ImportRowOutcome(enum.StrEnum):
     REJECTED = "rejected"
     DUPLICATE = "duplicate"
     SUPPRESSED = "suppressed"
+    AMBIGUOUS = "ambiguous"
 
 
 class DedupMatchType(enum.StrEnum):

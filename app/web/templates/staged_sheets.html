@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div class="crumbs"><a href="/imports">Imports</a><span>/</span>{{ staged.filename }}</div>
+  <h1>Inspect workbook</h1>
+  <div class="sub">Step 2 of 4 — <strong>{{ staged.filename }}</strong> contains {{ sheets | length }} sheet{{ "s" if sheets | length != 1 }}. Choose which sheet(s) to import; sheets without a header row cannot be selected.</div>
+</div>
+
+<div class="steps" aria-label="Import steps">
+  <span class="step done"><span class="n">1</span>Upload</span>
+  <span class="step current"><span class="n">2</span>Sheets &amp; mapping</span>
+  <span class="step"><span class="n">3</span>Preview &amp; validate</span>
+  <span class="step"><span class="n">4</span>Confirm</span>
+</div>
+
+<form method="post" action="/imports/staged/{{ staged.id }}/sheets">
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th style="width:44px"><span class="sr-only">Select</span></th><th>Sheet</th><th class="num">Data rows</th><th>Columns found</th></tr></thead>
+      <tbody>
+        {% for sheet in sheets %}
+        <tr>
+          <td>
+            {% if sheet.header %}
+            <label class="check-row" style="margin:0"><input type="checkbox" name="sheet" value="{{ sheet.index }}"
+              {{ "checked" if staged.sheet_selection is none or sheet.index in (staged.sheet_selection or []) }}>
+              <span class="sr-only">Import sheet {{ sheet.name }}</span></label>
+            {% else %}
+            <span class="muted-text" title="No header row">—</span>
+            {% endif %}
+          </td>
+          <td><strong>{{ sheet.name }}</strong> <span class="small muted-text">(sheet {{ sheet.index + 1 }})</span>
+            {% if not sheet.header %}<div class="small muted-text">Empty — no header row; cannot be imported.</div>{% endif %}
+          </td>
+          <td class="num">{{ sheet.data_row_count }}</td>
+          <td class="wrap small mono">{{ sheet.header | join(", ") if sheet.header else "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div style="margin-top:16px">
+    <button class="btn" type="submit">Continue to column mapping</button>
+    <a class="btn secondary" href="/imports">Cancel</a>
+  </div>
+</form>
+{% endblock %}

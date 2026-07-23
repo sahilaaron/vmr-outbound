@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="unavailable">
+  <h2>Not found</h2>
+  <p>{{ message | default("The record you asked for does not exist (it may have been removed or reset).") }}</p>
+  <a class="btn secondary" href="/">Back to Overview</a>
+</div>
+{% endblock %}

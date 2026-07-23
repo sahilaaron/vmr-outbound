@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% from "_macros.html" import batch_badge %}
+{% block content %}
+<div class="page-head">
+  <h1>Overview</h1>
+  <div class="sub">Live state of the local outbound database. Every number below is read directly from Postgres — nothing is simulated.</div>
+</div>
+
+{% if not stats.database_ok %}
+<div class="notice err" role="alert">
+  <div><strong>Database unavailable.</strong> The workbench cannot read the local database
+  ({{ stats.database_detail }}). Start Postgres and reload this page.</div>
+</div>
+{% else %}
+
+<div class="stat-grid">
+  <div class="stat accent"><div class="label">Campaigns</div><div class="value">{{ stats.campaign_count }}</div></div>
+  <div class="stat accent"><div class="label">Contacts</div><div class="value">{{ stats.contact_count }}</div></div>
+  <div class="stat accent"><div class="label">Import batches</div><div class="value">{{ stats.import_batch_count }}</div></div>
+  <div class="stat"><div class="label">Suppression entries</div><div class="value muted">{{ stats.suppression_entries }}</div></div>
+</div>
+
+<div class="stat-grid">
+  <div class="stat"><div class="label">Accepted rows</div><div class="value ok">{{ stats.accepted_rows }}</div></div>
+  <div class="stat"><div class="label">Rejected rows</div><div class="value err">{{ stats.rejected_rows }}</div></div>
+  <div class="stat"><div class="label">Duplicates</div><div class="value info">{{ stats.duplicate_rows }}</div></div>
+  <div class="stat"><div class="label">Ambiguous rows</div><div class="value warn">{{ stats.ambiguous_rows }}</div></div>
+  <div class="stat"><div class="label">Suppressed rows</div><div class="value muted">{{ stats.suppressed_rows }}</div></div>
+</div>
+
+<div class="grid-2">
+  <div class="table-wrap">
+    <div class="toolbar"><strong class="small">Recent imports</strong><a class="btn small" href="/imports/new">New import</a></div>
+    {% if stats.recent_batches %}
+    <table>
+      <thead><tr><th>File</th><th>Status</th><th class="num">Rows</th><th>When</th></tr></thead>
+      <tbody>
+        {% for b in stats.recent_batches %}
+        <tr>
+          <td><a href="/imports/{{ b.id }}">{{ b.filename or "(unnamed upload)" }}</a>
+            <div class="small muted-text">{{ b.source_format.value | upper }}</div></td>
+          <td>{{ batch_badge(b) }}</td>
+          <td class="num">{{ b.total_rows }}</td>
+          <td class="small muted-text">{{ b.created_at | dt }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty">
+      <div class="empty-title">No imports yet</div>
+      <p>Upload your first CSV or XLSX to bring contacts into a campaign.</p>
+      <a class="btn" href="/imports/new">Start an import</a>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="table-wrap">
+    <div class="toolbar"><strong class="small">Needs attention</strong></div>
+    {% if stats.attention_batches %}
+    <table>
+      <thead><tr><th>File</th><th>Why</th><th>Next action</th></tr></thead>
+      <tbody>
+        {% for b in stats.attention_batches %}
+        <tr>
+          <td><a href="/imports/{{ b.id }}">{{ b.filename or "(unnamed upload)" }}</a></td>
+          <td>
+            {% if b.status.value == "failed" %}<span class="badge err">failed</span>
+            {% else %}
+              {% if b.rejected_rows %}<span class="badge err">{{ b.rejected_rows }} rejected</span>{% endif %}
+              {% if b.ambiguous_rows %}<span class="badge warn">{{ b.ambiguous_rows }} ambiguous</span>{% endif %}
+            {% endif %}
+          </td>
+          <td class="small">
+            {% if b.status.value == "failed" %}Open the batch to read the failure reason, fix the file, and re-import.
+            {% elif b.ambiguous_rows %}Review the ambiguous rows — they were kept out of the campaign until a human decides.
+            {% else %}Open the rejected rows, fix them at the source, and re-import the corrected file.{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty">
+      <div class="empty-title">All clear</div>
+      <p>No failed imports and no rows waiting for review.</p>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>System status</h2></div>
+  <div class="card-body">
+    <dl class="kv">
+      <dt>Environment</dt><dd><span class="badge accent plain">{{ app_env }}</span></dd>
+      <dt>Database</dt><dd>{% if stats.database_ok %}<span class="badge ok">connected</span>{% else %}<span class="badge err">unavailable</span>{% endif %}</dd>
+      <dt>Dry run</dt><dd>{% if dry_run %}<span class="badge ok">on — no real email can be scheduled</span>{% else %}<span class="badge err">off</span>{% endif %}</dd>
+      <dt>Enabled features</dt>
+      <dd>{% for f in features_enabled %}<code>{{ f }}</code> {% else %}<span class="muted-text">none</span>{% endfor %}</dd>
+      <dt>Later phases</dt>
+      <dd class="small muted-text">Verification, scoring, research, drafting, approval, and sending are not built yet; their areas are disabled in the navigation.</dd>
+    </dl>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
