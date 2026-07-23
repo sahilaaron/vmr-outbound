@@ -62,6 +62,33 @@ class DedupMatchType(enum.StrEnum):
     NATURAL_KEY = "natural_key"
 
 
+class IdentityResolutionType(enum.StrEnum):
+    """How an operator resolved an ambiguous imported identity or duplicate pair.
+
+    An ambiguous import row (several existing contacts share its natural key) is
+    never merged silently; the operator makes one explicit, audited decision:
+
+    * ``ASSIGN_EXISTING`` — the row is the same person as one chosen existing
+      contact; it is linked to that contact (membership + provenance), no new
+      contact is created.
+    * ``CREATE_NEW`` — none of the candidates match; a new contact is created.
+    * ``MARK_SEPARATE`` — the row is a new, distinct person deliberately recorded
+      as separate from the shown candidates (a confirmed non-match). A new
+      contact is created and the candidates it was distinguished from are
+      recorded on the resolution. This resolves the *present row only*: the
+      distinction is intentionally not used to auto-suppress future matching, so
+      a later import sharing the same natural key can still be flagged ambiguous
+      for a fresh, explicit decision (conservative by design).
+    * ``MERGE`` — two *existing* contacts are confirmed duplicates and merged
+      into a single survivor under a deterministic transfer policy.
+    """
+
+    ASSIGN_EXISTING = "assign_existing"
+    CREATE_NEW = "create_new"
+    MARK_SEPARATE = "mark_separate"
+    MERGE = "merge"
+
+
 class SuppressionType(enum.StrEnum):
     """The identity dimension a suppression entry applies to."""
 

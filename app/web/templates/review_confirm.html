@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block content %}
+{% set n = review.normalized %}
+<div class="page-head">
+  <div class="crumbs"><a href="/review">Review</a><span>/</span><a href="/review/rows/{{ review.row.id }}">Row {{ review.row.row_number }}</a><span>/</span>Confirm</div>
+  <h1>Confirm: {{ action.value.replace('_',' ') }}</h1>
+  <div class="sub">Review exactly what will happen before anything is written. Nothing has changed yet.</div>
+</div>
+
+{% if preview.destructive %}
+<div class="notice err" role="alert">
+  <div><strong>This is a destructive merge.</strong> One contact is folded into another. The
+    duplicate is preserved (never deleted) but tombstoned. This cannot be undone from the workbench.</div>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-head"><h2>Consequences</h2></div>
+  <div class="card-body">
+    <ul class="consequence-list">
+      {% for line in preview.summary %}<li>{{ line }}</li>{% endfor %}
+    </ul>
+    {% if preview.suppression_enforced %}
+    <p class="small"><strong>Suppression will be enforced:</strong> the resulting membership stays SUPPRESSED and cannot enter outreach.</p>
+    {% endif %}
+  </div>
+</div>
+
+<form method="post" action="/review/rows/{{ review.row.id }}/resolve" class="confirm-form">
+  <input type="hidden" name="action" value="{{ action.value }}">
+  {% if target_contact_id %}<input type="hidden" name="target_contact_id" value="{{ target_contact_id }}">{% endif %}
+  {% if merged_contact_id %}<input type="hidden" name="merged_contact_id" value="{{ merged_contact_id }}">{% endif %}
+  <label class="field">
+    <span>Reason{% if preview.destructive %} (required){% else %} (recorded in the audit trail){% endif %}</span>
+    <input type="text" name="reason" placeholder="Why this decision?" maxlength="500"
+      {% if preview.destructive %}required aria-required="true"{% endif %}>
+  </label>
+  <div class="action-row">
+    <button class="btn {{ 'warn' if preview.destructive else '' }}" type="submit">
+      {{ "Confirm merge" if preview.destructive else "Confirm" }}
+    </button>
+    <a class="btn secondary" href="/review/rows/{{ review.row.id }}">Cancel</a>
+  </div>
+</form>
+{% endblock %}

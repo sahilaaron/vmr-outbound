@@ -125,10 +125,45 @@ or reset to a known demo state. Guard rails:
 * Fixture loads and resets write audit events; the reset records its own audit
   event after clearing, so the wipe leaves a trace.
 
+## Ambiguity review & identity resolution (DAT-004)
+
+The importer never merges an uncertain match: a row whose natural key matches
+several existing contacts becomes an explicit `AMBIGUOUS` outcome with no contact
+and no membership. The **Review** area (`/review`) is where an operator resolves
+those rows safely.
+
+* The queue lists every unresolved ambiguous row. The rail shows an open-count
+  badge. Resolving a row removes it from the queue; the originating import row and
+  its `AMBIGUOUS` outcome are preserved forever (resolutions are layered on top,
+  never destructive to import history).
+* The detail page shows the immutable raw row, the normalized candidate values,
+  and the possible existing matches — each with its match evidence (exact email or
+  exact natural key only, never a similar name or shared company), memberships,
+  provenance count, and suppression state.
+* Four explicit actions: **assign** the row to one existing contact, **create** a
+  new contact, **mark intentionally separate** (a confirmed distinct person), or
+  **merge** two confirmed duplicate contacts. Every action first renders a
+  consequence preview; a destructive merge requires an extra confirmation.
+* Safety rules enforced in the service layer (`app/services/identity.py`), not the
+  browser: no silent merge; the raw row and all provenance are preserved; a merged
+  contact is tombstoned (`contacts.merged_into_id`), never deleted; a suppressed
+  identity yields only a `SUPPRESSED` membership and can never enter outreach;
+  assign/merge never creates a duplicate active membership; conflicting emails are
+  refused and stay reviewable; merges have a defined survivor and a deterministic
+  transfer policy for memberships, provenance, observations, and email evidence.
+* Every applied resolution writes an `identity_resolutions` record (actor,
+  action, reason, before/after snapshot) and an audit event. Submissions are
+  idempotent by import row, by idempotency key, and by already-merged pair, so a
+  retried confirm changes nothing. Each apply runs in a single transaction that
+  rolls back completely on failure — no partial contact, membership, or provenance
+  is committed.
+
 ## Known limitations
 
-* Ambiguous rows are reviewable but not yet actionable in the UI (no
-  merge/assign action); resolution is via corrected re-import.
+* Merges are one-directional and not undoable from the workbench (the tombstoned
+  duplicate is preserved for audit, but there is no un-merge action yet).
+* Duplicate *existing* contacts are surfaced for merge from an ambiguous row's
+  candidate list; there is no standalone duplicate-scan report yet.
 * The preview's row-by-row table shows the first 50 rows (all problems and all
   counts cover the full file; all rows are browsable on the batch after
   confirm).

@@ -34,6 +34,11 @@
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.5 3.4-5.5 6.5-5.5s5.7 2 6.5 5.5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8"/><path d="M17.5 14.7c2.2.7 3.6 2.5 4 5.3"/></svg>
         Contacts
       </a>
+      <a href="/review" class="{{ 'active' if active_nav == 'review' else '' }}">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3l9 16H3L12 3z"/><path d="M12 10v4"/><path d="M12 17.5v.5"/></svg>
+        Review
+        {% if open_reviews %}<span class="tag warn-tag">{{ open_reviews }}</span>{% endif %}
+      </a>
       {% if local_env %}
       <a href="/local-tools" class="local-only {{ 'active' if active_nav == 'local-tools' else '' }}">
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6L14 13l-3-3 3.7-3.7z"/></svg>

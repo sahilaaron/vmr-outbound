@@ -464,3 +464,27 @@ code { font-family: var(--mono); font-size: 12.5px; background: var(--muted-soft
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
+
+/* --- Ambiguity review & identity resolution (DAT-004) ------------------- */
+.rail-nav a .tag.warn-tag {
+  background: var(--warn-soft);
+  color: var(--warn);
+  margin-left: auto;
+}
+.btn.warn { background: var(--warn); color: #241a00; }
+.btn.warn:hover { background: #b8860b; color: #fff; }
+.hint { font-size: 12.5px; color: var(--text-2); }
+.action-row { display: flex; align-items: center; gap: 12px; margin: 10px 0; flex-wrap: wrap; }
+.action-row form { display: flex; align-items: center; gap: 10px; margin: 0; }
+.merge-form { margin-top: 4px; }
+.merge-selects { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; margin: 10px 0 6px; }
+.merge-selects label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--text-2); }
+.merge-selects select { min-height: 36px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); }
+.consequence-list { margin: 4px 0 0; padding-left: 20px; }
+.consequence-list li { margin: 5px 0; line-height: 1.45; }
+.confirm-form { margin-top: 16px; }
+.confirm-form .field input[type="text"] {
+  width: 100%; min-height: 38px; padding: 8px 11px; border: 1px solid var(--border);
+  border-radius: 8px; background: var(--surface); color: var(--text); font: inherit;
+}
+.confirm-form .field span { display: block; font-size: 12.5px; color: var(--text-2); margin-bottom: 4px; }

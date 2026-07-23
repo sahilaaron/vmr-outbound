@@ -17,7 +17,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Index, String, func
+from sqlalchemy import DateTime, ForeignKey, Index, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -42,6 +42,9 @@ class Contact(Base):
         # people may share a natural key when they have distinct emails.
         Index("ix_contacts_natural_key", "natural_key"),
         Index("ix_contacts_company_domain", "company_domain"),
+        # A tombstoned duplicate points at its survivor. Indexed so a survivor's
+        # merged-away duplicates are cheap to list on the contact record.
+        Index("ix_contacts_merged_into_id", "merged_into_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -64,6 +67,17 @@ class Contact(Base):
     # casefold(first_name)|casefold(last_name)|company_domain — computed at import.
     natural_key: Mapped[str] = mapped_column(String(1024), nullable=False)
 
+    # --- Merge tombstone (DAT-004 identity resolution) -----------------------
+    # When two contacts are confirmed duplicates, the loser is NOT deleted (its
+    # import history and provenance are preserved); it is tombstoned by pointing
+    # at the surviving contact. A merged contact is excluded from dedup lookups
+    # and the active contact list, but remains fully auditable.
+    merged_into_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("contacts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -73,6 +87,12 @@ class Contact(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
+
+    @property
+    def is_merged(self) -> bool:
+        """True when this contact has been merged into a surviving duplicate."""
+
+        return self.merged_into_id is not None
 
     def __repr__(self) -> str:  # pragma: no cover - debug helper
         return (
