@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% from "_macros.html" import pager %}
+{% block content %}
+<div class="page-head">
+  <h1>Ambiguity review</h1>
+  <div class="sub">Imported rows whose identity match was uncertain. Each was kept out of its
+    campaign rather than merged automatically — resolve each one explicitly. Nothing here is
+    ever combined without your decision.</div>
+</div>
+
+{% if items %}
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">{{ total }} row{{ "s" if total != 1 }} awaiting review</strong></div>
+  <table>
+    <thead><tr><th>Person</th><th>Company</th><th>Campaign</th><th>Batch</th><th class="num">Candidates</th><th></th></tr></thead>
+    <tbody>
+      {% for item in items %}
+      {% set n = item.validation.normalized_data or {} %}
+      <tr>
+        <td>{{ n.get("first_name") or "" }} {{ n.get("last_name") or "" }}</td>
+        <td class="small">{{ n.get("company_name") or "" }}<br><span class="muted-text">{{ n.get("company_domain") or "" }}</span></td>
+        <td><a href="/campaigns/{{ item.campaign.id }}">{{ item.campaign.name }}</a></td>
+        <td class="small"><a href="/imports/{{ item.batch.id }}">{{ item.batch.filename or item.batch.id }}</a> · row {{ item.row.row_number }}</td>
+        <td class="num">{{ item.candidate_count }}</td>
+        <td><a class="btn small" href="/review/rows/{{ item.row.id }}">Resolve</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {{ pager(page, pages, total, "/review", "rows") }}
+</div>
+{% else %}
+<div class="empty">
+  <div class="empty-title">Nothing to review</div>
+  <p>No imported row is currently ambiguous. Ambiguous rows appear here when a new row's identity
+    matches more than one existing contact and cannot be resolved automatically.</p>
+</div>
+{% endif %}
+{% endblock %}

@@ -25,8 +25,13 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.core.config import get_settings
-from app.models.enums import CampaignStatus, ContactWorkflowState, ImportRowOutcome
-from app.services import devtools, workbench
+from app.models.enums import (
+    CampaignStatus,
+    ContactWorkflowState,
+    IdentityResolutionType,
+    ImportRowOutcome,
+)
+from app.services import devtools, identity, workbench
 from app.services.campaigns import (
     CampaignError,
     campaign_imports,
@@ -97,12 +102,17 @@ def _render(
     """Render a page with the shared shell context merged in."""
 
     settings = get_settings()
+    try:
+        open_reviews = identity.count_open_reviews(db)
+    except Exception:
+        open_reviews = 0
     shared: dict[str, Any] = {
         "app_env": settings.app_env,
         "dry_run": settings.dry_run,
         "features_enabled": settings.features.enabled(),
         "local_env": settings.app_env.lower() == "local",
         "database_ok": _database_ok(db),
+        "open_reviews": open_reviews,
         "flash_ok": request.query_params.get("ok"),
         "flash_err": request.query_params.get("err"),
     }
@@ -742,6 +752,179 @@ def row_detail_page(
             "page_title": f"Row {row.row.row_number}",
         },
     )
+
+
+# --- Ambiguity review & identity resolution (DAT-004) ------------------------
+
+_ROW_ACTIONS = {
+    IdentityResolutionType.ASSIGN_EXISTING,
+    IdentityResolutionType.CREATE_NEW,
+    IdentityResolutionType.MARK_SEPARATE,
+}
+
+
+def _parse_action(value: str | None) -> IdentityResolutionType | None:
+    if not value:
+        return None
+    try:
+        return IdentityResolutionType(value)
+    except ValueError:
+        return None
+
+
+def _idempotency_key(
+    row_id: uuid.UUID,
+    action: IdentityResolutionType,
+    target: uuid.UUID | None,
+    loser: uuid.UUID | None = None,
+) -> str:
+    """A deterministic key so a repeated confirm of the same decision is a no-op."""
+
+    return f"row:{row_id}:{action.value}:{target or '-'}:{loser or '-'}"
+
+
+@router.get("/review", response_class=HTMLResponse)
+def review_queue_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    page = _page_number(request)
+    items, total = identity.list_review_queue(db, limit=PAGE_SIZE, offset=(page - 1) * PAGE_SIZE)
+    return _render(
+        request,
+        db,
+        "review_queue.html",
+        {
+            "items": items,
+            "total": total,
+            "page": page,
+            "pages": _pages(total),
+            "active_nav": "review",
+            "page_title": "Ambiguity review",
+        },
+    )
+
+
+@router.get("/review/rows/{row_id}", response_class=HTMLResponse)
+def review_detail_page(
+    request: Request, row_id: str, db: Session = Depends(get_db)
+) -> HTMLResponse:
+    parsed = _parse_uuid(row_id)
+    review = identity.get_row_review(db, parsed) if parsed else None
+    if review is None:
+        return _not_found(
+            request, db, "That ambiguous row does not exist, or it has already been resolved."
+        )
+    return _render(
+        request,
+        db,
+        "review_detail.html",
+        {
+            "review": review,
+            "active_nav": "review",
+            "page_title": f"Resolve row {review.row.row_number}",
+        },
+    )
+
+
+@router.post("/review/rows/{row_id}/preview", response_class=HTMLResponse)
+async def review_preview(request: Request, row_id: str, db: Session = Depends(get_db)) -> Response:
+    parsed = _parse_uuid(row_id)
+    review = identity.get_row_review(db, parsed) if parsed else None
+    if review is None or parsed is None:
+        return _redirect("/review", err="That ambiguous row does not exist or was resolved.")
+
+    form = await request.form()
+    action = _parse_action(str(form.get("action", "")))
+    if action is None:
+        return _redirect(f"/review/rows/{row_id}", err="Choose a resolution action.")
+    target = _parse_uuid(str(form.get("target_contact_id", "")) or None)
+    loser = _parse_uuid(str(form.get("merged_contact_id", "")) or None)
+
+    try:
+        preview = identity.preview_row_resolution(
+            db,
+            import_row_id=parsed,
+            action=action,
+            target_contact_id=target,
+            merged_contact_id=loser,
+        )
+    except identity.ResolutionError as exc:
+        return _redirect(f"/review/rows/{row_id}", err=str(exc))
+
+    if not preview.ok:
+        return _redirect(f"/review/rows/{row_id}", err=preview.blocked_reason or "Cannot resolve.")
+
+    return _render(
+        request,
+        db,
+        "review_confirm.html",
+        {
+            "review": review,
+            "preview": preview,
+            "action": action,
+            "target_contact_id": target,
+            "merged_contact_id": loser,
+            "active_nav": "review",
+            "page_title": f"Confirm — row {review.row.row_number}",
+        },
+    )
+
+
+@router.post("/review/rows/{row_id}/resolve")
+async def review_resolve(request: Request, row_id: str, db: Session = Depends(get_db)) -> Response:
+    parsed = _parse_uuid(row_id)
+    if parsed is None:
+        return _redirect("/review", err="That ambiguous row reference is invalid.")
+
+    form = await request.form()
+    action = _parse_action(str(form.get("action", "")))
+    if action is None:
+        return _redirect(f"/review/rows/{row_id}", err="Choose a resolution action.")
+    target = _parse_uuid(str(form.get("target_contact_id", "")) or None)
+    loser = _parse_uuid(str(form.get("merged_contact_id", "")) or None)
+    reason = str(form.get("reason", "")).strip() or None
+
+    try:
+        if action is IdentityResolutionType.MERGE:
+            key = _idempotency_key(parsed, action, target, loser)
+            result = identity.merge_contacts(
+                db,
+                survivor_id=target,  # type: ignore[arg-type]
+                loser_id=loser,  # type: ignore[arg-type]
+                idempotency_key=key,
+                actor="workbench",
+                reason=reason,
+                import_row_id=parsed,
+            )
+        elif action in _ROW_ACTIONS:
+            key = _idempotency_key(parsed, action, target)
+            result = identity.resolve_row(
+                db,
+                import_row_id=parsed,
+                action=action,
+                idempotency_key=key,
+                actor="workbench",
+                reason=reason,
+                target_contact_id=target,
+                merged_contact_id=loser,
+            )
+        else:
+            return _redirect(f"/review/rows/{row_id}", err="Unknown resolution action.")
+    except identity.ResolutionError as exc:
+        return _redirect(f"/review/rows/{row_id}", err=str(exc))
+    except Exception:
+        db.rollback()
+        return _redirect(
+            f"/review/rows/{row_id}",
+            err="The resolution could not be completed and was rolled back. Nothing changed.",
+        )
+
+    contact_id = result.resolution.target_contact_id
+    if result.reused:
+        note = "This decision was already recorded; nothing changed."
+    else:
+        note = f"Resolved by {action.value.replace('_', ' ')}."
+    if contact_id is not None:
+        return _redirect(f"/contacts/{contact_id}", ok=note)
+    return _redirect("/review", ok=note)
 
 
 # --- Contacts ----------------------------------------------------------------

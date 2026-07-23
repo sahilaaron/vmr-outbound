@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% from "_macros.html" import state_badge %}
+{% block content %}
+{% set n = review.normalized %}
+<div class="page-head">
+  <div class="crumbs"><a href="/review">Review</a><span>/</span>Row {{ review.row.row_number }}</div>
+  <h1>Resolve {{ n.get("first_name") or "" }} {{ n.get("last_name") or "" }} <span class="badge warn">ambiguous</span></h1>
+  <div class="sub">This row from <a href="/imports/{{ review.batch.id }}">{{ review.batch.filename or review.batch.id }}</a>
+    was going into <strong>{{ review.campaign.name }}</strong>, but its identity matched more than one
+    existing contact. Choose one explicit resolution below — nothing is merged automatically.</div>
+</div>
+
+{% if review.existing_resolution %}
+<div class="notice ok" role="status">
+  <div><strong>Already resolved</strong> by {{ review.existing_resolution.resolution_type.value.replace('_',' ') }}
+  on {{ review.existing_resolution.created_at | dt }}. Re-submitting will not change anything.</div>
+</div>
+{% endif %}
+
+{% for reason in review.reasons %}
+<div class="notice warn"><div>{{ reason }}</div></div>
+{% endfor %}
+
+{% if review.active_suppression %}
+<div class="notice err" role="alert">
+  <div><strong>This identity is on the suppression ledger</strong>
+    ({{ review.active_suppression.reason.value }}). Any resolution will create a
+    <strong>suppressed</strong> membership only — it can never enter outreach.</div>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-head"><h2>Imported row</h2><span class="hint">Raw values are immutable; normalized values are derived</span></div>
+  <div class="card-body">
+    <table>
+      <thead><tr><th>Field</th><th>Raw (verbatim)</th><th>Normalized candidate value</th></tr></thead>
+      <tbody>
+        {% for field in ["first_name","last_name","company_name","company_domain","email","title","country","industry","company_size"] %}
+        {% set rawval = review.row.raw_data.get(field) %}
+        {% set normval = n.get(field) %}
+        {% if rawval not in (none,"") or normval not in (none,"") %}
+        <tr><td class="mono">{{ field }}</td>
+          <td class="wrap">{{ rawval if rawval not in (none,"") else "—" }}</td>
+          <td class="wrap">{{ normval if normval not in (none,"") else "—" }}</td></tr>
+        {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if review.natural_key %}<p class="small muted-text" style="margin-top:8px">Natural key: <code>{{ review.natural_key }}</code></p>{% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Possible existing matches</h2><span class="hint">Matched only by exact email or exact natural key — never by similar name or shared company</span></div>
+  <div class="card-body">
+    {% if review.candidates %}
+    <table>
+      <thead><tr><th>Existing contact</th><th>Match evidence</th><th>Memberships</th><th class="num">Provenance</th><th>Assign</th></tr></thead>
+      <tbody>
+        {% for c in review.candidates %}
+        <tr>
+          <td>
+            <a href="/contacts/{{ c.contact.id }}">{{ c.contact.first_name }} {{ c.contact.last_name }}</a>
+            <div class="small muted-text">{{ c.contact.email or "no email" }} · {{ c.contact.company_domain }}</div>
+            {% if c.active_suppression %}<span class="badge muted">suppressed</span>{% endif %}
+          </td>
+          <td class="small">{{ c.match_reason }}</td>
+          <td class="small">
+            {% for m, camp in c.memberships %}<div>{{ camp.name }} {{ state_badge(m.state) }}</div>{% else %}<span class="muted-text">none</span>{% endfor %}
+          </td>
+          <td class="num">{{ c.provenance_count }}</td>
+          <td>
+            <form method="post" action="/review/rows/{{ review.row.id }}/preview">
+              <input type="hidden" name="action" value="assign_existing">
+              <input type="hidden" name="target_contact_id" value="{{ c.contact.id }}">
+              <button class="btn small secondary" type="submit">Assign to this →</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="small muted-text">No existing contact currently matches this row by an exact signal.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Or record a different decision</h2></div>
+  <div class="card-body">
+    <div class="action-row">
+      <form method="post" action="/review/rows/{{ review.row.id }}/preview">
+        <input type="hidden" name="action" value="create_new">
+        <button class="btn" type="submit">Create a new contact</button>
+        <span class="hint">None of the candidates is this person.</span>
+      </form>
+    </div>
+    <div class="action-row">
+      <form method="post" action="/review/rows/{{ review.row.id }}/preview">
+        <input type="hidden" name="action" value="mark_separate">
+        <button class="btn secondary" type="submit">Mark intentionally separate</button>
+        <span class="hint">A distinct person deliberately kept apart from the candidates above.</span>
+      </form>
+    </div>
+
+    {% if review.candidates|length > 1 %}
+    <hr>
+    <form method="post" action="/review/rows/{{ review.row.id }}/preview" class="merge-form">
+      <input type="hidden" name="action" value="merge">
+      <strong class="small">Merge two candidates that are the same person</strong>
+      <div class="merge-selects">
+        <label>Keep (survivor)
+          <select name="target_contact_id" required>
+            <option value="">— choose —</option>
+            {% for c in review.candidates %}<option value="{{ c.contact.id }}">{{ c.contact.first_name }} {{ c.contact.last_name }} · {{ c.contact.email or "no email" }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Merge away (duplicate)
+          <select name="merged_contact_id" required>
+            <option value="">— choose —</option>
+            {% for c in review.candidates %}<option value="{{ c.contact.id }}">{{ c.contact.first_name }} {{ c.contact.last_name }} · {{ c.contact.email or "no email" }}</option>{% endfor %}
+          </select>
+        </label>
+        <button class="btn warn" type="submit">Preview merge…</button>
+      </div>
+      <span class="hint">Merging is destructive and needs confirmation. Conflicting emails cannot be merged.</span>
+    </form>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
