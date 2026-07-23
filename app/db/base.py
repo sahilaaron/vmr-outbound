@@ -29,7 +29,13 @@ class Base(DeclarativeBase):
 # are added in later phases.
 from app.models import audit_event as _audit_event  # noqa: E402,F401
 from app.models import campaign as _campaign  # noqa: E402,F401
+from app.models import company as _company  # noqa: E402,F401
 from app.models import contact as _contact  # noqa: E402,F401
+from app.models import draft as _draft  # noqa: E402,F401
+from app.models import email_evidence as _email_evidence  # noqa: E402,F401
+from app.models import external_event as _external_event  # noqa: E402,F401
 from app.models import import_batch as _import_batch  # noqa: E402,F401
+from app.models import insight as _insight  # noqa: E402,F401
 from app.models import provenance as _provenance  # noqa: E402,F401
+from app.models import score as _score  # noqa: E402,F401
 from app.models import suppression as _suppression  # noqa: E402,F401

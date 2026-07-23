@@ -109,3 +109,51 @@ ALLOWED_CONTACT_TRANSITIONS: dict[ContactWorkflowState, frozenset[ContactWorkflo
     ContactWorkflowState.SUPPRESSED: frozenset(),
     ContactWorkflowState.EXCLUDED: frozenset(),
 }
+
+
+class ImportSourceFormat(enum.StrEnum):
+    """Authorized spreadsheet import formats for the first launch: CSV and XLSX.
+
+    Legacy formats (.xls), Google Sheets direct import, and other spreadsheet
+    formats are intentionally out of scope until explicitly approved.
+    """
+
+    CSV = "csv"
+    XLSX = "xlsx"
+
+
+class EmailVerificationResult(enum.StrEnum):
+    """Outcome of an exact full-address verification.
+
+    Catch-all and unknown are deliberately distinct from valid/invalid so that
+    uncertainty can never be silently treated as a confirmed mailbox (AGENTS.md).
+    """
+
+    VALID = "valid"
+    INVALID = "invalid"
+    CATCH_ALL = "catch_all"
+    UNKNOWN = "unknown"
+
+
+class InsightSubject(enum.StrEnum):
+    """Whether a research insight is about a company or an individual contact."""
+
+    COMPANY = "company"
+    CONTACT = "contact"
+
+
+class ScoreType(enum.StrEnum):
+    """The two launch scores: computed before and after deep research."""
+
+    INITIAL_FIT = "initial_fit"
+    OUTREACH_READINESS = "outreach_readiness"
+
+
+class ApprovalStatus(enum.StrEnum):
+    """State of an approval that references one exact immutable draft version.
+
+    Editing a draft creates a new version and INVALIDATES the prior approval.
+    """
+
+    APPROVED = "approved"
+    INVALIDATED = "invalidated"

@@ -37,7 +37,12 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
-from app.models.enums import DedupMatchType, ImportBatchStatus, ImportRowOutcome
+from app.models.enums import (
+    DedupMatchType,
+    ImportBatchStatus,
+    ImportRowOutcome,
+    ImportSourceFormat,
+)
 
 
 class ImportBatch(Base):
@@ -58,12 +63,26 @@ class ImportBatch(Base):
         nullable=False,
     )
     filename: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # File checksum/hash of the original upload (also drives idempotent retry).
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[ImportBatchStatus] = mapped_column(
         Enum(ImportBatchStatus, name="import_batch_status"),
         nullable=False,
         default=ImportBatchStatus.PENDING,
     )
+
+    # --- Import-format metadata (CSV or XLSX; DAT-001) -----------------------
+    # The import system is not CSV-only: the first launch supports CSV and XLSX.
+    # Defaults to CSV so the existing importer keeps working unchanged.
+    source_format: Mapped[ImportSourceFormat] = mapped_column(
+        Enum(ImportSourceFormat, name="import_source_format"),
+        nullable=False,
+        default=ImportSourceFormat.CSV,
+        server_default=ImportSourceFormat.CSV.name,
+    )
+    mime_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    parser_version: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    mapper_version: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
     # --- Batch-level provenance (contact-input contract) ---------------------
     source_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
@@ -94,15 +113,21 @@ class ImportBatch(Base):
 
 
 class ImportRow(Base):
-    """Immutable, verbatim capture of one original CSV row.
+    """Immutable, verbatim capture of one original CSV/XLSX row.
 
     Written once at the raw-capture stage. ``raw_data`` is never mutated, so the
-    original imported values are always available for audit and re-processing.
+    original imported values are always available for audit and re-processing. For
+    an XLSX workbook a row is identified by its sheet and its original per-sheet
+    row number; a flat CSV is represented as a single sheet (``sheet_index`` 0).
     """
 
     __tablename__ = "import_rows"
     __table_args__ = (
-        UniqueConstraint("batch_id", "row_number", name="uq_import_rows_batch_row"),
+        # A row is unique within its (batch, sheet). CSV rows all use sheet 0, so
+        # this preserves the original per-batch uniqueness for flat files.
+        UniqueConstraint(
+            "batch_id", "sheet_index", "row_number", name="uq_import_rows_batch_sheet_row"
+        ),
         Index("ix_import_rows_batch_id", "batch_id"),
     )
 
@@ -112,8 +137,11 @@ class ImportRow(Base):
         ForeignKey("import_batches.id", ondelete="CASCADE"),
         nullable=False,
     )
-    # 1-based position among data rows (header excluded).
+    # Original row number within its sheet (header excluded). Per-file for CSV.
     row_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Sheet identity (XLSX). CSV is a single sheet: index 0, name NULL.
+    sheet_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    sheet_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # The original row exactly as read (header -> raw string value). Immutable.
     raw_data: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(

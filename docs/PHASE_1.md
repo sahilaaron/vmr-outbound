@@ -1,14 +1,24 @@
 # Phase 1 — Data & Campaigns: evidence map (first slice)
 
-This is the first build slice of Phase 1. It delivers the core data foundation
-and the staged CSV import (DAT-001, DAT-002). It deliberately does **not** touch
-email verification, scoring, research, drafting, or sending.
+This tracks the Phase 1 build slices. The first slices delivered the core data
+foundation and the staged CSV import (DAT-002); a follow-up slice completed the
+DAT-001 core schema (see "DAT-001 core-schema completion" below). None of this
+touches email verification, scoring, research, drafting, or sending behaviour —
+those remain later phases and their feature switches stay off.
+
+## First-launch import boundary
+
+Authorized spreadsheet import supporting **CSV and XLSX**. Legacy `.xls`, Google
+Sheets direct import, and other spreadsheet formats are **out of scope** until
+explicitly approved. XLSX *parsing* is not implemented in the DAT-001 slice; only
+the schema is prepared for it (source format, MIME type, parser/mapper version,
+and per-sheet row identity).
 
 ## What each card gets from this slice
 
 | Card | Outcome in this slice | Evidence |
 | --- | --- | --- |
-| **DAT-001** Core RDS schema | Version-controlled schema for the Phase 1 data foundation: campaigns, contacts, campaign membership, import batches, immutable raw rows, per-row validation results and errors, provenance records, suppression ledger. All via a committed Alembic migration with constraints, indexes, timestamps, and FK relationships. | `app/models/`, `migrations/versions/c11379ba2041_*.py` |
+| **DAT-001** Core RDS schema | Completed across two migrations: the data foundation (campaigns, contacts, membership, import batches, immutable raw rows, validation results/errors, provenance, suppression ledger) plus companies; three distinct email-evidence tables (exact-address verifications, domain-pattern observations, mail-domain observations); insights + evidence references; versioned scores, components, and score-evidence; immutable draft versions and exact-version approvals; external-provider events with duplicate protection; audit records. Import schema carries CSV/XLSX format metadata. Representation only — no later-phase behaviour. | `app/models/`, `migrations/versions/c11379ba2041_*.py`, `migrations/versions/b84699f38ef5_*.py`, `tests/test_schema_dat001.py` |
 | **DAT-002** Staged CSV import + row validation | Every upload creates a batch, preserves raw rows, validates required columns/values with actionable row-level errors, normalizes accepted rows, dedups conservatively, checks suppressions, and commits contacts + membership only after validation. Produces an import summary. Malformed rows are retained, never dropped. | `app/services/imports/`, `tests/test_imports.py`, `tests/fixtures/contacts_representative.csv` |
 | DAT-003 Normalize company/contact data | Conservative normalization (trim/collapse, lowercase email + host, URL cleanup) with originals preserved on the immutable raw row. *Foundation only* — a dedicated companies entity and country-name canonicalization are not built here. | `app/services/imports/normalization.py` |
 | DAT-004 Deduplicate / resolve contacts | Deterministic, explainable matching: exact normalized email, else exact natural key; ambiguous natural-key matches are kept separate. *Foundation only* — company-level dedup and a human review queue are deferred. | `app/services/imports/dedup.py` |
@@ -42,6 +52,33 @@ email verification, scoring, research, drafting, or sending.
    through deduplication rather than creating duplicate contacts.
 6. **Summary.** Per-row outcomes (`accepted` / `rejected` / `duplicate` /
    `suppressed`) are mutually exclusive and account for every row.
+
+## DAT-001 core-schema completion (representation only)
+
+A follow-up slice completes the DAT-001 schema. Added tables: `companies`;
+`exact_email_verifications`, `domain_pattern_observations`,
+`mail_domain_observations` (three structurally distinct email-evidence kinds so
+exact-address, domain-pattern, and mail-domain/catch-all facts can never be
+conflated); `insights` + `insight_evidence`; `scores`, `score_components`,
+`score_evidence` (versioned, explainable, with rule version, component values,
+total, reason, calculation time, and evidence links); `draft_versions`
+(immutable) + `draft_approvals` (each approval references exactly one draft
+version); `external_events` (provider, stable external id, event type, received
+time, controlled payload, and a `(provider, external_event_id)` unique constraint
+for duplicate protection). Audit records reuse the existing `audit_events` table.
+
+The import schema now records `source_format` (`csv`/`xlsx`), `mime_type`,
+`parser_version`, `mapper_version`, the file `content_hash`, and per-row
+`sheet_name`/`sheet_index`, so it does not assume a flat CSV forever. `csv` stays
+the default, and a flat CSV is represented as a single sheet (index 0), which
+preserves the existing importer and per-batch row uniqueness.
+
+This is **database representation only**. It creates the tables but implements
+none of the later-phase behaviour: no MillionVerifier integration, no email
+generation or verification, no score calculation, no research, no draft
+generation, no approval workflow/UI, no Saleshandy or webhook processing, and no
+XLSX parsing or broader file-format support. No live RDS deployment was performed;
+migrations are proven on local PostgreSQL 16 only.
 
 ## Verification performed
 
