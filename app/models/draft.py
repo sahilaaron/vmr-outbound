@@ -49,10 +49,12 @@ class DraftVersion(Base):
         ForeignKey("contacts.id", ondelete="CASCADE"),
         nullable=False,
     )
-    campaign_id: Mapped[uuid.UUID | None] = mapped_column(
+    # A draft always belongs to a campaign (required). CASCADE: a draft has no
+    # meaning once its campaign is gone.
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("campaigns.id", ondelete="CASCADE"),
-        nullable=True,
+        nullable=False,
     )
     # Sequential per (contact, campaign); a new edit is a new version.
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)

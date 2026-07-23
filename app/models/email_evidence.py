@@ -42,6 +42,9 @@ class ExactEmailVerification(Base):
         nullable=False,
     )
     provider: Mapped[str] = mapped_column(String(100), nullable=False)
+    # The verification-policy version under which this evidence was produced
+    # (required): it governs how the result may later be reused (TTLs, safe mode).
+    policy_version: Mapped[str] = mapped_column(String(50), nullable=False)
     provider_result_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
     provider_reference: Mapped[str | None] = mapped_column(String(255), nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)

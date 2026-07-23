@@ -262,6 +262,15 @@ def test_draft_version_and_approval_linkage(db_session: Session) -> None:
     assert fetched.status is ApprovalStatus.APPROVED
 
 
+def test_draft_version_requires_a_campaign(db_session: Session) -> None:
+    contact = _contact(db_session)
+    # campaign_id is required: a draft cannot be persisted without a campaign.
+    draft = DraftVersion(contact_id=contact.id, version_number=1, subject="s", body="b")
+    db_session.add(draft)
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+
 def test_draft_version_number_unique_per_contact_campaign(db_session: Session) -> None:
     contact = _contact(db_session)
     campaign = _campaign(db_session)
@@ -290,7 +299,14 @@ def test_draft_version_number_unique_per_contact_campaign(db_session: Session) -
 
 def test_one_approval_per_draft_version(db_session: Session) -> None:
     contact = _contact(db_session)
-    v1 = DraftVersion(contact_id=contact.id, version_number=1, subject="s", body="b")
+    campaign = _campaign(db_session)
+    v1 = DraftVersion(
+        contact_id=contact.id,
+        campaign_id=campaign.id,
+        version_number=1,
+        subject="s",
+        body="b",
+    )
     db_session.add(v1)
     db_session.flush()
     db_session.add(
@@ -313,6 +329,7 @@ def test_three_email_evidence_categories_are_independent(db_session: Session) ->
             email="ada@acme.example",
             result=EmailVerificationResult.CATCH_ALL,
             provider="millionverifier",
+            policy_version="safe-v1",
             checked_at=datetime.now(UTC),
         )
     )
@@ -335,6 +352,37 @@ def test_three_email_evidence_categories_are_independent(db_session: Session) ->
     # Catch-all evidence is represented as its own uncertainty, not a valid mailbox.
     ev = db_session.scalars(select(ExactEmailVerification)).one()
     assert ev.result is EmailVerificationResult.CATCH_ALL
+
+
+def test_exact_verification_persists_policy_version(db_session: Session) -> None:
+    db_session.add(
+        ExactEmailVerification(
+            email="grace@acme.example",
+            result=EmailVerificationResult.VALID,
+            provider="millionverifier",
+            policy_version="safe-v2",
+            checked_at=datetime.now(UTC),
+        )
+    )
+    db_session.flush()
+    ev = db_session.scalars(
+        select(ExactEmailVerification).where(ExactEmailVerification.email == "grace@acme.example")
+    ).one()
+    assert ev.policy_version == "safe-v2"
+
+
+def test_exact_verification_requires_policy_version(db_session: Session) -> None:
+    # policy_version is required; omitting it is a not-null violation.
+    db_session.add(
+        ExactEmailVerification(
+            email="omit@acme.example",
+            result=EmailVerificationResult.UNKNOWN,
+            provider="millionverifier",
+            checked_at=datetime.now(UTC),
+        )
+    )
+    with pytest.raises(IntegrityError):
+        db_session.flush()
 
 
 # --- Import batch/file metadata supports CSV and XLSX -----------------------
