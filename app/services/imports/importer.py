@@ -1,4 +1,4 @@
-"""Staged CSV import orchestration (DAT-002).
+"""Staged import orchestration for the two authorized formats (DAT-002).
 
 The import is deliberately staged so a malformed batch can never corrupt data:
 
@@ -15,15 +15,20 @@ The import is deliberately staged so a malformed batch can never corrupt data:
 3. **Summary.** Per-row outcomes and batch counts are returned.
 
 Re-running the exact same file into the same campaign is idempotent: an identical
-completed batch short-circuits, and overlapping-but-not-identical batches are
-reconciled by deduplication rather than creating duplicate contacts.
+completed batch (same content, sheet selection, and column mapping) short-
+circuits, and overlapping-but-not-identical batches are reconciled by
+deduplication rather than creating duplicate contacts.
+
+CSV and XLSX flow through one pipeline: the format-specific work ends at
+:mod:`app.services.imports.parsing`, which renders both formats into the same
+neutral rows; everything after that (mapping, validation, normalization,
+deduplication, provenance, suppression, persistence) is shared.
 """
 
 from __future__ import annotations
 
-import csv
 import hashlib
-import io
+import json
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -36,12 +41,18 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.models.campaign import Campaign, CampaignContact
 from app.models.contact import Contact
-from app.models.enums import ContactWorkflowState, ImportBatchStatus, ImportRowOutcome
+from app.models.enums import (
+    ContactWorkflowState,
+    ImportBatchStatus,
+    ImportRowOutcome,
+    ImportSourceFormat,
+)
 from app.models.import_batch import ImportBatch, ImportRow, ImportRowError, ImportRowValidation
 from app.models.provenance import ProvenanceRecord
 from app.services.audit import record_audit_event
 from app.services.contact_state import transition_contact_state
-from app.services.imports import dedup, validation
+from app.services.imports import dedup, parsing, validation
+from app.services.imports import mapping as mapping_service
 from app.services.suppressions import find_active_suppression
 
 _UNMAPPED_KEY = "_unmapped"
@@ -77,68 +88,87 @@ class ImportSummary:
     rejected_rows: int
     duplicate_rows: int
     suppressed_rows: int
+    ambiguous_rows: int
     contacts_created: int
     reused_existing_batch: bool = False
     error_detail: str | None = None
 
 
-def _parse_rows(
-    content: bytes,
-) -> tuple[list[str] | None, list[tuple[int, dict[str, str]]]]:
-    """Decode CSV bytes and return the header row plus (row_number, raw_row) pairs.
-
-    ``utf-8-sig`` transparently strips a BOM. The header is the first line's
-    field names (``None`` for an empty file). Fully blank rows are skipped; every
-    other row is captured verbatim (unknown columns are grouped under a single
-    ``_unmapped`` key so the raw record stays JSON-serialisable).
-    """
-
-    text = content.decode("utf-8-sig")
-    reader = csv.DictReader(io.StringIO(text), restkey=_UNMAPPED_KEY, restval="")
-    rows: list[tuple[int, dict[str, str]]] = []
-    row_number = 0
-    for row in reader:
-        cleaned: dict[str, Any] = {k: v for k, v in row.items() if k is not None}
-        if not any((str(v) if v is not None else "").strip() for v in cleaned.values()):
-            continue  # skip fully-empty lines
-        row_number += 1
-        rows.append((row_number, cleaned))
-    # ``fieldnames`` is populated once the reader has consumed the header line.
-    header = list(reader.fieldnames) if reader.fieldnames is not None else None
-    return header, rows
-
-
-def _validate_structure(header: list[str] | None, row_count: int) -> str | None:
-    """Return an actionable batch-level error if the CSV structure is unusable.
+def _validate_structure(
+    parsed: parsing.ParsedFile,
+    sheet_selection: list[int] | None,
+    column_mapping: dict[str, str] | None,
+) -> str | None:
+    """Return an actionable batch-level error if the file structure is unusable.
 
     A file is rejected outright — never treated as a completed import — when it
-    has no header, is missing any required column (which also catches a headerless
-    file, whose first data line becomes a pseudo-header lacking the required
-    names), or has a valid header but no data rows (DAT-002 contract).
+    has no usable header, when any selected sheet is missing a required column
+    after mapping (which also catches a headerless file, whose first data line
+    becomes a pseudo-header lacking the required names), or when the selection
+    contains no data rows (DAT-002 contract). The check runs per selected sheet
+    so a multi-sheet workbook fails with the exact sheet named.
     """
 
-    if not header:
-        return "CSV has no header row: the file is empty or unreadable."
+    sheets = [s for s in parsed.sheets if sheet_selection is None or s.index in sheet_selection]
+    if not sheets:
+        return "No sheet was selected for import."
 
-    present = {h.strip().lower() for h in header if h and h != _UNMAPPED_KEY}
-    missing = [c for c in validation.REQUIRED_COLUMNS if c not in present]
-    if missing:
-        found = ", ".join(sorted(present)) or "none"
-        return (
-            "CSV header is missing required column(s): "
-            f"{', '.join(missing)}. Columns found: {found}. "
-            "The first row must be a header naming first_name, last_name, "
-            "company_name, and company_domain."
-        )
+    label = "CSV" if parsed.source_format == "csv" else "Workbook"
 
-    if row_count == 0:
-        return "CSV has a valid header but contains no data rows."
+    for sheet in sheets:
+        where = f"sheet {sheet.name!r}" if sheet.name is not None else "the file"
+        if not sheet.header:
+            return f"{label}: {where} has no header row (it is empty or unreadable)."
+
+        if column_mapping is not None:
+            mapped_targets = {
+                target for column, target in column_mapping.items() if column in set(sheet.header)
+            }
+            missing = [c for c in validation.REQUIRED_COLUMNS if c not in mapped_targets]
+            if missing:
+                return (
+                    f"{label}: {where} is missing a mapped source column for required "
+                    f"field(s): {', '.join(missing)}. Adjust the column mapping or the file."
+                )
+        else:
+            present = {h.strip().lower() for h in sheet.header if h and h != _UNMAPPED_KEY}
+            missing = [c for c in validation.REQUIRED_COLUMNS if c not in present]
+            if missing:
+                found = ", ".join(sorted(present)) or "none"
+                return (
+                    f"{label}: {where} is missing required column(s): "
+                    f"{', '.join(missing)}. Columns found: {found}. "
+                    "The header must name first_name, last_name, "
+                    "company_name, and company_domain."
+                )
+
+    if not parsed.rows_for_sheets(sheet_selection):
+        return f"{label}: the selected sheet(s) have a valid header but no data rows."
 
     return None
 
 
-def _content_hash(content: bytes) -> str:
-    return hashlib.sha256(content).hexdigest()
+def _content_hash(
+    content: bytes,
+    sheet_selection: list[int] | None = None,
+    column_mapping: dict[str, str] | None = None,
+) -> str:
+    """Hash identifying one *interpretation* of one uploaded file.
+
+    The same bytes confirmed with a different sheet selection or column mapping
+    are a different import; the same bytes with the same interpretation are the
+    same import (idempotent confirm). A plain CSV import with no explicit
+    selection or mapping hashes to the raw content hash, unchanged from DAT-002.
+    """
+
+    digest = hashlib.sha256(content)
+    if sheet_selection is not None or column_mapping is not None:
+        extras = {
+            "sheets": sorted(sheet_selection) if sheet_selection is not None else None,
+            "mapping": dict(sorted(column_mapping.items())) if column_mapping else None,
+        }
+        digest.update(json.dumps(extras, sort_keys=True).encode("utf-8"))
+    return digest.hexdigest()
 
 
 def _summary_from_batch(batch: ImportBatch, *, reused: bool = False) -> ImportSummary:
@@ -150,6 +180,7 @@ def _summary_from_batch(batch: ImportBatch, *, reused: bool = False) -> ImportSu
         rejected_rows=batch.rejected_rows,
         duplicate_rows=batch.duplicate_rows,
         suppressed_rows=batch.suppressed_rows,
+        ambiguous_rows=batch.ambiguous_rows,
         contacts_created=batch.contacts_created,
         reused_existing_batch=reused,
         error_detail=batch.error_detail,
@@ -307,6 +338,7 @@ class _Counts:
         self.rejected = 0
         self.duplicate = 0
         self.suppressed = 0
+        self.ambiguous = 0
         self.contacts_created = 0
 
 
@@ -419,16 +451,38 @@ def _process_row(
         counts.duplicate += 1
         return
 
-    # 4. Accepted: a new contact. Ambiguous natural-key matches also land here
-    #    (kept separate rather than merged), with an explanatory note.
+    # 4. Ambiguous identity: several existing contacts share this row's natural
+    #    key, so a merge target cannot be chosen safely. The row is neither
+    #    merged nor silently accepted — it becomes an explicit, reviewable
+    #    outcome with no contact and no campaign membership (DAT-004).
+    if match.ambiguous:
+        result = ImportRowValidation(
+            import_row_id=import_row.id,
+            outcome=ImportRowOutcome.AMBIGUOUS,
+            normalized_data=dict(normalized),
+            note=match.note,
+        )
+        session.add(result)
+        record_audit_event(
+            session,
+            actor=actor,
+            action="import.row_ambiguous",
+            entity_type="import_row",
+            entity_id=str(import_row.id),
+            new_state=ImportRowOutcome.AMBIGUOUS.value,
+            reason=match.note or "ambiguous identity match",
+            context={"batch_id": str(batch.id), "row_number": import_row.row_number},
+        )
+        counts.ambiguous += 1
+        return
+
+    # 5. Accepted: a new contact.
     contact = _create_contact(session, normalized, natural_key)
-    accepted_note = match.note if match.ambiguous else None
     result = ImportRowValidation(
         import_row_id=import_row.id,
         outcome=ImportRowOutcome.ACCEPTED,
         contact_id=contact.id,
         normalized_data=dict(normalized),
-        note=accepted_note,
     )
     session.add(result)
     _create_membership(
@@ -466,10 +520,19 @@ def run_import(
     content: bytes,
     filename: str | None = None,
     provenance: BatchProvenance | None = None,
+    sheet_selection: list[int] | None = None,
+    column_mapping: dict[str, str] | None = None,
+    mime_type: str | None = None,
     actor: str = "importer",
     _fault: Callable[[], None] | None = None,
 ) -> ImportSummary:
-    """Run a staged CSV import into *campaign_id* and return a summary.
+    """Run a staged CSV/XLSX import into *campaign_id* and return a summary.
+
+    ``sheet_selection`` restricts an XLSX import to deliberately chosen sheets
+    (all sheets when None; ignored for CSV, which is a single sheet).
+    ``column_mapping`` is the operator-confirmed ``source column -> system
+    field`` mapping; when None the file's own header must already match the
+    contact-input contract (the DAT-002 behaviour, unchanged).
 
     ``_fault`` is a test-only hook invoked after all rows are processed but before
     the processing transaction commits, used to prove rollback and recovery.
@@ -483,9 +546,10 @@ def run_import(
         raise CampaignNotFound(f"campaign {campaign_id} does not exist")
 
     provenance = provenance or BatchProvenance()
-    content_hash = _content_hash(content)
+    content_hash = _content_hash(content, sheet_selection, column_mapping)
 
-    # Idempotent retry: an identical completed batch for this campaign is reused.
+    # Idempotent retry: an identical completed batch (same content and same
+    # interpretation) for this campaign is reused, never duplicated.
     existing = session.scalars(
         select(ImportBatch).where(
             ImportBatch.campaign_id == campaign_id,
@@ -496,7 +560,22 @@ def run_import(
     if existing is not None:
         return _summary_from_batch(existing, reused=True)
 
-    header, parsed = _parse_rows(content)
+    # --- Parse (format-specific work ends here) ------------------------------
+    parse_error: str | None = None
+    try:
+        if filename is not None:
+            parsed = parsing.parse_file(content, filename)
+        else:
+            parsed = parsing.parse_csv(content)  # DAT-002 default: raw CSV body
+    except (parsing.UnsupportedFormatError, parsing.MalformedFileError) as exc:
+        # A file that cannot be parsed still produces a visible FAILED batch —
+        # never a silent drop and never a completed import.
+        parsed = parsing.ParsedFile(source_format="csv", parser_version="unparsed")
+        if filename is not None and filename.lower().endswith(".xlsx"):
+            parsed.source_format = "xlsx"
+        parse_error = str(exc)
+
+    selected_rows = parsed.rows_for_sheets(sheet_selection)
 
     # --- Stage 1: durable raw capture ---------------------------------------
     batch = ImportBatch(
@@ -504,11 +583,18 @@ def run_import(
         filename=filename,
         content_hash=content_hash,
         status=ImportBatchStatus.VALIDATING,
+        source_format=(
+            ImportSourceFormat.XLSX if parsed.source_format == "xlsx" else ImportSourceFormat.CSV
+        ),
+        mime_type=mime_type,
+        parser_version=parsed.parser_version,
+        mapper_version=mapping_service.MAPPER_VERSION if column_mapping is not None else None,
+        column_mapping=dict(column_mapping) if column_mapping is not None else None,
         source_name=provenance.source_name,
         source_reference=provenance.source_reference,
         exported_by=provenance.exported_by,
         exported_at=provenance.exported_at,
-        total_rows=len(parsed),
+        total_rows=len(selected_rows),
     )
     session.add(batch)
     session.flush()
@@ -519,20 +605,31 @@ def run_import(
         entity_type="import_batch",
         entity_id=str(batch.id),
         new_state=ImportBatchStatus.VALIDATING.value,
-        reason="authorized CSV import received",
-        context={"campaign_id": str(campaign_id), "total_rows": len(parsed), "filename": filename},
+        reason="authorized import received",
+        context={
+            "campaign_id": str(campaign_id),
+            "total_rows": len(selected_rows),
+            "filename": filename,
+            "source_format": parsed.source_format,
+        },
     )
     import_rows: list[tuple[ImportRow, dict[str, str]]] = []
-    for row_number, raw in parsed:
-        import_row = ImportRow(batch_id=batch.id, row_number=row_number, raw_data=raw)
+    for parsed_row in selected_rows:
+        import_row = ImportRow(
+            batch_id=batch.id,
+            row_number=parsed_row.row_number,
+            sheet_index=parsed_row.sheet_index,
+            sheet_name=parsed_row.sheet_name,
+            raw_data=parsed_row.raw,
+        )
         session.add(import_row)
-        import_rows.append((import_row, raw))
+        import_rows.append((import_row, parsed_row.raw))
     session.flush()
     batch_id = batch.id
     session.commit()  # raw capture is now durable even if processing fails
 
-    # --- Structure gate: an unusable CSV never becomes a completed import -----
-    structure_error = _validate_structure(header, len(parsed))
+    # --- Structure gate: an unusable file never becomes a completed import ----
+    structure_error = parse_error or _validate_structure(parsed, sheet_selection, column_mapping)
     if structure_error is not None:
         batch.status = ImportBatchStatus.FAILED
         batch.error_detail = structure_error
@@ -553,7 +650,12 @@ def run_import(
     counts = _Counts()
     try:
         for import_row, raw in import_rows:
-            validated = validation.validate_row(import_row.row_number, raw)
+            source = (
+                mapping_service.apply_mapping(raw, column_mapping)
+                if column_mapping is not None
+                else raw
+            )
+            validated = validation.validate_row(import_row.row_number, source)
             _process_row(
                 session,
                 campaign=campaign,
@@ -572,6 +674,7 @@ def run_import(
         batch.rejected_rows = counts.rejected
         batch.duplicate_rows = counts.duplicate
         batch.suppressed_rows = counts.suppressed
+        batch.ambiguous_rows = counts.ambiguous
         batch.contacts_created = counts.contacts_created
         batch.completed_at = datetime.now(UTC)
         record_audit_event(
@@ -588,6 +691,7 @@ def run_import(
                 "rejected": counts.rejected,
                 "duplicate": counts.duplicate,
                 "suppressed": counts.suppressed,
+                "ambiguous": counts.ambiguous,
                 "contacts_created": counts.contacts_created,
             },
         )

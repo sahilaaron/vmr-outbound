@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% from "_macros.html" import batch_badge, outcome_badge, pager %}
+{% block content %}
+<div class="page-head">
+  <div class="crumbs"><a href="/imports">Imports</a><span>/</span>{{ batch.filename or batch.id }}</div>
+  <div class="head-row">
+    <div>
+      <h1>{{ batch.filename or "(unnamed upload)" }} {{ batch_badge(batch) }}</h1>
+      <div class="sub">Imported into <a href="/campaigns/{{ campaign.id }}">{{ campaign.name }}</a> · {{ batch.source_format.value | upper }} · {{ batch.created_at | dt }}</div>
+    </div>
+  </div>
+</div>
+
+{% if batch.status.value == "failed" %}
+<div class="notice err" role="alert">
+  <div><strong>This import failed and wrote no contacts.</strong><br>{{ batch.error_detail }}
+    <div class="small" style="margin-top:6px">The raw rows (if any were readable) are preserved below for audit.
+    Fix the file at the source and start a new import — re-uploading the corrected file is safe.</div></div>
+</div>
+{% elif batch.ambiguous_rows %}
+<div class="notice warn">
+  <div><strong>{{ batch.ambiguous_rows }} row{{ "s" if batch.ambiguous_rows != 1 }} need{{ "" if batch.ambiguous_rows != 1 else "s" }} review.</strong>
+  Their identity match was uncertain, so they were kept out of the campaign rather than merged. Use the <em>ambiguous</em> filter below to review each one.</div>
+</div>
+{% endif %}
+
+<div class="stat-grid">
+  <div class="stat"><div class="label">Total rows</div><div class="value">{{ batch.total_rows }}</div></div>
+  <div class="stat"><div class="label">Accepted</div><div class="value ok">{{ batch.accepted_rows }}</div></div>
+  <div class="stat"><div class="label">Rejected</div><div class="value err">{{ batch.rejected_rows }}</div></div>
+  <div class="stat"><div class="label">Duplicates</div><div class="value info">{{ batch.duplicate_rows }}</div></div>
+  <div class="stat"><div class="label">Ambiguous</div><div class="value warn">{{ batch.ambiguous_rows }}</div></div>
+  <div class="stat"><div class="label">Suppressed</div><div class="value muted">{{ batch.suppressed_rows }}</div></div>
+  <div class="stat"><div class="label">Contacts created</div><div class="value">{{ batch.contacts_created }}</div></div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Batch record</h2></div>
+  <div class="card-body">
+    <dl class="kv">
+      <dt>Batch id</dt><dd class="mono">{{ batch.id }}</dd>
+      <dt>Source format</dt><dd>{{ batch.source_format.value | upper }}{% if batch.parser_version %} · parser <code>{{ batch.parser_version }}</code>{% endif %}</dd>
+      {% if batch.column_mapping %}
+      <dt>Column mapping</dt>
+      <dd class="small">{% for src, dst in batch.column_mapping.items() %}<code>{{ src }}</code> → <code>{{ dst }}</code>{{ " · " if not loop.last }}{% endfor %}
+        {% if batch.mapper_version %}<span class="muted-text"> (mapper {{ batch.mapper_version }})</span>{% endif %}</dd>
+      {% endif %}
+      <dt>Content hash</dt><dd class="mono small">{{ batch.content_hash }}</dd>
+      {% if batch.source_name or batch.source_reference or batch.exported_by or batch.exported_at %}
+      <dt>Provenance</dt>
+      <dd class="small">{{ batch.source_name or "" }}{% if batch.source_reference %} · {{ batch.source_reference }}{% endif %}
+        {% if batch.exported_by %} · exported by {{ batch.exported_by }}{% endif %}
+        {% if batch.exported_at %} · {{ batch.exported_at }}{% endif %}</dd>
+      {% endif %}
+      <dt>Started</dt><dd>{{ batch.created_at | dt }}</dd>
+      {% if batch.completed_at %}<dt>Completed</dt><dd>{{ batch.completed_at | dt }}</dd>{% endif %}
+    </dl>
+  </div>
+</div>
+
+<div class="table-wrap">
+  <div class="toolbar">
+    <strong class="small">Rows</strong>
+    <div class="filter-chips" role="group" aria-label="Filter rows by outcome">
+      <a class="chip {{ 'on' if not outcome_filter }}" href="/imports/{{ batch.id }}">All <span class="count">{{ batch.total_rows }}</span></a>
+      {% for value, count in [("accepted", batch.accepted_rows), ("rejected", batch.rejected_rows), ("duplicate", batch.duplicate_rows), ("ambiguous", batch.ambiguous_rows), ("suppressed", batch.suppressed_rows)] %}
+      <a class="chip {{ 'on' if outcome_filter == value }}" href="/imports/{{ batch.id }}?outcome={{ value }}">{{ value }} <span class="count">{{ count }}</span></a>
+      {% endfor %}
+    </div>
+  </div>
+  {% if rows %}
+  <table>
+    <thead><tr>{% if batch.source_format.value == "xlsx" %}<th>Sheet</th>{% endif %}<th class="num">Row</th><th>Outcome</th><th>Contact</th><th>Errors / note</th><th></th></tr></thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        {% if batch.source_format.value == "xlsx" %}<td>{{ r.row.sheet_name }}</td>{% endif %}
+        <td class="num">{{ r.row.row_number }}</td>
+        <td>{% if r.validation %}{{ outcome_badge(r.validation.outcome) }}{% else %}<span class="badge muted">unprocessed</span>{% endif %}</td>
+        <td>
+          {% if r.validation and r.validation.contact_id %}
+          <a href="/contacts/{{ r.validation.contact_id }}">{{ (r.validation.normalized_data or {}).get("first_name", "") }} {{ (r.validation.normalized_data or {}).get("last_name", "") }}</a>
+          {% elif r.validation and r.validation.normalized_data %}
+          {{ r.validation.normalized_data.get("first_name") or "" }} {{ r.validation.normalized_data.get("last_name") or "" }}
+          {% else %}<span class="muted-text">—</span>{% endif %}
+        </td>
+        <td class="wrap small">
+          {% for e in r.errors %}<div>{{ e.message }}</div>{% endfor %}
+          {% if r.validation and r.validation.note %}<div class="muted-text">{{ r.validation.note }}</div>{% endif %}
+        </td>
+        <td><a class="btn small secondary" href="/imports/{{ batch.id }}/rows/{{ r.row.id }}">Inspect</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {{ pager(page, pages, total_rows, "/imports/" ~ batch.id ~ ("?outcome=" ~ outcome_filter if outcome_filter else ""), "rows") }}
+  {% else %}
+  <div class="empty">
+    <div class="empty-title">No rows{{ " with this outcome" if outcome_filter }}</div>
+    <p>{% if outcome_filter %}Try a different outcome filter.{% else %}This batch captured no readable rows.{% endif %}</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div class="crumbs"><a href="/imports">Imports</a><span>/</span>New import</div>
+  <h1>New import</h1>
+  <div class="sub">Step 1 of 4 — upload the file. Supported formats: <strong>.csv</strong> and <strong>.xlsx</strong>. Legacy .xls and Google Sheets links are not supported.</div>
+</div>
+
+<div class="steps" aria-label="Import steps">
+  <span class="step current"><span class="n">1</span>Upload</span>
+  <span class="step"><span class="n">2</span>Sheets &amp; mapping</span>
+  <span class="step"><span class="n">3</span>Preview &amp; validate</span>
+  <span class="step"><span class="n">4</span>Confirm</span>
+</div>
+
+{% if not campaigns %}
+<div class="notice warn">
+  <div><strong>No campaign to import into.</strong> Create a campaign first — an import always targets exactly one campaign.
+  <div style="margin-top:10px"><a class="btn small" href="/campaigns">Create a campaign</a></div></div>
+</div>
+{% else %}
+<div class="card">
+  <div class="card-body">
+    <form method="post" action="/imports/upload" enctype="multipart/form-data">
+      <div class="form-grid">
+        <div class="field">
+          <label for="i-campaign">Campaign</label>
+          <select id="i-campaign" name="campaign_id" required>
+            {% for row in campaigns %}
+            <option value="{{ row.campaign.id }}" {{ "selected" if preselect_campaign == row.campaign.id | string }}>{{ row.campaign.name }} ({{ row.campaign.status.value }})</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="field">
+          <label for="i-file">Contact file (.csv or .xlsx)</label>
+          <input type="file" id="i-file" name="file" accept=".csv,.xlsx" required>
+          <div class="help">Maximum size: {{ (max_upload_bytes / 1048576) | round(1) | int if max_upload_bytes % 1048576 == 0 else (max_upload_bytes / 1048576) | round(1) }} MB.
+            The original file is kept verbatim for audit; nothing is imported until you confirm at step 4.</div>
+        </div>
+      </div>
+      <hr class="sep">
+      <strong class="small">Provenance <span class="muted-text">(recommended — where this list came from)</span></strong>
+      <div class="form-grid" style="margin-top:10px">
+        <div class="field">
+          <label for="p-source">Source name <span class="opt">(optional)</span></label>
+          <input type="text" id="p-source" name="source_name" maxlength="512" placeholder="e.g. Sales Navigator export">
+        </div>
+        <div class="field">
+          <label for="p-ref">Source reference <span class="opt">(optional)</span></label>
+          <input type="text" id="p-ref" name="source_reference" maxlength="1024" placeholder="e.g. saved-search URL or list name">
+        </div>
+        <div class="field">
+          <label for="p-by">Exported by <span class="opt">(optional)</span></label>
+          <input type="text" id="p-by" name="exported_by" maxlength="255" placeholder="who produced the file">
+        </div>
+        <div class="field">
+          <label for="p-at">Export date <span class="opt">(optional)</span></label>
+          <input type="date" id="p-at" name="exported_at">
+        </div>
+      </div>
+      <button class="btn" type="submit">Upload and inspect</button>
+      <a class="btn secondary" href="/imports">Cancel</a>
+    </form>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

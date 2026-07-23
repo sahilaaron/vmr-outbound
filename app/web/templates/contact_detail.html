@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% from "_macros.html" import state_badge, outcome_badge, campaign_badge %}
+{% block content %}
+<div class="page-head">
+  <div class="crumbs"><a href="/contacts">Contacts</a><span>/</span>{{ detail.contact.first_name }} {{ detail.contact.last_name }}</div>
+  <h1>{{ detail.contact.first_name }} {{ detail.contact.last_name }}
+    {% if detail.active_suppression %}<span class="badge muted">suppressed</span>{% endif %}</h1>
+  <div class="sub">{{ detail.contact.title or "" }}{{ " · " if detail.contact.title }}{{ detail.contact.company_name }}</div>
+</div>
+
+{% if detail.active_suppression %}
+<div class="notice warn" role="alert">
+  <div><strong>This identity is on the suppression ledger and can never enter outreach.</strong><br>
+    {{ detail.active_suppression.suppression_type.value }} <code>{{ detail.active_suppression.value }}</code>
+    · reason: {{ detail.active_suppression.reason.value.replace("_", " ") }}
+    {% if detail.active_suppression.source %} · source: {{ detail.active_suppression.source }}{% endif %}
+    · added {{ detail.active_suppression.created_at | dt }}
+    {% if detail.active_suppression.notes %}<div class="small" style="margin-top:4px">{{ detail.active_suppression.notes }}</div>{% endif %}
+  </div>
+</div>
+{% endif %}
+
+{% if detail.ambiguity_notes %}
+<div class="notice info">
+  <div><strong>Match notes from imports</strong>
+    <ul style="margin:6px 0 0; padding-left:18px">{% for note in detail.ambiguity_notes %}<li>{{ note }}</li>{% endfor %}</ul>
+  </div>
+</div>
+{% endif %}
+
+<div class="grid-2">
+  <div class="card">
+    <div class="card-head"><h2>Normalized record</h2><span class="hint">Canonical values used by the pipeline</span></div>
+    <div class="card-body">
+      <dl class="kv">
+        <dt>First name</dt><dd>{{ detail.contact.first_name }}</dd>
+        <dt>Last name</dt><dd>{{ detail.contact.last_name }}</dd>
+        <dt>Email</dt><dd class="mono">{{ detail.contact.email or "—" }}</dd>
+        <dt>Company</dt><dd>{{ detail.contact.company_name }}</dd>
+        <dt>Domain</dt><dd class="mono">{{ detail.contact.company_domain }}</dd>
+        <dt>Title</dt><dd>{{ detail.contact.title or "—" }}</dd>
+        <dt>LinkedIn</dt><dd class="mono small">{{ detail.contact.linkedin_url or "—" }}</dd>
+        <dt>Country</dt><dd>{{ detail.contact.country or "—" }}</dd>
+        <dt>Industry</dt><dd>{{ detail.contact.industry or "—" }}</dd>
+        <dt>Company size</dt><dd>{{ detail.contact.company_size or "—" }}</dd>
+        <dt>Natural key</dt><dd class="mono small">{{ detail.contact.natural_key }}</dd>
+        <dt>Created</dt><dd>{{ detail.contact.created_at | dt }}</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div>
+    <div class="table-wrap">
+      <div class="toolbar"><strong class="small">Campaign membership</strong></div>
+      {% if detail.memberships %}
+      <table>
+        <thead><tr><th>Campaign</th><th>State</th><th>Added</th></tr></thead>
+        <tbody>
+          {% for membership, campaign in detail.memberships %}
+          <tr>
+            <td><a href="/campaigns/{{ campaign.id }}">{{ campaign.name }}</a> {{ campaign_badge(campaign.status) }}</td>
+            <td>{{ state_badge(membership.state) }}</td>
+            <td class="small muted-text">{{ membership.created_at | dt }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="empty"><div class="empty-title">Not in any campaign</div><p>This contact exists but has no campaign membership.</p></div>
+      {% endif %}
+    </div>
+
+    <div class="table-wrap" style="margin-top:20px">
+      <div class="toolbar"><strong class="small">Provenance (source observations)</strong>
+        <span class="hint">Append-only; older imports can never overwrite newer evidence</span></div>
+      {% if detail.provenance %}
+      <table>
+        <thead><tr><th>Observed</th><th>Source</th><th>Exported</th></tr></thead>
+        <tbody>
+          {% for p in detail.provenance %}
+          <tr>
+            <td class="small">{{ p.observed_at | dt }}</td>
+            <td class="small">{{ p.source_name or "—" }}{% if p.source_reference %}<div class="muted-text">{{ p.source_reference }}</div>{% endif %}</td>
+            <td class="small">{{ p.exported_by or "—" }}{% if p.exported_at %} · {{ p.exported_at }}{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="empty"><div class="empty-title">No provenance records</div><p>No import observation has been recorded for this contact.</p></div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Import history</strong><span class="hint">Every import row that created or matched this contact</span></div>
+  {% if detail.observations %}
+  <table>
+    <thead><tr><th>File</th><th>Sheet / row</th><th>Outcome</th><th>When</th><th></th></tr></thead>
+    <tbody>
+      {% for validation, row, batch in detail.observations %}
+      <tr>
+        <td><a href="/imports/{{ batch.id }}">{{ batch.filename or "(unnamed upload)" }}</a></td>
+        <td class="small">{% if row.sheet_name %}{{ row.sheet_name }} · {% endif %}row {{ row.row_number }}</td>
+        <td>{{ outcome_badge(validation.outcome) }}</td>
+        <td class="small muted-text">{{ row.created_at | dt }}</td>
+        <td><a class="btn small secondary" href="/imports/{{ batch.id }}/rows/{{ row.id }}">Original values</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty"><div class="empty-title">No import history</div><p>No import row is linked to this contact.</p></div>
+  {% endif %}
+</div>
+{% endblock %}

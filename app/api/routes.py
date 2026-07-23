@@ -55,6 +55,7 @@ class ImportSummaryOut(BaseModel):
     rejected_rows: int
     duplicate_rows: int
     suppressed_rows: int
+    ambiguous_rows: int
     contacts_created: int
     reused_existing_batch: bool
     error_detail: str | None = None
@@ -140,6 +141,7 @@ async def import_contacts_route(
         rejected_rows=summary.rejected_rows,
         duplicate_rows=summary.duplicate_rows,
         suppressed_rows=summary.suppressed_rows,
+        ambiguous_rows=summary.ambiguous_rows,
         contacts_created=summary.contacts_created,
         reused_existing_batch=summary.reused_existing_batch,
         error_detail=summary.error_detail,

@@ -73,6 +73,17 @@ uvicorn app.main:app --reload --port 8000
 # Readiness: curl http://127.0.0.1:8000/ready   (checks the database)
 ```
 
+To run the local operator workbench (server-rendered UI at `/`), enable its
+switches (they default off):
+
+```bash
+FEATURES__WORKBENCH=true FEATURES__CSV_IMPORT=true \
+  uvicorn app.main:app --reload --port 8000
+```
+
+See `docs/WORKBENCH.md` for the pages, the CSV/XLSX preview -> confirm import
+flow, and the local-only reset safety rules.
+
 ## 6. Run the checks (same as CI)
 
 ```bash

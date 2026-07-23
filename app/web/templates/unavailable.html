@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="unavailable">
+  <svg class="lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+  <h2>{{ section_title }} isn't available yet</h2>
+  <p>
+    This area belongs to a later phase of the launch plan and is deliberately
+    disabled until that phase is built and verified. Nothing here is simulated
+    — when it appears, it will be real.
+  </p>
+  <a class="btn secondary" href="/">Back to Overview</a>
+</div>
+{% endblock %}
