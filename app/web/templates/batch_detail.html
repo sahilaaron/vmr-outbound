@@ -11,6 +11,27 @@
   </div>
 </div>
 
+{% if is_pending %}
+<div class="notice warn" role="status">
+  <div>
+    <strong>Staged — not yet imported.</strong> No contacts, memberships, scores, or suppressions
+    have been created from this batch. Review the capture below, then map, preview, and explicitly
+    confirm to run it through the normal import checks.
+    <div style="margin-top:10px">
+      <a class="btn btn-primary" href="/imports/{{ batch.id }}/map">Map &amp; import this batch</a>
+    </div>
+    {% if is_salesnav %}
+    <div class="small" style="margin-top:6px">Sales Navigator captures do not include a company
+      domain; rows without one are truthfully rejected at preview until a domain source is supplied.</div>
+    {% endif %}
+    {% if not csv_import_enabled %}
+    <div class="small" style="margin-top:6px">Importing is currently disabled
+      (set <code>FEATURES__CSV_IMPORT=true</code> to confirm a batch into contacts).</div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
 {% if batch.status.value == "failed" %}
 <div class="notice err" role="alert">
   <div><strong>This import failed and wrote no contacts.</strong><br>{{ batch.error_detail }}
@@ -57,6 +78,35 @@
     </dl>
   </div>
 </div>
+
+{% if is_salesnav and sn_meta %}
+<div class="card">
+  <div class="card-head"><h2>Sales Navigator capture</h2></div>
+  <div class="card-body">
+    <dl class="kv">
+      <dt>Source</dt><dd>Sales Navigator capture{% if sn_meta.get("source") %} · <code>{{ sn_meta.get("source") }}</code>{% endif %}</dd>
+      <dt>Contract</dt><dd class="small"><code>{{ sn_meta.get("schema_version") }}</code></dd>
+      {% if sn_meta.get("captured_at") %}<dt>Captured at</dt><dd>{{ sn_meta.get("captured_at") }}</dd>{% endif %}
+      <dt>Records staged</dt><dd>{{ sn_meta.get("record_count") if sn_meta.get("record_count") is not none else batch.total_rows }}</dd>
+      {% if sn_meta.get("current_search_url") %}
+      <dt>Search provenance</dt>
+      <dd class="small wrap"><a href="{{ sn_meta.get('current_search_url') }}" target="_blank" rel="noreferrer">{{ sn_meta.get("current_search_url") }}</a></dd>
+      {% endif %}
+      {% set em = sn_meta.get("extraction_metadata") or {} %}
+      {% if em.get("extension_version") %}<dt>Extension</dt><dd class="small">v{{ em.get("extension_version") }}{% if em.get("pages_captured") is not none %} · {{ em.get("pages_captured") }} page(s){% endif %}</dd>{% endif %}
+      {% if em.get("capture_statuses") %}<dt>Capture statuses</dt><dd class="small">{% for s in em.get("capture_statuses") %}<span class="badge muted">{{ s }}</span> {% endfor %}</dd>{% endif %}
+      {% set ws = em.get("warnings_summary") or {} %}
+      {% if ws %}
+      <dt>Extraction warnings</dt>
+      <dd class="small">{% for code, n in ws.items() %}<span class="badge badge-warn">{{ code }}: {{ n }}</span> {% endfor %}</dd>
+      {% endif %}
+    </dl>
+    <p class="small muted-text" style="margin-top:8px">Per-record captured values, warnings, and
+      uncertain-identity flags are preserved verbatim on each row — open any row to inspect them.
+      Records the operator excluded in the extension were never submitted and are not present here.</p>
+  </div>
+</div>
+{% endif %}
 
 <div class="table-wrap">
   <div class="toolbar">

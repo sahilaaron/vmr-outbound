@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div class="crumbs"><a href="/imports">Imports</a><span>/</span><a href="/imports/{{ batch.id }}">staged batch</a><span>/</span>map</div>
+  <h1>Map captured fields</h1>
+  <div class="sub">Tell the system which captured fields correspond to which contact fields, then preview and confirm. Required fields: <code>first_name</code>, <code>last_name</code>, <code>company_name</code>, <code>company_domain</code>.</div>
+</div>
+
+<div class="steps" aria-label="Import steps">
+  <span class="step done"><span class="n">1</span>Capture &amp; stage</span>
+  <span class="step current"><span class="n">2</span>Map fields</span>
+  <span class="step"><span class="n">3</span>Preview &amp; validate</span>
+  <span class="step"><span class="n">4</span>Confirm</span>
+</div>
+
+{% if mapping_problems %}
+<div class="notice err" role="alert">
+  <div><strong>The mapping is not usable yet.</strong>
+    <ul style="margin:6px 0 0; padding-left:18px">
+      {% for p in mapping_problems %}<li>{{ p.message }}</li>{% endfor %}
+    </ul>
+  </div>
+</div>
+{% endif %}
+
+{% if mapping_warnings %}
+<div class="notice warn" role="status">
+  <div><strong>Some required fields have no captured source.</strong>
+    Rows lacking them will be truthfully rejected at preview (Sales Navigator captures do not include a company domain).
+    <ul style="margin:6px 0 0; padding-left:18px">
+      {% for m in mapping_warnings %}<li>{{ m }}</li>{% endfor %}
+    </ul>
+  </div>
+</div>
+{% endif %}
+
+<div class="grid-2">
+  <form method="post" action="/imports/{{ batch.id }}/map">
+    <div class="card">
+      <div class="card-head"><h2>Field mapping</h2>
+        <span class="hint">{{ header | length }} captured fields</span></div>
+      <div class="card-body tight">
+        <table>
+          <thead><tr><th>Captured field</th><th>Maps to</th></tr></thead>
+          <tbody>
+            {% for column in header %}
+            <tr>
+              <td class="mono">{{ column }}</td>
+              <td>
+                <label class="sr-only" for="map-{{ loop.index }}">Mapping for {{ column }}</label>
+                <select id="map-{{ loop.index }}" name="map__{{ column }}">
+                  <option value="">— ignore this field —</option>
+                  {% for target in system_fields %}
+                  <option value="{{ target }}" {{ "selected" if current_mapping.get(column) == target }}>
+                    {{ target }}{{ " (required)" if target in required_fields }}
+                  </option>
+                  {% endfor %}
+                </select>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div style="margin-top:16px">
+      <button class="btn" type="submit">Validate &amp; preview</button>
+      <a class="btn secondary" href="/imports/{{ batch.id }}">Back to batch</a>
+    </div>
+  </form>
+
+  <div class="table-wrap">
+    <div class="toolbar"><strong class="small">Sample captured records (first {{ sample_rows | length }})</strong></div>
+    <table>
+      <thead><tr>{% for column in header %}<th>{{ column }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        {% for row in sample_rows %}
+        <tr>{% for column in header %}<td class="small wrap">{{ row.get(column, "") }}</td>{% endfor %}</tr>
+        {% else %}
+        <tr><td colspan="{{ header | length }}" class="muted-text small">No captured records.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
