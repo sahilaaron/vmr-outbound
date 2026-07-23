@@ -140,16 +140,53 @@ unless the goal file is updated.
 ## Project Tracking Behavior
 
 GitHub is the development command center. The project Google Sheet is the
-management view of operational readiness. Maintain the relevant phase tab
-according to `docs/PROJECT_TRACKING.md` after a meaningful verified build or a
-material change to scope, blockers, forecast, or launch readiness.
+management view of operational readiness. ChatGPT, not Claude, owns independent
+review verdicts and official Sheet updates.
 
-Keep Sheet updates concise and operational. State what is usable, what was
-verified, what remains, who owns the next action, and the current answer to
-"When can we go live?" Link GitHub issues, pull requests, commits, checks, or
-other evidence rather than pasting technical specifications into the Sheet.
+After a meaningful build, open or update the GitHub pull request and provide a
+structured handoff containing:
 
-Do not update the tracker for every commit. Do not invent dates, confidence,
-owners, completion, or metrics. If Sheet access is unavailable, state that the
-update is pending in the handoff and do not claim the phase is complete until
-the tracker has been reconciled.
+- Authorized phase and issues
+- Branch, pull request, commits, and check results
+- What became usable
+- What remains incomplete
+- Known failures, risks, and recovery behavior
+- Blockers and decisions required, with an owner where known
+- Claude's claimed phase status and go-live answer
+- A concise proposed tracker update
+
+Do not claim that Claude's own tests or handoff constitute independent
+acceptance. Do not wait for Google Sheets access, and do not update the Sheet
+directly. ChatGPT will verify the evidence, issue the formal verdict, and
+reconcile the tracker. Sahil decides material scope, risk, cost, and product
+questions. Claude performs the GitHub actions after the review gate is
+satisfied.
+
+## GitHub Ownership
+
+Claude owns the repository's routine operating work from start to finish:
+
+- Create and switch branches.
+- Commit intentional changes with clear messages.
+- Push branches and tags when authorized by the current goal.
+- Create, edit, and update pull requests.
+- Link and maintain the relevant issues.
+- Monitor checks and inspect failures.
+- Apply corrections requested by ChatGPT's review.
+- Re-run checks and update the pull request evidence.
+- Merge only after ChatGPT issues the required passing verdict and Sahil has
+  resolved any named decision or approval.
+- Close linked issues and remove merged branches when safe.
+
+Prefer code and authenticated GitHub tooling. Use Claude's browser capability
+when a GitHub action cannot be completed reliably through code or when the site
+requires visible user interaction.
+
+Do not delegate routine GitHub actions to Sahil and do not give him commands to
+copy and run. Ask him only for a material decision, explicit approval,
+authentication, or an access change that cannot be completed safely on his
+behalf. If authentication requires Sahil, pause at the login or approval step;
+after he completes it, resume and finish the GitHub action yourself.
+
+Do not produce tracker noise for every commit. Do not invent dates, confidence,
+owners, completion, or metrics.

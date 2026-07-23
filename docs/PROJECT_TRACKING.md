@@ -30,6 +30,35 @@ Use one owner for each type of information:
 Never copy full technical specifications or implementation logs into Google
 Sheets. Summarize their operational consequence and link to GitHub for evidence.
 
+## Operating Ownership
+
+The operating loop is deliberately split so the builder does not certify its
+own work:
+
+1. **Claude builds and operates GitHub.** Claude works only within the
+   authorized phase; creates the branch; commits and pushes changes; creates
+   and maintains the pull request; runs checks; applies review corrections;
+   and, after the required verdict, merges, closes linked issues, and safely
+   cleans up the branch.
+2. **ChatGPT verifies.** ChatGPT inspects the actual branch, diff, checks,
+   migrations, tests, and phase exit conditions. Claude's handoff is a claim,
+   not proof.
+3. **ChatGPT records.** After issuing a formal verdict, ChatGPT updates the
+   Roadmap and relevant phase tab when the verified evidence materially changes
+   readiness, blockers, decisions, or forecast.
+4. **Sahil decides.** Sahil resolves material product, operating, risk, cost,
+   and scope choices. Claude executes the resulting GitHub actions.
+
+Claude does not require Google Sheets access. Its handoff must contain the exact
+proposed management update, but ChatGPT owns the official entry. Sahil should
+not have to copy development status between systems manually.
+
+Sahil is not responsible for pushing, creating or updating pull requests,
+merging, closing issues, or branch cleanup. Claude should use code or
+authenticated GitHub tooling first and its browser capability where required.
+Only authentication, protected-action approval, or a material decision should
+be escalated to Sahil.
+
 ## Tracking Workbook
 
 Google Sheet:
@@ -291,15 +320,20 @@ Track these outcomes at minimum.
 
 After a meaningful build:
 
-1. Verify the build and collect GitHub evidence.
-2. Identify which operational deliverable changed.
-3. Update only the relevant phase tab.
-4. Update the phase summary if status, blockers, ETA, confidence, decisions, or
-   go-live readiness changed.
-5. Update or add the affected deliverable row.
-6. Append one update-log entry.
-7. Confirm that the current build or PR link is correct.
-8. Report the tracking update in the development handoff.
+1. Claude opens or updates the pull request and supplies its structured handoff
+   and proposed tracker payload.
+2. ChatGPT verifies the actual GitHub build and relevant phase exit condition.
+3. ChatGPT issues `PASS`, `PASS WITH CONDITIONS`, `FAIL`, or `BLOCKED`.
+4. ChatGPT identifies which operational deliverable changed.
+5. ChatGPT updates only the relevant phase tab and the Roadmap if the overall
+   launch answer changed.
+6. ChatGPT updates the phase summary when status, blockers, ETA, confidence,
+   decisions, or go-live readiness changed.
+7. ChatGPT updates or adds the affected deliverable row and appends one
+   update-log entry.
+8. ChatGPT confirms that the build or PR link and verification date are correct.
+9. Claude merges after the required review gate is satisfied and any named
+   Sahil decision or approval has been recorded.
 
 If nothing operationally changed, do not manufacture a spreadsheet update.
 
@@ -309,8 +343,10 @@ If the Google Sheet is temporarily unavailable:
 
 * Do not discard or repeat completed development work.
 * Do not claim the tracking update succeeded.
-* Include the exact pending update in the development handoff.
-* Complete the pending tracking update before beginning the next phase.
+* Preserve Claude's exact proposed tracker payload in the handoff.
+* ChatGPT records the pending official update when access returns.
+* Do not mark the phase officially complete or begin the next phase until the
+  tracker is reconciled.
 
 If GitHub evidence is unavailable, do not mark the associated deliverable
 complete.
