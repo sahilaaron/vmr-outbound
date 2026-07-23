@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<!--
+  Manual in-browser verification harness. Loads the SAME shared modules the
+  extension ships and runs extraction against every synthetic fixture in a REAL
+  browser DOM (not jsdom), rendering a pass/fail report. Serve this folder over
+  http and open test/browser-check.html.
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>SalesNav Capture — browser extraction check</title>
+    <style>
+      body { font: 13px -apple-system, "Segoe UI", Roboto, sans-serif; margin: 20px; color: #1d2226; }
+      h1 { font-size: 17px; }
+      table { border-collapse: collapse; width: 100%; margin-top: 12px; }
+      th, td { border: 1px solid #e2e6ea; padding: 6px 8px; text-align: left; vertical-align: top; }
+      th { background: #f4f5f7; }
+      .ok { color: #067647; font-weight: 600; }
+      .bad { color: #b42318; font-weight: 600; }
+      .muted { color: #5e6b74; }
+      code { background: #eef2f6; padding: 1px 4px; border-radius: 4px; }
+    </style>
+  </head>
+  <body>
+    <h1>Sales Navigator Capture — in-browser extraction check</h1>
+    <p class="muted">Runs the shipped extraction modules against synthetic fixtures in a real browser DOM.</p>
+    <div id="summary"></div>
+    <table id="report">
+      <thead>
+        <tr><th>Fixture</th><th>Expected status</th><th>Actual status</th><th>Rows</th><th>Notes</th><th>Result</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+
+    <script src="../src/common/constants.js"></script>
+    <script src="../src/common/normalize.js"></script>
+    <script src="../src/common/extraction.js"></script>
+    <script src="../src/common/dedupe.js"></script>
+    <script src="../src/common/schema.js"></script>
+    <script>
+      const { extraction, dedupe, constants } = self.SNCapture;
+      const S = constants.CAPTURE_STATUS;
+      const SUPPORTED = "https://www.linkedin.com/sales/search/people?page=2";
+      const CASES = [
+        ["results-normal.html", S.OK, SUPPORTED, "3 rows, raw fields"],
+        ["results-missing-fields.html", S.OK, SUPPORTED, "explicit nulls + warnings"],
+        ["results-alternate-selectors.html", S.OK, SUPPORTED, "fallback selectors"],
+        ["results-empty.html", S.EMPTY, SUPPORTED, "no-results state"],
+        ["results-duplicates.html", S.OK, SUPPORTED, "dupes collapse in batch"],
+        ["results-malformed-urls.html", S.OK, SUPPORTED, "bad urls flagged, not repaired"],
+        ["results-unicode.html", S.OK, SUPPORTED, "raw unicode preserved"],
+        ["results-challenge.html", S.CHALLENGE_DETECTED, SUPPORTED, "halts on challenge"],
+        ["results-normal.html", S.UNSUPPORTED_PAGE, "https://www.linkedin.com/feed/", "unsupported url"],
+        ["results-account-search.html", S.UNSUPPORTED_PAGE, "https://www.linkedin.com/sales/search/company?page=1", "account search rejected"],
+        ["results-account-search.html", S.UNSUPPORTED_PAGE, "https://www.linkedin.com/sales/company/123", "company page rejected"],
+        ["results-normal.html", S.UNSUPPORTED_PAGE, "https://www.linkedin.com/sales/home", "generic SN page rejected"],
+      ];
+
+      async function parseFixture(name, url) {
+        const html = await (await fetch("fixtures/" + name)).text();
+        const doc = new DOMParser().parseFromString(html, "text/html");
+        return extraction.extractPage(doc, { sourceSearchUrl: url, capturedAt: new Date().toISOString() });
+      }
+
+      (async () => {
+        const tbody = document.querySelector("#report tbody");
+        let pass = 0;
+        for (const [name, expected, url, note] of CASES) {
+          const r = await parseFixture(name, url);
+          const good = r.status === expected;
+          if (good) pass++;
+          const tr = document.createElement("tr");
+          const cells = [name, expected, r.status, String(r.count), note, good ? "PASS" : "FAIL"];
+          cells.forEach((c, i) => {
+            const td = document.createElement("td");
+            td.textContent = c;
+            if (i === 5) td.className = good ? "ok" : "bad";
+            tr.appendChild(td);
+          });
+          tbody.appendChild(tr);
+        }
+        // Batch dedup demonstration.
+        const dup = await parseFixture("results-duplicates.html", SUPPORTED);
+        const merged = dedupe.mergeBatch([], dup.records);
+        const sum = document.getElementById("summary");
+        sum.innerHTML =
+          `<p class="${pass === CASES.length ? "ok" : "bad"}">${pass}/${CASES.length} fixture cases passed.</p>` +
+          `<p class="muted">Batch dedup on the duplicates fixture: ${dup.records.length} captured → ` +
+          `${merged.records.length} distinct (${merged.collapsed} collapsed, ${merged.uncertain} uncertain).</p>`;
+        document.title = "browser-check " + (pass === CASES.length ? "PASS" : "FAIL");
+        window.__RESULT__ = { pass, total: CASES.length, merged: { distinct: merged.records.length, collapsed: merged.collapsed, uncertain: merged.uncertain } };
+      })();
+    </script>
+  </body>
+</html>

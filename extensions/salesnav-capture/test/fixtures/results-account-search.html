@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<!-- Synthetic Sales Navigator ACCOUNT/COMPANY search results page. This surface
+     is explicitly UNSUPPORTED: even though it has result rows, the extension must
+     reject it based on the URL and capture nothing (account/company capture is
+     out of scope for this slice). -->
+<html lang="en">
+  <head><meta charset="UTF-8" /><title>Sales Navigator — Account results</title></head>
+  <body>
+    <main>
+      <ol class="artdeco-list search-results-container">
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <a data-control-name="view_company_via_result_name" href="/sales/company/1234567">Northwind Logistics</a>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="industry">Logistics &amp; Supply Chain</span>
+            </div>
+            <div class="artdeco-entity-lockup__caption">1,001-5,000 employees</div>
+          </div>
+        </li>
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <a data-control-name="view_company_via_result_name" href="/sales/company/7654321">Cliffside Software</a>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="industry">Software Development</span>
+            </div>
+          </div>
+        </li>
+      </ol>
+    </main>
+  </body>
+</html>

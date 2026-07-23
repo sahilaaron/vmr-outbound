@@ -1,0 +1,145 @@
+:root {
+  --bg: #f4f5f7;
+  --card: #ffffff;
+  --ink: #1d2226;
+  --muted: #5e6b74;
+  --line: #e2e6ea;
+  --primary: #0a66c2;
+  --primary-ink: #ffffff;
+  --danger: #b42318;
+  --ok: #067647;
+  --warn: #b54708;
+  --warn-bg: #fef6ee;
+  --ok-bg: #ecfdf3;
+  --neutral-bg: #eef2f6;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--bg);
+  padding: 0 10px 24px;
+}
+
+.app-header { padding: 12px 2px 4px; }
+.app-header h1 { font-size: 15px; margin: 0; }
+.subtitle { margin: 2px 0 0; color: var(--muted); font-size: 11px; }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  margin-top: 10px;
+}
+summary.step-label { cursor: pointer; }
+
+.step-label {
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.row { display: flex; align-items: center; }
+.row.gap { gap: 8px; }
+.row.wrap { flex-wrap: wrap; }
+.space-between { justify-content: space-between; }
+.grow, .grow select { flex: 1; }
+.full { width: 100%; }
+
+.btn {
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  border-radius: 6px;
+  padding: 7px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.btn:hover { background: #f7f9fb; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-primary { background: var(--primary); border-color: var(--primary); color: var(--primary-ink); }
+.btn-primary:hover { background: #08528f; }
+.btn-ghost { background: transparent; }
+.btn.full { margin-top: 8px; }
+.danger { color: var(--danger); }
+
+.input, select {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 13px;
+  margin: 3px 0 8px;
+  background: #fff;
+}
+select { width: auto; }
+
+.status { border-radius: 6px; padding: 8px 10px; margin: 8px 0 4px; font-weight: 500; }
+.status-neutral { background: var(--neutral-bg); }
+.status-ok { background: var(--ok-bg); color: var(--ok); }
+.status-warn { background: var(--warn-bg); color: var(--warn); }
+.status-err { background: #fef3f2; color: var(--danger); }
+
+.muted { color: var(--muted); }
+.small { font-size: 11.5px; }
+.tiny { font-size: 10.5px; }
+
+.badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+.badge-muted { background: var(--neutral-bg); color: var(--muted); }
+.badge-warn { background: var(--warn-bg); color: var(--warn); }
+.badge-ok { background: var(--ok-bg); color: var(--ok); }
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin: 8px 0;
+}
+.summary-tile {
+  background: var(--neutral-bg);
+  border-radius: 6px;
+  padding: 6px 8px;
+  text-align: center;
+}
+.summary-tile .n { font-size: 16px; font-weight: 700; display: block; }
+.summary-tile .k { font-size: 10px; color: var(--muted); text-transform: uppercase; }
+
+.records { margin-top: 6px; max-height: 46vh; overflow-y: auto; }
+.record {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px;
+  margin-bottom: 6px;
+}
+.record.excluded { opacity: 0.5; }
+.record .name { font-weight: 600; }
+.record .meta { color: var(--muted); font-size: 11.5px; margin-top: 1px; word-break: break-word; }
+.record .links a { color: var(--primary); font-size: 11px; margin-right: 8px; word-break: break-all; }
+.record .warns { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
+.record .toprow { display: flex; justify-content: space-between; gap: 8px; }
+.checkbox { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+
+.send-target { margin-top: 10px; }
+.send-state { margin-top: 8px; }
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  background: var(--neutral-bg);
+  border-radius: 4px;
+  padding: 1px 4px;
+  word-break: break-all;
+}
+footer { text-align: center; margin-top: 14px; }

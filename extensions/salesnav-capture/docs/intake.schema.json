@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vmr.local/schemas/salesnav-capture/intake.request.json",
+  "title": "Sales Navigator capture — intake staging request",
+  "description": "Body of POST /api/intake/sales-navigator/stage. The receiver STAGES raw records only; it must not create, normalize authoritatively, verify, deduplicate against the database, or score contacts.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "client_batch_id",
+    "campaign_id",
+    "captured_at",
+    "source",
+    "current_search_url",
+    "extraction_metadata",
+    "records"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "salesnav-capture/1.0.0",
+      "description": "Contract version. Bump on any breaking change to this shape."
+    },
+    "client_batch_id": {
+      "type": "string",
+      "minLength": 8,
+      "description": "Client-minted UUID. Stable for the life of one draft batch and used as the idempotency key."
+    },
+    "campaign_id": {
+      "type": ["string", "null"],
+      "description": "Operator-selected campaign id, or null if none chosen at capture time."
+    },
+    "captured_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 timestamp the draft batch was created (client clock)."
+    },
+    "source": {
+      "type": "string",
+      "description": "Client identifier, e.g. 'chrome-extension:salesnav-capture'."
+    },
+    "current_search_url": {
+      "type": ["string", "null"],
+      "description": "The last Sales Navigator search URL the operator captured from."
+    },
+    "extraction_metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "extension_version": { "type": ["string", "null"] },
+        "pages_captured": { "type": ["integer", "null"] },
+        "record_count": { "type": ["integer", "null"] },
+        "capture_statuses": { "type": "array", "items": { "type": "string" } },
+        "warnings_summary": { "type": "object" }
+      }
+    },
+    "records": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 500,
+      "items": { "$ref": "#/$defs/record" }
+    }
+  },
+  "$defs": {
+    "record": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One captured, result-page-visible record. Every field is nullable; missing values are explicit nulls plus a warning — never guessed.",
+      "required": [
+        "firstName",
+        "lastName",
+        "rawFullName",
+        "title",
+        "companyName",
+        "location",
+        "linkedinProfileUrl",
+        "salesNavLeadUrl",
+        "companyLinkedInUrl",
+        "salesNavCompanyUrl",
+        "visibleCompanyMetadata",
+        "sourceSearchUrl",
+        "sourcePageNumber",
+        "sourcePosition",
+        "capturedAt",
+        "warnings"
+      ],
+      "properties": {
+        "firstName": { "type": ["string", "null"] },
+        "lastName": { "type": ["string", "null"] },
+        "rawFullName": { "type": ["string", "null"], "description": "Exact visible name, Unicode preserved. Not translated or ASCII-folded." },
+        "title": { "type": ["string", "null"] },
+        "companyName": { "type": ["string", "null"] },
+        "location": { "type": ["string", "null"] },
+        "linkedinProfileUrl": { "type": ["string", "null"], "description": "Public /in/ URL only if visibly present; never derived from the lead id." },
+        "salesNavLeadUrl": { "type": ["string", "null"], "description": "Canonicalized /sales/lead/ URL (search-context suffix removed)." },
+        "companyLinkedInUrl": { "type": ["string", "null"] },
+        "salesNavCompanyUrl": { "type": ["string", "null"] },
+        "visibleCompanyMetadata": {
+          "type": ["array", "null"],
+          "items": { "type": "string" },
+          "description": "Raw visible caption/metadata lines. Unparsed; NOT authoritative industry/size/domain."
+        },
+        "sourceSearchUrl": { "type": ["string", "null"] },
+        "sourcePageNumber": { "type": ["integer", "null"] },
+        "sourcePosition": { "type": ["integer", "null"], "description": "1-based position within the source page." },
+        "capturedAt": { "type": ["string", "null"], "format": "date-time" },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["code"],
+            "properties": {
+              "code": { "type": "string" },
+              "field": { "type": "string" },
+              "detail": { "type": "string" },
+              "raw": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}
