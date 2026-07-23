@@ -1,0 +1,34 @@
+# --- Secrets / environment ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# --- Local data (imports, exports, scratch) ---
+# Large historical workbooks and any local contact files must not be treated as
+# code. Historical-data import belongs to a later phase (see GOAL.md).
+/local_data/
+*.csv
+!tests/**/*.csv
+
+# --- Editor / OS ---
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
