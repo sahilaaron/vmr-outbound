@@ -830,3 +830,124 @@ def test_mark_separate_resolves_present_row_only(db_session: Session, enabled: N
         db_session, campaign_id=campaign_b.id, content=csv, filename="ambig-again.csv"
     )
     assert summary.ambiguous_rows == 1
+
+
+# --- Re-review regressions (PR #122, round 2): negative tests -----------------
+
+
+def _emailless_ambiguous(
+    session: Session, *, first: str, domain: str
+) -> tuple[uuid.UUID, list[Contact], Campaign]:
+    """Two email-less duplicates + an ambiguous email-less row matching both."""
+
+    campaign_a = create_campaign(session, name=f"Seed {first}")
+    pair = _emailless_pair(session, first=first, domain=domain)
+    session.add_all([CampaignContact(campaign_id=campaign_a.id, contact_id=c.id) for c in pair])
+    session.flush()
+    campaign_b = create_campaign(session, name=f"Ambig {first}")
+    csv = (
+        b"first_name,last_name,company_name,company_domain\n"
+        + f"{first},Doe,Co,{domain}\n".encode()
+    )
+    summary = run_import(session, campaign_id=campaign_b.id, content=csv, filename="a.csv")
+    assert summary.ambiguous_rows == 1
+    validation = session.scalars(
+        select(ImportRowValidation).where(ImportRowValidation.outcome == ImportRowOutcome.AMBIGUOUS)
+    ).first()
+    return validation.import_row_id, pair, campaign_b
+
+
+def test_row_merge_requires_reason_through_resolve_row(db_session: Session, enabled: None) -> None:
+    """Regression 1: resolve_row(action=MERGE) must also require a non-empty reason.
+
+    The guard previously lived only in merge_contacts(); a row-driven merge routed
+    through the public resolve_row() service could commit with reason=None.
+    """
+
+    row_id, pair, _campaign = _emailless_ambiguous(
+        db_session, first="Gendry", domain="forge.example"
+    )
+    survivor, loser = pair
+    for bad_reason in (None, "", "   "):
+        with pytest.raises(identity.ResolutionError, match="reason"):
+            identity.resolve_row(
+                db_session,
+                import_row_id=row_id,
+                action=IdentityResolutionType.MERGE,
+                idempotency_key=f"k-rowmerge-{bad_reason!r}",
+                actor="tester",
+                reason=bad_reason,
+                target_contact_id=survivor.id,
+                merged_contact_id=loser.id,
+            )
+    db_session.refresh(loser)
+    assert loser.merged_into_id is None  # nothing merged
+
+    # Sanity: with a reason it succeeds, confirming the guard is the only blocker.
+    identity.resolve_row(
+        db_session,
+        import_row_id=row_id,
+        action=IdentityResolutionType.MERGE,
+        idempotency_key="k-rowmerge-ok",
+        actor="tester",
+        reason="same person",
+        target_contact_id=survivor.id,
+        merged_contact_id=loser.id,
+    )
+    db_session.refresh(loser)
+    assert loser.merged_into_id == survivor.id
+
+
+def test_merge_collision_excluded_loser_does_not_suppress_survivor(
+    db_session: Session, enabled: None
+) -> None:
+    """Regression 2: an EXCLUDED loser membership must not relabel the survivor.
+
+    EXCLUDED is a campaign-specific exclusion, distinct from identity-level
+    suppression. Only SUPPRESSED carries over on a collision; an excluded loser
+    leaves the survivor's IMPORTED membership unchanged.
+    """
+
+    campaign = create_campaign(db_session, name="Excluded Collision")
+    survivor, loser = _emailless_pair(db_session, first="Hodor", domain="hold.example")
+    db_session.add_all(
+        [
+            CampaignContact(
+                campaign_id=campaign.id,
+                contact_id=survivor.id,
+                state=ContactWorkflowState.IMPORTED,
+            ),
+            CampaignContact(
+                campaign_id=campaign.id,
+                contact_id=loser.id,
+                state=ContactWorkflowState.EXCLUDED,
+            ),
+        ]
+    )
+    db_session.flush()
+
+    identity.merge_contacts(
+        db_session,
+        survivor_id=survivor.id,
+        loser_id=loser.id,
+        idempotency_key="k-excluded",
+        actor="tester",
+        reason="same person",
+    )
+
+    survivor_membership = db_session.scalars(
+        select(CampaignContact).where(
+            CampaignContact.campaign_id == campaign.id,
+            CampaignContact.contact_id == survivor.id,
+        )
+    ).first()
+    # Survivor stays IMPORTED — NOT relabelled SUPPRESSED by the excluded loser.
+    assert survivor_membership is not None
+    assert survivor_membership.state == ContactWorkflowState.IMPORTED
+    # The loser's redundant membership is coalesced away.
+    assert (
+        db_session.scalar(
+            select(func.count(CampaignContact.id)).where(CampaignContact.contact_id == loser.id)
+        )
+        == 0
+    )

@@ -760,6 +760,14 @@ def resolve_row(
             reused=True,
         )
 
+    # A merge is destructive and irreversible: require a non-empty operator reason
+    # on the row-resolution path too, not only in merge_contacts(). Without this a
+    # row-driven merge invoked through this public service could commit with no
+    # human justification. Enforced after the idempotency short-circuits above so a
+    # retried confirm of an already-applied merge still succeeds.
+    if action is IdentityResolutionType.MERGE and (reason is None or not reason.strip()):
+        raise ResolutionError("A reason is required to merge contacts.")
+
     review = get_row_review(session, import_row_id)
     if review is None:
         raise ResolutionError("That ambiguous row does not exist or was already resolved.")
@@ -936,13 +944,19 @@ def _apply_merge(
         survivor_membership = _campaign_membership(session, membership.campaign_id, survivor.id)
         if survivor_membership is not None:
             # Collision: the survivor is already a member of this campaign. The
-            # loser's membership is coalesced into the survivor's — a suppressed
+            # loser's membership is coalesced into the survivor's — a *suppressed*
             # loser state is carried over first (suppression is never lost), then
             # the loser's now-redundant membership is removed so ONLY the survivor
             # holds an active membership. Leaving it would keep the tombstoned
             # identity visible and operable in campaign counts and member reads.
+            #
+            # Only SUPPRESSED carries over — NOT EXCLUDED. EXCLUDED is a
+            # campaign-specific exclusion, distinct from identity-level
+            # suppression; relabelling the survivor SUPPRESSED because the loser
+            # was merely excluded would erase that distinction. (Ledger-based
+            # suppression is handled separately, up front, from both identities.)
             if (
-                membership.state in _TERMINAL_STATES
+                membership.state == ContactWorkflowState.SUPPRESSED
                 and survivor_membership.state not in _TERMINAL_STATES
             ):
                 transition_contact_state(
