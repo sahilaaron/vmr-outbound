@@ -131,6 +131,39 @@ def get_batch(session: Session, batch_id: uuid.UUID) -> tuple[ImportBatch, Campa
     return row[0], row[1]
 
 
+def list_import_rows(session: Session, batch_id: uuid.UUID) -> list[ImportRow]:
+    """All immutable raw rows of a batch, ordered as captured.
+
+    Used by the pending-batch (Sales Navigator capture) map/preview/confirm flow,
+    which reprocesses these already-captured rows in place.
+    """
+
+    return list(
+        session.scalars(
+            select(ImportRow)
+            .where(ImportRow.batch_id == batch_id)
+            .order_by(ImportRow.sheet_index, ImportRow.row_number)
+        ).all()
+    )
+
+
+def raw_row_header(rows: list[ImportRow]) -> list[str]:
+    """Order-preserving union of the raw-data keys across *rows*.
+
+    A capture batch has no spreadsheet header; its "columns" are the fields
+    present on the captured records. Every field is offered to the mapper.
+    """
+
+    header: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        for key in row.raw_data:
+            if key not in seen:
+                seen.add(key)
+                header.append(key)
+    return header
+
+
 @dataclass(frozen=True)
 class BatchRow:
     """One import row joined with its outcome and errors for display."""

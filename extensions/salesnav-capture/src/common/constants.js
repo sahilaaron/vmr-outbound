@@ -30,10 +30,13 @@
     CAPTURE_SCROLL_BUDGET_MS: 8000,
   };
 
-  // Chrome storage keys (non-secret preferences + recoverable draft batch).
+  // Chrome storage keys (non-secret preferences + recoverable draft batch +
+  // the last successful staging result, kept so the operator can reopen the
+  // staged batch after the popup closes without recapturing).
   const STORAGE = {
     DRAFT_BATCH: "sn_draft_batch",
     PREFERENCES: "sn_preferences",
+    LAST_RESULT: "sn_last_stage_result",
   };
 
   // Default, overridable operator preferences. No secrets, no remote URLs.

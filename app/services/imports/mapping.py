@@ -64,6 +64,12 @@ _ALIASES: dict[str, str] = {
     "exported by": "exported_by",
     "export date": "exported_at",
     "exported at": "exported_at",
+    # Sales Navigator capture field names (camelCase collapses to one token in
+    # _canon), so an operator opening a captured batch gets a sensible suggested
+    # mapping. company_domain is intentionally absent from captures — Sales
+    # Navigator does not expose it — so it stays unmapped for the operator.
+    "companyname": "company_name",
+    "linkedinprofileurl": "linkedin_url",
 }
 
 
