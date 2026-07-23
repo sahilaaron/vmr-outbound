@@ -60,5 +60,11 @@ jobs:
       - name: Alembic has no un-generated changes
         run: alembic check
 
+      - name: Alembic migration round trip (downgrade then re-upgrade)
+        # Proves every migration is reversible before migration volume grows.
+        run: |
+          alembic downgrade base
+          alembic upgrade head
+
       - name: Pytest
         run: python -m pytest

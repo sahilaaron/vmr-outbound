@@ -28,3 +28,8 @@ class Base(DeclarativeBase):
 # autogenerate and ``create_all`` in tests. Keep this list current as models
 # are added in later phases.
 from app.models import audit_event as _audit_event  # noqa: E402,F401
+from app.models import campaign as _campaign  # noqa: E402,F401
+from app.models import contact as _contact  # noqa: E402,F401
+from app.models import import_batch as _import_batch  # noqa: E402,F401
+from app.models import provenance as _provenance  # noqa: E402,F401
+from app.models import suppression as _suppression  # noqa: E402,F401
