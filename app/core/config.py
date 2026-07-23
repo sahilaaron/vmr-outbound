@@ -69,6 +69,34 @@ class Settings(BaseSettings):
         description="Maximum spreadsheet upload size in bytes (default 25 MB).",
     )
 
+    # --- Sales Navigator capture intake (DAT-009, local only) ----------------
+    # Loopback base URL used to build the operator_workbench_url returned to the
+    # capture extension. Must be a loopback origin; the extension only renders
+    # the returned deep link when it is loopback.
+    operator_base_url: str = Field(
+        default="http://127.0.0.1:8000",
+        description="Loopback base URL for operator workbench deep links (local only).",
+    )
+    # Maximum accepted Sales Navigator intake body size. The contract caps a
+    # batch at 500 records of result-page-visible fields; 2 MB is a generous
+    # ceiling. Oversized bodies are rejected with 413 before JSON parsing.
+    salesnav_intake_max_bytes: int = Field(
+        default=2 * 1024 * 1024,
+        gt=0,
+        description="Maximum Sales Navigator intake body size in bytes (default 2 MB).",
+    )
+    # Wall-clock budget for a single intake staging operation. Enforced
+    # cooperatively inside the synchronous service (deadline checks) and, as a
+    # database-side backstop, via PostgreSQL ``statement_timeout``. On breach the
+    # staging transaction is rolled back and the request returns 504. Staging a
+    # <=500-record batch takes milliseconds locally, so 15 s is conservative
+    # without being flaky on a cold database.
+    salesnav_intake_timeout_seconds: float = Field(
+        default=15.0,
+        gt=0,
+        description="Wall-clock budget in seconds for one intake staging operation (default 15).",
+    )
+
     features: FeatureFlags = Field(default_factory=FeatureFlags)
 
     @property

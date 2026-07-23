@@ -22,6 +22,10 @@ class FeatureFlags(BaseModel):
 
     # Phase 1 — Data & Campaigns
     csv_import: bool = False
+    # Local Sales Navigator capture intake endpoint (DAT-009). Off by default so
+    # the endpoint stays fully disabled (returns 404) until deliberately enabled
+    # for local operation, matching the FND-007 default-off pattern.
+    salesnav_intake: bool = False
     # Operator workbench UI (server-rendered pages). Off by default so the UI
     # stays disabled until it is deliberately enabled for local operation.
     workbench: bool = False

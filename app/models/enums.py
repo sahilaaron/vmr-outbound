@@ -145,14 +145,23 @@ ALLOWED_CONTACT_TRANSITIONS: dict[ContactWorkflowState, frozenset[ContactWorkflo
 
 
 class ImportSourceFormat(enum.StrEnum):
-    """Authorized spreadsheet import formats for the first launch: CSV and XLSX.
+    """Authorized import sources for the first launch.
 
-    Legacy formats (.xls), Google Sheets direct import, and other spreadsheet
-    formats are intentionally out of scope until explicitly approved.
+    ``CSV`` and ``XLSX`` are the authorized spreadsheet upload formats. Legacy
+    formats (.xls), Google Sheets direct import, and other spreadsheet formats
+    are intentionally out of scope until explicitly approved.
+
+    ``SALES_NAVIGATOR`` marks a batch staged from the operator-driven Sales
+    Navigator capture extension (DAT-009). It is not a spreadsheet: the records
+    arrive as an authorized JSON batch over the local intake endpoint and are
+    captured verbatim as raw rows. It never bypasses the staged-import gates — a
+    Sales Navigator batch is staged for operator preview exactly like an uploaded
+    file, and creates no contacts until the operator confirms it downstream.
     """
 
     CSV = "csv"
     XLSX = "xlsx"
+    SALES_NAVIGATOR = "sales_navigator"
 
 
 class EmailVerificationResult(enum.StrEnum):
