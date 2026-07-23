@@ -54,6 +54,13 @@ class ImportBatch(Base):
         # Content hash lets the importer recognise an identical re-upload and
         # keep retries idempotent.
         Index("ix_import_batches_content_hash", "content_hash"),
+        # A Sales Navigator capture batch is idempotent on the extension-minted
+        # ``client_batch_id`` (DAT-009). The unique constraint makes a duplicate
+        # submission fail at the database, not only in application code. Spreadsheet
+        # batches leave this NULL, and PostgreSQL treats NULLs as distinct, so the
+        # constraint never affects CSV/XLSX imports.
+        UniqueConstraint("client_batch_id", name="uq_import_batches_client_batch_id"),
+        Index("ix_import_batches_client_batch_id", "client_batch_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -86,6 +93,18 @@ class ImportBatch(Base):
     # The operator-confirmed column mapping (source column -> system field) that
     # was applied to this batch, so a batch's interpretation is reproducible.
     column_mapping: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+    # --- Sales Navigator capture provenance (DAT-009) ------------------------
+    # The extension-minted idempotency key for a Sales Navigator capture batch.
+    # NULL for spreadsheet imports. A re-submission with the same key returns the
+    # existing staged batch instead of creating a second one.
+    client_batch_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Verbatim batch-level provenance from the capture extension (schema version,
+    # source, capture timestamp, search URL, and the raw extraction_metadata
+    # object). Stored as received so no extension provenance is lost. Never holds
+    # LinkedIn credentials, cookies, or secrets — the contract forbids them and
+    # the endpoint only persists the fields defined by the intake schema.
+    source_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
     # --- Batch-level provenance (contact-input contract) ---------------------
     source_name: Mapped[str | None] = mapped_column(String(512), nullable=True)

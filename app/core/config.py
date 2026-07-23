@@ -69,6 +69,23 @@ class Settings(BaseSettings):
         description="Maximum spreadsheet upload size in bytes (default 25 MB).",
     )
 
+    # --- Sales Navigator capture intake (DAT-009, local only) ----------------
+    # Loopback base URL used to build the operator_workbench_url returned to the
+    # capture extension. Must be a loopback origin; the extension only renders
+    # the returned deep link when it is loopback.
+    operator_base_url: str = Field(
+        default="http://127.0.0.1:8000",
+        description="Loopback base URL for operator workbench deep links (local only).",
+    )
+    # Maximum accepted Sales Navigator intake body size. The contract caps a
+    # batch at 500 records of result-page-visible fields; 2 MB is a generous
+    # ceiling. Oversized bodies are rejected with 413 before JSON parsing.
+    salesnav_intake_max_bytes: int = Field(
+        default=2 * 1024 * 1024,
+        gt=0,
+        description="Maximum Sales Navigator intake body size in bytes (default 2 MB).",
+    )
+
     features: FeatureFlags = Field(default_factory=FeatureFlags)
 
     @property

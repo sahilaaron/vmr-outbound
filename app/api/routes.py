@@ -7,10 +7,13 @@ rules"). Both import behaviours are gated by the ``csv_import`` feature switch.
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import date
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -24,8 +27,140 @@ from app.services.imports.importer import (
     FeatureDisabledError,
     run_import,
 )
+from app.services.imports.salesnav_intake import (
+    InvalidJsonError,
+    PayloadTooLargeError,
+    SalesNavIntakeError,
+    UnauthorizedError,
+    stage_salesnav_batch,
+)
 
 router = APIRouter()
+
+# --- Sales Navigator capture intake (DAT-009) --------------------------------
+
+SALESNAV_INTAKE_PATH = "/api/intake/sales-navigator/stage"
+
+# Loopback hosts the capture extension is allowed to talk to. The endpoint is
+# local-only; a request from any non-loopback web origin is refused.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+_CORS_ALLOW_METHODS = "POST, GET, OPTIONS"
+_CORS_ALLOW_HEADERS = "Content-Type, Idempotency-Key, X-Client-Batch-Id"
+
+
+def _origin_allowed(origin: str | None) -> bool:
+    """Allow no-origin (curl/service-worker), the extension, and loopback only."""
+
+    if origin is None:
+        return True
+    parsed = urlsplit(origin)
+    if parsed.scheme == "chrome-extension":
+        return True
+    if parsed.scheme in {"http", "https"} and parsed.hostname in _LOOPBACK_HOSTS:
+        return True
+    return False
+
+
+def _cors_headers(origin: str | None) -> dict[str, str]:
+    """CORS headers reflecting an allowed origin (empty when there is none)."""
+
+    if origin is None:
+        return {}
+    return {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Methods": _CORS_ALLOW_METHODS,
+        "Access-Control-Allow-Headers": _CORS_ALLOW_HEADERS,
+        "Vary": "Origin",
+    }
+
+
+def _intake_error_response(exc: SalesNavIntakeError, origin: str | None) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.http_status, content=exc.to_body(), headers=_cors_headers(origin)
+    )
+
+
+@router.options(SALESNAV_INTAKE_PATH, include_in_schema=False)
+async def salesnav_stage_preflight(request: Request) -> Response:
+    """CORS preflight for the capture extension. Reflects an allowed origin only."""
+
+    origin = request.headers.get("origin")
+    if not _origin_allowed(origin):
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={"error": "unauthorized", "status": 403},
+        )
+    return Response(status_code=status.HTTP_204_NO_CONTENT, headers=_cors_headers(origin))
+
+
+@router.post(SALESNAV_INTAKE_PATH)
+async def salesnav_stage_route(request: Request, db: Session = Depends(get_db)) -> Response:
+    """Stage one authorized Sales Navigator capture batch (DAT-009).
+
+    Thin adapter: enforces the endpoint's local/private-access, origin, size, and
+    JSON boundaries, then delegates all staging logic to the service. A success
+    creates only the staged import batch and its immutable raw rows — never a
+    contact, company, membership, score, or outreach action.
+    """
+
+    settings = get_settings()
+    origin = request.headers.get("origin")
+
+    # 1. Feature gate: the endpoint does not exist until deliberately enabled.
+    if not settings.features.salesnav_intake:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"error": "not_found", "status": 404},
+        )
+
+    # 2. Local-only guard: the endpoint has no authentication and must never
+    #    serve a non-local environment (same rule as the operator workbench).
+    if settings.app_env.lower() != "local":
+        return _intake_error_response(
+            UnauthorizedError("the Sales Navigator intake endpoint is available only locally"),
+            origin,
+        )
+
+    # 3. Origin guard: only the extension or a loopback origin may post here.
+    if not _origin_allowed(origin):
+        return _intake_error_response(
+            UnauthorizedError(f"origin {origin!r} is not allowed"), origin
+        )
+
+    # 4. Payload-size guard: reject an oversized body before reading/parsing it.
+    limit = settings.salesnav_intake_max_bytes
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > limit:
+        return _intake_error_response(
+            PayloadTooLargeError(f"request body exceeds the {limit}-byte intake limit"), origin
+        )
+    body = await request.body()
+    if len(body) > limit:
+        return _intake_error_response(
+            PayloadTooLargeError(f"request body exceeds the {limit}-byte intake limit"), origin
+        )
+
+    # 5. JSON parse: a malformed body is a deterministic 400.
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return _intake_error_response(InvalidJsonError("request body was not valid JSON"), origin)
+    if not isinstance(payload, dict):
+        return _intake_error_response(
+            InvalidJsonError("request body must be a JSON object"), origin
+        )
+
+    # 6. Stage. All contract validation and persistence live in the service.
+    try:
+        result = stage_salesnav_batch(
+            db, payload=payload, operator_base_url=settings.operator_base_url
+        )
+    except SalesNavIntakeError as exc:
+        return _intake_error_response(exc, origin)
+
+    return JSONResponse(
+        status_code=result.http_status, content=result.to_body(), headers=_cors_headers(origin)
+    )
 
 
 class CampaignCreate(BaseModel):
