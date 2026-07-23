@@ -31,8 +31,9 @@
   {% if target_contact_id %}<input type="hidden" name="target_contact_id" value="{{ target_contact_id }}">{% endif %}
   {% if merged_contact_id %}<input type="hidden" name="merged_contact_id" value="{{ merged_contact_id }}">{% endif %}
   <label class="field">
-    <span>Reason (recorded in the audit trail)</span>
-    <input type="text" name="reason" placeholder="Why this decision?" maxlength="500">
+    <span>Reason{% if preview.destructive %} (required){% else %} (recorded in the audit trail){% endif %}</span>
+    <input type="text" name="reason" placeholder="Why this decision?" maxlength="500"
+      {% if preview.destructive %}required aria-required="true"{% endif %}>
   </label>
   <div class="action-row">
     <button class="btn {{ 'warn' if preview.destructive else '' }}" type="submit">

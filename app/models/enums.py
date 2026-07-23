@@ -75,7 +75,10 @@ class IdentityResolutionType(enum.StrEnum):
     * ``MARK_SEPARATE`` — the row is a new, distinct person deliberately recorded
       as separate from the shown candidates (a confirmed non-match). A new
       contact is created and the candidates it was distinguished from are
-      recorded, so the same ambiguity does not re-surface.
+      recorded on the resolution. This resolves the *present row only*: the
+      distinction is intentionally not used to auto-suppress future matching, so
+      a later import sharing the same natural key can still be flagged ambiguous
+      for a fresh, explicit decision (conservative by design).
     * ``MERGE`` — two *existing* contacts are confirmed duplicates and merged
       into a single survivor under a deterministic transfer policy.
     """

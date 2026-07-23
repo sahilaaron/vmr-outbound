@@ -486,8 +486,10 @@ def _preview_create(
     if action is IdentityResolutionType.MARK_SEPARATE and review.candidates:
         preview.summary.append(
             "Record that this person is intentionally separate from the "
-            f"{len(review.candidates)} similar existing contact(s), so the ambiguity "
-            "will not re-surface."
+            f"{len(review.candidates)} similar existing contact(s). This resolves the "
+            "current row only; because the record stays conservative and never "
+            "auto-suppresses a future match, a later import of the same name may be "
+            "flagged for review again."
         )
     preview.summary.append(f"Add the new contact to “{review.campaign.name}”.")
     preview.summary.append("Append this import row as the contact's first provenance observation.")
@@ -524,6 +526,24 @@ def _preview_merge(
         raise ResolutionError(
             "The chosen survivor has itself been merged away; pick an active survivor."
         )
+
+    # Safety: a row-driven merge may only combine contacts that are genuine
+    # candidates *for that ambiguous row*. Without this, a tampered/forged POST
+    # could merge two arbitrary contacts that merely exist and are active. The
+    # candidate set is recomputed from the row here (never trusted from the
+    # request), so only the exact-signal matches the operator was shown qualify.
+    if import_row_id is not None:
+        review = get_row_review(session, import_row_id)
+        if review is None:
+            raise ResolutionError(
+                "That ambiguous row does not exist or was already resolved; merge refused."
+            )
+        candidate_ids = {c.contact.id for c in review.candidates}
+        if survivor.id not in candidate_ids or loser.id not in candidate_ids:
+            raise ResolutionError(
+                "Both contacts must be candidate matches for this ambiguous row. "
+                "Only the row's own candidates can be merged from here."
+            )
 
     # Safety: conflicting distinct emails are never merged — they stay reviewable.
     if survivor.email and loser.email and survivor.email != loser.email:
@@ -895,16 +915,32 @@ def _apply_merge(
         "loser": _snapshot_contact(loser),
     }
 
+    # Capture ledger suppression for BOTH identities BEFORE any mutation. If only
+    # the loser is suppressed (by an email or domain the survivor does not share),
+    # transferring its records must still leave the survivor suppressed — otherwise
+    # the survivor's other memberships would silently stay eligible. Email
+    # inheritance below can also change what the survivor matches, so the decision
+    # is fixed here, up front, from the pre-merge state.
+    suppressed = (
+        _active_suppression_for_contact(session, survivor) is not None
+        or _active_suppression_for_contact(session, loser) is not None
+    )
+
     # Deterministic transfer: memberships, provenance, observations, then email.
     transferred = 0
     skipped = 0
+    coalesced_campaigns: list[str] = []
     for membership in session.scalars(
         select(CampaignContact).where(CampaignContact.contact_id == loser.id)
     ).all():
         survivor_membership = _campaign_membership(session, membership.campaign_id, survivor.id)
         if survivor_membership is not None:
-            # Survivor already a member — never create a duplicate. Preserve a
-            # suppressed state from the loser so suppression is not lost.
+            # Collision: the survivor is already a member of this campaign. The
+            # loser's membership is coalesced into the survivor's — a suppressed
+            # loser state is carried over first (suppression is never lost), then
+            # the loser's now-redundant membership is removed so ONLY the survivor
+            # holds an active membership. Leaving it would keep the tombstoned
+            # identity visible and operable in campaign counts and member reads.
             if (
                 membership.state in _TERMINAL_STATES
                 and survivor_membership.state not in _TERMINAL_STATES
@@ -916,6 +952,9 @@ def _apply_merge(
                     actor=actor,
                     reason="suppression preserved from merged duplicate",
                 )
+            session.delete(membership)
+            session.flush()
+            coalesced_campaigns.append(str(membership.campaign_id))
             skipped += 1
         else:
             membership.contact_id = survivor.id
@@ -952,7 +991,8 @@ def _apply_merge(
     loser.merged_into_id = survivor.id
     session.flush()
 
-    suppressed = _active_suppression_for_contact(session, survivor) is not None
+    # Enforce the suppression decision captured before mutation (from either
+    # identity) across every one of the survivor's memberships.
     if suppressed:
         _propagate_suppression(
             session,
@@ -966,6 +1006,7 @@ def _apply_merge(
         "loser_id": str(loser.id),
         "memberships_transferred": transferred,
         "memberships_skipped": skipped,
+        "coalesced_campaigns": coalesced_campaigns,
         "provenance_transferred": provenance_moved,
         "observations_transferred": observations_moved,
         "email_inherited": email_inherited,
@@ -1041,6 +1082,13 @@ def merge_contacts(
                 preview=ConsequencePreview(action=IdentityResolutionType.MERGE, ok=True),
                 reused=True,
             )
+
+    # A merge is destructive and irreversible from the workbench: a non-empty
+    # operator reason is mandatory (it is the human justification in the audit
+    # trail). This is enforced only after the idempotency short-circuits above, so
+    # a retried confirm of an already-applied merge still succeeds.
+    if reason is None or not reason.strip():
+        raise ResolutionError("A reason is required to merge contacts.")
 
     preview = _preview_merge(
         session, survivor_id=survivor_id, loser_id=loser_id, import_row_id=import_row_id

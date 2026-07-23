@@ -30,7 +30,7 @@ from app.models.identity_resolution import IdentityResolution
 from app.models.import_batch import ImportRow, ImportRowValidation
 from app.models.provenance import ProvenanceRecord
 from app.services import identity
-from app.services.campaigns import create_campaign
+from app.services.campaigns import campaign_members, create_campaign, get_campaign_overview
 from app.services.imports.importer import run_import
 from app.services.suppressions import add_suppression
 from sqlalchemy import func, select
@@ -311,6 +311,7 @@ def test_merge_inherits_email_when_survivor_has_none(scenario, db_session: Sessi
         loser_id=loser.id,
         idempotency_key="k-inherit",
         actor="tester",
+        reason="same person",
     )
     db_session.refresh(survivor)
     db_session.refresh(loser)
@@ -331,6 +332,7 @@ def test_merge_with_conflicting_emails_is_refused(scenario, db_session: Session)
             loser_id=candidates[1].id,
             idempotency_key="k-conflict",
             actor="tester",
+            reason="same person",
         )
     # Both remain active and separate.
     db_session.refresh(candidates[1])
@@ -484,6 +486,7 @@ def test_merge_into_suppressed_survivor_stays_suppressed(scenario, db_session: S
         loser_id=loser.id,
         idempotency_key="k-ms",
         actor="tester",
+        reason="same person",
     )
     for membership in db_session.scalars(
         select(CampaignContact).where(CampaignContact.contact_id == survivor.id)
@@ -632,3 +635,198 @@ def test_resolve_non_ambiguous_row_raises(db_session: Session, enabled: None) ->
             idempotency_key="k",
             actor="t",
         )
+
+
+# --- Review-verdict corrections (PR #122): negative tests ---------------------
+
+
+def _emailless_pair(session: Session, *, first: str, domain: str) -> list[Contact]:
+    """Two email-less contacts sharing a natural key under one domain."""
+
+    pair = [
+        Contact(
+            first_name=first,
+            last_name="Doe",
+            company_name="Co",
+            company_domain=domain,
+            natural_key=f"{first.casefold()}|doe|{domain}",
+        )
+        for _ in range(2)
+    ]
+    session.add_all(pair)
+    session.flush()
+    return pair
+
+
+def test_row_merge_rejects_non_candidate_contacts(scenario, db_session: Session) -> None:
+    """Finding 1: a row-driven merge may only combine that row's own candidates.
+
+    A forged POST naming two arbitrary (existing, active, non-conflicting)
+    contacts must be refused — the candidate set is recomputed from the row.
+    """
+
+    _campaign, candidates, row_id = scenario
+    # A stranger who is NOT a candidate of the ambiguous row.
+    stranger = Contact(
+        first_name="Petyr",
+        last_name="Baelish",
+        company_name="Mockingbird",
+        company_domain="mockingbird.example",
+        natural_key="petyr|baelish|mockingbird.example",
+    )
+    db_session.add(stranger)
+    db_session.flush()
+
+    with pytest.raises(identity.ResolutionError, match="candidate"):
+        identity.merge_contacts(
+            db_session,
+            survivor_id=candidates[0].id,
+            loser_id=stranger.id,
+            idempotency_key="k-forge",
+            actor="attacker",
+            reason="forged",
+            import_row_id=row_id,
+        )
+    db_session.refresh(stranger)
+    assert stranger.merged_into_id is None  # untouched
+
+
+def test_merge_preserves_suppression_from_loser_only(db_session: Session, enabled: None) -> None:
+    """Finding 2: a ledger hit on the LOSER alone still suppresses the survivor.
+
+    The survivor's domain is clean; the loser's domain is suppressed. After the
+    merge the survivor's memberships must all be SUPPRESSED — otherwise a
+    suppressed identity would silently stay eligible.
+    """
+
+    campaign = create_campaign(db_session, name="Loser Suppression")
+    survivor = Contact(
+        first_name="Olenna",
+        last_name="Tyrell",
+        company_name="Highgarden",
+        company_domain="highgarden.example",
+        natural_key="olenna|tyrell|highgarden.example",
+    )
+    loser = Contact(
+        first_name="Olenna",
+        last_name="Tyrell",
+        company_name="Old Co",
+        company_domain="oldco.example",
+        natural_key="olenna|tyrell|oldco.example",
+    )
+    db_session.add_all([survivor, loser])
+    db_session.flush()
+    db_session.add(CampaignContact(campaign_id=campaign.id, contact_id=survivor.id))
+    db_session.flush()
+    # Only the loser's domain is suppressed.
+    add_suppression(
+        db_session,
+        suppression_type=SuppressionType.DOMAIN,
+        value="oldco.example",
+        reason=SuppressionReason.OPT_OUT,
+    )
+
+    identity.merge_contacts(
+        db_session,
+        survivor_id=survivor.id,
+        loser_id=loser.id,
+        idempotency_key="k-loser-supp",
+        actor="tester",
+        reason="same person",
+    )
+    memberships = db_session.scalars(
+        select(CampaignContact).where(CampaignContact.contact_id == survivor.id)
+    ).all()
+    assert memberships and all(m.state == ContactWorkflowState.SUPPRESSED for m in memberships)
+
+
+def test_merge_collision_coalesces_membership_off_loser(db_session: Session, enabled: None) -> None:
+    """Finding 3: a colliding membership must not stay active on the tombstone.
+
+    Both contacts are members of the same campaign. After the merge only the
+    survivor may hold an active membership; the campaign count and member reads
+    must not include the merged-away identity.
+    """
+
+    campaign = create_campaign(db_session, name="Collision Campaign")
+    survivor, loser = _emailless_pair(db_session, first="Davos", domain="seaworth.example")
+    db_session.add_all(
+        [
+            CampaignContact(campaign_id=campaign.id, contact_id=survivor.id),
+            CampaignContact(campaign_id=campaign.id, contact_id=loser.id),
+        ]
+    )
+    db_session.flush()
+    assert get_campaign_overview(db_session, campaign.id).contact_count == 2
+
+    result = identity.merge_contacts(
+        db_session,
+        survivor_id=survivor.id,
+        loser_id=loser.id,
+        idempotency_key="k-coalesce",
+        actor="tester",
+        reason="same person",
+    )
+
+    # Only the survivor remains a member; the loser has no active membership.
+    members, total = campaign_members(db_session, campaign.id)
+    assert total == 1
+    assert [c.id for _m, c in members] == [survivor.id]
+    assert (
+        db_session.scalar(
+            select(func.count(CampaignContact.id)).where(CampaignContact.contact_id == loser.id)
+        )
+        == 0
+    )
+    assert get_campaign_overview(db_session, campaign.id).contact_count == 1
+    assert result.resolution.resulting_state["coalesced_campaigns"] == [str(campaign.id)]
+
+
+def test_merge_requires_non_empty_reason(scenario, db_session: Session) -> None:
+    """Finding 4: a destructive merge is refused without an operator reason."""
+
+    _campaign, _candidates, campaign_row = scenario
+    survivor, loser = _emailless_pair(db_session, first="Missandei", domain="naath.example")
+    for bad_reason in (None, "", "   "):
+        with pytest.raises(identity.ResolutionError, match="reason"):
+            identity.merge_contacts(
+                db_session,
+                survivor_id=survivor.id,
+                loser_id=loser.id,
+                idempotency_key=f"k-noreason-{bad_reason!r}",
+                actor="tester",
+                reason=bad_reason,
+            )
+    db_session.refresh(loser)
+    assert loser.merged_into_id is None  # nothing merged
+
+
+def test_mark_separate_resolves_present_row_only(db_session: Session, enabled: None) -> None:
+    """Clarification: MARK_SEPARATE resolves the current row only.
+
+    It never auto-suppresses future matching, so a later import sharing the same
+    natural key is flagged ambiguous again for a fresh, explicit decision.
+    """
+
+    campaign_a = create_campaign(db_session, name="Sep A")
+    _seed_two_candidates(db_session, campaign_a)
+    campaign_b = create_campaign(db_session, name="Sep B")
+    row_id = _make_ambiguous_row(db_session, campaign_b)
+
+    identity.resolve_row(
+        db_session,
+        import_row_id=row_id,
+        action=IdentityResolutionType.MARK_SEPARATE,
+        idempotency_key="k-sep-scope",
+        actor="tester",
+        reason="distinct person",
+    )
+    # A later import of the same name (now three same-key contacts) is ambiguous again.
+    csv = (
+        b"first_name,last_name,company_name,company_domain\n"
+        b"Jon,Snow,Winterfell,winterfell.example\n"
+    )
+    summary = run_import(
+        db_session, campaign_id=campaign_b.id, content=csv, filename="ambig-again.csv"
+    )
+    assert summary.ambiguous_rows == 1

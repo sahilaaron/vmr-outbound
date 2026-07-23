@@ -267,3 +267,61 @@ def test_resolve_unknown_action_redirects_with_error(
     )
     assert resp.status_code == 303
     assert "err=" in resp.headers["location"]
+
+
+# --- Review-verdict corrections (PR #122): HTTP negative tests ----------------
+
+
+def test_http_merge_rejects_non_candidate(
+    client: TestClient, ambiguous: tuple[uuid.UUID, list[Contact], Campaign], db_session: Session
+) -> None:
+    """Finding 1: a forged merge POST naming a non-candidate contact is refused."""
+
+    row_id, candidates, _campaign = ambiguous
+    stranger = Contact(
+        first_name="Varys",
+        last_name="Spider",
+        company_name="Kings Landing",
+        company_domain="kingslanding.example",
+        natural_key="varys|spider|kingslanding.example",
+    )
+    db_session.add(stranger)
+    db_session.flush()
+
+    resp = client.post(
+        f"/review/rows/{row_id}/resolve",
+        data={
+            "action": "merge",
+            "target_contact_id": str(candidates[0].id),
+            "merged_contact_id": str(stranger.id),
+            "reason": "forged",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert "err=" in resp.headers["location"]
+    db_session.refresh(stranger)
+    assert stranger.merged_into_id is None
+
+
+def test_http_merge_requires_reason(
+    client: TestClient, ambiguous: tuple[uuid.UUID, list[Contact], Campaign], db_session: Session
+) -> None:
+    """Finding 4: a merge POST with an empty reason is rejected at the route."""
+
+    row_id, candidates, _campaign = ambiguous
+    survivor, loser = candidates
+    resp = client.post(
+        f"/review/rows/{row_id}/resolve",
+        data={
+            "action": "merge",
+            "target_contact_id": str(survivor.id),
+            "merged_contact_id": str(loser.id),
+            "reason": "   ",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert "err=" in resp.headers["location"]
+    db_session.refresh(loser)
+    assert loser.merged_into_id is None  # nothing merged
