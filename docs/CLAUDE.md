@@ -139,12 +139,8 @@ unless the goal file is updated.
 
 ## Project Tracking Behavior
 
-GitHub is the development command center. The project Google Sheet is the
-management view of operational readiness. ChatGPT, not Claude, owns independent
-review verdicts and official Sheet updates.
-
-After a meaningful build, open or update the GitHub pull request and provide a
-structured handoff containing:
+GitHub is the development command center. After a meaningful build, open
+or update the GitHub pull request and provide a structured handoff containing:
 
 - Authorized phase and issues
 - Branch, pull request, commits, and check results
@@ -156,9 +152,7 @@ structured handoff containing:
 - A concise proposed tracker update
 
 Do not claim that Claude's own tests or handoff constitute independent
-acceptance. Do not wait for Google Sheets access, and do not update the Sheet
-directly. ChatGPT will verify the evidence, issue the formal verdict, and
-reconcile the tracker. Sahil decides material scope, risk, cost, and product
+acceptance. Sahil decides material scope, risk, cost, and product
 questions. Claude performs the GitHub actions after the review gate is
 satisfied.
 
@@ -190,3 +184,8 @@ after he completes it, resume and finish the GitHub action yourself.
 
 Do not produce tracker noise for every commit. Do not invent dates, confidence,
 owners, completion, or metrics.
+
+## GitHub Writing Rule
+
+- When creating or updating GitHub pull requests, issues, comments, commits, or release notes, write in the voice of the project maintainer.
+- Do not mention Claude, Claude Cowork, AI assistance, generation, or authorship unless Sahil explicitly asks for that wording in that specific message.
