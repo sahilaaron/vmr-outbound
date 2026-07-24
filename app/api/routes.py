@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import date
+from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -20,9 +21,15 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.core.config import get_settings
-from app.models.campaign import Campaign
+from app.models.campaign import DEFAULT_MIN_SCORE_THRESHOLD, Campaign
 from app.models.enums import CampaignStatus
-from app.services.campaigns import CampaignError, create_campaign
+from app.services.campaigns import (
+    CampaignError,
+    create_campaign,
+    get_campaign,
+    update_campaign_settings,
+)
+from app.services.campaigns import CampaignNotFound as CampaignSettingsNotFound
 from app.services.imports.importer import (
     BatchProvenance,
     CampaignNotFound,
@@ -248,7 +255,43 @@ class CampaignCreate(BaseModel):
 
     name: str = Field(min_length=1, max_length=255)
     description: str | None = None
+    offer: str | None = None
+    audience_rules: dict[str, Any] | None = None
+    exclusions: dict[str, Any] | None = None
+    min_score_threshold: int = Field(default=DEFAULT_MIN_SCORE_THRESHOLD, ge=0, le=100)
+    tone: str | None = None
+    owner: str | None = None
+    source: str | None = None
+    sending_reference: str | None = None
     status: CampaignStatus = CampaignStatus.DRAFT
+
+
+class CampaignUpdate(BaseModel):
+    """Partial update to a draft campaign's settings.
+
+    Only fields present in the JSON body are changed. Send a field with JSON
+    ``null`` to explicitly clear it (where the field is nullable); omit a
+    field entirely to leave its current value untouched. ``name``,
+    ``min_score_threshold``, and ``status`` are never nullable — sending
+    ``null`` for one of them is rejected rather than silently ignored.
+    """
+
+    name: str | None = Field(default=None, max_length=255)
+    description: str | None = None
+    offer: str | None = None
+    audience_rules: dict[str, Any] | None = None
+    exclusions: dict[str, Any] | None = None
+    min_score_threshold: int | None = Field(default=None, ge=0, le=100)
+    tone: str | None = None
+    owner: str | None = None
+    source: str | None = None
+    sending_reference: str | None = None
+    status: CampaignStatus | None = None
+
+
+# Fields that are never nullable in the domain model; explicitly sending JSON
+# ``null`` for one of these is a malformed request, not a valid "clear".
+_CAMPAIGN_UPDATE_NON_NULLABLE = ("name", "min_score_threshold", "status")
 
 
 class CampaignOut(BaseModel):
@@ -257,7 +300,32 @@ class CampaignOut(BaseModel):
     id: uuid.UUID
     name: str
     description: str | None
+    offer: str | None
+    audience_rules: dict[str, Any] | None
+    exclusions: dict[str, Any] | None
+    min_score_threshold: int
+    tone: str | None
+    owner: str | None
+    source: str | None
+    sending_reference: str | None
     status: CampaignStatus
+
+
+def _campaign_out(campaign: Campaign) -> CampaignOut:
+    return CampaignOut(
+        id=campaign.id,
+        name=campaign.name,
+        description=campaign.description,
+        offer=campaign.offer,
+        audience_rules=campaign.audience_rules,
+        exclusions=campaign.exclusions,
+        min_score_threshold=campaign.min_score_threshold,
+        tone=campaign.tone,
+        owner=campaign.owner,
+        source=campaign.source,
+        sending_reference=campaign.sending_reference,
+        status=campaign.status,
+    )
 
 
 class ImportSummaryOut(BaseModel):
@@ -278,24 +346,81 @@ class ImportSummaryOut(BaseModel):
 
 @router.post("/campaigns", response_model=CampaignOut, status_code=status.HTTP_201_CREATED)
 def create_campaign_route(payload: CampaignCreate, db: Session = Depends(get_db)) -> CampaignOut:
-    """Create a campaign shell that can receive an authorized import."""
+    """Create a draft campaign with its launch settings.
+
+    Only ``name`` is required; every other setting may be omitted and added
+    later through :func:`update_campaign_route`.
+    """
 
     try:
         campaign = create_campaign(
             db,
             name=payload.name,
             description=payload.description,
+            offer=payload.offer,
+            audience_rules=payload.audience_rules,
+            exclusions=payload.exclusions,
+            min_score_threshold=payload.min_score_threshold,
+            tone=payload.tone,
+            owner=payload.owner,
+            source=payload.source,
+            sending_reference=payload.sending_reference,
             status=payload.status,
         )
     except CampaignError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-    return CampaignOut(
-        id=campaign.id,
-        name=campaign.name,
-        description=campaign.description,
-        status=campaign.status,
-    )
+    return _campaign_out(campaign)
+
+
+@router.get(f"{CAMPAIGNS_PATH}/{{campaign_id}}", response_model=CampaignOut)
+def get_campaign_route(campaign_id: uuid.UUID, db: Session = Depends(get_db)) -> CampaignOut:
+    """Return one campaign's current settings.
+
+    Deliberately under ``/api/campaigns`` (not the bare ``/campaigns/{id}``
+    path): that path is already the operator workbench's HTML campaign-detail
+    page (``app/web/routes.py``), and a JSON route at the identical path would
+    shadow it for every GET request, not just JSON clients.
+    """
+
+    campaign = get_campaign(db, campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="campaign not found")
+    return _campaign_out(campaign)
+
+
+@router.patch("/campaigns/{campaign_id}", response_model=CampaignOut)
+def update_campaign_route(
+    campaign_id: uuid.UUID, payload: CampaignUpdate, db: Session = Depends(get_db)
+) -> CampaignOut:
+    """Apply a partial update to a draft campaign's settings.
+
+    Only fields present in the request body are changed; an omitted field is
+    left untouched, and JSON ``null`` explicitly clears a nullable field.
+    """
+
+    fields_set = payload.model_fields_set
+    for field_name in _CAMPAIGN_UPDATE_NON_NULLABLE:
+        if field_name in fields_set and getattr(payload, field_name) is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"{field_name} cannot be cleared",
+            )
+
+    update_kwargs: dict[str, Any] = {
+        field_name: getattr(payload, field_name)
+        for field_name in CampaignUpdate.model_fields
+        if field_name in fields_set
+    }
+
+    try:
+        campaign = update_campaign_settings(db, campaign_id, **update_kwargs)
+    except CampaignSettingsNotFound as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except CampaignError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    return _campaign_out(campaign)
 
 
 @router.post("/campaigns/{campaign_id}/imports", response_model=ImportSummaryOut)

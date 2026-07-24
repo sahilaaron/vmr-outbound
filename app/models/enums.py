@@ -20,6 +20,19 @@ class CampaignStatus(enum.StrEnum):
     ARCHIVED = "archived"
 
 
+# Legal campaign status transitions (CMP-001). Only the states already present
+# for the pilot are used — no new state is introduced here. A draft may be
+# activated or retired directly; an active campaign may be retired; ARCHIVED is
+# terminal. This governs the *settings* lifecycle only (draft editing and
+# retirement); it does not model sending or scheduling, which remain out of
+# scope until a later phase.
+ALLOWED_CAMPAIGN_TRANSITIONS: dict[CampaignStatus, frozenset[CampaignStatus]] = {
+    CampaignStatus.DRAFT: frozenset({CampaignStatus.ACTIVE, CampaignStatus.ARCHIVED}),
+    CampaignStatus.ACTIVE: frozenset({CampaignStatus.ARCHIVED}),
+    CampaignStatus.ARCHIVED: frozenset(),
+}
+
+
 class ImportBatchStatus(enum.StrEnum):
     """Processing state of a single CSV import batch."""
 
