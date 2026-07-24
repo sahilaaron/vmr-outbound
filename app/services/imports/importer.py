@@ -54,6 +54,7 @@ from app.services.contact_state import transition_contact_state
 from app.services.enrichment import companies as enrichment_companies
 from app.services.imports import dedup, parsing, validation
 from app.services.imports import mapping as mapping_service
+from app.services.provenance.service import record_import_observations
 from app.services.suppressions import find_active_suppression
 
 _UNMAPPED_KEY = "_unmapped"
@@ -453,6 +454,19 @@ def _process_row(
             row_id=import_row.id,
             resolved=resolved_provenance,
         )
+        # Field-level provenance: record this batch's observation of every tracked
+        # field and reconcile the winner deterministically, so a newer import can
+        # correct a stale value while older evidence can never overwrite newer
+        # (DAT-005).
+        record_import_observations(
+            session,
+            contact=contact,
+            normalized=normalized,
+            batch_id=batch.id,
+            row_id=import_row.id,
+            resolved_provenance=resolved_provenance,
+            actor=actor,
+        )
         counts.duplicate += 1
         return
 
@@ -503,6 +517,17 @@ def _process_row(
         batch_id=batch.id,
         row_id=import_row.id,
         resolved=resolved_provenance,
+    )
+    # Seed field-level provenance for the new contact: one observation per tracked
+    # field, each the sole (and therefore winning) evidence for that field (DAT-005).
+    record_import_observations(
+        session,
+        contact=contact,
+        normalized=normalized,
+        batch_id=batch.id,
+        row_id=import_row.id,
+        resolved_provenance=resolved_provenance,
+        actor=actor,
     )
     record_audit_event(
         session,

@@ -37,6 +37,7 @@ from app.models.verification_job import VerificationJob
 from app.services import usage_ledger
 from app.services.email.candidates import generate_candidates
 from app.services.imports.normalization import normalize_email
+from app.services.suppressions import evaluate_suppression
 from app.services.verification import queue as jobs
 from app.services.verification import usage
 from app.services.verification.policy import MappedOutcome, VerificationPolicy, get_policy
@@ -102,6 +103,11 @@ class EnqueueOutcome:
     reused_evidence: ExactEmailVerification | None = None
     needs_review: bool = False
     review_reason: str | None = None
+    # Set when the suppression ledger blocked this contact before any candidate
+    # was generated or any provider work was queued (DAT-006). The reason is
+    # truthful, e.g. "email opt_out" — never a silent drop.
+    blocked: bool = False
+    blocked_reason: str | None = None
 
 
 def prepare_and_enqueue_contact(
@@ -117,6 +123,13 @@ def prepare_and_enqueue_contact(
 
     settings = settings or get_settings()
     policy = policy or get_policy(settings)
+
+    # Suppression gate (DAT-006): the ledger is consulted before a contact
+    # advances toward outreach. A suppressed identity never generates a candidate
+    # or queues a paid verification call; the block is explicit and truthful.
+    decision = evaluate_suppression(session, email=contact.email, domain=contact.company_domain)
+    if decision.blocked:
+        return EnqueueOutcome(blocked=True, blocked_reason=decision.blocked_reason)
 
     gen = generate_candidates(session, contact)
     if gen.needs_review or gen.selected is None:
