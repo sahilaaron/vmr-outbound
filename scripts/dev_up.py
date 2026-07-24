@@ -28,6 +28,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from psycopg import sql
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
@@ -91,8 +92,31 @@ def wait_for_server(url: str, *, wait: bool) -> None:
             engine.dispose()
 
 
+def build_create_database_statement(name: str) -> str:
+    """Compose a ``CREATE DATABASE`` statement with a safely-quoted identifier.
+
+    The database name comes from configuration (``DATABASE_URL``), so it is
+    composed with psycopg's SQL identifier quoting rather than interpolated into
+    the statement — a name containing quotes, spaces, or SQL metacharacters can
+    never break out of the identifier.
+    """
+
+    return (
+        sql.SQL("CREATE DATABASE {} ENCODING 'UTF8' TEMPLATE template0")
+        .format(sql.Identifier(name))
+        .as_string(None)
+    )
+
+
 def ensure_database(url: str) -> None:
-    """Create the target database as UTF-8 if it does not already exist."""
+    """Create the target database as UTF-8 if it does not already exist.
+
+    Existence is decided by querying ``pg_database`` on the admin connection —
+    not by trying to connect to the target and treating any failure as "missing".
+    A missing database is therefore distinguished from authentication, network,
+    permission, SSL, or other connection failures: those surface as a clear error
+    against the admin connection and never trigger ``CREATE DATABASE``.
+    """
 
     target = make_url(url)
     name = target.database
@@ -100,29 +124,26 @@ def ensure_database(url: str) -> None:
         _say("ERROR: DATABASE_URL has no database name.")
         raise SystemExit(2)
 
-    engine = create_engine(target, isolation_level="AUTOCOMMIT")
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        _say(f'database "{name}" already exists.')
-        return
-    except OperationalError:
-        pass  # does not exist (or cannot connect) — try to create it below
-    finally:
-        engine.dispose()
-
-    admin = create_engine(make_url(url).set(database="postgres"), isolation_level="AUTOCOMMIT")
+    admin_url = make_url(url).set(database="postgres")
+    admin = create_engine(admin_url, isolation_level="AUTOCOMMIT")
     try:
         with admin.connect() as conn:
             exists = conn.execute(
                 text("SELECT 1 FROM pg_database WHERE datname = :n"), {"n": name}
             ).scalar()
             if exists:
-                _say(f'database "{name}" exists (created concurrently).')
+                _say(f'database "{name}" already exists.')
                 return
-            # Identifier is our own configured DB name, not user input at runtime.
-            conn.execute(text(f"CREATE DATABASE \"{name}\" ENCODING 'UTF8' TEMPLATE template0"))
+            conn.exec_driver_sql(build_create_database_statement(name))
             _say(f'created UTF-8 database "{name}".')
+    except OperationalError as exc:
+        # A failure here is a connection/auth/permission/SSL problem reaching the
+        # server — NOT evidence that the target database is missing. Fail clearly
+        # and never attempt to create. Credentials/URL are masked.
+        _say("ERROR: could not prepare the database (could not reach the server).")
+        _say(f"  server: {admin_url.render_as_string(hide_password=True)}")
+        _say(f"  detail: {type(exc).__name__}")
+        raise SystemExit(2) from exc
     finally:
         admin.dispose()
 

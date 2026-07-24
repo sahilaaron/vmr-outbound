@@ -1,4 +1,4 @@
-# Local development Postgres for the VMR Outbound Agent (FND-004).
+# Local development Postgres for the VMR Outbound Agent.
 #
 # One reproducible, UTF-8 database that matches the default DATABASE_URL in
 # .env.example (postgresql+psycopg://dev@127.0.0.1:5433/vmr_dev). This is a
