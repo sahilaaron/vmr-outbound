@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "VMR Sales Navigator Capture",
+  "name": "VMR SalesNav Capture",
   "version": "1.0.0",
-  "description": "Operator-driven capture of visible Sales Navigator records for the VMR Outbound Agent intake. No scraping automation, no credentials stored.",
+  "description": "Operator-driven capture of visible SalesNav records for the VMR Outbound Agent intake. No scraping automation, no credentials stored.",
   "minimum_chrome_version": "116",
   "permissions": ["storage", "sidePanel", "downloads", "activeTab", "scripting"],
   "host_permissions": ["https://www.linkedin.com/sales/*"],
@@ -14,7 +14,7 @@
     "default_path": "src/sidepanel/sidepanel.html"
   },
   "action": {
-    "default_title": "VMR Sales Navigator Capture"
+    "default_title": "VMR SalesNav Capture"
   },
   "content_scripts": [
     {

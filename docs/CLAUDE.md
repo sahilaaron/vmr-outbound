@@ -114,12 +114,9 @@ integration hub or the system of record.
 ## Browser and Data Acquisition
 
 Targeting criteria and Sales Navigator result URLs are created by the user.
-Do not implement unattended scraping, anti-bot evasion, CAPTCHA solving, or
-platform-limit bypasses. Authorized acquisition paths are manual export and
-operator-driven capture of visible pages via the Sales Navigator capture
-extension (`extensions/salesnav-capture/`); both feed the same staged import
-pipeline. Keep the downstream import contract independent of the acquisition
-method.
+Data is acquired through an external chrome extension. (`extensions/salesnav-capture/`);
+both feed the same staged import pipeline. Keep the downstream import
+contract independent of the acquisition method.
 
 For public-web research, obey source access restrictions and store provenance.
 Do not collect sensitive personal data that is unnecessary for legitimate B2B
