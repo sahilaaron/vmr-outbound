@@ -81,6 +81,7 @@
     {% endif %}
     <form method="post" action="/imports/{{ batch.id }}/confirm">
       <button class="btn" type="submit" {{ "disabled" if not csv_import_enabled }}>Confirm and import {{ preview.total_rows }} rows</button>
+      {% if enrich_enabled %}<a class="btn secondary" href="/imports/{{ batch.id }}/enrich">Back to domain enrichment</a>{% endif %}
       <a class="btn secondary" href="/imports/{{ batch.id }}/map">Back to mapping</a>
       <a class="btn secondary" href="/imports/{{ batch.id }}">Cancel</a>
     </form>

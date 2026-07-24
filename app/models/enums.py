@@ -164,6 +164,56 @@ class ImportSourceFormat(enum.StrEnum):
     SALES_NAVIGATOR = "sales_navigator"
 
 
+class EnrichmentLookupStatus(enum.StrEnum):
+    """State of a company-domain lookup against logo.dev (DAT-010).
+
+    These states are truthful and distinct so the operator always sees whether a
+    lookup has run and how it turned out. ``OK`` means candidates were returned;
+    it never means a domain was chosen — the operator confirms every domain by
+    hand. ``NOT_STARTED`` is the initial state before any lookup; ``ERROR`` covers
+    an unexpected failure that is neither a clean no-match nor a recognised
+    provider condition.
+    """
+
+    NOT_STARTED = "not_started"
+    OK = "ok"
+    NO_MATCH = "no_match"
+    API_UNAVAILABLE = "api_unavailable"
+    RATE_LIMITED = "rate_limited"
+    MALFORMED = "malformed"
+    ERROR = "error"
+
+
+class EnrichmentConfirmationStatus(enum.StrEnum):
+    """Whether an operator has decided this company's domain (DAT-010).
+
+    ``UNCONFIRMED`` is the default: no domain is applied and the company's rows
+    stay truthfully rejected for a missing domain. ``CONFIRMED`` means the
+    operator explicitly chose a domain (a candidate or a manual override).
+    ``UNRESOLVED`` means the operator explicitly decided to leave the company
+    without a domain; its rows remain rejected, but the decision is now recorded
+    rather than merely pending.
+    """
+
+    UNCONFIRMED = "unconfirmed"
+    CONFIRMED = "confirmed"
+    UNRESOLVED = "unresolved"
+
+
+class EnrichmentConfirmationSource(enum.StrEnum):
+    """How a confirmed domain was chosen (DAT-010 provenance).
+
+    Recorded separately from the immutable Sales Navigator raw values so the
+    origin of an applied domain is always auditable: a logo.dev ``CANDIDATE`` the
+    operator selected, a ``MANUAL`` domain the operator typed, or ``UNRESOLVED``
+    when the operator deliberately left the company without a domain.
+    """
+
+    CANDIDATE = "candidate"
+    MANUAL = "manual"
+    UNRESOLVED = "unresolved"
+
+
 class EmailVerificationResult(enum.StrEnum):
     """Outcome of an exact full-address verification.
 
