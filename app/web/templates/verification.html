@@ -14,6 +14,24 @@
   </div>
 </div>
 
+{% set L = console.ledger %}
+<div class="card" style="margin:16px 0">
+  <div class="card-head">
+    <h2>MillionVerifier usage &amp; cost</h2>
+    <span class="hint">Provider-neutral ledger · {{ L.currency }}{% if not L.rate_configured %} · rate not set{% endif %}</span>
+  </div>
+  <div class="card-body">
+    <div class="stat-row" style="display:flex;gap:14px;flex-wrap:wrap">
+      <div class="stat"><div class="label">Calls</div><div class="value">{{ L.calls }}</div><div class="small muted-text">{{ L.billed_calls }} billed · {{ L.units_consumed }} credits</div></div>
+      <div class="stat"><div class="label">Cache savings</div><div class="value ok">{{ L.cache_hits }}</div><div class="small muted-text">{% if L.rate_configured %}~{{ L.currency }} {{ "%.4f"|format(L.cache_savings_estimated) }} saved{% else %}calls avoided{% endif %}</div></div>
+      <div class="stat"><div class="label">Failures</div><div class="value warn">{{ L.failures }}</div>{% if L.uncertain_charges %}<div class="small warn">{{ L.uncertain_charges }} uncertain charge(s)</div>{% endif %}</div>
+      <div class="stat"><div class="label">Estimated spend</div><div class="value">{% if L.rate_configured %}{{ L.currency }} {{ "%.4f"|format(L.estimated_spend) }}{% else %}—{% endif %}</div>{% if L.provider_reported_spend is not none %}<div class="small muted-text">provider: {{ L.currency }} {{ "%.4f"|format(L.provider_reported_spend) }}</div>{% endif %}</div>
+      <div class="stat"><div class="label">Credits left</div><div class="value">{{ L.remaining_credits if L.remaining_credits is not none else "—" }}</div></div>
+      <div class="stat"><div class="label">Projected to finish batch</div><div class="value">{% if L.rate_configured %}{{ L.currency }} {{ "%.4f"|format(L.projected_batch_cost) }}{% else %}—{% endif %}</div><div class="small muted-text">{{ console.runnable_jobs }} runnable (upper bound){% if not L.rate_configured %}; set MILLIONVERIFIER_COST_PER_CREDIT{% endif %}</div></div>
+    </div>
+  </div>
+</div>
+
 <div class="stat-row" style="display:flex;gap:14px;flex-wrap:wrap;margin:16px 0">
   <div class="stat"><div class="label">Paid calls</div><div class="value">{{ console.usage.calls_made }}</div><div class="small muted-text">{{ console.usage.credited_calls }} billed</div></div>
   <div class="stat"><div class="label">Cache reuse</div><div class="value ok">{{ console.usage.cache_reuse }}</div><div class="small muted-text">calls avoided</div></div>

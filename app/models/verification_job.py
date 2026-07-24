@@ -88,6 +88,13 @@ class VerificationJob(Base):
         ForeignKey("contacts.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # Optional campaign context, carried so each usage ledger entry can attribute
+    # the request (and its cost) to a campaign / batch.
+    campaign_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("campaigns.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     idempotency_key: Mapped[str] = mapped_column(String(400), nullable=False)
     policy_version: Mapped[str] = mapped_column(String(50), nullable=False)
     status: Mapped[VerificationJobStatus] = mapped_column(

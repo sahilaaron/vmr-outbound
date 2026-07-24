@@ -40,6 +40,7 @@ def enqueue_verification(
     policy_version: str,
     max_attempts: int,
     contact_id: uuid.UUID | None = None,
+    campaign_id: uuid.UUID | None = None,
 ) -> tuple[VerificationJob, bool]:
     """Idempotently enqueue a verification job for an exact address.
 
@@ -61,6 +62,7 @@ def enqueue_verification(
     job = VerificationJob(
         email=norm,
         contact_id=contact_id,
+        campaign_id=campaign_id,
         idempotency_key=key,
         policy_version=policy_version,
         status=VerificationJobStatus.PENDING,

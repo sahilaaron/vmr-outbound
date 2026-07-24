@@ -105,6 +105,23 @@ mapped internal state.
 avoided), each exception class, retries, recoveries, and the latest known credit
 balance. Only ok/invalid/disposable are billed; catch-all/unknown are free.
 
+A compact **MillionVerifier usage & cost** card summarises the provider-neutral
+usage ledger: calls, cache savings, failures (including any *uncertain* charges
+from interrupted jobs), estimated spend, remaining credits, and the projected
+cost to finish the active batch. To turn credit counts into money estimates, set
+your plan's effective per-email rate:
+
+```
+MILLIONVERIFIER_COST_PER_CREDIT=0.001   # example; use your plan's rate
+MILLIONVERIFIER_CURRENCY=USD
+```
+
+With the rate unset (default 0), the ledger still records credits consumed and the
+card shows credits with the money figure left blank — it never fabricates a price.
+The same `usage_ledger_entries` table is provider-neutral and will later carry
+research, AI-model, enrichment, and Saleshandy usage without a schema change; the
+full multi-provider finance dashboard is out of scope for #137.
+
 ## Recovery & safety notes
 
 * Duplicate concurrent requests for one address cannot cause duplicate paid calls

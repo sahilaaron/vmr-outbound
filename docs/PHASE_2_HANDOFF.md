@@ -1,5 +1,20 @@
 # Phase 2 build handoff — Issue #137 (email intelligence + MillionVerifier)
 
+> **Extension (provider-neutral usage/cost ledger).** A follow-up commit adds a
+> provider-neutral `usage_ledger_entries` table: every MillionVerifier request (and
+> every cache hit that avoids one) records provider, operation, campaign, a soft
+> job/request reference, attempted time, result, cache status, retry number, units,
+> estimated cost, provider-reported cost (when available), currency, and whether the
+> charge is confirmed/uncertain/none. An interrupted job records an *uncertain*
+> charge. A compact "MillionVerifier usage & cost" card on `/verification` shows
+> calls, cache savings, failures, estimated spend, remaining credits, and projected
+> cost to finish the active batch. The ledger is provider-neutral so future
+> research/AI/enrichment/Saleshandy usage reuses the same table with no schema
+> replacement; the full multi-provider finance dashboard is intentionally out of
+> scope. Migration `ad1e298fb49a` (reversible). New tests: `tests/test_usage_ledger.py`.
+> Totals after this extension: **361 tests pass**. See `docs/PHASE_2.md` →
+> "Provider-neutral usage/cost ledger".
+
 **Not an acceptance.** This is a factual build handoff. ChatGPT independently
 inspects the remote PR and issue evidence and issues the verdict; Sahil approves
 merges. Claude does not grade its own work or declare Phase 2 complete.

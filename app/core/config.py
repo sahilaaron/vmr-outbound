@@ -201,6 +201,25 @@ class Settings(BaseSettings):
     verification_ttl_unknown_days: int = Field(default=3, gt=0)
     verification_ttl_disposable_days: int = Field(default=30, gt=0)
 
+    # Estimated cost per *billed* MillionVerifier credit, in
+    # ``millionverifier_currency``. This is a local estimate for cost visibility,
+    # not a quote: MillionVerifier's Single API does not report a per-call price,
+    # so set this to your plan's effective per-email rate. Default 0.0 means "rate
+    # not configured" — the ledger still records units (credits) consumed, and the
+    # UI shows credits with the cost left explicitly unestimated rather than
+    # fabricating a number.
+    millionverifier_cost_per_credit: float = Field(
+        default=0.0,
+        ge=0,
+        description="Local estimated cost per billed MillionVerifier credit (0 = not set).",
+    )
+    millionverifier_currency: str = Field(
+        default="USD",
+        min_length=3,
+        max_length=3,
+        description="ISO currency code for MillionVerifier cost estimates.",
+    )
+
     def has_millionverifier_key(self) -> bool:
         """True when a non-empty MillionVerifier key is configured (never logs it)."""
 

@@ -42,5 +42,6 @@ from app.models import provenance as _provenance  # noqa: E402,F401
 from app.models import salesnav_enrichment as _salesnav_enrichment  # noqa: E402,F401
 from app.models import score as _score  # noqa: E402,F401
 from app.models import suppression as _suppression  # noqa: E402,F401
+from app.models import usage_ledger as _usage_ledger  # noqa: E402,F401
 from app.models import verification_job as _verification_job  # noqa: E402,F401
 from app.models import verification_usage as _verification_usage  # noqa: E402,F401

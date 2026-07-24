@@ -328,6 +328,35 @@ PRECISE_TO_VISUAL: dict[EmailPreciseStatus, EmailVisualStatus] = {
 }
 
 
+class UsageCacheStatus(enum.StrEnum):
+    """Whether a usage ledger entry served a cache hit, a real call, or neither.
+
+    Provider-neutral: ``HIT`` means fresh evidence was reused and no external call
+    (or charge) occurred; ``MISS`` means a real provider request was attempted;
+    ``NOT_APPLICABLE`` covers operations without a cache dimension.
+    """
+
+    HIT = "hit"
+    MISS = "miss"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class UsageChargeStatus(enum.StrEnum):
+    """Whether an external charge is confirmed, uncertain, or absent (VER-006+).
+
+    ``CONFIRMED`` means the provider billed for this request (for MillionVerifier:
+    an ok/invalid/disposable result). ``NONE`` means no charge (a cache hit, a free
+    result such as catch-all/unknown, or a pre-charge failure). ``UNCERTAIN`` means
+    a paid call may have completed but could not be confirmed — for example a
+    worker that died mid-flight and left its job to be reclaimed. Uncertainty is
+    recorded, never silently treated as free or as charged.
+    """
+
+    CONFIRMED = "confirmed"
+    UNCERTAIN = "uncertain"
+    NONE = "none"
+
+
 class VerificationUsageEventType(enum.StrEnum):
     """Recorded verification usage and exception events (VER-006).
 

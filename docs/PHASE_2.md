@@ -52,7 +52,32 @@ treatment — none is ever shown as a valid mailbox or a plain invalid mailbox.
 | **#32 VER-001** MillionVerifier adapter | Replaceable `VerificationProvider`; network-free simulator (default + all tests) and an HTTP client behind an injectable transport; key from env, redacted everywhere. | `app/services/verification/provider.py` | `tests/test_verification_provider.py`, `tests/test_verification_secrets.py` |
 | **#33 VER-004** Conservative catch-all handling | Catch-all/unknown/disposable never become valid or scheduling-ready; derivation keeps them amber. | `app/services/verification/status.py`, `policy.py` | `tests/test_verification_status.py`, `tests/test_verification_policy.py` |
 | **#34 VER-005** Rate limits, retries, idempotency | Postgres-backed queue; unique idempotency key + partial unique active-email index (≤1 active job/address); leased claiming (`FOR UPDATE SKIP LOCKED`); bounded backoff+jitter for transient failures only; interrupted-worker recovery. | `app/models/verification_job.py`, `app/services/verification/queue.py`, `service.py` | `tests/test_verification_queue.py`, `tests/test_verification_service.py::test_duplicate_enqueue_makes_max_one_paid_call` |
-| **#35 VER-006** Track usage & exceptions | Every call, cache reuse, provider error, timeout, insufficient-credit, retry, recovery recorded; billed vs free visible; credit balance surfaced. | `app/models/verification_usage.py`, `app/services/verification/usage.py`, `console.py` | `tests/test_verification_service.py` (usage assertions), `tests/test_verification_web.py` |
+| **#35 VER-006** Track usage & exceptions | Every call, cache reuse, provider error, timeout, insufficient-credit, retry, recovery recorded; billed vs free visible; credit balance surfaced. Plus a **provider-neutral usage/cost ledger** (below). | `app/models/verification_usage.py`, `app/services/verification/usage.py`, `console.py`, `app/models/usage_ledger.py`, `app/services/usage_ledger.py` | `tests/test_verification_service.py`, `tests/test_verification_web.py`, `tests/test_usage_ledger.py` |
+
+### Provider-neutral usage/cost ledger
+
+Every MillionVerifier request (and every cache hit that avoided one) writes a row
+to `usage_ledger_entries`, capturing: provider, operation, campaign, a *soft*
+related-job reference (`job_id` + `job_kind`, no hard FK) and request ref,
+attempted time, result, cache status (hit/miss/n-a), retry number, units
+consumed, estimated cost, provider-reported cost (when a provider returns one —
+null for MillionVerifier), currency, and whether the charge is `confirmed`,
+`uncertain`, or `none`. An interrupted (reclaimed) job records an **uncertain**
+charge so a possibly-completed paid call is never lost.
+
+The compact MillionVerifier usage summary on `/verification` shows calls, cache
+savings, failures, estimated spend, remaining credits (when obtainable), and the
+projected cost to finish the active batch (runnable jobs × per-credit rate, an
+upper bound). Estimated cost uses `MILLIONVERIFIER_COST_PER_CREDIT`; when unset
+the UI shows credits consumed and leaves the money figure blank rather than
+fabricating one.
+
+The ledger is **deliberately provider-neutral** — `provider`/`operation` are free
+strings and the job link is a soft reference — so future metered services
+(research APIs, AI models, enrichment providers, Saleshandy) record usage in the
+*same table* with no schema replacement (`tests/test_usage_ledger.py::test_second_provider_writes_same_table`).
+The complete multi-provider finance dashboard is intentionally **out of scope**
+for #137; this is the shared ledger primitive it will later read from.
 
 VER-007 (#? provider contract tests + live smoke) is partially satisfied: the
 documented outcomes are covered offline by contract tests; the single live smoke

@@ -1496,7 +1496,17 @@ def contact_verify(contact_id: str, db: Session = Depends(get_db)) -> Response:
     if contact is None:
         return _redirect("/contacts", err="That contact does not exist.")
     settings = get_settings()
-    outcome = verification_service.prepare_and_enqueue_contact(db, contact, settings=settings)
+    # Attribute the request to the contact's campaign when unambiguous (exactly
+    # one membership); otherwise leave campaign attribution unset.
+    from app.models.campaign import CampaignContact
+
+    memberships = list(
+        db.scalars(select(CampaignContact).where(CampaignContact.contact_id == contact.id)).all()
+    )
+    campaign_id = memberships[0].campaign_id if len(memberships) == 1 else None
+    outcome = verification_service.prepare_and_enqueue_contact(
+        db, contact, settings=settings, campaign_id=campaign_id
+    )
     if outcome.needs_review:
         db.commit()
         return _redirect(f"/contacts/{contact_id}", err=f"Needs review: {outcome.review_reason}")
@@ -1593,7 +1603,9 @@ async def verification_bulk(request: Request, db: Session = Depends(get_db)) -> 
     reused = 0
     review = 0
     for contact in contacts:
-        outcome = verification_service.prepare_and_enqueue_contact(db, contact, settings=settings)
+        outcome = verification_service.prepare_and_enqueue_contact(
+            db, contact, settings=settings, campaign_id=campaign_id
+        )
         if outcome.needs_review:
             review += 1
         elif outcome.reused_evidence is not None:

@@ -8,17 +8,21 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
+from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.config import Settings, get_settings
 from app.models.contact import Contact
 from app.models.email_candidate import EmailCandidate
 from app.models.email_evidence import ExactEmailVerification
 from app.models.enums import VerificationJobStatus
 from app.models.verification_job import VerificationJob
 from app.models.verification_usage import VerificationUsageEvent
+from app.services import usage_ledger
 from app.services.verification import usage as usage_service
+from app.services.verification.service import LEDGER_PROVIDER
 from app.services.verification.status import StatusView, derive_status_for_contact
 
 
@@ -77,6 +81,7 @@ class VerificationConsole:
     """Aggregates for the verification operator page."""
 
     usage: usage_service.UsageSummary
+    ledger: usage_ledger.LedgerSummary
     job_counts: dict[str, int] = field(default_factory=dict)
     recent_jobs: list[VerificationJob] = field(default_factory=list)
     recent_events: list[VerificationUsageEvent] = field(default_factory=list)
@@ -85,7 +90,8 @@ class VerificationConsole:
     reclaimable_jobs: int = 0
 
 
-def load_console(session: Session) -> VerificationConsole:
+def load_console(session: Session, *, settings: Settings | None = None) -> VerificationConsole:
+    settings = settings or get_settings()
     counts_rows = session.execute(
         select(VerificationJob.status, func.count()).group_by(VerificationJob.status)
     ).all()
@@ -99,8 +105,18 @@ def load_console(session: Session) -> VerificationConsole:
             select(VerificationJob).order_by(VerificationJob.updated_at.desc()).limit(25)
         ).all()
     )
+    # Projected cost to finish the active batch: the still-runnable jobs are the
+    # remaining billable-at-most units (an upper bound — some return free results).
+    ledger = usage_ledger.provider_summary(
+        session,
+        provider=LEDGER_PROVIDER,
+        currency=settings.millionverifier_currency,
+        cost_per_unit=Decimal(str(settings.millionverifier_cost_per_credit)),
+        pending_units=runnable,
+    )
     return VerificationConsole(
         usage=usage_service.usage_summary(session),
+        ledger=ledger,
         job_counts=job_counts,
         recent_jobs=recent_jobs,
         recent_events=usage_service.recent_events(session, limit=25),
