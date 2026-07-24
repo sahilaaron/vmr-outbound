@@ -51,6 +51,7 @@ from app.models.import_batch import ImportBatch, ImportRow, ImportRowError, Impo
 from app.models.provenance import ProvenanceRecord
 from app.services.audit import record_audit_event
 from app.services.contact_state import transition_contact_state
+from app.services.enrichment import companies as enrichment_companies
 from app.services.imports import dedup, parsing, validation
 from app.services.imports import mapping as mapping_service
 from app.services.suppressions import find_active_suppression
@@ -727,6 +728,7 @@ def process_pending_batch(
     *,
     batch: ImportBatch,
     column_mapping: dict[str, str] | None,
+    domain_overlay: dict[str, str] | None = None,
     actor: str = "workbench",
     _fault: Callable[[], None] | None = None,
 ) -> ImportSummary:
@@ -741,6 +743,12 @@ def process_pending_batch(
     ``pending -> completed`` (or ``failed`` on error, rolling back all processing
     work). It creates a second import pipeline nowhere: only the entry point
     differs (an existing batch vs. a freshly parsed file).
+
+    ``domain_overlay`` maps a normalized company key to an operator-confirmed
+    company_domain (DAT-010). It fills the ``company_domain`` of a mapped row that
+    lacks one — applied to the transient mapped view only, never to the immutable
+    raw row — so a Sales Navigator company whose domain the operator confirmed can
+    pass validation while an unresolved company's rows stay truthfully rejected.
 
     Idempotent: a batch that is already ``completed`` is returned unchanged.
     """
@@ -790,8 +798,9 @@ def process_pending_batch(
             source = (
                 mapping_service.apply_mapping(raw, column_mapping)
                 if column_mapping is not None
-                else raw
+                else dict(raw)
             )
+            enrichment_companies.apply_overlay_to_source(source, domain_overlay)
             validated = validation.validate_row(import_row.row_number, source)
             _process_row(
                 session,

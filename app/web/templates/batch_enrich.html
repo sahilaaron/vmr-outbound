@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% block content %}
+{% set STATUS_LABELS = {
+  "not_started": "Not looked up",
+  "ok": "Candidates found",
+  "no_match": "No match",
+  "api_unavailable": "API unavailable",
+  "rate_limited": "Rate limited",
+  "malformed": "Malformed response",
+  "error": "Lookup error",
+} %}
+<div class="page-head">
+  <div class="crumbs"><a href="/imports">Imports</a><span>/</span><a href="/imports/{{ batch.id }}">staged batch</a><span>/</span>enrich domains</div>
+  <h1>Resolve company domains</h1>
+  <div class="sub">Sales Navigator captures do not include a company domain. Look each unique company
+    up through the official logo.dev directory, then <strong>confirm one domain per company by hand</strong>.
+    Nothing is auto-selected. A company you leave unresolved keeps its rows rejected.</div>
+</div>
+
+<div class="steps" aria-label="Import steps">
+  <span class="step done"><span class="n">1</span>Capture &amp; stage</span>
+  <span class="step done"><span class="n">2</span>Map fields</span>
+  <span class="step current"><span class="n">3</span>Resolve domains</span>
+  <span class="step"><span class="n">4</span>Preview &amp; validate</span>
+  <span class="step"><span class="n">5</span>Confirm</span>
+</div>
+
+{% if not has_mapping %}
+<div class="notice warn" role="status">
+  <div>No field mapping is set yet, so companies are grouped by the captured field names directly.
+    <a href="/imports/{{ batch.id }}/map">Set a mapping</a> first so <code>company_name</code> is identified correctly.</div>
+</div>
+{% endif %}
+
+{% if not api_key_configured %}
+<div class="notice warn" role="status">
+  <div><strong>logo.dev API key is not configured.</strong> Set <code>LOGO_DEV_API_KEY</code> in the
+    local environment and restart the app to look companies up. You can still enter a domain manually
+    or leave a company unresolved without a key.</div>
+</div>
+{% endif %}
+
+<div class="stat-grid">
+  <div class="stat"><div class="label">Companies</div><div class="value">{{ view.total }}</div></div>
+  <div class="stat"><div class="label">Confirmed</div><div class="value ok">{{ view.confirmed }}</div></div>
+  <div class="stat"><div class="label">Unresolved</div><div class="value muted">{{ view.unresolved }}</div></div>
+  <div class="stat"><div class="label">Pending</div><div class="value warn">{{ view.pending }}</div></div>
+  <div class="stat"><div class="label">Looked up</div><div class="value info">{{ view.looked_up }}</div></div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Look up domains</h2></div>
+  <div class="card-body">
+    <p class="small muted-text mt-0">Runs one logo.dev lookup per company that has not been looked up yet.
+      A company is never looked up twice automatically — use <em>Re-look-up</em> on a company to refresh it.</p>
+    <div class="head-row">
+      <form method="post" action="/imports/{{ batch.id }}/enrich/lookup">
+        <button class="btn" type="submit" {{ "disabled" if not api_key_configured }}>Look up all companies</button>
+      </form>
+      <a class="btn secondary" href="/imports/{{ batch.id }}/preview">Continue to preview →</a>
+    </div>
+  </div>
+</div>
+
+{% if view.total == 0 %}
+<div class="empty">
+  <div class="empty-title">No companies to resolve</div>
+  <p>This staged batch has no rows with a company name to look up.</p>
+</div>
+{% endif %}
+
+{% for c in view.companies %}
+{% set rec = c.record %}
+<div class="card">
+  <div class="card-head">
+    <h2>{{ rec.company_name }}</h2>
+    <span class="hint">{{ rec.row_count }} row{{ "s" if rec.row_count != 1 }}</span>
+  </div>
+  <div class="card-body">
+    <dl class="kv">
+      <dt>Lookup</dt>
+      <dd>
+        {% if rec.lookup_status.value == "ok" %}<span class="badge ok">{{ STATUS_LABELS.get(rec.lookup_status.value) }}</span>
+        {% elif rec.lookup_status.value == "not_started" %}<span class="badge muted">{{ STATUS_LABELS.get(rec.lookup_status.value) }}</span>
+        {% else %}<span class="badge badge-warn">{{ STATUS_LABELS.get(rec.lookup_status.value, rec.lookup_status.value) }}</span>{% endif %}
+        {% if rec.looked_up_at %}<span class="small muted-text"> · {{ rec.looked_up_at | dt }}{% if rec.lookup_attempts > 1 %} · attempt {{ rec.lookup_attempts }}{% endif %}</span>{% endif %}
+      </dd>
+      <dt>Decision</dt>
+      <dd>
+        {% if rec.confirmation_status.value == "confirmed" %}
+          <span class="badge ok">Confirmed</span> <code>{{ rec.confirmed_domain }}</code>
+          <span class="small muted-text">({{ rec.confirmation_source.value }}{% if rec.confirmed_at %} · {{ rec.confirmed_at | dt }}{% endif %})</span>
+        {% elif rec.confirmation_status.value == "unresolved" %}
+          <span class="badge muted">Unresolved</span> <span class="small muted-text">rows stay rejected</span>
+        {% else %}
+          <span class="badge badge-warn">Pending</span>
+        {% endif %}
+      </dd>
+    </dl>
+
+    <form method="post" action="/imports/{{ batch.id }}/enrich/confirm">
+      <input type="hidden" name="company_key" value="{{ rec.company_key }}">
+      {% if c.candidates %}
+      <fieldset style="border:0;padding:0;margin:0 0 10px">
+        <legend class="small"><strong>Candidates from logo.dev</strong> — select one, then confirm</legend>
+        {% for cand in c.candidates %}
+        <label class="candidate-option" style="display:block;margin:4px 0">
+          <input type="radio" name="candidate_domain" value="{{ cand.domain }}"
+            {{ "checked" if rec.confirmed_domain == cand.domain }}>
+          <code>{{ cand.domain }}</code>{% if cand.name %} <span class="small muted-text">— {{ cand.name }}</span>{% endif %}
+        </label>
+        {% endfor %}
+        <button class="btn small" type="submit" name="action" value="candidate">Confirm selected candidate</button>
+      </fieldset>
+      {% elif rec.lookup_status.value == "ok" %}
+      <p class="small muted-text">logo.dev returned no usable candidate for this company. Enter a domain manually or leave it unresolved.</p>
+      {% elif rec.lookup_status.value != "not_started" %}
+      <p class="small muted-text">No candidates available ({{ STATUS_LABELS.get(rec.lookup_status.value, rec.lookup_status.value) }}). Enter a domain manually, leave it unresolved, or re-look-up.</p>
+      {% endif %}
+
+      <div class="grid-2" style="align-items:end;gap:10px">
+        <div>
+          <label class="small" for="manual-{{ loop.index }}">Manual domain override</label>
+          <input id="manual-{{ loop.index }}" type="text" name="manual_domain" placeholder="example.com"
+            value="{{ rec.confirmed_domain if rec.confirmation_source and rec.confirmation_source.value == 'manual' else '' }}">
+        </div>
+        <div>
+          <button class="btn small secondary" type="submit" name="action" value="manual">Use this domain</button>
+          <button class="btn small secondary" type="submit" name="action" value="unresolved">Leave unresolved</button>
+        </div>
+      </div>
+    </form>
+
+    <form method="post" action="/imports/{{ batch.id }}/enrich/refresh" style="margin-top:8px">
+      <input type="hidden" name="company_key" value="{{ rec.company_key }}">
+      <button class="btn small secondary" type="submit" {{ "disabled" if not api_key_configured }}>Re-look-up</button>
+    </form>
+  </div>
+</div>
+{% endfor %}
+
+<div style="margin-top:16px">
+  <a class="btn" href="/imports/{{ batch.id }}/preview">Continue to preview →</a>
+  <a class="btn secondary" href="/imports/{{ batch.id }}/map">Back to mapping</a>
+</div>
+{% endblock %}

@@ -19,10 +19,15 @@
     confirm to run it through the normal import checks.
     <div style="margin-top:10px">
       <a class="btn btn-primary" href="/imports/{{ batch.id }}/map">Map &amp; import this batch</a>
+      {% if enrich_enabled %}
+      <a class="btn secondary" href="/imports/{{ batch.id }}/enrich">Enrich company domains</a>
+      {% endif %}
     </div>
     {% if is_salesnav %}
     <div class="small" style="margin-top:6px">Sales Navigator captures do not include a company
-      domain; rows without one are truthfully rejected at preview until a domain source is supplied.</div>
+      domain; rows without one are truthfully rejected at preview until a domain is supplied.
+      {% if enrich_enabled %}Use <strong>Enrich company domains</strong> (after mapping) to look each
+      company up via logo.dev and confirm a domain by hand.{% endif %}</div>
     {% endif %}
     {% if not csv_import_enabled %}
     <div class="small" style="margin-top:6px">Importing is currently disabled

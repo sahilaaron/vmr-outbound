@@ -28,6 +28,7 @@ from app.core.config import get_settings
 from app.models.enums import (
     CampaignStatus,
     ContactWorkflowState,
+    EnrichmentConfirmationSource,
     IdentityResolutionType,
     ImportBatchStatus,
     ImportRowOutcome,
@@ -42,6 +43,7 @@ from app.services.campaigns import (
     get_campaign_overview,
     list_campaigns,
 )
+from app.services.enrichment import companies as enrichment
 from app.services.imports import mapping as mapping_service
 from app.services.imports import parsing, staging, validation
 from app.services.imports.importer import (
@@ -689,6 +691,7 @@ def batch_detail_page(
             "outcome_filter": outcome_filter,
             "is_salesnav": is_salesnav,
             "is_pending": is_pending,
+            "enrich_enabled": is_salesnav and _enrichment_enabled(),
             "sn_meta": batch.source_metadata if is_salesnav else None,
             "csv_import_enabled": get_settings().features.csv_import,
             "active_nav": "imports",
@@ -816,7 +819,220 @@ async def batch_map_save(
     batch.column_mapping = mapping
     batch.mapper_version = mapping_service.MAPPER_VERSION
     db.commit()
+    # A Sales Navigator capture has no company_domain source, so when the
+    # domain-enrichment feature is on the operator resolves domains next; other
+    # batches go straight to the preview (unchanged behaviour).
+    if (
+        batch.source_format == ImportSourceFormat.SALES_NAVIGATOR
+        and get_settings().features.salesnav_domain_enrichment
+    ):
+        return _redirect(f"/imports/{batch.id}/enrich")
     return _redirect(f"/imports/{batch.id}/preview")
+
+
+# --- Sales Navigator company-domain enrichment (DAT-010) ---------------------
+#
+# A Sales Navigator capture carries no company_domain, so its rows reject until
+# a domain is supplied. These routes let the operator look each unique company up
+# through the official logo.dev Search Brands API and EXPLICITLY confirm one
+# domain per company (a candidate, a manual override, or "unresolved"); the
+# confirmed domain is overlaid onto matching rows at preview/confirm — the raw
+# capture is never mutated, and nothing is ever auto-accepted.
+
+
+def _enrichment_enabled() -> bool:
+    return get_settings().features.salesnav_domain_enrichment
+
+
+def _render_enrich(
+    request: Request, db: Session, batch: Any, campaign: Any, rows: list[Any]
+) -> HTMLResponse:
+    settings = get_settings()
+    view = enrichment.build_view(db, batch=batch, rows=rows, column_mapping=batch.column_mapping)
+    db.commit()  # persist any NOT_STARTED records ensure_records created
+    return _render(
+        request,
+        db,
+        "batch_enrich.html",
+        {
+            "batch": batch,
+            "campaign": campaign,
+            "view": view,
+            "has_mapping": bool(batch.column_mapping),
+            "api_key_configured": settings.has_logo_dev_key(),
+            "active_nav": "imports",
+            "page_title": f"Enrich domains — staged batch {batch.id}",
+        },
+    )
+
+
+@router.get("/imports/{batch_id}/enrich", response_class=HTMLResponse)
+def batch_enrich_page(
+    request: Request, batch_id: str, db: Session = Depends(get_db)
+) -> HTMLResponse:
+    if not _enrichment_enabled():
+        return _not_found(
+            request, db, "Company-domain enrichment is not enabled for this workbench."
+        )
+    loaded = _load_pending_batch(db, batch_id)
+    if loaded is None:
+        return _not_found(
+            request, db, "That staged batch does not exist or has already been processed."
+        )
+    batch, campaign, rows = loaded
+    return _render_enrich(request, db, batch, campaign, rows)
+
+
+@router.post("/imports/{batch_id}/enrich/lookup")
+def batch_enrich_lookup(request: Request, batch_id: str, db: Session = Depends(get_db)) -> Response:
+    """Look up every not-yet-looked-up company once (idempotent, explicit)."""
+
+    if not _enrichment_enabled():
+        return _redirect("/imports", err="Company-domain enrichment is not enabled.")
+    loaded = _load_pending_batch(db, batch_id)
+    if loaded is None:
+        return _redirect("/imports", err="That staged batch does not exist or was processed.")
+    batch, _campaign, rows = loaded
+    settings = get_settings()
+    if not settings.has_logo_dev_key():
+        return _redirect(
+            f"/imports/{batch.id}/enrich",
+            err="logo.dev API key is not configured (set LOGO_DEV_API_KEY). No lookup ran.",
+        )
+    try:
+        summary = enrichment.run_pending_lookups(
+            db,
+            batch=batch,
+            rows=rows,
+            column_mapping=batch.column_mapping,
+            api_key=settings.logo_dev_api_key or "",
+            search_url=settings.logo_dev_search_url,
+            timeout=settings.logo_dev_timeout_seconds,
+            max_candidates=settings.logo_dev_max_candidates,
+            actor="workbench",
+        )
+    except enrichment.ApiKeyMissing:
+        db.rollback()
+        return _redirect(
+            f"/imports/{batch.id}/enrich",
+            err="logo.dev API key is not configured (set LOGO_DEV_API_KEY). No lookup ran.",
+        )
+    db.commit()
+    return _redirect(
+        f"/imports/{batch.id}/enrich",
+        ok=(
+            f"Looked up {summary.looked_up} compan{'y' if summary.looked_up == 1 else 'ies'}"
+            f"{f' (skipped {summary.skipped} already looked up)' if summary.skipped else ''}."
+        ),
+    )
+
+
+@router.post("/imports/{batch_id}/enrich/refresh")
+async def batch_enrich_refresh(
+    request: Request, batch_id: str, db: Session = Depends(get_db)
+) -> Response:
+    """Explicitly re-look-up one company (the only path that re-calls logo.dev)."""
+
+    if not _enrichment_enabled():
+        return _redirect("/imports", err="Company-domain enrichment is not enabled.")
+    loaded = _load_pending_batch(db, batch_id)
+    if loaded is None:
+        return _redirect("/imports", err="That staged batch does not exist or was processed.")
+    batch, _campaign, rows = loaded
+    settings = get_settings()
+    form = await request.form()
+    key = str(form.get("company_key", ""))
+    if not settings.has_logo_dev_key():
+        return _redirect(
+            f"/imports/{batch.id}/enrich",
+            err="logo.dev API key is not configured (set LOGO_DEV_API_KEY). No lookup ran.",
+        )
+    enrichment.ensure_records(db, batch=batch, rows=rows, column_mapping=batch.column_mapping)
+    record = next(
+        (
+            r
+            for r in enrichment.build_view(
+                db, batch=batch, rows=rows, column_mapping=batch.column_mapping
+            ).companies
+            if r.record.company_key == key
+        ),
+        None,
+    )
+    if record is None:
+        return _redirect(f"/imports/{batch.id}/enrich", err="Unknown company for this batch.")
+    try:
+        enrichment.run_lookup(
+            db,
+            record=record.record,
+            api_key=settings.logo_dev_api_key or "",
+            search_url=settings.logo_dev_search_url,
+            timeout=settings.logo_dev_timeout_seconds,
+            max_candidates=settings.logo_dev_max_candidates,
+            actor="workbench",
+            force=True,
+        )
+    except enrichment.ApiKeyMissing:
+        db.rollback()
+        return _redirect(
+            f"/imports/{batch.id}/enrich",
+            err="logo.dev API key is not configured (set LOGO_DEV_API_KEY). No lookup ran.",
+        )
+    db.commit()
+    return _redirect(f"/imports/{batch.id}/enrich", ok="Re-looked-up the company.")
+
+
+@router.post("/imports/{batch_id}/enrich/confirm")
+async def batch_enrich_confirm(
+    request: Request, batch_id: str, db: Session = Depends(get_db)
+) -> Response:
+    """Apply the operator's explicit domain decision for one company."""
+
+    if not _enrichment_enabled():
+        return _redirect("/imports", err="Company-domain enrichment is not enabled.")
+    loaded = _load_pending_batch(db, batch_id)
+    if loaded is None:
+        return _redirect("/imports", err="That staged batch does not exist or was processed.")
+    batch, _campaign, rows = loaded
+    # Ensure records exist (mapping-consistent) before applying a decision.
+    enrichment.ensure_records(db, batch=batch, rows=rows, column_mapping=batch.column_mapping)
+
+    form = await request.form()
+    key = str(form.get("company_key", ""))
+    action_raw = str(form.get("action", ""))
+    try:
+        source = EnrichmentConfirmationSource(action_raw)
+    except ValueError:
+        return _redirect(f"/imports/{batch.id}/enrich", err="Choose select, manual, or unresolved.")
+    if source is EnrichmentConfirmationSource.CANDIDATE:
+        domain: str | None = str(form.get("candidate_domain", "")).strip() or None
+    elif source is EnrichmentConfirmationSource.MANUAL:
+        domain = str(form.get("manual_domain", "")).strip() or None
+    else:
+        domain = None
+    note = str(form.get("note", "")).strip() or None
+
+    try:
+        record = enrichment.confirm_company(
+            db,
+            batch=batch,
+            company_key_value=key,
+            source=source,
+            domain=domain,
+            actor="workbench",
+            note=note,
+        )
+    except enrichment.EnrichmentError as exc:
+        db.rollback()
+        return _redirect(f"/imports/{batch.id}/enrich", err=str(exc))
+    db.commit()
+    if record.confirmation_status.value == "confirmed":
+        msg = (
+            f"“{record.company_name}” → {record.confirmed_domain} "
+            f"applied to {record.row_count} row(s)."
+        )
+    else:
+        msg = f"“{record.company_name}” left unresolved; its rows stay rejected."
+    return _redirect(f"/imports/{batch.id}/enrich", ok=msg)
 
 
 @router.get("/imports/{batch_id}/preview", response_class=HTMLResponse)
@@ -829,7 +1045,10 @@ def batch_preview_page(
             request, db, "That staged batch does not exist or has already been processed."
         )
     batch, campaign, rows = loaded
-    result = preview_pending_batch(db, rows=rows, column_mapping=batch.column_mapping)
+    overlay = enrichment.domain_overlay(db, batch.id)
+    result = preview_pending_batch(
+        db, rows=rows, column_mapping=batch.column_mapping, domain_overlay=overlay
+    )
     return _render(
         request,
         db,
@@ -841,6 +1060,9 @@ def batch_preview_page(
             "shown_rows": result.rows[:PREVIEW_ROWS_SHOWN],
             "has_mapping": bool(batch.column_mapping),
             "csv_import_enabled": get_settings().features.csv_import,
+            "enrich_enabled": (
+                batch.source_format == ImportSourceFormat.SALES_NAVIGATOR and _enrichment_enabled()
+            ),
             "active_nav": "imports",
             "page_title": f"Preview — staged batch {batch.id}",
         },
@@ -865,8 +1087,11 @@ def batch_confirm(request: Request, batch_id: str, db: Session = Depends(get_db)
             err="This staged batch cannot be processed in its current state.",
         )
 
+    overlay = enrichment.domain_overlay(db, batch.id)
     try:
-        summary = process_pending_batch(db, batch=batch, column_mapping=batch.column_mapping)
+        summary = process_pending_batch(
+            db, batch=batch, column_mapping=batch.column_mapping, domain_overlay=overlay
+        )
     except FeatureDisabledError:
         return _redirect(
             f"/imports/{batch.id}/preview",

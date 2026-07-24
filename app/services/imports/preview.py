@@ -18,6 +18,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.models.import_batch import ImportRow
+from app.services.enrichment import companies as enrichment_companies
 from app.services.imports import dedup, parsing, validation
 from app.services.imports import mapping as mapping_service
 from app.services.imports.importer import _validate_structure
@@ -79,17 +80,25 @@ def _predict_row(
     result: PreviewResult,
     seen_emails: set[str],
     seen_natural_keys: dict[str, int],
+    domain_overlay: dict[str, str] | None = None,
 ) -> None:
     """Predict one row's outcome and record it on *result* (no writes).
 
     This is the single, shared prediction step used for both a parsed file and an
     already-captured staged batch, so every source predicts outcomes through the
     exact same validation, suppression, and deduplication rules.
+
+    ``domain_overlay`` (DAT-010) fills a mapped row's missing ``company_domain``
+    from an operator-confirmed company domain, so the preview predicts the same
+    outcome the committing importer will produce — never touching the raw row.
     """
 
     source = (
-        mapping_service.apply_mapping(raw, column_mapping) if column_mapping is not None else raw
+        mapping_service.apply_mapping(raw, column_mapping)
+        if column_mapping is not None
+        else dict(raw)
     )
+    enrichment_companies.apply_overlay_to_source(source, domain_overlay)
     validated = validation.validate_row(row_number, source)
 
     if not validated.is_valid:
@@ -213,6 +222,7 @@ def preview_pending_batch(
     *,
     rows: list[ImportRow],
     column_mapping: dict[str, str] | None,
+    domain_overlay: dict[str, str] | None = None,
 ) -> PreviewResult:
     """Predict the outcome of committing an already-captured staged batch.
 
@@ -222,6 +232,10 @@ def preview_pending_batch(
     capture has no header, so a row missing a required field (Sales Navigator does
     not provide ``company_domain``) is predicted as ``rejected`` by validation,
     exactly as the committing importer would, rather than being silently skipped.
+
+    ``domain_overlay`` (DAT-010) supplies operator-confirmed company domains so a
+    resolved company's rows preview as accepted while an unresolved company's
+    rows still preview as rejected — the same outcome the confirm step commits.
     """
 
     result = PreviewResult()
@@ -242,6 +256,7 @@ def preview_pending_batch(
             result=result,
             seen_emails=seen_emails,
             seen_natural_keys=seen_natural_keys,
+            domain_overlay=domain_overlay,
         )
 
     return result

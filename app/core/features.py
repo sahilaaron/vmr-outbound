@@ -29,6 +29,12 @@ class FeatureFlags(BaseModel):
     # Operator workbench UI (server-rendered pages). Off by default so the UI
     # stays disabled until it is deliberately enabled for local operation.
     workbench: bool = False
+    # Operator-driven Sales Navigator company-domain enrichment via the official
+    # logo.dev Search Brands API (DAT-010). Off by default so the lookup UI and
+    # any outbound call stay fully disabled until deliberately enabled for local
+    # operation. Turning it on does not import anything and never auto-accepts a
+    # candidate: the operator still confirms every domain by hand.
+    salesnav_domain_enrichment: bool = False
     normalization: bool = False
     deduplication: bool = False
     suppressions: bool = False

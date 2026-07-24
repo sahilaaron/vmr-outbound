@@ -97,6 +97,45 @@ class Settings(BaseSettings):
         description="Wall-clock budget in seconds for one intake staging operation (default 15).",
     )
 
+    # --- Company-domain enrichment via logo.dev (DAT-010, local only) --------
+    # The official logo.dev Search Brands by Name API key. Read from
+    # ``LOGO_DEV_API_KEY``. It is a SECRET: ``repr=False`` and ``exclude=True``
+    # keep it out of ``repr(settings)`` and ``settings.model_dump()`` so it is
+    # never accidentally logged, serialized into a template, or dumped to disk.
+    # When unset, the enrichment lookup reports "API not configured" rather than
+    # calling out; no domain is ever invented. No key is committed to source.
+    logo_dev_api_key: str | None = Field(
+        default=None,
+        repr=False,
+        exclude=True,
+        description="logo.dev Search Brands API key (secret; supplied via LOGO_DEV_API_KEY).",
+    )
+    # Base URL for the logo.dev Search Brands by Name endpoint. Overridable only
+    # so tests can point at a stub; production uses the documented default.
+    logo_dev_search_url: str = Field(
+        default="https://api.logo.dev/search",
+        description="logo.dev Search Brands by Name endpoint.",
+    )
+    # Wall-clock budget for a single logo.dev lookup. A slow or hung provider is
+    # treated as "API unavailable" and never blocks the operator indefinitely.
+    logo_dev_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        description="Wall-clock budget in seconds for one logo.dev lookup (default 10).",
+    )
+    # Upper bound on candidates surfaced per company. The operator still chooses
+    # explicitly; this only bounds the list so a noisy response stays reviewable.
+    logo_dev_max_candidates: int = Field(
+        default=10,
+        gt=0,
+        description="Maximum logo.dev candidates surfaced per company (default 10).",
+    )
+
+    def has_logo_dev_key(self) -> bool:
+        """True when a non-empty logo.dev API key is configured (never logs it)."""
+
+        return bool(self.logo_dev_api_key and self.logo_dev_api_key.strip())
+
     features: FeatureFlags = Field(default_factory=FeatureFlags)
 
     @property

@@ -38,5 +38,6 @@ from app.models import identity_resolution as _identity_resolution  # noqa: E402
 from app.models import import_batch as _import_batch  # noqa: E402,F401
 from app.models import insight as _insight  # noqa: E402,F401
 from app.models import provenance as _provenance  # noqa: E402,F401
+from app.models import salesnav_enrichment as _salesnav_enrichment  # noqa: E402,F401
 from app.models import score as _score  # noqa: E402,F401
 from app.models import suppression as _suppression  # noqa: E402,F401
