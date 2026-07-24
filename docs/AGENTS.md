@@ -162,7 +162,6 @@ The initial research threshold is an absolute score of **85/100**, not the top
 - Never expose unrestricted SQL, arbitrary code execution, suppression deletion,
   mailbox-limit changes, approval bypasses, or bulk-send authority to an agent.
 - Never bypass login controls, CAPTCHAs, platform limits, or access restrictions.
-- Do not automate unattended Sales Navigator scraping or use undocumented APIs.
 - Do not add paid model APIs or pay-per-token dependencies without explicit approval.
 - Keep secrets out of source, prompts, logs, screenshots, fixtures, browser code,
   documentation, and Git history.
