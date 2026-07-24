@@ -29,7 +29,9 @@ from app.models.enums import (
     CampaignStatus,
     ContactWorkflowState,
     IdentityResolutionType,
+    ImportBatchStatus,
     ImportRowOutcome,
+    ImportSourceFormat,
 )
 from app.services import devtools, identity, workbench
 from app.services.campaigns import (
@@ -43,12 +45,14 @@ from app.services.campaigns import (
 from app.services.imports import mapping as mapping_service
 from app.services.imports import parsing, staging, validation
 from app.services.imports.importer import (
+    BatchNotProcessable,
     BatchProvenance,
     CampaignNotFound,
     FeatureDisabledError,
+    process_pending_batch,
     run_import,
 )
-from app.services.imports.preview import preview_import
+from app.services.imports.preview import preview_import, preview_pending_batch
 
 router = APIRouter(include_in_schema=False)
 
@@ -669,6 +673,8 @@ def batch_detail_page(
     rows, total_rows = workbench.list_batch_rows(
         db, batch.id, outcome=outcome, limit=PAGE_SIZE, offset=(page - 1) * PAGE_SIZE
     )
+    is_salesnav = batch.source_format == ImportSourceFormat.SALES_NAVIGATOR
+    is_pending = batch.status == ImportBatchStatus.PENDING
     return _render(
         request,
         db,
@@ -681,10 +687,205 @@ def batch_detail_page(
             "page": page,
             "pages": _pages(total_rows),
             "outcome_filter": outcome_filter,
+            "is_salesnav": is_salesnav,
+            "is_pending": is_pending,
+            "sn_meta": batch.source_metadata if is_salesnav else None,
+            "csv_import_enabled": get_settings().features.csv_import,
             "active_nav": "imports",
             "page_title": batch.filename or "Import batch",
         },
     )
+
+
+# --- Pending staged batch: map -> preview -> confirm (Sales Navigator, UI-010) -
+#
+# A Sales Navigator capture (DAT-009) is staged as a PENDING ImportBatch whose
+# raw rows already exist. These routes let the operator drive that exact batch
+# through the SAME mapping, non-committing preview, and explicit confirmation the
+# spreadsheet importer uses — processing the rows in place, never a second
+# pipeline, never auto-confirmed.
+
+
+def _load_pending_batch(db: Session, batch_id: str) -> tuple[Any, Any, list[Any]] | None:
+    """Return (batch, campaign, raw_rows) for a PENDING batch, else None."""
+
+    parsed_id = _parse_uuid(batch_id)
+    found = workbench.get_batch(db, parsed_id) if parsed_id else None
+    if found is None:
+        return None
+    batch, campaign = found
+    if batch.status != ImportBatchStatus.PENDING:
+        return None
+    rows = workbench.list_import_rows(db, batch.id)
+    return batch, campaign, rows
+
+
+def _mapping_blocking_problems(problems: list[Any]) -> list[Any]:
+    """Structural mapping problems that must block progress.
+
+    A capture may legitimately lack a source for a required field (Sales
+    Navigator never exposes ``company_domain``). ``missing_required`` is therefore
+    surfaced as a non-blocking warning rather than a hard block: the rows that
+    lack the field are still truthfully rejected by validation at preview/confirm,
+    so no validation rule is bypassed. Structural errors (unknown column, unknown
+    field, duplicate target) still block.
+    """
+
+    return [p for p in problems if p.code != "missing_required"]
+
+
+@router.get("/imports/{batch_id}/map", response_class=HTMLResponse)
+def batch_map_page(request: Request, batch_id: str, db: Session = Depends(get_db)) -> HTMLResponse:
+    loaded = _load_pending_batch(db, batch_id)
+    if loaded is None:
+        return _not_found(
+            request, db, "That staged batch does not exist or has already been processed."
+        )
+    batch, campaign, rows = loaded
+    header = workbench.raw_row_header(rows)
+    current = batch.column_mapping or mapping_service.suggest_mapping(header)
+    check = mapping_service.check_mapping(current, header) if current else None
+    warnings = _mapping_warnings(check)
+    return _render(
+        request,
+        db,
+        "batch_map.html",
+        {
+            "batch": batch,
+            "campaign": campaign,
+            "header": header,
+            "current_mapping": current,
+            "system_fields": list(mapping_service.SYSTEM_FIELDS),
+            "required_fields": set(validation.REQUIRED_COLUMNS),
+            "sample_rows": [dict(r.raw_data) for r in rows[:SAMPLE_ROWS_SHOWN]],
+            "mapping_problems": [],
+            "mapping_warnings": warnings,
+            "active_nav": "imports",
+            "page_title": f"Map columns — staged batch {batch.id}",
+        },
+    )
+
+
+def _mapping_warnings(check: Any) -> list[str]:
+    if check is None:
+        return []
+    return [p.message for p in check.problems if p.code == "missing_required"]
+
+
+@router.post("/imports/{batch_id}/map")
+async def batch_map_save(
+    request: Request, batch_id: str, db: Session = Depends(get_db)
+) -> Response:
+    loaded = _load_pending_batch(db, batch_id)
+    if loaded is None:
+        return _redirect(
+            "/imports", err="That staged batch does not exist or was already processed."
+        )
+    batch, campaign, rows = loaded
+    header = workbench.raw_row_header(rows)
+
+    form = await request.form()
+    mapping: dict[str, str] = {}
+    for key, value in form.multi_items():
+        if key.startswith("map__") and str(value):
+            mapping[key[len("map__") :]] = str(value)
+
+    check = mapping_service.check_mapping(mapping, header)
+    blocking = _mapping_blocking_problems(check.problems)
+    if blocking:
+        return _render(
+            request,
+            db,
+            "batch_map.html",
+            {
+                "batch": batch,
+                "campaign": campaign,
+                "header": header,
+                "current_mapping": mapping,
+                "system_fields": list(mapping_service.SYSTEM_FIELDS),
+                "required_fields": set(validation.REQUIRED_COLUMNS),
+                "sample_rows": [dict(r.raw_data) for r in rows[:SAMPLE_ROWS_SHOWN]],
+                "mapping_problems": blocking,
+                "mapping_warnings": _mapping_warnings(check),
+                "active_nav": "imports",
+                "page_title": f"Map columns — staged batch {batch.id}",
+            },
+            status_code=400,
+        )
+
+    batch.column_mapping = mapping
+    batch.mapper_version = mapping_service.MAPPER_VERSION
+    db.commit()
+    return _redirect(f"/imports/{batch.id}/preview")
+
+
+@router.get("/imports/{batch_id}/preview", response_class=HTMLResponse)
+def batch_preview_page(
+    request: Request, batch_id: str, db: Session = Depends(get_db)
+) -> HTMLResponse:
+    loaded = _load_pending_batch(db, batch_id)
+    if loaded is None:
+        return _not_found(
+            request, db, "That staged batch does not exist or has already been processed."
+        )
+    batch, campaign, rows = loaded
+    result = preview_pending_batch(db, rows=rows, column_mapping=batch.column_mapping)
+    return _render(
+        request,
+        db,
+        "batch_preview.html",
+        {
+            "batch": batch,
+            "campaign": campaign,
+            "preview": result,
+            "shown_rows": result.rows[:PREVIEW_ROWS_SHOWN],
+            "has_mapping": bool(batch.column_mapping),
+            "csv_import_enabled": get_settings().features.csv_import,
+            "active_nav": "imports",
+            "page_title": f"Preview — staged batch {batch.id}",
+        },
+    )
+
+
+@router.post("/imports/{batch_id}/confirm")
+def batch_confirm(request: Request, batch_id: str, db: Session = Depends(get_db)) -> Response:
+    parsed_id = _parse_uuid(batch_id)
+    found = workbench.get_batch(db, parsed_id) if parsed_id else None
+    if found is None:
+        return _redirect("/imports", err="That staged batch does not exist.")
+    batch, _campaign = found
+
+    if batch.status == ImportBatchStatus.COMPLETED:
+        return _redirect(
+            f"/imports/{batch.id}", ok="This staged batch was already imported; showing outcomes."
+        )
+    if batch.status != ImportBatchStatus.PENDING:
+        return _redirect(
+            f"/imports/{batch.id}",
+            err="This staged batch cannot be processed in its current state.",
+        )
+
+    try:
+        summary = process_pending_batch(db, batch=batch, column_mapping=batch.column_mapping)
+    except FeatureDisabledError:
+        return _redirect(
+            f"/imports/{batch.id}/preview",
+            err="Imports are disabled: set FEATURES__CSV_IMPORT=true and restart the app.",
+        )
+    except (CampaignNotFound, BatchNotProcessable) as exc:
+        return _redirect(f"/imports/{batch.id}", err=str(exc))
+
+    if summary.status.value == "failed":
+        return _redirect(
+            f"/imports/{batch.id}",
+            err="The import could not be completed — see the failure reason on the batch.",
+        )
+    message = (
+        f"Import complete: {summary.accepted_rows} accepted, {summary.rejected_rows} rejected, "
+        f"{summary.duplicate_rows} duplicate, {summary.ambiguous_rows} ambiguous, "
+        f"{summary.suppressed_rows} suppressed."
+    )
+    return _redirect(f"/imports/{batch.id}", ok=message)
 
 
 _COMPARE_FIELDS: tuple[str, ...] = (

@@ -67,6 +67,10 @@ class CampaignNotFound(Exception):
     """Raised when the target campaign does not exist."""
 
 
+class BatchNotProcessable(Exception):
+    """Raised when a batch cannot be processed in place (wrong status)."""
+
+
 @dataclass(frozen=True)
 class BatchProvenance:
     """Operator-supplied provenance captured once for a whole batch."""
@@ -701,6 +705,139 @@ def run_import(
         # Roll back all processing work; no partial contacts are committed.
         session.rollback()
         failed = session.get(ImportBatch, batch_id)
+        if failed is not None:
+            failed.status = ImportBatchStatus.FAILED
+            failed.error_detail = f"{type(exc).__name__}: {exc}"
+            record_audit_event(
+                session,
+                actor=actor,
+                action="import.failed",
+                entity_type="import_batch",
+                entity_id=str(failed.id),
+                previous_state=ImportBatchStatus.VALIDATING.value,
+                new_state=ImportBatchStatus.FAILED.value,
+                reason=failed.error_detail,
+            )
+            session.commit()
+        raise
+
+
+def process_pending_batch(
+    session: Session,
+    *,
+    batch: ImportBatch,
+    column_mapping: dict[str, str] | None,
+    actor: str = "workbench",
+    _fault: Callable[[], None] | None = None,
+) -> ImportSummary:
+    """Process an already raw-captured PENDING batch into contacts, in place.
+
+    This is stage 2 of the staged import applied to a batch whose immutable raw
+    rows already exist (e.g. a Sales Navigator capture staged by DAT-009). It runs
+    the SAME per-row processing as :func:`run_import` — the shared
+    :func:`_process_row` — so validation, normalization, deduplication,
+    suppression, ambiguity handling, provenance, and contact creation are
+    identical to a spreadsheet import; nothing is bypassed. The batch transitions
+    ``pending -> completed`` (or ``failed`` on error, rolling back all processing
+    work). It creates a second import pipeline nowhere: only the entry point
+    differs (an existing batch vs. a freshly parsed file).
+
+    Idempotent: a batch that is already ``completed`` is returned unchanged.
+    """
+
+    if not get_settings().features.csv_import:
+        raise FeatureDisabledError("CSV import is disabled (FEATURES__CSV_IMPORT is off).")
+
+    # Idempotent confirm: an already-processed batch is returned as-is.
+    if batch.status == ImportBatchStatus.COMPLETED:
+        return _summary_from_batch(batch, reused=True)
+    if batch.status != ImportBatchStatus.PENDING:
+        raise BatchNotProcessable(
+            f"batch {batch.id} is {batch.status.value}, not pending; it cannot be processed."
+        )
+
+    campaign = session.get(Campaign, batch.campaign_id)
+    if campaign is None:
+        raise CampaignNotFound(f"campaign {batch.campaign_id} does not exist")
+
+    import_rows = list(
+        session.scalars(
+            select(ImportRow)
+            .where(ImportRow.batch_id == batch.id)
+            .order_by(ImportRow.sheet_index, ImportRow.row_number)
+        ).all()
+    )
+
+    # Batch-level provenance was captured at staging time; reuse it verbatim.
+    provenance = BatchProvenance(
+        source_name=batch.source_name,
+        source_reference=batch.source_reference,
+        exported_by=batch.exported_by,
+        exported_at=batch.exported_at,
+    )
+
+    # Record the operator-confirmed mapping on the batch so its interpretation is
+    # reproducible (same column as a spreadsheet import).
+    batch.status = ImportBatchStatus.VALIDATING
+    batch.column_mapping = dict(column_mapping) if column_mapping is not None else None
+    batch.mapper_version = mapping_service.MAPPER_VERSION if column_mapping is not None else None
+    session.flush()
+
+    counts = _Counts()
+    try:
+        for import_row in import_rows:
+            raw = dict(import_row.raw_data)
+            source = (
+                mapping_service.apply_mapping(raw, column_mapping)
+                if column_mapping is not None
+                else raw
+            )
+            validated = validation.validate_row(import_row.row_number, source)
+            _process_row(
+                session,
+                campaign=campaign,
+                batch=batch,
+                import_row=import_row,
+                validated=validated,
+                provenance=provenance,
+                actor=actor,
+                counts=counts,
+            )
+        if _fault is not None:
+            _fault()
+
+        batch.status = ImportBatchStatus.COMPLETED
+        batch.accepted_rows = counts.accepted
+        batch.rejected_rows = counts.rejected
+        batch.duplicate_rows = counts.duplicate
+        batch.suppressed_rows = counts.suppressed
+        batch.ambiguous_rows = counts.ambiguous
+        batch.contacts_created = counts.contacts_created
+        batch.completed_at = datetime.now(UTC)
+        record_audit_event(
+            session,
+            actor=actor,
+            action="import.completed",
+            entity_type="import_batch",
+            entity_id=str(batch.id),
+            previous_state=ImportBatchStatus.PENDING.value,
+            new_state=ImportBatchStatus.COMPLETED.value,
+            reason="staged batch processed after operator confirmation",
+            context={
+                "accepted": counts.accepted,
+                "rejected": counts.rejected,
+                "duplicate": counts.duplicate,
+                "suppressed": counts.suppressed,
+                "ambiguous": counts.ambiguous,
+                "contacts_created": counts.contacts_created,
+                "source_format": batch.source_format.value,
+            },
+        )
+        session.commit()
+        return _summary_from_batch(batch)
+    except Exception as exc:
+        session.rollback()
+        failed = session.get(ImportBatch, batch.id)
         if failed is not None:
             failed.status = ImportBatchStatus.FAILED
             failed.error_detail = f"{type(exc).__name__}: {exc}"

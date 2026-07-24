@@ -17,10 +17,11 @@ importScripts(
   "../common/normalize.js",
   "../common/dedupe.js",
   "../common/schema.js",
-  "../common/permissions.js"
+  "../common/permissions.js",
+  "../common/handoff.js"
 );
 
-const { constants, dedupe, schema, permissions } = self.SNCapture;
+const { constants, dedupe, schema, permissions, handoff } = self.SNCapture;
 const { STORAGE, DEFAULT_PREFERENCES, LIMITS, CAPTURE_STATUS, ALLOWED_BACKEND_ORIGIN_PATTERNS, INTAKE_PATH } =
   constants;
 
@@ -53,6 +54,19 @@ async function getBatch() {
 async function setBatch(batch) {
   await chrome.storage.local.set({ [STORAGE.DRAFT_BATCH]: batch });
   return batch;
+}
+// Last successful staging result — a small, safe summary kept so the operator
+// can reopen the staged batch after the popup closes, without recapturing.
+async function getLastResult() {
+  const data = await chrome.storage.local.get(STORAGE.LAST_RESULT);
+  return data[STORAGE.LAST_RESULT] || null;
+}
+async function setLastResult(result) {
+  await chrome.storage.local.set({ [STORAGE.LAST_RESULT]: result });
+  return result;
+}
+async function clearLastResult() {
+  await chrome.storage.local.remove(STORAGE.LAST_RESULT);
 }
 async function ensureBatch() {
   let batch = await getBatch();
@@ -207,6 +221,9 @@ async function toggleExclude(stableKey, index) {
 
 async function clearBatch() {
   await chrome.storage.local.remove(STORAGE.DRAFT_BATCH);
+  // Clearing the reviewed batch also discards the last staging result: the
+  // staged batch is only meaningful while its reviewed source exists.
+  await clearLastResult();
   const fresh = await ensureBatch();
   return buildBatchView(fresh);
 }
@@ -339,7 +356,14 @@ async function sendBatch(explicitTarget) {
     if (!resp.ok) {
       return { ok: false, error: "receiver_rejected", status: resp.status, body };
     }
-    return { ok: true, status: resp.status, body, target, url };
+    // Persist a safe, recoverable summary of the staged batch (ids + counts +
+    // an openable workbench URL only — never the raw body or records).
+    const result = handoff.sanitizeStageResult(body, {
+      campaignId: payload.campaign_id || null,
+      stagedAt: new Date().toISOString(),
+    });
+    await setLastResult(result);
+    return { ok: true, status: resp.status, body, target, url, result };
   } catch (e) {
     clearTimeout(timer);
     if (e && e.name === "AbortError") {
@@ -427,7 +451,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case "GET_STATE": {
         const batch = await ensureBatch();
         const prefs = await getPrefs();
-        sendResponse({ ok: true, prefs, batchView: buildBatchView(batch) });
+        const lastResult = await getLastResult();
+        sendResponse({ ok: true, prefs, batchView: buildBatchView(batch), lastResult });
         break;
       }
       case "DETECT_ACTIVE_PAGE":

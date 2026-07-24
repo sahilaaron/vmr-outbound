@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% from "_macros.html" import outcome_badge %}
+{% block content %}
+<div class="page-head">
+  <div class="crumbs"><a href="/imports">Imports</a><span>/</span><a href="/imports/{{ batch.id }}">staged batch</a><span>/</span>preview</div>
+  <h1>Preview &amp; validate</h1>
+  <div class="sub">This is a dry run. <strong>Nothing has been written</strong>: no contacts, no memberships, no import outcomes. Review the predicted result, then confirm to commit.</div>
+</div>
+
+<div class="steps" aria-label="Import steps">
+  <span class="step done"><span class="n">1</span>Capture &amp; stage</span>
+  <span class="step done"><span class="n">2</span>Map fields</span>
+  <span class="step current"><span class="n">3</span>Preview &amp; validate</span>
+  <span class="step"><span class="n">4</span>Confirm</span>
+</div>
+
+<div class="stat-grid">
+  <div class="stat"><div class="label">Total rows</div><div class="value">{{ preview.total_rows }}</div></div>
+  <div class="stat"><div class="label">Would accept</div><div class="value ok">{{ preview.accepted }}</div></div>
+  <div class="stat"><div class="label">Would reject</div><div class="value err">{{ preview.rejected }}</div></div>
+  <div class="stat"><div class="label">Duplicates</div><div class="value info">{{ preview.duplicate }}</div></div>
+  <div class="stat"><div class="label">Ambiguous</div><div class="value warn">{{ preview.ambiguous }}</div></div>
+  <div class="stat"><div class="label">Suppressed</div><div class="value muted">{{ preview.suppressed }}</div></div>
+</div>
+
+{% if not has_mapping %}
+<div class="notice warn" role="status">
+  <div>No field mapping is set, so rows are validated against their captured field names directly.
+    <a href="/imports/{{ batch.id }}/map">Set a mapping</a> to correct field correspondence.</div>
+</div>
+{% endif %}
+
+{% if preview.problems %}
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Validation problems ({{ preview.problems | length }})</strong>
+    <span class="hint">These rows would be rejected. Adjust the mapping or supply the missing fields, then preview again.</span></div>
+  <table>
+    <thead><tr><th class="num">Row</th><th>Field</th><th>Problem</th></tr></thead>
+    <tbody>
+      {% for p in preview.problems[:100] %}
+      <tr>
+        <td class="num">{{ p.row_number }}</td>
+        <td class="mono">{{ p.column or "—" }}</td>
+        <td class="wrap">{{ p.message }}</td>
+      </tr>
+      {% endfor %}
+      {% if preview.problems | length > 100 %}
+      <tr><td colspan="3" class="small muted-text">…and {{ preview.problems | length - 100 }} more. All problems stay visible on the batch after import.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Row-by-row prediction (first {{ shown_rows | length }} of {{ preview.rows | length }})</strong></div>
+  <table>
+    <thead><tr><th class="num">Row</th><th>Predicted outcome</th><th>Contact</th><th>Note</th></tr></thead>
+    <tbody>
+      {% for row in shown_rows %}
+      <tr>
+        <td class="num">{{ row.row_number }}</td>
+        <td>{{ outcome_badge(row.outcome) }}</td>
+        <td>{{ row.normalized.get("first_name") or "" }} {{ row.normalized.get("last_name") or "" }}
+          <div class="small muted-text mono">{{ row.normalized.get("email") or row.normalized.get("company_domain") or "" }}</div></td>
+        <td class="wrap small">{{ row.note or "" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Confirm import</h2></div>
+  <div class="card-body">
+    <p class="small muted-text mt-0">Confirming processes this exact staged batch into
+      campaign <strong>{{ campaign.name }}</strong> through the normal validation, deduplication, suppression,
+      and ambiguity checks. Confirming twice will not re-import — the batch is processed once.</p>
+    {% if not csv_import_enabled %}
+    <div class="notice err" role="alert"><div>Importing is disabled. Set <code>FEATURES__CSV_IMPORT=true</code> and restart the app to confirm.</div></div>
+    {% endif %}
+    <form method="post" action="/imports/{{ batch.id }}/confirm">
+      <button class="btn" type="submit" {{ "disabled" if not csv_import_enabled }}>Confirm and import {{ preview.total_rows }} rows</button>
+      <a class="btn secondary" href="/imports/{{ batch.id }}/map">Back to mapping</a>
+      <a class="btn secondary" href="/imports/{{ batch.id }}">Cancel</a>
+    </form>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,37 @@
+# Local development Postgres for the VMR Outbound Agent.
+#
+# One reproducible, UTF-8 database that matches the default DATABASE_URL in
+# .env.example (postgresql+psycopg://dev@127.0.0.1:5433/vmr_dev). This is a
+# LOCAL DEVELOPMENT convenience only — no production/RDS credentials belong here.
+#
+#   docker compose up -d db      # start Postgres in the background
+#   python scripts/dev_up.py     # create schema (migrations) + verify
+#   docker compose down          # stop it (data persists in the named volume)
+#   docker compose down -v       # stop it AND delete all local data
+services:
+  db:
+    image: postgres:16
+    container_name: vmr_dev_db
+    environment:
+      POSTGRES_USER: dev
+      POSTGRES_DB: vmr_dev
+      # Loopback-only trust auth so the passwordless default DATABASE_URL works
+      # unchanged. Safe here because the port is bound to 127.0.0.1 only (below);
+      # never use trust auth on a network-reachable database.
+      POSTGRES_HOST_AUTH_METHOD: trust
+      # Force a UTF-8 cluster: a C/SQL_ASCII locale makes the driver return text
+      # as bytes and breaks SQLAlchemy (see docs/DEVELOPMENT.md).
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      # Bound to loopback only — not reachable from the network.
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - vmr_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dev -d vmr_dev"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  vmr_pgdata:

@@ -5,7 +5,7 @@
 (function () {
   "use strict";
 
-  const { constants } = self.SNCapture;
+  const { constants, handoff } = self.SNCapture;
   const WARN = constants.WARNINGS;
 
   function send(message) {
@@ -302,65 +302,57 @@
     setStatus(state, "status-neutral", "Sending…");
     const r = await send({ type: "SEND_BATCH", target });
     if (r && r.ok) {
-      const body = r.body || {};
-      const already = body.already_received ? " (already received — idempotent)" : "";
-      setStatus(
-        state,
-        "status-ok",
-        `Staged${already}: ${body.record_count != null ? body.record_count + " records" : "ok"}` +
-          (body.staging_id ? ` · id ${body.staging_id}` : "")
-      );
-      renderSendDetails(body);
+      // The worker persisted a safe result summary; render it (also restores on
+      // reopen). The reviewed batch is intentionally NOT cleared here.
+      const result = r.result || handoff.sanitizeStageResult(r.body || {}, {});
+      renderStagedResult(result);
     } else {
-      const detail = describeSendError(r);
+      const detail = handoff.describeSendError(r);
       setStatus(state, "status-err", detail.headline);
-      if (detail.body) {
-        state.appendChild(el("div", { class: "small mono", text: detail.body }));
+      if (detail.detail) {
+        state.appendChild(el("div", { class: "small muted", text: detail.detail }));
       }
-      actions.appendChild(el("button", { class: "btn btn-ghost", text: "Retry", on: { click: doSend } }));
+      // The reviewed draft and its exclusions are preserved (send never mutates
+      // the batch), so Retry re-sends the SAME client_batch_id — idempotent.
+      if (detail.canRetry !== false) {
+        actions.appendChild(el("button", { class: "btn btn-ghost", text: "Retry", on: { click: doSend } }));
+      }
     }
   }
 
-  function describeSendError(r) {
-    if (!r) return { headline: "Send failed." };
-    switch (r.error) {
-      case "timeout":
-        return { headline: "Receiver timed out. Is the backend/mock running?", body: r.message };
-      case "network_error":
-        return { headline: "Network error reaching the receiver.", body: r.message };
-      case "receiver_rejected":
-        return {
-          headline: `Receiver rejected the batch (HTTP ${r.status}).`,
-          body: r.body ? JSON.stringify(r.body) : "",
-        };
-      case "origin_not_allowed":
-        return { headline: r.message || "Target origin not allowed (loopback only)." };
-      case "invalid_payload":
-        return { headline: "Payload failed validation.", body: (r.messages || []).join("; ") };
-      case "payload_too_large":
-        return { headline: r.message };
-      case "empty_batch":
-        return { headline: "Nothing to send — all records excluded or batch empty." };
-      default:
-        return { headline: (r.message || r.error || "Send failed."), body: r.detail };
-    }
-  }
-
-  function renderSendDetails(body) {
+  /**
+   * Render the successful-staging state and, distinctly, an Open in workbench
+   * action. Staging and opening the workbench stay separate operator actions;
+   * the workbench is never opened automatically. Used both right after a send
+   * and to restore the state when the popup is reopened.
+   */
+  function renderStagedResult(result) {
+    if (!result) return;
+    const state = $("send-state");
     const actions = $("send-actions");
     actions.textContent = "";
-    if (body.warnings && body.warnings.length) {
-      $("send-state").appendChild(
-        el("div", { class: "small muted", text: `Backend warnings: ${body.warnings.length}` })
-      );
+    const already = result.alreadyReceived ? " (already received — idempotent)" : "";
+    setStatus(
+      state,
+      "status-ok",
+      `Staged${already}: ${result.recordCount != null ? result.recordCount + " records" : "ok"}` +
+        (result.stagingId ? ` · id ${result.stagingId}` : "")
+    );
+    if (result.warningCount) {
+      state.appendChild(el("div", { class: "small muted", text: `Backend warnings: ${result.warningCount}` }));
     }
-    if (body.expires_at) {
-      $("send-state").appendChild(el("div", { class: "tiny muted", text: "Expires: " + body.expires_at }));
+    if (result.expiresAt) {
+      state.appendChild(el("div", { class: "tiny muted", text: "Expires: " + result.expiresAt }));
     }
-    const url = body.operator_workbench_url || body.workbench_url;
-    if (url && /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?\//.test(url)) {
+    // Only open a URL the backend returned if it is a known local workbench
+    // destination; a non-loopback/unexpected URL is refused (never opened).
+    if (result.workbenchUrl && handoff.isOpenableWorkbenchUrl(result.workbenchUrl)) {
       actions.appendChild(
-        el("a", { class: "btn btn-primary", text: "Open staged batch in workbench", attrs: { href: url, target: "_blank", rel: "noreferrer" } })
+        el("a", { class: "btn btn-primary", text: "Open staged batch in workbench", attrs: { href: result.workbenchUrl, target: "_blank", rel: "noreferrer" } })
+      );
+    } else {
+      state.appendChild(
+        el("div", { class: "tiny muted", text: "Open the batch from the workbench Imports list (no safe workbench link was returned)." })
       );
     }
   }
@@ -417,6 +409,10 @@
     if (state && state.ok) {
       loadPrefsIntoUi(state.prefs);
       renderBatch(state.batchView);
+      // Recovery: if a batch was already staged (popup was closed/reloaded, or
+      // navigation failed), restore the staged state + Open in workbench action
+      // without requiring a recapture or resend.
+      if (state.lastResult) renderStagedResult(state.lastResult);
     }
     refreshDetect();
   }
