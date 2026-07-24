@@ -363,6 +363,8 @@ def get_contact_detail(session: Session, contact_id: uuid.UUID) -> ContactDetail
         combined = conditions[0]
         for extra in conditions[1:]:
             combined = combined | extra
-        detail.active_suppression = session.scalars(select(Suppression).where(combined)).first()
+        detail.active_suppression = session.scalars(
+            select(Suppression).where(Suppression.is_active.is_(True), combined)
+        ).first()
 
     return detail

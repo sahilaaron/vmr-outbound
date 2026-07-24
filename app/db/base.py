@@ -31,6 +31,7 @@ from app.models import audit_event as _audit_event  # noqa: E402,F401
 from app.models import campaign as _campaign  # noqa: E402,F401
 from app.models import company as _company  # noqa: E402,F401
 from app.models import contact as _contact  # noqa: E402,F401
+from app.models import contact_field_value as _contact_field_value  # noqa: E402,F401
 from app.models import draft as _draft  # noqa: E402,F401
 from app.models import email_candidate as _email_candidate  # noqa: E402,F401
 from app.models import email_evidence as _email_evidence  # noqa: E402,F401

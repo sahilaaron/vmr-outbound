@@ -97,14 +97,48 @@ class SuppressionType(enum.StrEnum):
 
 
 class SuppressionReason(enum.StrEnum):
-    """Why an identity is suppressed. Opt-outs and hard bounces never expire."""
+    """Why an identity is suppressed. Opt-outs and hard bounces never expire.
+
+    ``LEGAL_COMPLIANCE`` covers a legal or compliance hold (e.g. a GDPR erasure
+    request or a jurisdiction the campaign may not contact). New reasons are added
+    here and take effect everywhere the ledger is consulted (DAT-006).
+    """
 
     OPT_OUT = "opt_out"
     HARD_BOUNCE = "hard_bounce"
     CUSTOMER = "customer"
     COMPETITOR = "competitor"
     INTERNAL_EXCLUSION = "internal_exclusion"
+    LEGAL_COMPLIANCE = "legal_compliance"
     MANUAL = "manual"
+
+
+# Precedence when one identity carries several active suppressions: the strongest
+# reason is the one reported as the blocking reason. Opt-out and hard bounce are
+# the hardest (never expire, deliverability/consent), then legal, then the
+# commercial/manual reasons. A total, deterministic order (DAT-006).
+SUPPRESSION_REASON_PRECEDENCE: tuple[SuppressionReason, ...] = (
+    SuppressionReason.OPT_OUT,
+    SuppressionReason.HARD_BOUNCE,
+    SuppressionReason.LEGAL_COMPLIANCE,
+    SuppressionReason.COMPETITOR,
+    SuppressionReason.CUSTOMER,
+    SuppressionReason.INTERNAL_EXCLUSION,
+    SuppressionReason.MANUAL,
+)
+
+
+class SuppressionEventType(enum.StrEnum):
+    """A change to one suppression record's lifecycle, kept as history (DAT-006).
+
+    Unsuppressing never deletes a suppression; it appends a ``DEACTIVATED`` event
+    and flips the record inactive, so the full history — who suppressed an
+    identity, why, when, and any later reactivation — is always preserved.
+    """
+
+    CREATED = "created"
+    REACTIVATED = "reactivated"
+    DEACTIVATED = "deactivated"
 
 
 class ContactWorkflowState(enum.StrEnum):
