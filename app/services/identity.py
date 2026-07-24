@@ -36,7 +36,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.models.campaign import Campaign, CampaignContact
@@ -46,6 +46,7 @@ from app.models.enums import (
     IdentityResolutionType,
     ImportRowOutcome,
 )
+from app.models.external_event import ExternalEvent
 from app.models.identity_resolution import IdentityResolution
 from app.models.import_batch import ImportBatch, ImportRow, ImportRowValidation
 from app.models.provenance import ProvenanceRecord
@@ -970,6 +971,17 @@ def _apply_merge(
                     actor=actor,
                     reason=f"{membership.state.value} preserved from merged duplicate",
                 )
+            # Re-home outreach history recorded against the loser's membership
+            # onto the survivor's BEFORE the redundant row is deleted, so
+            # completed/failed/suppressed outreach history is never lost by
+            # this coalescing (CMP-003 invariant: dedup must not collapse
+            # distinct historical records). The FK's ON DELETE SET NULL is
+            # only the defense-in-depth fallback for paths that don't do this.
+            session.execute(
+                update(ExternalEvent)
+                .where(ExternalEvent.campaign_contact_id == membership.id)
+                .values(campaign_contact_id=survivor_membership.id, contact_id=survivor.id)
+            )
             session.delete(membership)
             session.flush()
             coalesced_campaigns.append(str(membership.campaign_id))
