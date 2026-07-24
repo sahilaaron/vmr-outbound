@@ -171,6 +171,12 @@ def _append_observation(
     return cfv
 
 
+def _is_blank(value: str | None) -> bool:
+    """True when an imported value carries no evidence (missing or whitespace)."""
+
+    return value is None or not value.strip()
+
+
 def record_import_observations(
     session: Session,
     *,
@@ -181,21 +187,31 @@ def record_import_observations(
     resolved_provenance: dict[str, Any],
     actor: str,
 ) -> None:
-    """Record one import's observation of every tracked field, then reconcile.
+    """Record one import's observation of each *populated* tracked field, then reconcile.
 
     Called for each accepted or duplicate row. The row's ``exported_at`` provides
-    the source observation time (or None when absent). Each tracked field gets one
-    appended observation and is reconciled independently, so a newer import can
-    correct a stale ``title`` while an unrelated field is untouched.
+    the source observation time (or None when absent). Each populated tracked field
+    gets one appended observation and is reconciled independently, so a newer import
+    can correct a stale ``title`` while an unrelated field is untouched.
+
+    A missing or blank imported field is an **omission, not an instruction to
+    clear**: no observation is recorded for it, so a partial import can never let a
+    fresh empty value overwrite a previously known value. Deliberately clearing a
+    field is only possible through an explicit, audited manual override
+    (:func:`set_manual_override`), which may set a value to ``None``.
     """
 
     observed_at = _observed_at_from_export(resolved_provenance.get("exported_at"))
     for field_name in TRACKED_FIELDS:
+        value = normalized.get(field_name)
+        if _is_blank(value):
+            # Omitted/blank field: leave existing evidence untouched (DAT-005).
+            continue
         _append_observation(
             session,
             contact_id=contact.id,
             field_name=field_name,
-            value=normalized.get(field_name),
+            value=value,
             import_batch_id=batch_id,
             import_row_id=row_id,
             source_name=resolved_provenance.get("source_name"),

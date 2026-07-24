@@ -17,7 +17,6 @@ from app.services.campaigns import create_campaign
 from app.services.imports.importer import BatchProvenance, run_import
 from app.services.provenance.freshness import (
     FRESHNESS_POLICY_VERSION,
-    TRACKED_FIELDS,
     Observation,
     resolve_winner,
     sort_key,
@@ -147,6 +146,16 @@ def _contact(db: Session) -> Contact:
     return db.scalars(select(Contact).where(Contact.email == "dana@acme.example")).one()
 
 
+def _csv_company(company: str, exported_at: str, *, tag: str = "") -> bytes:
+    """A re-export that carries company_name but deliberately OMITS the title column."""
+    header = b"first_name,last_name,company_name,company_domain,email,exported_at"
+    row = f"Dana,Lee,{company},acme.example,dana@acme.example,{exported_at}".encode()
+    if tag:
+        header = header + b",tag"
+        row = row + f",{tag}".encode()
+    return header + b"\n" + row + b"\n"
+
+
 def _field_values(db: Session, contact_id, field: str) -> list[ContactFieldValue]:
     return list(
         db.scalars(
@@ -164,12 +173,17 @@ def test_new_contact_seeds_field_provenance(db_session: Session) -> None:
     contact = _contact(db_session)
 
     assert contact.title == "Manager"
-    for field in TRACKED_FIELDS:
+    # Populated tracked fields (title, company_name) are seeded as the sole winner.
+    for field in ("title", "company_name"):
         values = _field_values(db_session, contact.id, field)
         assert len(values) == 1
         assert values[0].is_current_winner is True
         assert values[0].policy_version == FRESHNESS_POLICY_VERSION
         assert values[0].decision_reason == "only observation of this field"
+    # Tracked fields the import did not carry record no observation (not a blank
+    # observation that could later be mistaken for evidence).
+    for field in ("company_size", "industry", "country", "linkedin_url"):
+        assert _field_values(db_session, contact.id, field) == []
 
 
 def test_newer_import_updates_stale_field(db_session: Session) -> None:
@@ -326,3 +340,83 @@ def test_winner_is_reproducible_from_stored_evidence(db_session: Session) -> Non
     stored_winner = next(v for v in values if v.is_current_winner)
     assert recomputed.key == str(stored_winner.id)
     assert stored_winner.value == "VP" == contact.title
+
+
+# --------------------------------------------------------------------------- #
+# Partial imports must not erase known evidence (PR #148 review)              #
+# --------------------------------------------------------------------------- #
+
+
+def test_newer_partial_import_does_not_erase_omitted_field(db_session: Session) -> None:
+    campaign = create_campaign(db_session, name="C")
+    # Full first import: title known, company "Acme Co", observed 2026-01-01.
+    _import(db_session, campaign, _csv("Manager", "2026-01-01"))
+    contact = _contact(db_session)
+    assert contact.title == "Manager"
+
+    # A NEWER re-export (2026-06-01) that omits the title column entirely but
+    # changes company_name. The fresher, empty title must NOT overwrite the known
+    # value, while the populated company_name reconciles normally.
+    _import(db_session, campaign, _csv_company("Acme Corp", "2026-06-01", tag="reexport"))
+    db_session.refresh(contact)
+
+    assert contact.title == "Manager"  # not erased by the omitted field
+    assert contact.company_name == "Acme Corp"  # populated field reconciled
+
+    # No blank observation was recorded for the omitted field.
+    title_values = _field_values(db_session, contact.id, "title")
+    assert len(title_values) == 1
+    assert all(v.value == "Manager" for v in title_values)
+
+
+def test_blank_field_records_no_observation(db_session: Session) -> None:
+    campaign = create_campaign(db_session, name="C")
+    # An import whose title cell is present but empty is an omission, not a clear.
+    content = (
+        b"first_name,last_name,company_name,company_domain,email,title,exported_at\n"
+        b"Dana,Lee,Acme Co,acme.example,dana@acme.example,,2026-01-01\n"
+    )
+    _import(db_session, campaign, content)
+    contact = _contact(db_session)
+    assert contact.title is None
+    assert _field_values(db_session, contact.id, "title") == []
+
+
+def test_manual_override_can_explicitly_clear_a_field(db_session: Session) -> None:
+    campaign = create_campaign(db_session, name="C")
+    _import(db_session, campaign, _csv("Manager", "2026-01-01"))
+    contact = _contact(db_session)
+    assert contact.title == "Manager"
+
+    # Explicit clear IS supported — but only through an audited manual override.
+    set_manual_override(
+        db_session,
+        contact=contact,
+        field_name="title",
+        value=None,
+        actor="operator@vmr.example",
+        reason="title no longer accurate",
+    )
+    db_session.refresh(contact)
+    assert contact.title is None
+
+    view = explain_field(db_session, contact=contact, field_name="title")
+    assert view.current_value is None
+    assert view.winner is not None
+    assert view.winner.is_manual_override is True
+    assert view.winner.value is None
+
+
+def test_manual_clear_not_undone_by_later_populated_import(db_session: Session) -> None:
+    campaign = create_campaign(db_session, name="C")
+    _import(db_session, campaign, _csv("Manager", "2026-01-01"))
+    contact = _contact(db_session)
+    set_manual_override(db_session, contact=contact, field_name="title", value=None, actor="op")
+    db_session.refresh(contact)
+    assert contact.title is None
+
+    # A later import that DOES carry a title must not silently undo the explicit
+    # operator clear (manual override stays authoritative).
+    _import(db_session, campaign, _csv("VP", "2027-01-01", tag="later"))
+    db_session.refresh(contact)
+    assert contact.title is None
