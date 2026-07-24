@@ -5,7 +5,10 @@
   "description": "Operator-driven capture of visible SalesNav records for the VMR Outbound Agent intake. No scraping automation, no credentials stored.",
   "minimum_chrome_version": "116",
   "permissions": ["storage", "sidePanel", "downloads", "activeTab", "scripting"],
-  "host_permissions": ["https://www.linkedin.com/sales/*"],
+  "host_permissions": [
+    "https://www.linkedin.com/sales/*",
+    "https://www.linkedin.com/in/*"
+  ],
   "optional_host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
   "background": {
     "service_worker": "src/background/service-worker.js"
@@ -24,6 +27,18 @@
         "src/common/normalize.js",
         "src/common/extraction.js",
         "src/content/content-script.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.linkedin.com/in/*"],
+      "js": [
+        "src/common/constants.js",
+        "src/common/normalize.js",
+        "src/common/extraction.js",
+        "src/common/surface.js",
+        "src/common/profile-extraction.js",
+        "src/content/profile-content-script.js"
       ],
       "run_at": "document_idle"
     }

@@ -15,15 +15,28 @@
 importScripts(
   "../common/constants.js",
   "../common/normalize.js",
+  "../common/extraction.js",
+  "../common/surface.js",
   "../common/dedupe.js",
   "../common/schema.js",
+  "../common/profile-schema.js",
   "../common/permissions.js",
   "../common/handoff.js"
 );
 
-const { constants, dedupe, schema, permissions, handoff } = self.SNCapture;
-const { STORAGE, DEFAULT_PREFERENCES, LIMITS, CAPTURE_STATUS, ALLOWED_BACKEND_ORIGIN_PATTERNS, INTAKE_PATH } =
-  constants;
+const { constants, dedupe, schema, profileSchema, permissions, handoff, surface } =
+  self.SNCapture;
+const {
+  STORAGE,
+  PROFILE_STORAGE,
+  DEFAULT_PREFERENCES,
+  LIMITS,
+  CAPTURE_STATUS,
+  SURFACES,
+  ALLOWED_BACKEND_ORIGIN_PATTERNS,
+  INTAKE_PATH,
+  PROFILE_INTAKE_PATH,
+} = constants;
 
 const EXTENSION_VERSION = chrome.runtime.getManifest().version;
 const SEND_TIMEOUT_MS = 15000;
@@ -406,6 +419,226 @@ async function fetchCampaigns() {
   }
 }
 
+// ---- person-profile capture mode (DAT-012C) --------------------------------
+//
+// A profile draft is ONE reviewed capture (not a batch). It lives in its own
+// storage keys so the SalesNav batch workflow is never affected. Nothing is
+// sent without an explicit PROFILE_SEND from the operator.
+
+async function getProfileDraft() {
+  const data = await chrome.storage.local.get(PROFILE_STORAGE.DRAFT_PROFILE);
+  return data[PROFILE_STORAGE.DRAFT_PROFILE] || null;
+}
+async function setProfileDraft(draft) {
+  await chrome.storage.local.set({ [PROFILE_STORAGE.DRAFT_PROFILE]: draft });
+  return draft;
+}
+async function getLastProfileResult() {
+  const data = await chrome.storage.local.get(PROFILE_STORAGE.LAST_PROFILE_RESULT);
+  return data[PROFILE_STORAGE.LAST_PROFILE_RESULT] || null;
+}
+async function setLastProfileResult(result) {
+  await chrome.storage.local.set({ [PROFILE_STORAGE.LAST_PROFILE_RESULT]: result });
+  return result;
+}
+
+async function findActiveTab() {
+  const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  return (tabs && tabs[0]) || null;
+}
+
+/** Classify the ACTIVE tab into a side-panel mode (URL-level; DOM checks refine). */
+async function detectActiveSurface() {
+  const tab = await findActiveTab();
+  if (!tab || !tab.url) return { ok: true, surface: SURFACES.UNSUPPORTED, url: null };
+  const detected = surface.detectSurface(tab.url, null);
+  return { ok: true, surface: detected.surface, reason: detected.reason, url: tab.url };
+}
+
+const PROFILE_CS_FILES = [
+  "src/common/constants.js",
+  "src/common/normalize.js",
+  "src/common/extraction.js",
+  "src/common/surface.js",
+  "src/common/profile-extraction.js",
+  "src/content/profile-content-script.js",
+];
+
+async function askProfileContentScript(message) {
+  const tab = await findActiveTab();
+  if (!tab || !/^https:\/\/www\.linkedin\.com\/in\//.test(tab.url || "")) {
+    return {
+      ok: false,
+      error: "no_profile_tab",
+      message: "Open a LinkedIn profile (linkedin.com/in/…) in the active tab.",
+    };
+  }
+  try {
+    const resp = await chrome.tabs.sendMessage(tab.id, message);
+    return { ok: true, tab, resp };
+  } catch (e) {
+    try {
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: PROFILE_CS_FILES });
+      const resp = await chrome.tabs.sendMessage(tab.id, message);
+      return { ok: true, tab, resp };
+    } catch (e2) {
+      return { ok: false, error: "content_script_unavailable", detail: String(e2 && e2.message) };
+    }
+  }
+}
+
+async function profileDetect() {
+  const r = await askProfileContentScript({ type: "PS_DETECT" });
+  if (!r.ok) return { ok: false, error: r.error, message: r.message };
+  return { ok: true, page: r.resp };
+}
+
+/** Build a small, reviewable summary of a draft for the side panel. */
+function buildProfileDraftView(draft) {
+  if (!draft) return null;
+  const ex = draft.extraction;
+  const current = (ex.experiences || []).filter((e) => e.is_current === true);
+  return {
+    clientCaptureId: draft.clientCaptureId,
+    capturedAt: ex.capturedAt,
+    status: ex.status,
+    profile: ex.profile,
+    experiences: ex.experiences || [],
+    experienceCount: (ex.experiences || []).length,
+    currentRoles: current.map((e) => ({
+      job_title: e.job_title,
+      company_name: e.company_name,
+    })),
+    missingSections: ex.missingSections || [],
+    pageWarnings: ex.pageWarnings || [],
+    excludedSections: draft.excludedSections || [],
+  };
+}
+
+async function profileCapture() {
+  const r = await askProfileContentScript({ type: "PS_CAPTURE" });
+  if (!r.ok) return { ok: false, error: r.error, message: r.message };
+  const result = r.resp;
+
+  // Only ok/partial results become a reviewable draft. Challenge, unavailable,
+  // unsupported, and unrecognized-structure results are surfaced and NOT stored.
+  if (result.status !== CAPTURE_STATUS.OK && result.status !== CAPTURE_STATUS.PARTIAL) {
+    return {
+      ok: true,
+      captureStatus: result.status,
+      pageWarnings: result.pageWarnings || [],
+      draftView: buildProfileDraftView(await getProfileDraft()),
+    };
+  }
+
+  // A NEW capture replaces the draft and mints a fresh client_capture_id (a
+  // changed reviewed content must never reuse the previous idempotency key).
+  const draft = {
+    clientCaptureId: profileSchema.newCaptureId(),
+    createdAt: new Date().toISOString(),
+    excludedSections: [],
+    extraction: result,
+  };
+  await setProfileDraft(draft);
+  await chrome.storage.local.remove(PROFILE_STORAGE.LAST_PROFILE_RESULT);
+  return {
+    ok: true,
+    captureStatus: result.status,
+    pageWarnings: result.pageWarnings || [],
+    draftView: buildProfileDraftView(draft),
+  };
+}
+
+async function profileToggleSection(section) {
+  const draft = await getProfileDraft();
+  if (!draft) return { ok: false, error: "no_draft" };
+  const set = new Set(draft.excludedSections || []);
+  if (set.has(section)) set.delete(section);
+  else set.add(section);
+  draft.excludedSections = Array.from(set);
+  await setProfileDraft(draft);
+  return { ok: true, draftView: buildProfileDraftView(draft) };
+}
+
+async function profileClear() {
+  await chrome.storage.local.remove(PROFILE_STORAGE.DRAFT_PROFILE);
+  await chrome.storage.local.remove(PROFILE_STORAGE.LAST_PROFILE_RESULT);
+  return { ok: true, draftView: null };
+}
+
+async function buildProfilePayloadFromDraft() {
+  const draft = await getProfileDraft();
+  if (!draft) return { draft: null, payload: null };
+  const prefs = await getPrefs();
+  const payload = profileSchema.buildProfilePayload({
+    extraction: draft.extraction,
+    clientCaptureId: draft.clientCaptureId,
+    campaignId: prefs.lastCampaignId || null,
+    extensionVersion: EXTENSION_VERSION,
+    excludedSections: draft.excludedSections || [],
+  });
+  return { draft, payload, prefs };
+}
+
+async function profileSend() {
+  const { draft, payload, prefs } = await buildProfilePayloadFromDraft();
+  if (!draft) return { ok: false, error: "empty_batch", message: "No reviewed capture to send." };
+
+  const validation = profileSchema.validateProfilePayload(payload);
+  if (!validation.valid) {
+    return { ok: false, error: "invalid_payload", messages: validation.errors };
+  }
+  const serialized = profileSchema.serializePayload(payload);
+  if (!serialized.withinLimit) {
+    return { ok: false, error: "payload_too_large" };
+  }
+
+  const base = (prefs.backendBaseUrl || "").replace(/\/$/, "");
+  const url = base + PROFILE_INTAKE_PATH;
+  if (!isAllowedBackendOrigin(url)) {
+    return { ok: false, error: "origin_not_allowed" };
+  }
+  const perm = await hasHostPermission(url);
+  if (!perm.ok) {
+    return { ok: false, error: "permission_denied", originPattern: perm.pattern };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": payload.client_capture_id,
+      },
+      body: serialized.json,
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    const text = await resp.text();
+    let body = null;
+    try { body = text ? JSON.parse(text) : null; } catch (_e) { body = { raw: text }; }
+    if (!resp.ok) {
+      // The reviewed draft is preserved so a recoverable failure can be
+      // retried with the SAME client_capture_id (idempotent).
+      return { ok: false, error: "receiver_rejected", status: resp.status, body };
+    }
+    const result = handoff.sanitizeProfileStageResult(body, {
+      campaignId: payload.campaign_id || null,
+      stagedAt: new Date().toISOString(),
+    });
+    await setLastProfileResult(result);
+    return { ok: true, status: resp.status, result };
+  } catch (e) {
+    clearTimeout(timer);
+    if (e && e.name === "AbortError") {
+      return { ok: false, error: "timeout", message: `No response within ${SEND_TIMEOUT_MS}ms.` };
+    }
+    return { ok: false, error: "network_error", message: String(e && e.message) };
+  }
+}
+
 // ---- downloads ------------------------------------------------------------
 
 function sanitizeFilename(name) {
@@ -482,6 +715,35 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         break;
       case "FETCH_CAMPAIGNS":
         sendResponse(await fetchCampaigns());
+        break;
+      case "DETECT_SURFACE":
+        sendResponse(await detectActiveSurface());
+        break;
+      case "PROFILE_GET_STATE": {
+        const draft = await getProfileDraft();
+        const lastResult = await getLastProfileResult();
+        sendResponse({
+          ok: true,
+          prefs: await getPrefs(),
+          draftView: buildProfileDraftView(draft),
+          lastResult,
+        });
+        break;
+      }
+      case "PROFILE_DETECT":
+        sendResponse(await profileDetect());
+        break;
+      case "PROFILE_CAPTURE":
+        sendResponse(await profileCapture());
+        break;
+      case "PROFILE_TOGGLE_SECTION":
+        sendResponse(await profileToggleSection(msg.section));
+        break;
+      case "PROFILE_CLEAR":
+        sendResponse(await profileClear());
+        break;
+      case "PROFILE_SEND":
+        sendResponse(await profileSend());
         break;
       case "EXPORT_BATCH":
         sendResponse(await exportBatch(msg.format));

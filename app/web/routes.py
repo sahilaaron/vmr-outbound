@@ -36,6 +36,7 @@ from app.models.enums import (
     ImportSourceFormat,
     VerificationUsageEventType,
 )
+from app.models.linkedin_profile import LinkedInProfileSnapshot
 from app.services import devtools, identity, workbench
 from app.services.campaigns import (
     CampaignError,
@@ -1714,6 +1715,41 @@ async def local_tools_demo_reset(request: Request, db: Session = Depends(get_db)
         return _redirect("/local-tools", err=str(exc))
     loaded = " and ".join(f"“{r.campaign_name}”" for r in results)
     return _redirect("/", ok=f"Demo state ready: cleared local data and loaded {loaded}.")
+
+
+# --- LinkedIn profile snapshots (DAT-012D, read-only) ------------------------
+
+
+@router.get("/profiles/{snapshot_id}", response_class=HTMLResponse)
+def profile_snapshot_page(
+    request: Request, snapshot_id: str, db: Session = Depends(get_db)
+) -> HTMLResponse:
+    """Read-only view of one immutable LinkedIn profile capture snapshot.
+
+    This is the record the capture extension links to after staging. It renders
+    evidence only — there is no action here that changes a contact, suppression,
+    verification, or approval.
+    """
+
+    parsed_id = _parse_uuid(snapshot_id)
+    snapshot = db.get(LinkedInProfileSnapshot, parsed_id) if parsed_id else None
+    if snapshot is None:
+        return _not_found(request, db, "That profile snapshot does not exist.")
+    fields = snapshot.profile_fields or {}
+    profile_rows = [
+        ("full_name", fields.get("full_name")),
+        ("headline", fields.get("headline")),
+        ("displayed_location", fields.get("displayed_location")),
+        ("connection_count", fields.get("connection_count")),
+        ("open_to_work", fields.get("open_to_work")),
+        ("warnings", len(fields.get("warnings") or [])),
+    ]
+    return _render(
+        request,
+        db,
+        "profile_snapshot.html",
+        {"snapshot": snapshot, "profile_rows": profile_rows, "page_title": "Profile snapshot"},
+    )
 
 
 # --- Later-phase sections: one clean unavailable state -----------------------

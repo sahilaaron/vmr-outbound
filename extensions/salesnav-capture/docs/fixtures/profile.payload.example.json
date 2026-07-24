@@ -1,0 +1,102 @@
+{
+  "schema_version": "linkedin-profile-capture/1.0.0",
+  "client_capture_id": "9f8e7d6c-0000-4000-8000-123456789abc",
+  "campaign_id": null,
+  "captured_at": "2026-07-24T10:00:00.000Z",
+  "source": "chrome-extension:linkedin-profile-capture",
+  "source_url": "https://www.linkedin.com/in/morgan-vale",
+  "extraction": {
+    "adapter_version": "linkedin-person-profile-adapter/1",
+    "extension_version": "1.0.0",
+    "status": "ok",
+    "surface": "linkedin_person_profile",
+    "missing_sections": [],
+    "excluded_sections": [],
+    "page_warnings": []
+  },
+  "profile": {
+    "linkedin_profile_url": "https://www.linkedin.com/in/morgan-vale",
+    "public_identifier": "morgan-vale",
+    "full_name": "Morgan Vale",
+    "headline": "Director of Operations at Meridian Works",
+    "displayed_location": "Austin, Texas, United States",
+    "connection_count": 500,
+    "connection_count_raw": "500+ connections",
+    "open_to_work": false,
+    "observed_at": "2026-07-24T10:00:00.000Z",
+    "raw_lines": [
+      "Morgan Vale",
+      "She/Her",
+      "· 3rd",
+      "Director of Operations at Meridian Works",
+      "Austin, Texas, United States",
+      "Contact info",
+      "500+ connections",
+      "Connect",
+      "Message",
+      "More"
+    ],
+    "warnings": []
+  },
+  "experiences": [
+    {
+      "position_index": 1,
+      "layout": "basic",
+      "company_name": "Meridian Works",
+      "company_linkedin_url": "https://www.linkedin.com/company/meridian-works",
+      "company_linkedin_id": "meridian-works",
+      "job_title": "Director of Operations",
+      "timeline_text": "Jan 2021 - Present",
+      "start_date": {
+        "year": 2021,
+        "month": 1
+      },
+      "end_date": null,
+      "dates_reliable": true,
+      "duration_text": "5 yrs 7 mos",
+      "employment_type": "Full-time",
+      "role_location": "Austin, Texas, United States",
+      "workplace_type": "Hybrid",
+      "is_current": true,
+      "raw_lines": [
+        "Director of Operations",
+        "Meridian Works · Full-time",
+        "Jan 2021 - Present · 5 yrs 7 mos",
+        "Austin, Texas, United States · Hybrid"
+      ],
+      "warnings": [],
+      "observed_at": "2026-07-24T10:00:00.000Z"
+    },
+    {
+      "position_index": 2,
+      "layout": "basic",
+      "company_name": "Harbor Analytics",
+      "company_linkedin_url": "https://www.linkedin.com/company/harbor-analytics",
+      "company_linkedin_id": "harbor-analytics",
+      "job_title": "Operations Manager",
+      "timeline_text": "Mar 2016 - Dec 2020",
+      "start_date": {
+        "year": 2016,
+        "month": 3
+      },
+      "end_date": {
+        "year": 2020,
+        "month": 12
+      },
+      "dates_reliable": true,
+      "duration_text": "4 yrs 10 mos",
+      "employment_type": "Full-time",
+      "role_location": "Denver, Colorado, United States",
+      "workplace_type": "On-site",
+      "is_current": false,
+      "raw_lines": [
+        "Operations Manager",
+        "Harbor Analytics · Full-time",
+        "Mar 2016 - Dec 2020 · 4 yrs 10 mos",
+        "Denver, Colorado, United States · On-site"
+      ],
+      "warnings": [],
+      "observed_at": "2026-07-24T10:00:00.000Z"
+    }
+  ]
+}

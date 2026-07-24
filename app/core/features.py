@@ -26,6 +26,11 @@ class FeatureFlags(BaseModel):
     # the endpoint stays fully disabled (returns 404) until deliberately enabled
     # for local operation, matching the FND-007 default-off pattern.
     salesnav_intake: bool = False
+    # Local LinkedIn person-profile capture intake endpoint (DAT-012D). Off by
+    # default so the endpoint stays fully disabled (returns 404) until
+    # deliberately enabled for local operation. Turning it on stages immutable
+    # snapshots only; it never updates a canonical contact by itself.
+    linkedin_profile_intake: bool = False
     # Operator workbench UI (server-rendered pages). Off by default so the UI
     # stays disabled until it is deliberately enabled for local operation.
     workbench: bool = False

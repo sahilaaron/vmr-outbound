@@ -433,3 +433,20 @@ class ApprovalStatus(enum.StrEnum):
 
     APPROVED = "approved"
     INVALIDATED = "invalidated"
+
+
+class LinkedInSnapshotOutcome(enum.StrEnum):
+    """Truthful backend outcome of ingesting one LinkedIn capture snapshot.
+
+    ``STORED`` is the DAT-012D baseline: the snapshot is persisted immutably and
+    nothing else happens. The reconciliation outcomes are produced only once
+    exact-URL matching lands (DAT-012E); ``rejected`` payloads are never
+    persisted, so no member exists for them.
+    """
+
+    STORED = "stored"
+    EXACT_MATCH_REFRESHED = "exact_match_refreshed"
+    EXACT_MATCH_UNCHANGED = "exact_match_unchanged"
+    UNMATCHED_STAGED = "unmatched_staged"
+    AMBIGUOUS_REVIEW = "ambiguous_review"
+    SUPPRESSED = "suppressed"
