@@ -79,36 +79,43 @@ exception, or written into the result.
   as a live result; a transport failure is reported as "provider not reached" and
   never as a verified mailbox.
 
-## Live provider call status
+## Live provider call status — EXECUTED, PASS
 
-**Not yet executed against the real key.** No approved smoke-test address was
-supplied, so per the task no real person's address was invented and no credit was
-spent. The automated live-path test uses a fake transport, so **the provider
-interaction in this session was simulated (test seam), not a real network call.**
-The command is ready; Sahil runs the one live request locally (the only step that
-requires the real key and consumes a credit).
+The one deliberate live request was run by Sahil against the real key on a
+VMR-controlled address. It was an authentic MillionVerifier request (not the
+simulator/test seam): the live HTTP client was selected, `livemode` was reported
+true, the outcome mapped truthfully, evidence was stored with **live** provenance,
+and the usage ledger recorded a real cache-miss, confirmed charge.
 
-## Operator to record after the one live run (fill in; keep sanitized)
+### Sanitized run record
 
 ```
-date/time (local)        :
-address (may redact)     :
-live HTTP client used    :   (expect: yes)
-provider request made    :   (expect: yes)
-provider livemode        :
-provider result / code   :
-canonical mapped result  :
-precise internal status  :
-billed this call         :
-credits remaining        :
-evidence stored (source) :   (expect: source=live)
-ledger (cache/charge)    :   (expect: cache=miss)
-UI status text           :
-PASS / FAIL              :
+date/time (local)        : 2026-07-24 17:30:18 +05:30
+address                  : sahil@verifiedmarketresearch.com (VMR-controlled)
+live HTTP client used    : yes
+provider request made    : yes
+transport ok             : yes
+provider livemode        : yes
+provider result / code   : ok / 1
+canonical mapped result  : valid
+precise internal status  : valid
+role / free / suggestion : no / no / —
+subresult                : ok
+billed this call         : yes
+credits remaining        : 487
+evidence stored (source) : yes (source=live)
+evidence id              : daf755e7-8102-49d2-b050-ae27b9c31e14
+ledger (cache/charge)    : cache=miss, charge=confirmed
+UI status                : successful — "Fresh result: the mailbox exists.
+                           Live MillionVerifier evidence — produced by an external
+                           provider request."
+result                   : PASS
 ```
 
 A live response does not have to be `valid` to pass — the acceptance is an
-authentic, truthfully-mapped provider interaction.
+authentic, truthfully-mapped provider interaction. This run returned a valid mailbox
+and confirms credentials, live-mode selection, mapping, storage, ledger, and truthful
+display end to end. No key or raw provider response is recorded here.
 
 ## Secret hygiene confirmation
 

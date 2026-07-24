@@ -86,8 +86,9 @@ outcomes are covered offline by contract tests (`tests/test_verification_provide
 and `tests/test_verification_live_smoke.py` — performs exactly one live request
 through the real mapping/storage/ledger/display path. Stored evidence now records
 simulated-vs-live provenance so a simulated success is never shown as an external
-verification. The single live request against a real key remains the one manual
-acceptance step (owner: Sahil); see the runbook.
+verification. The single live request against a real key has now been executed
+(PASS) — see `docs/phase2_evidence/VER-007_live_smoke_acceptance.md` for the
+sanitized record.
 
 ## MillionVerifier contract used
 
