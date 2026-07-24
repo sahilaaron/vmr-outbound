@@ -32,6 +32,7 @@ from app.models import campaign as _campaign  # noqa: E402,F401
 from app.models import company as _company  # noqa: E402,F401
 from app.models import contact as _contact  # noqa: E402,F401
 from app.models import draft as _draft  # noqa: E402,F401
+from app.models import email_candidate as _email_candidate  # noqa: E402,F401
 from app.models import email_evidence as _email_evidence  # noqa: E402,F401
 from app.models import external_event as _external_event  # noqa: E402,F401
 from app.models import identity_resolution as _identity_resolution  # noqa: E402,F401
@@ -41,3 +42,6 @@ from app.models import provenance as _provenance  # noqa: E402,F401
 from app.models import salesnav_enrichment as _salesnav_enrichment  # noqa: E402,F401
 from app.models import score as _score  # noqa: E402,F401
 from app.models import suppression as _suppression  # noqa: E402,F401
+from app.models import usage_ledger as _usage_ledger  # noqa: E402,F401
+from app.models import verification_job as _verification_job  # noqa: E402,F401
+from app.models import verification_usage as _verification_usage  # noqa: E402,F401

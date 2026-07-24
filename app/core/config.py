@@ -136,6 +136,95 @@ class Settings(BaseSettings):
 
         return bool(self.logo_dev_api_key and self.logo_dev_api_key.strip())
 
+    # --- MillionVerifier exact-address verification (Phase 2) ----------------
+    # The MillionVerifier Single API key. Read from ``MILLIONVERIFIER_API_KEY``.
+    # It is a SECRET: ``repr=False`` and ``exclude=True`` keep it out of
+    # ``repr(settings)`` and ``settings.model_dump()`` so it can never be logged,
+    # serialized into a template, or dumped to disk. When unset, verification runs
+    # in a safe deterministic simulation and no live call is ever made. No key is
+    # committed to source. The documented test keys (``API_KEY_FOR_OK`` etc.) are
+    # accepted and route to the simulator, never to the network.
+    millionverifier_api_key: str | None = Field(
+        default=None,
+        repr=False,
+        exclude=True,
+        description="MillionVerifier Single API key (secret; via MILLIONVERIFIER_API_KEY).",
+    )
+    # Documented Single API endpoint. Overridable only so tests can point at a
+    # stub; production uses the documented default.
+    millionverifier_base_url: str = Field(
+        default="https://api.millionverifier.com/api/v3",
+        description="MillionVerifier Single API endpoint.",
+    )
+    # Per-call connection timeout passed to the provider (documented range 2-60s)
+    # and used as the local wall-clock budget for one HTTP call.
+    millionverifier_timeout_seconds: int = Field(
+        default=20,
+        ge=2,
+        le=60,
+        description="MillionVerifier per-call timeout in seconds (documented 2-60).",
+    )
+    # Maximum attempts for one verification job (initial try + retries). Only
+    # transient failures (provider error, timeout, IP block) consume a retry; a
+    # definite address result never retries.
+    verification_max_attempts: int = Field(
+        default=4,
+        ge=1,
+        le=10,
+        description="Max attempts per verification job (transient failures only).",
+    )
+    # Base backoff in seconds for retry scheduling; grows exponentially per attempt
+    # with bounded jitter (see services/verification/queue.py).
+    verification_retry_base_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        description="Base backoff seconds for verification retries (exponential + jitter).",
+    )
+    verification_retry_max_seconds: float = Field(
+        default=1800.0,
+        gt=0,
+        description="Ceiling for a single verification retry backoff window.",
+    )
+    # Lease duration for a claimed job. A worker that dies without finishing lets
+    # the lease expire so the job is safely reclaimed (interrupted-worker recovery).
+    verification_lease_seconds: float = Field(
+        default=120.0,
+        gt=0,
+        description="Seconds a claimed verification job stays leased before reclaim.",
+    )
+    # Freshness TTLs (days) per address-level result under the active policy. A
+    # result older than its TTL is *stale*: reused only as amber evidence and
+    # eligible for recheck, never as a fresh green pass.
+    verification_ttl_valid_days: int = Field(default=30, gt=0)
+    verification_ttl_invalid_days: int = Field(default=90, gt=0)
+    verification_ttl_catch_all_days: int = Field(default=7, gt=0)
+    verification_ttl_unknown_days: int = Field(default=3, gt=0)
+    verification_ttl_disposable_days: int = Field(default=30, gt=0)
+
+    # Estimated cost per *billed* MillionVerifier credit, in
+    # ``millionverifier_currency``. This is a local estimate for cost visibility,
+    # not a quote: MillionVerifier's Single API does not report a per-call price,
+    # so set this to your plan's effective per-email rate. Default 0.0 means "rate
+    # not configured" — the ledger still records units (credits) consumed, and the
+    # UI shows credits with the cost left explicitly unestimated rather than
+    # fabricating a number.
+    millionverifier_cost_per_credit: float = Field(
+        default=0.0,
+        ge=0,
+        description="Local estimated cost per billed MillionVerifier credit (0 = not set).",
+    )
+    millionverifier_currency: str = Field(
+        default="USD",
+        min_length=3,
+        max_length=3,
+        description="ISO currency code for MillionVerifier cost estimates.",
+    )
+
+    def has_millionverifier_key(self) -> bool:
+        """True when a non-empty MillionVerifier key is configured (never logs it)."""
+
+        return bool(self.millionverifier_api_key and self.millionverifier_api_key.strip())
+
     features: FeatureFlags = Field(default_factory=FeatureFlags)
 
     @property

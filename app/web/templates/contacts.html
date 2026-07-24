@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import pager %}
+{% from "_macros.html" import pager, verify_icon %}
 {% block content %}
 <div class="page-head">
   <h1>Contacts</h1>
@@ -42,7 +42,10 @@
       {% for c in contacts %}
       <tr>
         <td><a href="/contacts/{{ c.id }}">{{ c.first_name }} {{ c.last_name }}</a></td>
-        <td class="mono">{{ c.email or "—" }}</td>
+        <td class="mono">
+          {%- set st = statuses.get(c.id) -%}
+          {% if st %}{{ verify_icon(st) }} {% endif %}{{ c.email or (st.email if st and st.email else "—") }}
+        </td>
         <td>{{ c.company_name }}<div class="small muted-text mono">{{ c.company_domain }}</div></td>
         <td class="small">{{ c.title or "—" }}</td>
         <td class="small">{{ c.country or "—" }}</td>

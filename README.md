@@ -11,14 +11,22 @@ AI collaboration boundary.
 
 ## Status
 
-Phase 1 — Data & Campaigns (in progress). On top of the Phase 0 foundation
-(typed configuration, audit model, feature switches all off, dry-run on by
-default, Alembic migrations, CI), the repository now provides the core DAT-001
-schema, staged CSV/XLSX import with the local operator workbench
-(preview-then-confirm, ambiguous-row outcomes), the suppression ledger, and the
-operator-driven Sales Navigator capture extension. Operator identity resolution
-(DAT-004) is built and under review. No verification, scoring, research,
-drafting, or sending behaviour exists; those feature switches remain off, and
+Phase 1 — Data & Campaigns (in progress) plus a Phase 2 — Email Verification
+build under review. On top of the Phase 0 foundation (typed configuration, audit
+model, feature switches all off, dry-run on by default, Alembic migrations, CI),
+the repository provides the core DAT-001 schema, staged CSV/XLSX import with the
+local operator workbench (preview-then-confirm, ambiguous-row outcomes), the
+suppression ledger, the operator-driven Sales Navigator capture extension, and
+operator identity resolution (DAT-004).
+
+Phase 2 adds deterministic email-pattern intelligence and exact-address
+verification through MillionVerifier behind the `FEATURES__EMAIL_GENERATION` and
+`FEATURES__MILLIONVERIFIER` switches (both default off): ranked, transparent
+candidate generation; a policy-versioned exact-address cache; a Postgres-backed,
+idempotent, retry-safe, recoverable verification queue; and a compact four-state
+status icon (Pending / Successful / Failure / Warning) beside every prospect
+email. See `docs/PHASE_2.md` and `docs/VERIFICATION_RUNBOOK.md`. No scoring,
+research, drafting, or sending behaviour exists; those switches remain off, and
 no outreach capability is enabled.
 
 ## Quick start

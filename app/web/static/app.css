@@ -488,3 +488,44 @@ code { font-family: var(--mono); font-size: 12.5px; background: var(--muted-soft
   border-radius: 8px; background: var(--surface); color: var(--text); font: inherit;
 }
 .confirm-form .field span { display: block; font-size: 12.5px; color: var(--text-2); margin-bottom: 4px; }
+
+/* ---- Verification status icon (Phase 2) ---------------------------------- */
+/* Four visible states beside a prospect's email. Colour is never the only
+   signal: each state has a distinct icon shape (clock / check / cross /
+   triangle) and an aria-label + tooltip that name the precise underlying
+   state, so the meaning survives colour-blindness and greyscale. */
+.vstatus {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  vertical-align: middle;
+  line-height: 1;
+}
+.vicon { width: 16px; height: 16px; display: block; }
+.vstatus-text { font-size: 11px; font-weight: 600; text-transform: capitalize; letter-spacing: .01em; }
+.vstatus-pending    { color: var(--muted); }
+.vstatus-successful { color: var(--ok); }
+.vstatus-failure    { color: var(--err); }
+.vstatus-warning    { color: var(--warn); }
+/* A larger inline chip variant used on the contact detail header. */
+.vchip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+}
+.vchip .vicon { width: 15px; height: 15px; }
+.vchip.vstatus-pending    { color: var(--muted); background: var(--muted-soft); }
+.vchip.vstatus-successful { color: var(--ok);   background: var(--ok-soft); }
+.vchip.vstatus-failure    { color: var(--err);  background: var(--err-soft); }
+.vchip.vstatus-warning    { color: var(--warn); background: var(--warn-soft); }
+/* Respect users who ask for higher contrast. */
+@media (prefers-contrast: more) {
+  .vstatus svg { stroke-width: 2.8; }
+}
+
+/* Selected email candidate row (contact detail email-intelligence panel). */
+tr.row-selected { background: var(--ok-soft); }
+tr.row-selected td { font-weight: 500; }
+/* Simple stat tile used on the verification console. */
+.stat-row .stat { min-width: 120px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.stat-row .stat .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+.stat-row .stat .value { font-size: 22px; font-weight: 700; }
