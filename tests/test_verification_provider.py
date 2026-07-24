@@ -10,10 +10,13 @@ import json
 
 import pytest
 from app.services.verification.provider import (
+    LIVE_PROVIDER_LABEL,
+    SIMULATOR_PROVIDER_LABEL,
     HttpMillionVerifier,
     ProviderTransientError,
     SimulatedMillionVerifier,
     build_provider,
+    evidence_provider_label,
 )
 
 
@@ -58,6 +61,35 @@ def test_build_provider_never_returns_live_for_test_key() -> None:
 def test_build_provider_simulator_when_no_key() -> None:
     provider = build_provider(api_key=None, base_url="https://x", timeout_seconds=20, live=True)
     assert isinstance(provider, SimulatedMillionVerifier)
+
+
+def test_build_provider_live_with_real_key_selects_http() -> None:
+    provider = build_provider(
+        api_key="a-real-live-key", base_url="https://x", timeout_seconds=20, live=True
+    )
+    assert isinstance(provider, HttpMillionVerifier)
+    assert provider.simulated is False
+
+
+def test_build_provider_real_key_without_live_stays_simulator() -> None:
+    # A real key present but live NOT requested must never reach the network.
+    provider = build_provider(
+        api_key="a-real-live-key", base_url="https://x", timeout_seconds=20, live=False
+    )
+    assert isinstance(provider, SimulatedMillionVerifier)
+    assert provider.simulated is True
+
+
+def test_provider_simulated_flags_and_evidence_labels() -> None:
+    sim = SimulatedMillionVerifier("a-real-live-key")
+    live = HttpMillionVerifier("a-real-live-key", base_url="https://x")
+    assert sim.simulated is True
+    assert live.simulated is False
+    assert evidence_provider_label(sim) == SIMULATOR_PROVIDER_LABEL
+    assert evidence_provider_label(live) == LIVE_PROVIDER_LABEL
+    # The two labels are distinguishable so a simulated row is never shown as live.
+    assert SIMULATOR_PROVIDER_LABEL != LIVE_PROVIDER_LABEL
+    assert SIMULATOR_PROVIDER_LABEL.endswith("-simulator")
 
 
 class _FakeTransport:

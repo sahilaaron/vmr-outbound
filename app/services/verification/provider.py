@@ -53,6 +53,13 @@ TEST_KEYS: dict[str, str] = {
     "API_KEY_FOR_ERROR_INTERNAL_ERROR": "error:internal_error",
 }
 
+# Evidence-provenance labels stored on each ExactEmailVerification row so a
+# simulated outcome is never displayed as though an external provider verified it
+# (VER-007). The live client records the neutral vendor label; the simulator
+# records an explicit simulated label. These are the values the operator sees.
+LIVE_PROVIDER_LABEL = "millionverifier"
+SIMULATOR_PROVIDER_LABEL = "millionverifier-simulator"
+
 _RESULTCODE = {"ok": 1, "catch_all": 2, "unknown": 3, "error": 4, "disposable": 5, "invalid": 6}
 _ROLE_LOCALPARTS = frozenset(
     {"info", "sales", "support", "admin", "contact", "hello", "team", "office", "help"}
@@ -91,9 +98,25 @@ class VerificationProvider(Protocol):
     """The replaceable verification provider contract."""
 
     name: str
+    # True for the deterministic network-free simulator, False for the real HTTP
+    # client. Callers persist this provenance so a simulated result is never
+    # presented as an external MillionVerifier verification (VER-007).
+    simulated: bool
 
     def verify(self, email: str) -> ProviderResponse:
         """Verify one exact address or raise :class:`ProviderTransientError`."""
+
+
+def evidence_provider_label(provider: VerificationProvider) -> str:
+    """The provenance label to store for evidence produced by *provider*.
+
+    Falls back to the live label for structural test doubles that do not declare
+    ``simulated``; the two production providers both set it explicitly.
+    """
+
+    return (
+        SIMULATOR_PROVIDER_LABEL if getattr(provider, "simulated", False) else LIVE_PROVIDER_LABEL
+    )
 
 
 def _redact(text: str, secret: str | None) -> str:
@@ -109,6 +132,7 @@ class SimulatedMillionVerifier:
     """Deterministic, network-free provider used by default and in all tests."""
 
     name = "millionverifier"
+    simulated = True
 
     def __init__(self, api_key: str | None = None) -> None:
         self._api_key = api_key
@@ -216,6 +240,7 @@ class HttpMillionVerifier:
     """Real Single API client. Used only for the deliberate live smoke test."""
 
     name = "millionverifier"
+    simulated = False
 
     def __init__(
         self,
