@@ -75,29 +75,120 @@ reuse. Open `/contacts` and `/verification` to inspect. Safe to re-run.
 Hover any icon (or read its `aria-label`) for the precise underlying state and a
 plain explanation. The precise state is also shown on the contact detail panel.
 
-## The one manual acceptance item — live smoke test
+## The one manual acceptance item — live smoke test (VER-007)
 
-Everything is proven offline except a single deliberate live request that
-confirms real credentials and mapping end to end (VER-007). To run it manually:
+Everything is proven offline except a single deliberate live request that confirms
+real credentials and mapping end to end. There is one operator command for it:
+`scripts/verify_live_smoke.py`. It performs **exactly one** real MillionVerifier
+request for one address, runs the real mapping/storage/ledger/display path, and
+prints a sanitized result. It refuses to run unless you have deliberately opted
+into live mode, and it never falls back to a simulated success.
 
-1. Put a real key in your local `.env` as above and restart the app.
-2. From a Python shell in the project venv, verify one address you control:
+### Prerequisites (exact)
 
-   ```python
-   from app.core.config import get_settings
-   from app.services.verification.service import get_provider
+1. A real MillionVerifier key in your **local, git-ignored** `.env`:
 
-   s = get_settings()
-   provider = get_provider(s, live=True)  # live=True + a real (non-test) key -> HTTP client
-   print(provider.verify("an-address-you-control@your-domain.com"))
+   ```
+   MILLIONVERIFIER_API_KEY=your-real-key-here
    ```
 
-3. Confirm the returned `result`/`resultcode` match MillionVerifier's dashboard
-   for that address and that `credits` decremented as expected.
+   Set only the variable name shown above; never commit or paste the value.
+2. The verification feature enabled (also in `.env`): `FEATURES__MILLIONVERIFIER=true`.
+3. The local database reachable: `python scripts/dev_up.py`.
+4. **Restart the app / open a new shell after editing `.env`** — settings are read
+   once per process, so a running app will not pick up a newly added key until it
+   is restarted.
 
-Do **not** paste the key or the raw response (which may include the address) into
-commits, issues, screenshots, or the tracker. Record only PASS/FAIL and the
-mapped internal state.
+### Run exactly one live check
+
+Use an address **you control** (yours or a VMR-owned mailbox) that has **no fresh
+cached evidence** — the command refuses a cache hit, because a reused result would
+not prove a live call. Pick an address you have not verified within its TTL.
+
+```bash
+python scripts/verify_live_smoke.py --email you@your-domain.com --confirm
+```
+
+`--confirm` is required and is your deliberate consent to spend one credit. Without
+a real non-test key, without the feature enabled, or without `--confirm`, the
+command refuses and makes no call. The banner and the printed
+`live HTTP client used: yes` / `provider request made: yes` confirm the live path
+was taken.
+
+### Inspect the stored result and the usage ledger
+
+The command prints everything you need (sanitized): normalized email, provider
+`livemode`, provider `result`/`resultcode`, canonical mapped result, precise
+internal status, role/free/suggestion, `checked at`, policy version, whether the
+call was billed, credits remaining, the stored evidence id and its source, and the
+ledger cache/charge status. You can also confirm it in the UI: open the contact/
+address in `/contacts` (with the feature on) — the evidence row shows a
+**MillionVerifier (live)** badge and the status explains it as a live result. The
+`/verification` console's usage & cost card shows the call as a **cache miss** with
+the credits it consumed.
+
+A valid live response does **not** have to be `valid` for the smoke test to pass —
+the acceptance is that the interaction and mapping are authentic and truthful. A
+`catch_all`, `unknown`, `disposable`, `role`, provider-error, insufficient-credits,
+or timeout outcome is a legitimate live result and is **never** shown as a verified
+mailbox.
+
+## Recognising simulator vs cached-live vs live evidence
+
+The system never lets a simulated result look like an external verification:
+
+* **Simulated result — no external verification performed.** Produced by the
+  deterministic simulator (no key, a documented test key, or ordinary local
+  verification without live mode). Stored provenance is `millionverifier-simulator`;
+  the contact page shows an amber **simulated** badge and the status explanation
+  says "Simulated result — no external verification performed."
+* **Live provider result — a MillionVerifier request was performed.** Only the live
+  smoke command (real non-test key + explicit live mode) produces this. Stored
+  provenance is `millionverifier`; the contact page shows a **MillionVerifier (live)**
+  badge.
+* **Cached live evidence — no new provider request.** A previously stored live
+  result reused within its TTL. The status still shows the live badge; the
+  `/verification` console counts it under **cache savings** (calls avoided), and the
+  contact page shows its original `checked` timestamp rather than a fresh one.
+
+## Failure handling
+
+* **Invalid / not-configured key** — the command refuses before any call if the key
+  is missing (`no MillionVerifier API key configured`). If a *wrong* key reaches the
+  provider, an HTTP **401/403** is classified as a provider **access rejection**
+  (non-retryable provider error — check the key and plan), and a 200 response with an
+  `invalid_api_key` error maps the same way. Either way it is **never** a mailbox
+  result, and the key is redacted from every message.
+* **Database not reachable** — the command runs a preflight and stops with a clean
+  one-line hint (`run scripts/dev_up.py`) instead of a stack trace; it never prints
+  the connection URL.
+* **Insufficient credits** — maps to the **insufficient-credits** state (no address
+  evidence, no auto-retry). Top up the plan and re-run.
+* **Timeout / transport failure** — reported as `transport ok: no`; it is a retryable
+  provider failure, never a verdict, and stores no evidence. Re-run when the network
+  or provider recovers.
+* **Provider errors (IP blocked, internal error)** — map to a retryable **provider
+  error**; a definite address result is never fabricated from an error.
+
+In every failure case the API key is redacted from messages and never written to the
+database, logs, or the printed result.
+
+## What must never be captured in evidence
+
+Do **not** put the API key, an unredacted provider URL, or a raw provider response
+(which can contain personal data) into commits, issues, screenshots, recordings, the
+tracker, or the database. Record only the sanitized fields the command prints
+(PASS/FAIL, mapped state, result code, credits) — that is exactly what the command
+emits.
+
+## Disabling or rotating the key after the test
+
+The key lives only in your local `.env`. To stop live calls, remove or comment out
+`MILLIONVERIFIER_API_KEY` (or set `FEATURES__MILLIONVERIFIER=false`) and restart —
+verification falls back to the network-free simulator immediately. To rotate,
+generate a new key in the MillionVerifier dashboard, revoke the old one there,
+replace the value in `.env`, and restart. No key material is stored anywhere else,
+so nothing else needs cleaning up.
 
 ## Cost visibility
 

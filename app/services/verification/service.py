@@ -46,6 +46,7 @@ from app.services.verification.provider import (
     ProviderTransientError,
     VerificationProvider,
     build_provider,
+    evidence_provider_label,
 )
 
 # Provider-neutral labels for the shared usage ledger.
@@ -359,7 +360,10 @@ def process_job(
             response=response,
             policy=policy,
             contact_id=job.contact_id,
-            provider_name=provider_name,
+            # Evidence records simulated-vs-live provenance so a simulated result
+            # is never displayed as an external verification (VER-007). Usage and
+            # the neutral ledger keep the vendor label for cost correlation.
+            provider_name=evidence_provider_label(provider),
             now=now,
         )
         usage.record_usage(

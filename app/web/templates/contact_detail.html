@@ -107,6 +107,7 @@
     <div class="vstatus-summary" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px">
       <span class="vchip vstatus-{{ intel.status.visual.value }}">{{ verify_icon(intel.status) }} {{ intel.status.visual.value }}</span>
       <span class="small">Underlying state: <code>{{ intel.status.precise.value }}</code></span>
+      {% if intel.status.evidence_source == "simulated" %}<span class="badge warn" title="Deterministic local simulator — no external MillionVerifier request was made">simulated</span>{% elif intel.status.evidence_source == "live" %}<span class="badge info" title="Produced by a real MillionVerifier request">live MillionVerifier</span>{% endif %}
       <span class="small muted-text">{{ intel.status.explanation }}</span>
       {% if intel.status.checked_at %}<span class="small muted-text">· last checked {{ intel.status.checked_at | dt }}{% if intel.status.is_stale %} <span class="badge warn">stale</span>{% endif %}</span>{% endif %}
     </div>
@@ -161,7 +162,7 @@
         <tr>
           <td class="mono small">{{ ev.email }}</td>
           <td><code>{{ ev.result.value }}</code></td>
-          <td class="small">{{ ev.provider }}{% if ev.provider_result_code %} · code {{ ev.provider_result_code }}{% endif %}</td>
+          <td class="small">{% if ev.provider.endswith("-simulator") %}<span class="badge warn" title="Deterministic local simulator — no external MillionVerifier request was made">simulated</span>{% else %}<span class="badge info" title="Produced by a real MillionVerifier request">MillionVerifier (live)</span>{% endif %}{% if ev.provider_result_code %} · code {{ ev.provider_result_code }}{% endif %}</td>
           <td class="small mono">{{ ev.policy_version }}</td>
           <td class="small muted-text">{% if ev.is_role %}role {% endif %}{% if ev.is_free %}free {% endif %}{{ ev.subresult or "" }}</td>
           <td class="small muted-text">{{ ev.checked_at | dt }}</td>

@@ -36,6 +36,18 @@ from app.models.enums import (
 )
 from app.models.verification_job import ACTIVE_JOB_STATUSES, VerificationJob
 from app.services.verification.policy import get_policy
+from app.services.verification.provider import SIMULATOR_PROVIDER_LABEL
+
+# How each evidence provenance is described to the operator, so a simulated
+# outcome is never presented as an external MillionVerifier verification and a
+# stored live result is shown as cached evidence rather than a fresh live call
+# (VER-007).
+_SOURCE_SIMULATED = "simulated"
+_SOURCE_LIVE = "live"
+_PROVENANCE_SUFFIX = {
+    _SOURCE_SIMULATED: " Simulated result — no external verification performed.",
+    _SOURCE_LIVE: " Live MillionVerifier evidence — produced by an external provider request.",
+}
 
 # Precise statuses that a finished job may leave as an operational condition to
 # surface when no fresh address evidence exists.
@@ -74,10 +86,17 @@ class StatusView:
     checked_at: datetime | None = None
     is_stale: bool = False
     has_address: bool = True
+    # Provenance of the evidence being shown, when any: "simulated" or "live".
+    # None for in-flight/operational/unverified states with no evidence to show.
+    evidence_source: str | None = None
 
     @property
     def label(self) -> str:
         return self.visual.value
+
+    @property
+    def is_simulated(self) -> bool:
+        return self.evidence_source == _SOURCE_SIMULATED
 
 
 def _now() -> datetime:
@@ -160,7 +179,7 @@ def derive_status_for_email(session: Session, email: str | None) -> StatusView:
             precise = EmailPreciseStatus.CONFLICTING_EVIDENCE
         else:
             precise = policy.precise_for_result(latest.result, is_role=bool(latest.is_role))
-        return _view(email, precise, checked_at, is_stale=False)
+        return _view(email, precise, checked_at, is_stale=False, source=_source_of(latest))
 
     # No fresh evidence and no active job: surface a terminal operational outcome
     # from the most recent finished job, else stale evidence, else unverified.
@@ -179,22 +198,45 @@ def derive_status_for_email(session: Session, email: str | None) -> StatusView:
             return _view(email, precise_op, checked_at, is_stale=bool(latest and not fresh))
 
     if latest is not None:
-        return _view(email, EmailPreciseStatus.STALE_EVIDENCE, checked_at, is_stale=True)
+        return _view(
+            email,
+            EmailPreciseStatus.STALE_EVIDENCE,
+            checked_at,
+            is_stale=True,
+            source=_source_of(latest),
+        )
 
     return _view(email, EmailPreciseStatus.UNVERIFIED, None, is_stale=False)
 
 
+def _source_of(row: ExactEmailVerification | None) -> str | None:
+    """Provenance of a stored evidence row: 'simulated', 'live', or None."""
+
+    if row is None:
+        return None
+    return _SOURCE_SIMULATED if row.provider == SIMULATOR_PROVIDER_LABEL else _SOURCE_LIVE
+
+
 def _view(
-    email: str, precise: EmailPreciseStatus, checked_at: datetime | None, *, is_stale: bool
+    email: str,
+    precise: EmailPreciseStatus,
+    checked_at: datetime | None,
+    *,
+    is_stale: bool,
+    source: str | None = None,
 ) -> StatusView:
+    explanation = _EXPLANATIONS[precise]
+    if source is not None:
+        explanation += _PROVENANCE_SUFFIX[source]
     return StatusView(
         email=email,
         precise=precise,
         visual=PRECISE_TO_VISUAL[precise],
-        explanation=_EXPLANATIONS[precise],
+        explanation=explanation,
         checked_at=checked_at,
         is_stale=is_stale,
         has_address=True,
+        evidence_source=source,
     )
 
 

@@ -212,3 +212,27 @@ def test_reclaimed_job_records_recovered_event(db_session: Session) -> None:
     reclaimed = jobs.claim_next_job(db_session, worker_id="w2", lease_seconds=60, now=future)
     service.process_job(db_session, reclaimed, provider=provider)
     assert _count_usage(db_session, VerificationUsageEventType.RECOVERED) == 1
+
+
+def test_simulator_evidence_is_labeled_simulated_and_shown_as_such(db_session: Session) -> None:
+    """The real simulator stamps simulated provenance so a simulated success is
+    never displayed as an external MillionVerifier verification (VER-007)."""
+
+    from app.services.verification.provider import SIMULATOR_PROVIDER_LABEL
+    from app.services.verification.status import derive_status_for_email
+
+    provider = service.get_provider(get_settings())  # SimulatedMillionVerifier
+    assert provider.simulated is True
+    job = _enqueue_and_run(db_session, provider, "ok@acme.com")
+    assert job.status == VerificationJobStatus.SUCCEEDED
+
+    row = db_session.scalars(
+        select(ExactEmailVerification).where(ExactEmailVerification.email == "ok@acme.com")
+    ).first()
+    assert row is not None
+    assert row.provider == SIMULATOR_PROVIDER_LABEL
+
+    status = derive_status_for_email(db_session, "ok@acme.com")
+    assert status.evidence_source == "simulated"
+    assert status.is_simulated is True
+    assert "Simulated result" in status.explanation

@@ -79,9 +79,16 @@ strings and the job link is a soft reference — so future metered services
 The complete multi-provider finance dashboard is intentionally **out of scope**
 for #137; this is the shared ledger primitive it will later read from.
 
-VER-007 (#? provider contract tests + live smoke) is partially satisfied: the
-documented outcomes are covered offline by contract tests; the single live smoke
-request remains the only manual acceptance item (see the runbook).
+VER-007 (#37 provider contract tests + live smoke) is code-complete: the documented
+outcomes are covered offline by contract tests (`tests/test_verification_provider.py`,
+`tests/test_verification_secrets.py`), and a deliberate, safe operator command —
+`scripts/verify_live_smoke.py`, backed by `app/services/verification/live_smoke.py`
+and `tests/test_verification_live_smoke.py` — performs exactly one live request
+through the real mapping/storage/ledger/display path. Stored evidence now records
+simulated-vs-live provenance so a simulated success is never shown as an external
+verification. The single live request against a real key has now been executed
+(PASS) — see `docs/phase2_evidence/VER-007_live_smoke_acceptance.md` for the
+sanitized record.
 
 ## MillionVerifier contract used
 
