@@ -79,6 +79,16 @@ def test_config_error_is_not_retryable() -> None:
     assert m.is_address_evidence is False
 
 
+def test_access_rejected_is_provider_error_not_retryable() -> None:
+    # A 401/403 surfaces as error="access_rejected": a definite provider access
+    # rejection, never a mailbox verdict, and never auto-retried.
+    m = _policy().map_response(_resp(error="access_rejected"))
+    assert m.retryable is False
+    assert m.is_address_evidence is False
+    assert m.precise == EmailPreciseStatus.PROVIDER_ERROR
+    assert "401/403" in m.reason
+
+
 def test_result_error_code_is_transient() -> None:
     m = _policy().map_response(_resp(result="error", resultcode=4))
     assert m.retryable is True

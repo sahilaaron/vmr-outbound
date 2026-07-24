@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
@@ -59,6 +60,15 @@ TEST_KEYS: dict[str, str] = {
 # records an explicit simulated label. These are the values the operator sees.
 LIVE_PROVIDER_LABEL = "millionverifier"
 SIMULATOR_PROVIDER_LABEL = "millionverifier-simulator"
+
+# Static request headers for the live Single API client. A descriptive User-Agent
+# is good API citizenship (and some providers reject header-less requests); Accept
+# declares that we parse JSON. The version is kept in sync with pyproject.toml.
+_CLIENT_VERSION = "0.0.1"
+REQUEST_HEADERS: dict[str, str] = {
+    "Accept": "application/json",
+    "User-Agent": f"vmr-outbound/{_CLIENT_VERSION}",
+}
 
 _RESULTCODE = {"ok": 1, "catch_all": 2, "unknown": 3, "error": 4, "disposable": 5, "invalid": 6}
 _ROLE_LOCALPARTS = frozenset(
@@ -231,8 +241,17 @@ class Transport(Protocol):
 class UrllibTransport:
     """Default transport backed by the standard library (no third-party dep)."""
 
+    def build_request(self, url: str) -> urllib.request.Request:
+        """Build the GET request with our standard headers (pure; no network).
+
+        Split out from :meth:`get` so the header contract is unit-testable offline.
+        """
+
+        return urllib.request.Request(url, headers=dict(REQUEST_HEADERS), method="GET")
+
     def get(self, url: str, timeout: float) -> str:  # pragma: no cover - network
-        with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310
+        req = self.build_request(url)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
             return str(resp.read().decode("utf-8"))
 
 
@@ -272,6 +291,23 @@ class HttpMillionVerifier:
             body = self._transport.get(url, timeout=float(self._timeout) + 1.0)
         except ProviderTransientError:
             raise
+        except urllib.error.HTTPError as exc:
+            # 401/403 are a definite provider access rejection (a bad or rejected
+            # key, an out-of-quota plan, or a blocked IP) — not a transient blip.
+            # Surface it as a mapped, non-retryable provider access error; never
+            # retry it, and never let the key reach the message.
+            if exc.code in (401, 403):
+                return ProviderResponse(
+                    email=email,
+                    result=None,
+                    resultcode=None,
+                    error="access_rejected",
+                    raw={"error": "access_rejected", "http_status": exc.code},
+                )
+            # Other HTTP statuses: a transient transport failure (may retry). The
+            # HTTPError string is "HTTP Error <code>: <reason>" (no URL/key); redact
+            # defensively regardless.
+            raise ProviderTransientError(_redact(str(exc), self._api_key)) from None
         except Exception as exc:  # transport failure: no verdict, may retry
             raise ProviderTransientError(_redact(str(exc), self._api_key)) from None
         try:

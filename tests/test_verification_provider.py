@@ -7,14 +7,17 @@ HTTP client is exercised through an injected fake transport.
 from __future__ import annotations
 
 import json
+import urllib.error
 
 import pytest
 from app.services.verification.provider import (
     LIVE_PROVIDER_LABEL,
+    REQUEST_HEADERS,
     SIMULATOR_PROVIDER_LABEL,
     HttpMillionVerifier,
     ProviderTransientError,
     SimulatedMillionVerifier,
+    UrllibTransport,
     build_provider,
     evidence_provider_label,
 )
@@ -148,3 +151,48 @@ def test_http_client_malformed_json_is_transient() -> None:
     client = HttpMillionVerifier("SECRET", base_url="https://api.x/v3", transport=_Bad())
     with pytest.raises(ProviderTransientError):
         client.verify("a@b.com")
+
+
+def test_urllib_transport_sends_accept_and_user_agent_headers() -> None:
+    # The header contract is verified offline via the pure request builder.
+    req = UrllibTransport().build_request("https://api.x/v3?api=SECRET&email=a%40b.com")
+    assert req.get_header("Accept") == "application/json"
+    assert req.get_header("User-agent") == "vmr-outbound/0.0.1"
+    assert REQUEST_HEADERS == {
+        "Accept": "application/json",
+        "User-Agent": "vmr-outbound/0.0.1",
+    }
+    # The URL (which carries the key) is passed through unchanged for the GET.
+    assert req.full_url == "https://api.x/v3?api=SECRET&email=a%40b.com"
+
+
+class _HttpErrorTransport:
+    def __init__(self, code: int, msg: str = "denied") -> None:
+        self.code = code
+        self.msg = msg
+
+    def get(self, url: str, timeout: float) -> str:
+        raise urllib.error.HTTPError(url, self.code, self.msg, {}, None)  # type: ignore[arg-type]
+
+
+def test_http_401_403_map_to_access_rejected_not_retryable() -> None:
+    for code in (401, 403):
+        client = HttpMillionVerifier(
+            "SECRET", base_url="https://api.x/v3", transport=_HttpErrorTransport(code)
+        )
+        resp = client.verify("a@b.com")  # returns, does not raise (no auto-retry)
+        assert resp.error == "access_rejected"
+        assert resp.result is None
+        assert resp.raw.get("http_status") == code
+        assert "SECRET" not in json.dumps(resp.raw)
+
+
+def test_other_http_errors_stay_transient_and_redacted() -> None:
+    # A 500 includes the key in its message on purpose; it must be redacted and
+    # remain a retryable transport failure.
+    client = HttpMillionVerifier(
+        "SECRET", base_url="https://api.x/v3", transport=_HttpErrorTransport(500, "boom SECRET")
+    )
+    with pytest.raises(ProviderTransientError) as exc:
+        client.verify("a@b.com")
+    assert "SECRET" not in str(exc.value)

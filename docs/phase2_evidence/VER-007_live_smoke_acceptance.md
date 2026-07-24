@@ -20,6 +20,17 @@ key, no unredacted provider URL, and no raw provider response**.
 3. Strengthened offline contract/secret tests around live selection and key safety.
 4. Runbook and Phase 2 doc updates.
 
+### Review-round hardening (PR #149)
+
+* The live HTTP client sends explicit `Accept: application/json` and
+  `User-Agent: vmr-outbound/0.0.1` headers, built by a pure `build_request` seam
+  that is unit-tested offline.
+* HTTP **401/403** is classified as a provider **access rejection** (mapped to a
+  non-retryable provider error, never a mailbox verdict); other HTTP statuses stay
+  retryable transport failures. Key redaction is preserved on every path.
+* The operator command runs a database preflight and fails with a clean one-line
+  hint instead of a raw stack trace; it never prints the connection URL.
+
 No schema change (no `models/` or `migrations/` edits); `alembic check` reports no
 drift.
 
@@ -50,7 +61,7 @@ exception, or written into the result.
 | `ruff check .` | All checks passed |
 | `ruff format --check .` | 121 files already formatted |
 | `python -m mypy app` (strict) | Success: no issues in 68 source files |
-| `python -m pytest` | **374 passed** (361 baseline + 13 new) |
+| `python -m pytest` | **378 passed** (361 baseline + 17 new) |
 | `alembic upgrade head` (clean DB) | OK (head `ad1e298fb49a`) |
 | `alembic check` | No new upgrade operations detected |
 

@@ -31,8 +31,9 @@ POLICY_VERSION = "ver-1"
 # Transient application-level provider errors that justify a bounded retry.
 _TRANSIENT_ERRORS = frozenset({"ip_address_blocked", "internal_error", "timeout"})
 # Configuration/operational errors that must NOT auto-retry (a retry cannot help
-# until a human acts) and are never address evidence.
-_CONFIG_ERRORS = frozenset({"invalid_api_key", "no_apikey", "no_email"})
+# until a human acts) and are never address evidence. ``access_rejected`` is a
+# transport-level 401/403 from the provider (rejected key/plan/IP).
+_CONFIG_ERRORS = frozenset({"invalid_api_key", "no_apikey", "no_email", "access_rejected"})
 
 _KIND_TRANSIENT = "transient"
 _KIND_ADDRESS = "address"
@@ -121,13 +122,17 @@ class VerificationPolicy:
                     reason=f"transient provider error ({err}); will retry with backoff",
                 )
             # Configuration errors: no auto-retry, never address evidence.
+            if err == "access_rejected":
+                reason = "provider rejected access (HTTP 401/403) — verify the API key and plan"
+            else:
+                reason = f"provider error ({err}) requires operator action"
             return MappedOutcome(
                 kind=_KIND_PROVIDER_ERROR,
                 result=None,
                 precise=EmailPreciseStatus.PROVIDER_ERROR,
                 credited=False,
                 retryable=False,
-                reason=f"provider error ({err}) requires operator action",
+                reason=reason,
             )
 
         result_str = (response.result or "").strip().lower()

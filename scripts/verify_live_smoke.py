@@ -29,12 +29,33 @@ from __future__ import annotations
 import argparse
 
 from app.core.config import get_settings
-from app.db.session import session_scope
+from app.db.session import engine, session_scope
 from app.services.verification.live_smoke import (
     LiveSmokeError,
     LiveSmokeResult,
     run_live_smoke,
 )
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
+
+
+def _database_reachable() -> bool:
+    """Cheap preflight: True if the local database answers a trivial query.
+
+    Prints a clean one-line hint (never a raw stack trace or the connection URL,
+    which may hold credentials) when the database is unreachable.
+    """
+
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except SQLAlchemyError as exc:
+        print(
+            "[live-smoke] database not reachable — start it with "
+            f"`python scripts/dev_up.py` and retry. ({type(exc).__name__})"
+        )
+        return False
+    return True
 
 
 def _fmt(value: object) -> str:
@@ -110,6 +131,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     print("=" * 58)
 
+    if not _database_reachable():
+        return 2
+
     try:
         with session_scope() as session:
             result = run_live_smoke(
@@ -121,6 +145,11 @@ def main(argv: list[str] | None = None) -> int:
             )
     except LiveSmokeError as exc:
         print(f"[live-smoke] REFUSED: {exc}")
+        return 2
+    except SQLAlchemyError as exc:
+        # A database failure mid-run: report the class only, never the raw error
+        # (which can echo the connection URL/credentials).
+        print(f"[live-smoke] database error during the run ({type(exc).__name__}); aborted.")
         return 2
 
     _print_result(result)

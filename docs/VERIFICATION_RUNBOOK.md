@@ -155,8 +155,13 @@ The system never lets a simulated result look like an external verification:
 
 * **Invalid / not-configured key** — the command refuses before any call if the key
   is missing (`no MillionVerifier API key configured`). If a *wrong* key reaches the
-  provider, MillionVerifier returns an authentication error; it maps to
-  **provider error** (no verdict, no address evidence), never to a mailbox result.
+  provider, an HTTP **401/403** is classified as a provider **access rejection**
+  (non-retryable provider error — check the key and plan), and a 200 response with an
+  `invalid_api_key` error maps the same way. Either way it is **never** a mailbox
+  result, and the key is redacted from every message.
+* **Database not reachable** — the command runs a preflight and stops with a clean
+  one-line hint (`run scripts/dev_up.py`) instead of a stack trace; it never prints
+  the connection URL.
 * **Insufficient credits** — maps to the **insufficient-credits** state (no address
   evidence, no auto-retry). Top up the plan and re-run.
 * **Timeout / transport failure** — reported as `transport ok: no`; it is a retryable
