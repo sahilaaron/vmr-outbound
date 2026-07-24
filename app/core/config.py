@@ -12,11 +12,13 @@ the repository.
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.features import FeatureFlags
+from app.db.safety import validate_database_settings
 
 
 class Settings(BaseSettings):
@@ -38,12 +40,62 @@ class Settings(BaseSettings):
     debug: bool = False
 
     # --- Database ------------------------------------------------------------
+    # Explicit database mode (FND-009). ``local`` (default) requires a loopback
+    # host; ``rds-dev`` requires an explicitly supplied DATABASE_URL pointing at
+    # a non-loopback host with a strong sslmode. The rules are enforced fail-
+    # closed by ``app.db.safety`` at construction time and again per engine.
+    database_target: Literal["local", "rds-dev"] = Field(
+        default="local",
+        description="Active database mode: 'local' (loopback dev Postgres) or "
+        "'rds-dev' (the development RDS instance, TLS mandatory).",
+    )
     # Local dev default points at the documented local Postgres instance.
-    # In staging/production this is supplied by the environment (RDS). The
-    # value is a full SQLAlchemy URL; credentials never live in source.
+    # In rds-dev/staging/production this is supplied by the environment (local
+    # .env or secret manager). The value is a full SQLAlchemy URL; credentials
+    # never live in source, logs, errors, or audit output (see
+    # ``app.db.safety.mask_database_url``).
     database_url: str = Field(
         default="postgresql+psycopg://dev@127.0.0.1:5433/vmr_dev",
         description="SQLAlchemy database URL. Supplied by the environment outside local dev.",
+    )
+
+    # --- Database pool and timeout behaviour (FND-009) -------------------------
+    # Conservative defaults sized for a single-operator app sharing a small
+    # development RDS instance: a bounded pool, pre-ping to drop dead
+    # connections, recycling below common idle-timeout windows, a short connect
+    # timeout, and server-side statement/lock timeouts so a runaway query or a
+    # stuck lock can never hold the shared instance hostage.
+    db_pool_size: int = Field(
+        default=5, gt=0, description="SQLAlchemy connection pool size (default 5)."
+    )
+    db_max_overflow: int = Field(
+        default=5, ge=0, description="Connections allowed beyond the pool size (default 5)."
+    )
+    db_pool_timeout_seconds: float = Field(
+        default=30.0, gt=0, description="Seconds to wait for a pooled connection (default 30)."
+    )
+    db_pool_recycle_seconds: int = Field(
+        default=1800,
+        gt=0,
+        description="Recycle pooled connections older than this many seconds (default 1800).",
+    )
+    db_connect_timeout_seconds: int = Field(
+        default=10, gt=0, description="TCP/libpq connect timeout in seconds (default 10)."
+    )
+    db_statement_timeout_ms: int = Field(
+        default=30_000,
+        gt=0,
+        description="Server-side statement_timeout in milliseconds (default 30000).",
+    )
+    db_lock_timeout_ms: int = Field(
+        default=5_000,
+        gt=0,
+        description="Server-side lock_timeout in milliseconds (default 5000).",
+    )
+    db_idle_in_transaction_timeout_ms: int = Field(
+        default=60_000,
+        gt=0,
+        description="Server-side idle_in_transaction_session_timeout in ms (default 60000).",
     )
 
     # --- Safety switches -----------------------------------------------------
@@ -137,6 +189,23 @@ class Settings(BaseSettings):
         return bool(self.logo_dev_api_key and self.logo_dev_api_key.strip())
 
     features: FeatureFlags = Field(default_factory=FeatureFlags)
+
+    @model_validator(mode="after")
+    def _enforce_database_safety(self) -> Settings:
+        """Fail closed at construction when the database configuration is unsafe.
+
+        ``local`` must point at a loopback host; ``rds-dev`` must point at an
+        explicitly supplied, non-loopback URL with a strong ``sslmode``. This
+        makes an accidental remote connection (or a deliberate unencrypted one)
+        impossible to configure, not merely discouraged.
+        """
+
+        validate_database_settings(
+            target=self.database_target,
+            url=self.database_url,
+            url_explicitly_set="database_url" in self.model_fields_set,
+        )
+        return self
 
     @property
     def is_production(self) -> bool:

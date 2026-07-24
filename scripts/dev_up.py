@@ -28,6 +28,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from app.db.safety import mask_database_url
 from psycopg import sql
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
@@ -59,9 +60,16 @@ def ensure_env_file() -> None:
 def database_url() -> str:
     # Import lazily so a missing .env or install surfaces a clear earlier error.
     from app.core.config import get_settings
+    from app.db.safety import ensure_local_only_operation
 
     get_settings.cache_clear()
-    return get_settings().database_url
+    settings = get_settings()
+    # FND-009: this script creates databases and drives migrations without
+    # confirmation — strictly a LOCAL bootstrap. It refuses any non-local
+    # target/host outright; the development RDS instance is operated only
+    # through `python scripts/rds_migrate.py`.
+    ensure_local_only_operation(settings, operation="scripts/dev_up.py")
+    return settings.database_url
 
 
 def wait_for_server(url: str, *, wait: bool) -> None:
@@ -81,7 +89,7 @@ def wait_for_server(url: str, *, wait: bool) -> None:
         except OperationalError as exc:
             if time.monotonic() >= deadline:
                 _say("ERROR: could not reach the Postgres server.")
-                _say(f"  tried: {admin_url.render_as_string(hide_password=True)}")
+                _say(f"  tried: {mask_database_url(admin_url)}")
                 _say(f"  detail: {type(exc).__name__}")
                 _say("  Start it first — e.g. `docker compose up -d db` — then re-run this.")
                 raise SystemExit(2) from exc
@@ -141,7 +149,7 @@ def ensure_database(url: str) -> None:
         # server — NOT evidence that the target database is missing. Fail clearly
         # and never attempt to create. Credentials/URL are masked.
         _say("ERROR: could not prepare the database (could not reach the server).")
-        _say(f"  server: {admin_url.render_as_string(hide_password=True)}")
+        _say(f"  server: {mask_database_url(admin_url)}")
         _say(f"  detail: {type(exc).__name__}")
         raise SystemExit(2) from exc
     finally:
@@ -166,7 +174,7 @@ def main() -> None:
 
     ensure_env_file()
     url = database_url()
-    _say(f"using {make_url(url).render_as_string(hide_password=True)}")
+    _say(f"using {mask_database_url(url)}")
 
     wait_for_server(url, wait=not opts.no_wait)
     ensure_database(url)

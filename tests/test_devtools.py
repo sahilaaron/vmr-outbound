@@ -26,14 +26,46 @@ def test_guard_refuses_non_local_environment(monkeypatch: pytest.MonkeyPatch) ->
         _clear_settings_cache()
 
 
-def test_guard_refuses_non_loopback_database(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_guard_refuses_non_loopback_database() -> None:
+    # Settings construction itself fails closed on a non-loopback URL in local
+    # mode (see test_rds_safety.py), so a remote-pointing settings object can
+    # only be built by bypassing validation — the devtools guard must still
+    # refuse it independently (defence in depth).
+    from app.core.config import Settings
+
+    bad = Settings.model_construct(
+        app_env="local",
+        database_target="local",
+        database_url="postgresql+psycopg://user:pw@prod-rds.example.amazonaws.com:5432/vmr",
+    )
+    with pytest.raises(devtools.LocalOnlyViolation, match="non-loopback"):
+        devtools.ensure_local_database(bad)
+
+
+def test_guard_refuses_rds_dev_target() -> None:
+    from app.core.config import Settings
+
+    bad = Settings.model_construct(
+        app_env="local",
+        database_target="rds-dev",
+        database_url="postgresql+psycopg://user:pw@db.example.net:5432/vmr?sslmode=require",
+    )
+    with pytest.raises(devtools.LocalOnlyViolation, match="DATABASE_TARGET"):
+        devtools.ensure_local_database(bad)
+
+
+def test_settings_construction_fails_closed_on_remote_url_in_local_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.db.safety import DatabaseConfigurationError
+
     monkeypatch.setenv(
         "DATABASE_URL",
         "postgresql+psycopg://user:pw@prod-rds.example.amazonaws.com:5432/vmr",
     )
     _clear_settings_cache()
     try:
-        with pytest.raises(devtools.LocalOnlyViolation, match="non-loopback"):
+        with pytest.raises(DatabaseConfigurationError, match="loopback"):
             devtools.ensure_local_database()
     finally:
         _clear_settings_cache()

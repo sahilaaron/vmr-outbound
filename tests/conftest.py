@@ -14,10 +14,19 @@ from pathlib import Path
 import pytest
 from app.core.config import get_settings
 from app.db.base import Base
+from app.db.safety import RemoteDatabaseRefused, ensure_local_only_operation
 from app.db.session import engine
 from sqlalchemy.orm import Session
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
+
+# FND-009: the suite creates schema and writes/truncates data — it is a
+# destructive local-only operation and must never run against a non-loopback
+# database (the development RDS instance included), regardless of flags.
+try:
+    ensure_local_only_operation(get_settings(), operation="the pytest suite")
+except RemoteDatabaseRefused as exc:  # pragma: no cover - safety abort path
+    raise SystemExit(f"REFUSED: {exc}") from exc
 
 
 @pytest.fixture(scope="session", autouse=True)

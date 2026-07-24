@@ -1,8 +1,9 @@
-# Development setup (FND-003 / FND-004 / FND-005)
+# Development setup (FND-003 / FND-004 / FND-005 / FND-009)
 
 Exact steps to start the project on a clean machine, run the checks, and apply
-migrations. Phase 0 targets **local development only** — no production/RDS
-credentials are used or stored here.
+migrations. Sections 1–6 cover the default **local** database mode; section 7
+covers the deliberate **development-RDS** mode (FND-009). No RDS credential is
+ever used or stored in this repository.
 
 > Optional developer convenience: sections 2–4 (env file, database, migrations)
 > can be run in one step with `python scripts/dev_up.py`, and
@@ -117,6 +118,90 @@ python -m pytest
 
 CI runs exactly these steps against a Postgres 16 service — see
 `.github/workflows/ci.yml`.
+
+## 7. Using the development RDS database (FND-009)
+
+The application supports two explicit database modes, selected by
+`DATABASE_TARGET` in your local `.env`:
+
+| Mode | Meaning | Rules (enforced fail-closed) |
+| --- | --- | --- |
+| `local` (default) | loopback development Postgres | host must be `127.0.0.1` / `localhost` / `::1` |
+| `rds-dev` | the development RDS instance | `DATABASE_URL` must be supplied explicitly, point at a non-loopback host, and carry `sslmode=require`/`verify-ca`/`verify-full`; TLS is re-verified on every live connection |
+
+Local-only operations — `scripts/dev_up.py`, the workbench reset/fixture
+tools, the pytest suite, `alembic downgrade`, and database creation — refuse
+any non-loopback host under every flag combination. The only supported way to
+run migrations against RDS is the operator command below.
+
+### Connect
+
+Set, in your local `.env` only (never committed, never pasted into GitHub,
+chat, logs, or screenshots):
+
+```
+DATABASE_TARGET=rds-dev
+DATABASE_URL=postgresql+psycopg://USER:PASSWORD@ENDPOINT:5432/DBNAME?sslmode=verify-full&sslrootcert=/path/to/rds-global-bundle.pem
+```
+
+`sslmode=verify-full` with the [AWS RDS global certificate bundle](https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem)
+is preferred (verifies the server identity). `sslmode=require` is the accepted
+minimum; `prefer` and weaker are refused. Connection details printed by any
+tool are masked (`[masked-user]@[masked-host]`); errors print exception class
+names only.
+
+Pooling is conservative by default (pool 5 + overflow 5, pre-ping, 30-minute
+recycle, 10 s connect timeout, 30 s statement / 5 s lock / 60 s
+idle-in-transaction server-side timeouts). Override via the `DB_*` variables in
+`.env.example` only with a reason.
+
+### Migrate and check
+
+```bash
+python scripts/rds_migrate.py status    # read-only: server, encoding, TZ, TLS, schema head, drift
+python scripts/rds_migrate.py upgrade   # apply alembic upgrade head (typed confirmation) + check
+python scripts/rds_migrate.py prove     # readiness proof: capability checks + write/read/cleanup
+                                        # via a temporary table — persists nothing
+```
+
+Calling `alembic` directly against a non-loopback host is refused
+(`migrations/env.py` requires the one-shot token only `rds_migrate.py` sets),
+and `alembic downgrade` against a non-loopback host is refused unconditionally
+— recovering RDS uses backup/restore, not downgrade.
+
+### Backup and restore
+
+Run from your machine with the same `.env` values (never store dumps in the
+repository; `PG*` variables keep the credential out of the command line and
+shell history):
+
+```bash
+# Logical backup of the development database (custom format, compressed):
+PGSSLMODE=verify-full PGSSLROOTCERT=/path/to/rds-global-bundle.pem \
+  pg_dump -h ENDPOINT -p 5432 -U USER -d DBNAME -Fc -f vmr_dev_$(date +%Y%m%d).dump
+
+# Restore into an (empty) database:
+PGSSLMODE=verify-full PGSSLROOTCERT=/path/to/rds-global-bundle.pem \
+  pg_restore -h ENDPOINT -p 5432 -U USER -d DBNAME --no-owner --clean --if-exists vmr_dev_YYYYMMDD.dump
+```
+
+`pg_dump`/`pg_restore` prompt for the password (or read `PGPASSWORD` from the
+environment for one command — do not export it globally). RDS automated
+snapshots remain the primary recovery mechanism and are managed in AWS by the
+operator; nothing in this repository changes AWS-side settings.
+
+### Rotate credentials
+
+1. In the AWS console (operator action), set a new password for the database
+   user — or create a new user, grant it the same privileges, and plan to drop
+   the old one.
+2. Update `DATABASE_URL` in your local `.env` with the new value.
+3. Verify: `python scripts/rds_migrate.py status` (connects with the new
+   credential; output stays masked).
+4. If a separate user was created, drop the old user in AWS after the check
+   passes. The old password stops working immediately either way.
+
+Nothing else needs to change: the credential exists only in the local `.env`.
 
 ## Notes
 

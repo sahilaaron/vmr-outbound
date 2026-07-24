@@ -13,6 +13,7 @@ import app.db.base  # noqa: E402, F401
 from alembic import context
 from app.core.config import get_settings
 from app.db.base import Base
+from app.db.safety import ensure_migration_allowed
 from sqlalchemy import engine_from_config, pool
 
 # Alembic Config object, providing access to the .ini file values.
@@ -24,6 +25,25 @@ if config.config_file_name is not None:
 
 # Inject the application's database URL at runtime (never hard-coded in the ini).
 config.set_main_option("sqlalchemy.url", get_settings().database_url)
+
+
+def _alembic_command_name() -> str | None:
+    """The alembic CLI subcommand being executed (None when run programmatically)."""
+
+    cmd = getattr(config.cmd_opts, "cmd", None)
+    if not cmd:
+        return None
+    fn = cmd[0]
+    name = getattr(fn, "__name__", None)
+    return name if isinstance(name, str) else None
+
+
+# FND-009 guard: migrations run freely against a loopback database; against any
+# non-loopback host they run only through the deliberate operator command
+# (scripts/rds_migrate.py, which sets a one-shot token), and `downgrade` is
+# refused against a non-loopback host unconditionally. Fails closed with a
+# masked message before any connection is attempted.
+ensure_migration_allowed(get_settings().database_url, command=_alembic_command_name())
 
 target_metadata = Base.metadata
 

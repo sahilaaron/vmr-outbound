@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
 from app.db.base import Base
+from app.db.safety import mask_database_url
 from app.models.campaign import Campaign
 from app.models.enums import CampaignStatus, SuppressionReason, SuppressionType
 from app.services.audit import record_audit_event
@@ -51,10 +52,18 @@ def ensure_local_database(settings: Settings | None = None) -> None:
         raise LocalOnlyViolation(
             f"local data tools are disabled outside local development (APP_ENV={settings.app_env!r})"
         )
+    if settings.database_target != "local":
+        raise LocalOnlyViolation(
+            "local data tools are disabled while DATABASE_TARGET="
+            f"{settings.database_target!r}; they only ever run against the "
+            "local loopback database (FND-009)"
+        )
     host = urlparse(settings.database_url.replace("postgresql+psycopg", "postgresql")).hostname
     if host not in _LOOPBACK_HOSTS:
+        # The masked form never includes the endpoint or username (FND-009).
         raise LocalOnlyViolation(
-            f"local data tools refuse to run against non-loopback database host {host!r}"
+            "local data tools refuse to run against non-loopback database host "
+            f"({mask_database_url(settings.database_url)})"
         )
 
 
