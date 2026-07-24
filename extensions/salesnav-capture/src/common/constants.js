@@ -17,8 +17,16 @@
   // breaking change to the record/payload shape (see docs/BACKEND_CONTRACT.md).
   const SCHEMA_VERSION = "salesnav-capture/1.0.0";
 
+  // Versioned contracts for operator-opened ordinary LinkedIn pages (DAT-012).
+  // Independent namespaces so the Sales Navigator contract stays untouched.
+  // See docs/PROFILE_CONTRACT.md.
+  const PROFILE_SCHEMA_VERSION = "linkedin-profile-capture/1.0.0";
+  const COMPANY_SCHEMA_VERSION = "linkedin-company-capture/1.0.0";
+
   // Identifies the client that produced the batch.
   const SOURCE_IDENTIFIER = "chrome-extension:salesnav-capture";
+  const PROFILE_SOURCE_IDENTIFIER = "chrome-extension:linkedin-profile-capture";
+  const COMPANY_SOURCE_IDENTIFIER = "chrome-extension:linkedin-company-capture";
 
   // Safety limits (client-side; the backend enforces its own).
   const LIMITS = {
@@ -65,6 +73,21 @@
   // The backend route the contract targets. Final name reconciled to repo
   // conventions after PR #120 merges (see docs/BACKEND_CONTRACT.md).
   const INTAKE_PATH = "/api/intake/sales-navigator/stage";
+  const PROFILE_INTAKE_PATH = "/api/intake/linkedin-profile/stage";
+  const COMPANY_INTAKE_PATH = "/api/intake/linkedin-company/stage";
+
+  // Page surfaces the extension can be looking at. Detected by
+  // src/common/surface.js (PageSurfaceDetector); each surface maps to one
+  // side-panel mode. Detection never navigates — it only classifies the page
+  // the operator already opened.
+  const SURFACES = {
+    SALESNAV_PEOPLE_RESULTS: "salesnav_people_results",
+    PERSON_PROFILE: "linkedin_person_profile",
+    COMPANY_PROFILE: "linkedin_company_profile",
+    CHALLENGE: "challenge_or_login",
+    UNAVAILABLE: "unavailable_profile",
+    UNSUPPORTED: "unsupported_page",
+  };
 
   // Record-level warning codes (stable strings for UI + backend).
   const WARNINGS = {
@@ -74,25 +97,51 @@
     DUPLICATE_COLLAPSED: "duplicate_collapsed",
     MALFORMED_URL: "malformed_url",
     NO_STABLE_IDENTITY: "no_stable_identity",
+    // Profile/company capture warning codes (DAT-012).
+    MISSING_SECTION: "missing_section",
+    UNPARSED_TIMELINE: "unparsed_timeline",
+    UNRECOGNIZED_LAYOUT: "unrecognized_layout",
+    UNPARSED_VALUE: "unparsed_value",
   };
 
   // Page-level capture status.
   const CAPTURE_STATUS = {
     OK: "ok",
+    // Profile parsed, but one or more expected sections/fields are missing.
+    // Missing data stays null with warnings — never fabricated.
+    PARTIAL: "partial",
     UNSUPPORTED_PAGE: "unsupported_page",
     STRUCTURE_UNRECOGNIZED: "structure_unrecognized",
     CHALLENGE_DETECTED: "challenge_detected",
+    UNAVAILABLE_PROFILE: "unavailable_profile",
     EMPTY: "empty",
+  };
+
+  // Chrome storage keys for the person/company capture drafts (kept separate
+  // from the SalesNav batch so the two workflows never clobber each other).
+  const PROFILE_STORAGE = {
+    DRAFT_PROFILE: "li_draft_profile",
+    LAST_PROFILE_RESULT: "li_last_profile_result",
+    DRAFT_COMPANY: "li_draft_company",
+    LAST_COMPANY_RESULT: "li_last_company_result",
   };
 
   return {
     SCHEMA_VERSION,
+    PROFILE_SCHEMA_VERSION,
+    COMPANY_SCHEMA_VERSION,
     SOURCE_IDENTIFIER,
+    PROFILE_SOURCE_IDENTIFIER,
+    COMPANY_SOURCE_IDENTIFIER,
     LIMITS,
     STORAGE,
+    PROFILE_STORAGE,
     DEFAULT_PREFERENCES,
     ALLOWED_BACKEND_ORIGIN_PATTERNS,
     INTAKE_PATH,
+    PROFILE_INTAKE_PATH,
+    COMPANY_INTAKE_PATH,
+    SURFACES,
     WARNINGS,
     CAPTURE_STATUS,
   };

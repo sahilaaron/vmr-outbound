@@ -1,0 +1,217 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "vmr:intake:linkedin-company-capture:1.0.0",
+  "title": "LinkedIn company-page capture intake payload",
+  "description": "One reviewed, operator-approved snapshot of a manually opened LinkedIn company page (linkedin.com/company/...). The operator navigates there themselves \u2014 the extension never navigates from a person profile. Firmographic values are evidence, not canonical truth. See docs/PROFILE_CONTRACT.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "client_capture_id",
+    "campaign_id",
+    "captured_at",
+    "source",
+    "source_url",
+    "extraction",
+    "company"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "linkedin-company-capture/1.0.0"
+    },
+    "client_capture_id": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128
+    },
+    "campaign_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "captured_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "const": "chrome-extension:linkedin-company-capture"
+    },
+    "source_url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "extraction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "adapter_version",
+        "extension_version",
+        "status",
+        "surface",
+        "missing_sections",
+        "excluded_sections",
+        "page_warnings"
+      ],
+      "properties": {
+        "adapter_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "extension_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "partial"
+          ]
+        },
+        "surface": {
+          "const": "linkedin_company_profile"
+        },
+        "missing_sections": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "excluded_sections": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "page_warnings": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "company": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "company_linkedin_url",
+        "company_linkedin_id",
+        "name",
+        "website",
+        "industry",
+        "size_range",
+        "employee_count_raw",
+        "employee_count",
+        "headquarters_text",
+        "founded_year",
+        "founded_raw",
+        "specialties",
+        "observed_at",
+        "raw_lines",
+        "warnings"
+      ],
+      "properties": {
+        "company_linkedin_url": {
+          "type": "string",
+          "pattern": "^https://([a-z0-9-]+\\.)*linkedin\\.com/company/[^/]+(/about)?/?$",
+          "description": "Client-normalized company URL: https, a linkedin.com host, and a /company/<identifier> path (optionally /about) only. School pages are not a supported surface in the first release. The backend re-normalizes authoritatively before any matching."
+        },
+        "company_linkedin_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "website": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "industry": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "size_range": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The displayed size bucket (e.g. \"51-200 employees\"), verbatim."
+        },
+        "employee_count_raw": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The displayed associated-members / employee count text, verbatim."
+        },
+        "employee_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "headquarters_text": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The displayed headquarters value, verbatim. Never derived from person or role locations. City/state/country splitting happens backend-side and only when deterministic."
+        },
+        "founded_year": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1000,
+          "maximum": 2100
+        },
+        "founded_raw": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "specialties": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "raw_lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
+    }
+  }
+}
