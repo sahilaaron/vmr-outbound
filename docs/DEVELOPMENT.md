@@ -4,6 +4,13 @@ Exact steps to start the project on a clean machine, run the checks, and apply
 migrations. Phase 0 targets **local development only** — no production/RDS
 credentials are used or stored here.
 
+> Optional developer convenience: sections 2–4 (env file, database, migrations)
+> can be run in one step with `python scripts/dev_up.py`, and
+> `docker compose up -d db` provides a throwaway local UTF-8 Postgres that matches
+> the default `DATABASE_URL`. `python scripts/smoke.py` checks a running instance.
+> These scripts automate the manual steps documented below — they don't replace
+> them; this file remains the reference.
+
 ## Prerequisites
 
 - Python 3.11+
@@ -47,6 +54,14 @@ createdb -h 127.0.0.1 -p 5433 -U dev -E UTF8 -T template0 vmr_dev
 #   CREATE DATABASE vmr_dev ENCODING 'UTF8' TEMPLATE template0;
 ```
 
+Or start a throwaway local Postgres that matches the default URL and let the
+bootstrap script create the database (steps 3 and 4 together):
+
+```bash
+docker compose up -d db      # optional local Postgres on 127.0.0.1:5433 (UTF-8)
+python scripts/dev_up.py     # create the DB if missing, then apply + verify migrations
+```
+
 ## 4. Apply migrations
 
 ```bash
@@ -71,15 +86,20 @@ alembic downgrade base && alembic upgrade head
 uvicorn app.main:app --reload --port 8000
 # Liveness:  curl http://127.0.0.1:8000/health
 # Readiness: curl http://127.0.0.1:8000/ready   (checks the database)
+# Or:        python scripts/smoke.py    (health + readiness + which features are on)
 ```
 
 To run the local operator workbench (server-rendered UI at `/`), enable its
 switches (they default off):
 
 ```bash
-FEATURES__WORKBENCH=true FEATURES__CSV_IMPORT=true \
+FEATURES__WORKBENCH=true FEATURES__CSV_IMPORT=true FEATURES__SALESNAV_INTAKE=true \
   uvicorn app.main:app --reload --port 8000
 ```
+
+`FEATURES__SALESNAV_INTAKE=true` also enables the local Sales Navigator capture
+intake endpoint and campaign selector (DAT-009 / UI-010). On Windows, set these
+in `.env` instead of inline and run `uvicorn app.main:app --reload --port 8000`.
 
 See `docs/WORKBENCH.md` for the pages, the CSV/XLSX preview -> confirm import
 flow, and the local-only reset safety rules.
