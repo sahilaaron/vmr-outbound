@@ -17,7 +17,9 @@
     "experiences"
   ],
   "properties": {
-    "schema_version": { "const": "linkedin-profile-capture/1.0.0" },
+    "schema_version": {
+      "const": "linkedin-profile-capture/1.0.0"
+    },
     "client_capture_id": {
       "type": "string",
       "minLength": 8,
@@ -25,31 +27,79 @@
       "description": "Client-minted stable id for this reviewed draft (idempotency key). Unchanged across retries of the same reviewed content."
     },
     "campaign_id": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "description": "Operator-selected campaign, when applicable. Never required to stage."
     },
-    "captured_at": { "type": "string", "format": "date-time" },
-    "source": { "const": "chrome-extension:linkedin-profile-capture" },
+    "captured_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "const": "chrome-extension:linkedin-profile-capture"
+    },
     "source_url": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "description": "The raw page URL at capture time (unnormalized)."
     },
     "extraction": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["adapter_version", "extension_version", "status", "surface", "missing_sections", "excluded_sections", "page_warnings"],
+      "required": [
+        "adapter_version",
+        "extension_version",
+        "status",
+        "surface",
+        "missing_sections",
+        "excluded_sections",
+        "page_warnings"
+      ],
       "properties": {
-        "adapter_version": { "type": ["string", "null"] },
-        "extension_version": { "type": ["string", "null"] },
-        "status": { "enum": ["ok", "partial"] },
-        "surface": { "const": "linkedin_person_profile" },
-        "missing_sections": { "type": "array", "items": { "type": "string" } },
+        "adapter_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "extension_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "partial"
+          ]
+        },
+        "surface": {
+          "const": "linkedin_person_profile"
+        },
+        "missing_sections": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "excluded_sections": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Optional sections the operator explicitly excluded before sending."
         },
-        "page_warnings": { "type": "array", "items": { "type": "object" } }
+        "page_warnings": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
       }
     },
     "profile": {
@@ -71,29 +121,71 @@
       "properties": {
         "linkedin_profile_url": {
           "type": "string",
-          "pattern": "linkedin\\.com/in/",
-          "description": "Client-normalized profile URL (https, lower-cased host, no query/fragment/trailing slash). The backend re-normalizes authoritatively before any matching."
+          "pattern": "^https://([a-z0-9-]+\\.)*linkedin\\.com/in/[^/]+/?$",
+          "description": "Client-normalized MAIN profile URL: https, a linkedin.com host, and an /in/<public-identifier> path only (no sub-routes, no query, no fragment). The backend re-normalizes authoritatively before any matching."
         },
         "public_identifier": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "The /in/<id> slug, decoded, when safely derivable from the URL. Never invented."
         },
-        "full_name": { "type": ["string", "null"] },
-        "headline": { "type": ["string", "null"] },
+        "full_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "headline": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "displayed_location": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "The profile's displayed location. Distinct from any experience role_location and from company headquarters."
         },
-        "connection_count": { "type": ["integer", "null"], "minimum": 0 },
-        "connection_count_raw": { "type": ["string", "null"] },
-        "open_to_work": { "type": ["boolean", "null"] },
-        "observed_at": { "type": "string", "format": "date-time" },
+        "connection_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "connection_count_raw": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "open_to_work": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
         "raw_lines": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Immutable raw visible top-card text lines, verbatim."
         },
-        "warnings": { "type": "array", "items": { "type": "object" } }
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
       }
     },
     "experiences": {
@@ -124,30 +216,103 @@
           "observed_at"
         ],
         "properties": {
-          "position_index": { "type": "integer", "minimum": 1 },
-          "layout": { "enum": ["basic", "chained"] },
-          "company_name": { "type": ["string", "null"] },
-          "company_linkedin_url": { "type": ["string", "null"] },
-          "company_linkedin_id": { "type": ["string", "null"] },
-          "job_title": { "type": ["string", "null"] },
-          "timeline_text": { "type": ["string", "null"] },
-          "start_date": { "$ref": "#/$defs/datePart" },
-          "end_date": { "$ref": "#/$defs/datePart" },
+          "position_index": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "layout": {
+            "enum": [
+              "basic",
+              "chained"
+            ]
+          },
+          "company_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "company_linkedin_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "company_linkedin_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "job_title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timeline_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "start_date": {
+            "$ref": "#/$defs/datePart"
+          },
+          "end_date": {
+            "$ref": "#/$defs/datePart"
+          },
           "dates_reliable": {
             "type": "boolean",
             "description": "True only when start/end were parsed deterministically from timeline_text."
           },
-          "duration_text": { "type": ["string", "null"] },
-          "employment_type": { "type": ["string", "null"] },
+          "duration_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "employment_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "role_location": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "The role's displayed location. Distinct from the person's displayed_location and from company headquarters."
           },
-          "workplace_type": { "type": ["string", "null"] },
-          "is_current": { "type": ["boolean", "null"] },
-          "raw_lines": { "type": "array", "items": { "type": "string" } },
-          "warnings": { "type": "array", "items": { "type": "object" } },
-          "observed_at": { "type": "string", "format": "date-time" }
+          "workplace_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_current": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "raw_lines": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time"
+          }
         }
       }
     }
@@ -155,14 +320,30 @@
   "$defs": {
     "datePart": {
       "oneOf": [
-        { "type": "null" },
+        {
+          "type": "null"
+        },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["year", "month"],
+          "required": [
+            "year",
+            "month"
+          ],
           "properties": {
-            "year": { "type": "integer", "minimum": 1900, "maximum": 2100 },
-            "month": { "type": ["integer", "null"], "minimum": 1, "maximum": 12 }
+            "year": {
+              "type": "integer",
+              "minimum": 1900,
+              "maximum": 2100
+            },
+            "month": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 1,
+              "maximum": 12
+            }
           }
         }
       ]
