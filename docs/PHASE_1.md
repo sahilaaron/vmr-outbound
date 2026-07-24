@@ -26,7 +26,7 @@ and per-sheet row identity).
 | DAT-006 Suppression ledger | Independent ledger of suppressed emails/domains, consulted on every advancing route. An identity may carry several reasons at once (opt-out, hard bounce, customer, competitor, internal, legal/compliance, manual); each record keeps its creator and active/inactive state. Unsuppressing sets a record inactive and appends a lifecycle event — history is never destroyed. `evaluate_suppression` returns a truthful blocked reason (e.g. `email opt_out`), distinct from *invalid*. Enforced at import (all campaign memberships transitioned to `SUPPRESSED`) and at the verification advance path (blocked before any candidate or paid call). Downstream gates (scoring, research, drafting, scheduling, sending) call the same primitive as they land. | `app/models/suppression.py`, `app/services/suppressions.py`, `app/services/imports/importer.py`, `app/services/verification/service.py`, `tests/test_suppression_ledger.py` |
 | CMP-001 Campaign creation and settings | A draft campaign persists the minimum launch-ready settings for the pilot: name, description, offer, structured `audience_rules`/`exclusions` (JSON objects, not free text), `min_score_threshold` (defaults to the launch absolute threshold of 85), tone, owner, source, sending reference, lifecycle status, and timestamps. Creation validates required fields and rejects malformed/oversized values; partial updates change only the fields explicitly sent, `null` explicitly clears a nullable field, and status changes are checked against an explicit draft→active→archived transition map. No sequence generation, sending, scheduling, or provider integration. | `app/models/campaign.py`, `app/services/campaigns.py`, `app/api/routes.py`, `migrations/versions/f4c533f48a92_*.py`, `tests/test_campaigns.py`, `tests/test_api.py` |
 | CMP-002 Contact workflow states | Explicit per-campaign membership states with a validated transition map; illegal transitions raise; transitions are audited. Only import-stage states are wired. | `app/models/enums.py`, `app/services/contact_state.py` |
-| CMP-003 Link contacts to campaigns | Contacts join campaigns through a unique `(campaign, contact)` membership, so a contact can appear in several campaigns without a duplicate active-outreach record. | `app/models/campaign.py` |
+| CMP-003 Campaign-contact membership and outreach history | A contact can join multiple campaigns without losing or blocking on earlier activity, and cannot acquire duplicate active outreach in one campaign — proven under real concurrent inserts, not just app checks. Adds `ensure_membership` (idempotent, suppression-checked) and `record_outreach_event` (idempotent, suppression/eligibility-gated) on top of the pre-existing membership table, reusing `external_events` as the outreach-history record instead of a new table. See "CMP-003 campaign-contact membership and outreach history" below for the exact rule and rollback notes. | `app/models/external_event.py`, `app/services/campaign_contacts.py`, `app/services/identity.py`, `migrations/versions/4b659a2054e4_*.py`, `tests/test_campaign_contacts.py` |
 
 ## Import behaviour (exact)
 
@@ -80,6 +80,127 @@ generation, no approval workflow/UI, no Saleshandy or webhook processing, and no
 XLSX parsing or broader file-format support. No live RDS deployment was performed;
 migrations are proven on local PostgreSQL 16 only.
 
+## CMP-001 campaign contract (draft settings)
+
+`Campaign` (`app/models/campaign.py`) fields, all on the same table since the
+Phase 1 schema — CMP-001 extended it, it did not create a parallel entity:
+
+| Field | Type | Nullable | Default | Validation |
+| --- | --- | --- | --- | --- |
+| `name` | `String(255)`, unique | no | — | required, trimmed, 1–255 chars |
+| `description` | `Text` | yes | `None` | trimmed, blank → `None`, ≤4000 chars |
+| `offer` | `Text` | yes | `None` | trimmed, blank → `None`, ≤4000 chars |
+| `audience_rules` | `JSONB` | yes | `None` | must be a JSON object, ≤20,000 bytes serialized |
+| `exclusions` | `JSONB` | yes | `None` | same as `audience_rules`; campaign-scoped targeting exclusion — distinct from and never a substitute for the DAT-006 suppression ledger |
+| `min_score_threshold` | `Integer` | **no** | `85` | 0–100 (service-layer only; see limitations below) |
+| `tone` | `String(100)` | yes | `None` | trimmed, blank → `None`, ≤100 chars |
+| `owner` | `String(255)` | yes | `None` | trimmed, blank → `None`, ≤255 chars |
+| `source` | `String(255)` | yes | `None` | trimmed, blank → `None`, ≤255 chars |
+| `sending_reference` | `String(255)` | yes | `None` | opaque reference; never resolved against a sending provider |
+| `status` | enum `campaign_status` | no | `DRAFT` | see lifecycle below |
+| `created_at` / `updated_at` | timestamptz | no | `now()` | `updated_at` bumps on every column update |
+
+Lifecycle: `CampaignStatus` = `DRAFT` / `ACTIVE` / `ARCHIVED` (unchanged
+enum). `ALLOWED_CAMPAIGN_TRANSITIONS` (`app/models/enums.py`) permits
+`DRAFT → {ACTIVE, ARCHIVED}` and `ACTIVE → ARCHIVED`; `ARCHIVED` is terminal;
+the same status requested again is always a no-op, never an illegal
+transition. `create_campaign`/`update_campaign_settings`
+(`app/services/campaigns.py`) are the only write paths; a partial update
+changes only the fields explicitly passed (a private `UNSET` sentinel
+distinguishes "omitted" from an explicit `None`), and a rejected update never
+partially applies. JSON API: `POST /campaigns`, `GET /api/campaigns/{id}`,
+`PATCH /campaigns/{id}` (the GET route lives under `/api/` specifically to
+avoid shadowing the pre-existing HTML campaign-detail page at the bare
+`/campaigns/{id}` path).
+
+**Known limitation:** `min_score_threshold`'s 0–100 range is enforced only in
+the service layer, not by a database `CHECK` constraint — Alembic autogenerate
+in this project does not reliably detect `CheckConstraint` changes, and no
+other model uses one (e.g. `Score.total` has the same conceptual range with no
+DB check either). A write that bypasses the service layer could store an
+out-of-range value; this is a deliberate, documented trade-off, not an
+oversight.
+
+## CMP-003 campaign-contact membership and outreach history
+
+**The "duplicate active outreach" rule, precisely:** a contact has at most one
+`CampaignContact` membership row per campaign, ever — enforced by the
+database via the pre-existing unique index
+`uq_campaign_contacts_campaign_contact` on `campaign_contacts(campaign_id,
+contact_id)` (present since the Phase 1 schema). Because
+`ALLOWED_CONTACT_TRANSITIONS` is a strict DAG with two terminal states
+(`SUPPRESSED`, `EXCLUDED`) and no transition ever re-enters a non-terminal
+state, that one row's current state is always the single, unambiguous answer
+to "is this contact under active outreach in this campaign, and if not, why."
+This is a schema-level impossibility, not an application-level check —
+verified under two independent, really-committing database connections in
+`tests/test_campaign_contacts.py::test_duplicate_membership_insert_fails_at_db_level_under_concurrency`.
+
+Individual outreach **events** recorded against that one membership (a send
+attempt, a bounce, a reply, a stop) are deduplicated separately, by the
+pre-existing `uq_external_events_provider_event_id` unique index on
+`external_events(provider, external_event_id)` — CMP-003 reuses
+`ExternalEvent` (DAT-001) as the outreach-history record, adding three
+nullable attribution columns (`contact_id` CASCADE, `campaign_id` CASCADE,
+`campaign_contact_id` SET NULL) rather than inventing a parallel table. The
+same concurrency proof exists for events
+(`test_duplicate_outreach_event_insert_fails_at_db_level_under_concurrency`).
+Sending identity/channel (e.g. a specific mailbox) is deliberately **not**
+part of either key — no such concept exists anywhere in the repository yet.
+
+**Historical-activity preservation:** joining a second campaign
+(`ensure_membership`, `app/services/campaign_contacts.py`) never touches an
+earlier campaign's membership row or history — different campaigns are
+different rows by construction, and old/completed/suppressed history is never
+a reason to refuse a new membership. If a membership row is ever removed by an
+unrelated path, its history is not deleted with it: DAT-004's duplicate-contact
+merge, when it coalesces two memberships that collide in the same campaign
+(`app/services/identity.py::_apply_merge`), now re-parents any outreach events
+onto the surviving membership *before* deleting the redundant row; the FK's
+`ON DELETE SET NULL` is the defense-in-depth fallback for any other path
+(proven directly in
+`test_external_event_survives_membership_deletion_via_set_null`).
+`contact_id`/`campaign_id` stay populated even if `campaign_contact_id` is
+ever null, so history stays queryable by the durable keys.
+
+**Suppression/verification interaction:** `ensure_membership` evaluates the
+suppression ledger fresh (`evaluate_suppression`, DAT-006) on every call — a
+brand-new membership for a currently-suppressed identity starts `SUPPRESSED`,
+never `IMPORTED`. `record_outreach_event(..., is_outbound=True)` re-checks the
+ledger fresh at record time (not merely the membership's stored state, which
+can lag a suppression added after the membership was created) and refuses a
+terminal membership; non-outbound events (e.g. recording the bounce that
+*caused* a suppression) are always recorded so history stays complete. Neither
+function replaces or weakens `evaluate_suppression`; both call the exact same
+primitive the verification path already uses.
+
+**Operator-visible failure behaviour:** `ensure_membership` and
+`record_outreach_event` raise `CampaignContactNotFound` (unknown
+campaign/contact) or `OutreachError` (blocked outbound attempt) with a
+message that names the rule that blocked the request — never a database
+error, stack trace, or internal identifier. Idempotent calls (a repeat
+`ensure_membership`, a repeat `record_outreach_event` with the same
+`external_event_id`) return the existing row instead of raising.
+
+## Migration and rollback notes
+
+Two CMP migrations, both additive and reversible, applied on top of the
+Phase 1 schema in this order:
+
+* `migrations/versions/f4c533f48a92_*.py` (CMP-001) — adds 8 nullable-except-one
+  columns to `campaigns` (`min_score_threshold` is `NOT NULL DEFAULT 85`, so
+  existing rows backfill safely). Downgrade drops exactly those 8 columns.
+* `migrations/versions/4b659a2054e4_*.py` (CMP-003) — adds 3 nullable
+  attribution columns to `external_events` plus their indexes and foreign
+  keys. Downgrade drops exactly those 3 columns, their indexes, and their
+  foreign keys.
+
+Neither migration alters, drops, or backfills any pre-existing table's data,
+and neither touches a historical migration file. Both were verified locally
+with `alembic upgrade head`, `alembic check` (no drift before or after), and a
+full `downgrade -1` → `upgrade head` round trip with the resulting schema
+manually inspected via `psql \d`.
+
 ## Verification performed
 
 - `ruff check .`, `ruff format --check .` — clean.
@@ -96,7 +217,12 @@ Company entity and company-level dedup, uncertain-match review queue
 file shapes (DAT-008), company-contact saturation controls (CMP-004), batch
 stage actions and stage-count surfaces (CMP-005), and the dashboard build-out.
 No verification, scoring, insights, drafting, or Saleshandy behaviour is
-included; those feature switches remain off.
+included; those feature switches remain off. CMP-001's operator workbench UI
+for the new settings fields (offer/audience rules/tone/etc.) is not built —
+those fields are reachable only through the JSON API today, deliberately, to
+avoid post-launch campaign-builder scope. CMP-003 does not build any sending
+orchestration, sequence generation, or provider integration — `sending_reference`
+and outreach events are storage only.
 
 ## Operator-workbench slice (this branch)
 
