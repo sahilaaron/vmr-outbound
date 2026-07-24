@@ -33,6 +33,29 @@
   {%- else -%}<span class="badge muted">{{ v }}</span>{%- endif -%}
 {%- endmacro %}
 
+{# Verification status icon: one of four visible states (Pending / Successful /
+   Failure / Warning). Accessible — role=img with an aria-label that includes the
+   precise underlying state and explanation, plus a title tooltip. The precise
+   state is never hidden: it drives the label so a catch-all, provider error, or
+   insufficient-credit condition never reads as a valid mailbox. #}
+{% macro verify_icon(status, show_text=false) -%}
+  {%- set v = status.visual.value -%}
+  {%- set precise = status.precise.value.replace("_", " ") -%}
+  {%- set aria = "Email verification: " ~ v ~ " (" ~ precise ~ "). " ~ status.explanation -%}
+  <span class="vstatus vstatus-{{ v }}" role="img" aria-label="{{ aria }}" title="{{ v }} — {{ precise }}: {{ status.explanation }}" data-precise="{{ status.precise.value }}">
+    {%- if v == "pending" -%}
+      <svg class="vicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+    {%- elif v == "successful" -%}
+      <svg class="vicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.5 2.5 5-5.5"/></svg>
+    {%- elif v == "failure" -%}
+      <svg class="vicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9 9l6 6M15 9l-6 6"/></svg>
+    {%- else -%}
+      <svg class="vicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 3l9 16H3L12 3z"/><path d="M12 10v4"/><path d="M12 16.5v.5"/></svg>
+    {%- endif -%}
+    {%- if show_text %}<span class="vstatus-text">{{ v }}</span>{% endif -%}
+  </span>
+{%- endmacro %}
+
 {% macro pager(page, pages, total, base_url, label="records") -%}
 <div class="pager">
   <span>{{ total }} {{ label }} · page {{ page }} of {{ pages if pages else 1 }}</span>

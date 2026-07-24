@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <h1>Email Verification</h1>
+  <div class="sub">Exact-address verification through MillionVerifier. Catch-all, unknown, disposable, provider errors, and insufficient credits stay visibly uncertain — they never look valid.</div>
+</div>
+
+<div class="notice info" role="status">
+  <div>
+    Provider: <strong>MillionVerifier</strong> ·
+    generation {{ "on" if generation_enabled else "off" }} ·
+    verification {{ "on" if millionverifier_enabled else "off" }}.
+    Runs against a deterministic simulator unless a real key and live mode are configured.
+  </div>
+</div>
+
+<div class="stat-row" style="display:flex;gap:14px;flex-wrap:wrap;margin:16px 0">
+  <div class="stat"><div class="label">Paid calls</div><div class="value">{{ console.usage.calls_made }}</div><div class="small muted-text">{{ console.usage.credited_calls }} billed</div></div>
+  <div class="stat"><div class="label">Cache reuse</div><div class="value ok">{{ console.usage.cache_reuse }}</div><div class="small muted-text">calls avoided</div></div>
+  <div class="stat"><div class="label">Provider errors</div><div class="value warn">{{ console.usage.provider_errors }}</div></div>
+  <div class="stat"><div class="label">Timeouts</div><div class="value warn">{{ console.usage.timeouts }}</div></div>
+  <div class="stat"><div class="label">Insufficient credits</div><div class="value warn">{{ console.usage.insufficient_credits }}</div></div>
+  <div class="stat"><div class="label">Retries scheduled</div><div class="value">{{ console.usage.retries_scheduled }}</div></div>
+  <div class="stat"><div class="label">Recovered</div><div class="value">{{ console.usage.recovered }}</div></div>
+  <div class="stat"><div class="label">Credits left</div><div class="value">{{ console.usage.latest_credits_remaining if console.usage.latest_credits_remaining is not none else "—" }}</div></div>
+</div>
+
+<div class="table-wrap">
+  <div class="toolbar" style="gap:8px">
+    <strong class="small">Jobs</strong>
+    <span class="small muted-text">{{ console.total_jobs }} total · {{ console.runnable_jobs }} runnable · {{ console.reclaimable_jobs }} in-progress</span>
+    <span style="flex:1"></span>
+    {% if millionverifier_enabled %}
+    <form method="post" action="/verification/run" style="display:inline"><button class="btn small" type="submit">Run pending jobs</button></form>
+    {% endif %}
+    <form method="post" action="/verification/recover" style="display:inline"><button class="btn small secondary" type="submit">Recover interrupted jobs</button></form>
+  </div>
+  <table>
+    <thead><tr><th>State</th><th>Count</th></tr></thead>
+    <tbody>
+      {% for state, count in console.job_counts.items() %}
+      <tr><td><code>{{ state }}</code></td><td>{{ count }}</td></tr>
+      {% else %}
+      <tr><td colspan="2" class="muted-text small">No verification jobs yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="table-wrap" style="margin-top:20px">
+  <div class="toolbar"><strong class="small">Recent jobs</strong></div>
+  {% if console.recent_jobs %}
+  <table>
+    <thead><tr><th>Address</th><th>Status</th><th>Attempts</th><th>Outcome</th><th>Updated</th></tr></thead>
+    <tbody>
+      {% for job in console.recent_jobs %}
+      <tr>
+        <td class="mono small">{{ job.email }}</td>
+        <td><code>{{ job.status.value }}</code></td>
+        <td class="small">{{ job.attempts }}/{{ job.max_attempts }}</td>
+        <td class="small">{{ job.outcome_status or "—" }}</td>
+        <td class="small muted-text">{{ job.updated_at | dt }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty"><div class="empty-title">No jobs yet</div><p>Verify a contact from its detail page, or run a bulk verification.</p></div>
+  {% endif %}
+</div>
+
+<div class="table-wrap" style="margin-top:20px">
+  <div class="toolbar"><strong class="small">Usage &amp; exception log</strong><span class="hint">Every call, reuse, and exception is recorded</span></div>
+  {% if console.recent_events %}
+  <table>
+    <thead><tr><th>Event</th><th>Address</th><th>Result</th><th>Billed</th><th>Reason</th><th>When</th></tr></thead>
+    <tbody>
+      {% for ev in console.recent_events %}
+      <tr>
+        <td><code>{{ ev.event_type.value }}</code></td>
+        <td class="mono small">{{ ev.email or "—" }}</td>
+        <td class="small">{{ ev.result or "—" }}</td>
+        <td class="small">{{ "yes" if ev.credited else "no" }}</td>
+        <td class="small muted-text">{{ ev.reason or "" }}</td>
+        <td class="small muted-text">{{ ev.created_at | dt }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty"><div class="empty-title">No usage recorded</div><p>Usage and exceptions appear here as verifications run.</p></div>
+  {% endif %}
+</div>
+{% endblock %}

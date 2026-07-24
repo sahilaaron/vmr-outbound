@@ -48,6 +48,13 @@ class ExactEmailVerification(Base):
     provider_result_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
     provider_reference: Mapped[str | None] = mapped_column(String(255), nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Provider sub-signals preserved so the operator sees the full picture and a
+    # valid-but-role-based address is never shown as an unqualified success.
+    subresult: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    quality: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    is_role: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    is_free: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    did_you_mean: Mapped[str | None] = mapped_column(String(320), nullable=True)
     checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     # Controlled raw provider payload; never stores secrets.
     raw_response: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)

@@ -215,16 +215,137 @@ class EnrichmentConfirmationSource(enum.StrEnum):
 
 
 class EmailVerificationResult(enum.StrEnum):
-    """Outcome of an exact full-address verification.
+    """Address-level outcome of an exact full-address verification (VER-002).
 
-    Catch-all and unknown are deliberately distinct from valid/invalid so that
-    uncertainty can never be silently treated as a confirmed mailbox (AGENTS.md).
+    These are the mailbox-level answers that constitute *durable evidence about
+    one exact address* and are therefore cached. Catch-all, unknown, and
+    disposable are deliberately distinct from valid/invalid so that uncertainty
+    or a risky mailbox can never be silently treated as a confirmed valid mailbox
+    (AGENTS.md). Provider errors, timeouts, and insufficient-credit conditions are
+    *not* represented here: they are job/operational outcomes, not evidence about
+    the address, and never create an :class:`ExactEmailVerification` row.
     """
 
     VALID = "valid"
     INVALID = "invalid"
     CATCH_ALL = "catch_all"
     UNKNOWN = "unknown"
+    DISPOSABLE = "disposable"
+
+
+class EmailCandidateSource(enum.StrEnum):
+    """Where a candidate exact address came from (EML-002/005).
+
+    ``IMPORTED`` is an exact address supplied by the import itself — it is still
+    verified, never trusted on faith. ``GENERATED`` is a deterministic
+    pattern-derived candidate produced by the versioned generation engine.
+    """
+
+    IMPORTED = "imported"
+    GENERATED = "generated"
+
+
+class VerificationJobStatus(enum.StrEnum):
+    """Lifecycle of one queued exact-address verification job (VER-005 / OPS-001).
+
+    A job is the unit of background work. ``PENDING`` is claimable now;
+    ``IN_PROGRESS`` is leased by a worker; ``RETRY_SCHEDULED`` is a transient
+    failure waiting for its backoff window; the three terminal states record how
+    it ended. Only transient failures reach ``RETRY_SCHEDULED``; a definite
+    address result always ends ``SUCCEEDED``.
+    """
+
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    RETRY_SCHEDULED = "retry_scheduled"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class EmailPreciseStatus(enum.StrEnum):
+    """The precise underlying verification status beside a prospect's email.
+
+    These preserve the exact meaning defined in issue #137 and never collapse
+    distinct conditions together — a provider error, an insufficient-credit
+    exception, a timeout, an unknown result, and a catch-all are all separate
+    states even though several share the same amber *visual* treatment. The
+    deterministic map from a precise status to one of the four visible states is
+    :data:`PRECISE_TO_VISUAL`.
+    """
+
+    # --- Pending family (neutral / clock) ---
+    UNVERIFIED = "unverified"
+    QUEUED = "queued"
+    CHECKING = "checking"
+    RETRY_SCHEDULED = "retry_scheduled"
+    STALE_RECHECK_SCHEDULED = "stale_recheck_scheduled"
+    # --- Successful (green) ---
+    VALID = "valid"
+    # --- Failure (red) ---
+    INVALID = "invalid"
+    # --- Warning (amber) — each cause kept distinct ---
+    CATCH_ALL = "catch_all"
+    UNKNOWN = "unknown"
+    DISPOSABLE = "disposable"
+    ROLE_BASED = "role_based"
+    PROVIDER_ERROR = "provider_error"
+    INSUFFICIENT_CREDITS = "insufficient_credits"
+    STALE_EVIDENCE = "stale_evidence"
+    CONFLICTING_EVIDENCE = "conflicting_evidence"
+
+
+class EmailVisualStatus(enum.StrEnum):
+    """The four visible states shown as a compact status icon (#137)."""
+
+    PENDING = "pending"
+    SUCCESSFUL = "successful"
+    FAILURE = "failure"
+    WARNING = "warning"
+
+
+# Deterministic, total mapping from every precise status to its single visible
+# state. Kept next to the enums as the one authoritative source so the icon, the
+# accessible label, and any filter all agree. Provider errors, insufficient
+# credits, timeouts, unknown, and catch-all map to WARNING — never to FAILURE
+# (which means a definitively bad mailbox) and never to SUCCESSFUL.
+PRECISE_TO_VISUAL: dict[EmailPreciseStatus, EmailVisualStatus] = {
+    EmailPreciseStatus.UNVERIFIED: EmailVisualStatus.PENDING,
+    EmailPreciseStatus.QUEUED: EmailVisualStatus.PENDING,
+    EmailPreciseStatus.CHECKING: EmailVisualStatus.PENDING,
+    EmailPreciseStatus.RETRY_SCHEDULED: EmailVisualStatus.PENDING,
+    EmailPreciseStatus.STALE_RECHECK_SCHEDULED: EmailVisualStatus.PENDING,
+    EmailPreciseStatus.VALID: EmailVisualStatus.SUCCESSFUL,
+    EmailPreciseStatus.INVALID: EmailVisualStatus.FAILURE,
+    EmailPreciseStatus.CATCH_ALL: EmailVisualStatus.WARNING,
+    EmailPreciseStatus.UNKNOWN: EmailVisualStatus.WARNING,
+    EmailPreciseStatus.DISPOSABLE: EmailVisualStatus.WARNING,
+    EmailPreciseStatus.ROLE_BASED: EmailVisualStatus.WARNING,
+    EmailPreciseStatus.PROVIDER_ERROR: EmailVisualStatus.WARNING,
+    EmailPreciseStatus.INSUFFICIENT_CREDITS: EmailVisualStatus.WARNING,
+    EmailPreciseStatus.STALE_EVIDENCE: EmailVisualStatus.WARNING,
+    EmailPreciseStatus.CONFLICTING_EVIDENCE: EmailVisualStatus.WARNING,
+}
+
+
+class VerificationUsageEventType(enum.StrEnum):
+    """Recorded verification usage and exception events (VER-006).
+
+    Makes provider spend and every exception visible and auditable: whether a
+    paid call was made, whether cached evidence was reused instead, and each
+    distinct failure mode. ``credited`` on the row records whether MillionVerifier
+    actually charged (only ok/invalid/disposable are billed).
+    """
+
+    CALL_MADE = "call_made"
+    CACHE_REUSE = "cache_reuse"
+    PROVIDER_ERROR = "provider_error"
+    TIMEOUT = "timeout"
+    INSUFFICIENT_CREDITS = "insufficient_credits"
+    RETRY_SCHEDULED = "retry_scheduled"
+    STALE_DETECTED = "stale_detected"
+    CONFLICT_DETECTED = "conflict_detected"
+    RECOVERED = "recovered"
 
 
 class InsightSubject(enum.StrEnum):

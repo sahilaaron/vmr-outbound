@@ -47,9 +47,17 @@
       </a>
       {% endif %}
 
-      <div class="rail-section">Pipeline (later phases)</div>
-      {% for item in [
-        ("verification", "Email Verification"),
+      {% set verification_on = ('email_generation' in features_enabled) or ('millionverifier' in features_enabled) %}
+      {% if verification_on %}
+      <div class="rail-section">Pipeline</div>
+      <a href="/verification" class="{{ 'active' if active_nav == 'verification' else '' }}">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 4h16v16H4z" opacity="0"/><path d="M22 6l-10 7L2 6"/><rect x="2" y="5" width="20" height="14" rx="2"/></svg>
+        Email Verification
+      </a>
+      {% endif %}
+
+      <div class="rail-section">{{ "More (later phases)" if verification_on else "Pipeline (later phases)" }}</div>
+      {% for item in ([] if verification_on else [("verification", "Email Verification")]) + [
         ("scoring", "Scoring"),
         ("research", "Research"),
         ("drafts", "Drafts &amp; Approval"),

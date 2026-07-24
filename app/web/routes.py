@@ -20,11 +20,12 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.core.config import get_settings
+from app.models.contact import Contact
 from app.models.enums import (
     CampaignStatus,
     ContactWorkflowState,
@@ -33,6 +34,7 @@ from app.models.enums import (
     ImportBatchStatus,
     ImportRowOutcome,
     ImportSourceFormat,
+    VerificationUsageEventType,
 )
 from app.services import devtools, identity, workbench
 from app.services.campaigns import (
@@ -55,6 +57,10 @@ from app.services.imports.importer import (
     run_import,
 )
 from app.services.imports.preview import preview_import, preview_pending_batch
+from app.services.verification import console as verification_console
+from app.services.verification import queue as verification_queue
+from app.services.verification import service as verification_service
+from app.services.verification import usage as verification_usage
 
 router = APIRouter(include_in_schema=False)
 
@@ -68,7 +74,8 @@ SAMPLE_ROWS_SHOWN = 5
 _UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 _UNAVAILABLE_SECTIONS: dict[str, str] = {
-    "verification": "Email Verification",
+    # "verification" is handled by a real route (verification_page), which renders
+    # the unavailable state itself when the Phase 2 switches are off.
     "scoring": "Scoring",
     "research": "Research",
     "drafts": "Drafts & Approval",
@@ -1397,12 +1404,15 @@ def contacts_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespon
     }
     filter_url = "/contacts" + (f"?{urlencode(filter_params)}" if filter_params else "")
 
+    statuses = verification_console.statuses_for_contacts(db, contacts)
+
     return _render(
         request,
         db,
         "contacts.html",
         {
             "contacts": contacts,
+            "statuses": statuses,
             "total": total,
             "page": page,
             "pages": _pages(total),
@@ -1427,15 +1437,180 @@ def contact_detail_page(
     detail = workbench.get_contact_detail(db, parsed_id) if parsed_id else None
     if detail is None:
         return _not_found(request, db, "That contact does not exist.")
+    settings = get_settings()
+    intel = verification_console.contact_email_intel(db, detail.contact)
     return _render(
         request,
         db,
         "contact_detail.html",
         {
             "detail": detail,
+            "intel": intel,
+            "verification_enabled": settings.features.email_generation
+            or settings.features.millionverifier,
+            "generation_enabled": settings.features.email_generation,
+            "millionverifier_enabled": settings.features.millionverifier,
             "active_nav": "contacts",
             "page_title": f"{detail.contact.first_name} {detail.contact.last_name}",
         },
+    )
+
+
+# --- Phase 2: email verification --------------------------------------------
+
+
+def _verification_available() -> bool:
+    features = get_settings().features
+    return features.email_generation or features.millionverifier
+
+
+WORKER_ID = "workbench-local"
+
+
+@router.post("/contacts/{contact_id}/generate-candidates")
+def contact_generate_candidates(contact_id: str, db: Session = Depends(get_db)) -> Response:
+    if not get_settings().features.email_generation:
+        return _redirect(f"/contacts/{contact_id}", err="Email generation is disabled.")
+    parsed = _parse_uuid(contact_id)
+    contact = db.get(Contact, parsed) if parsed else None
+    if contact is None:
+        return _redirect("/contacts", err="That contact does not exist.")
+    from app.services.email.candidates import generate_candidates
+
+    result = generate_candidates(db, contact)
+    db.commit()
+    if result.needs_review or result.selected is None:
+        return _redirect(f"/contacts/{contact_id}", err=f"Needs review: {result.review_reason}")
+    return _redirect(
+        f"/contacts/{contact_id}",
+        ok=f"Generated {len(result.candidates)} candidate(s); selected {result.selected.email}.",
+    )
+
+
+@router.post("/contacts/{contact_id}/verify")
+def contact_verify(contact_id: str, db: Session = Depends(get_db)) -> Response:
+    if not get_settings().features.millionverifier:
+        return _redirect(f"/contacts/{contact_id}", err="MillionVerifier is disabled.")
+    parsed = _parse_uuid(contact_id)
+    contact = db.get(Contact, parsed) if parsed else None
+    if contact is None:
+        return _redirect("/contacts", err="That contact does not exist.")
+    settings = get_settings()
+    outcome = verification_service.prepare_and_enqueue_contact(db, contact, settings=settings)
+    if outcome.needs_review:
+        db.commit()
+        return _redirect(f"/contacts/{contact_id}", err=f"Needs review: {outcome.review_reason}")
+    provider = verification_service.get_provider(settings)
+    verification_service.run_worker(db, provider=provider, settings=settings, worker_id=WORKER_ID)
+    db.commit()
+    if outcome.reused_evidence is not None:
+        return _redirect(
+            f"/contacts/{contact_id}",
+            ok=f"Reused fresh cached evidence for {outcome.email} (no provider call).",
+        )
+    return _redirect(f"/contacts/{contact_id}", ok=f"Verification processed for {outcome.email}.")
+
+
+@router.get("/verification", response_class=HTMLResponse, name="verification")
+def verification_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    settings = get_settings()
+    if not _verification_available():
+        return _render(
+            request,
+            db,
+            "unavailable.html",
+            {
+                "section_title": "Email Verification",
+                "active_nav": "verification",
+                "page_title": "Email Verification",
+            },
+        )
+    console = verification_console.load_console(db)
+    return _render(
+        request,
+        db,
+        "verification.html",
+        {
+            "console": console,
+            "generation_enabled": settings.features.email_generation,
+            "millionverifier_enabled": settings.features.millionverifier,
+            "active_nav": "verification",
+            "page_title": "Email Verification",
+        },
+    )
+
+
+@router.post("/verification/run")
+def verification_run(db: Session = Depends(get_db)) -> Response:
+    settings = get_settings()
+    if not settings.features.millionverifier:
+        return _redirect("/verification", err="MillionVerifier is disabled.")
+    provider = verification_service.get_provider(settings)
+    processed = verification_service.run_worker(
+        db, provider=provider, settings=settings, worker_id=WORKER_ID
+    )
+    db.commit()
+    return _redirect("/verification", ok=f"Processed {len(processed)} job(s).")
+
+
+@router.post("/verification/recover")
+def verification_recover(db: Session = Depends(get_db)) -> Response:
+    if not _verification_available():
+        return _redirect("/verification", err="Email verification is disabled.")
+    reclaimed = verification_queue.recover_stale_jobs(db)
+    for job in reclaimed:
+        verification_usage.record_usage(
+            db,
+            event_type=VerificationUsageEventType.RECOVERED,
+            provider="millionverifier",
+            email=job.email,
+            contact_id=job.contact_id,
+            job_id=job.id,
+            reason="recovered by explicit operator sweep",
+        )
+    db.commit()
+    return _redirect(
+        "/verification", ok=f"Recovered {len(reclaimed)} interrupted job(s) back to pending."
+    )
+
+
+@router.post("/verification/bulk")
+async def verification_bulk(request: Request, db: Session = Depends(get_db)) -> Response:
+    settings = get_settings()
+    if not settings.features.millionverifier:
+        return _redirect("/verification", err="MillionVerifier is disabled.")
+    form = await request.form()
+    campaign_id = _parse_uuid(str(form.get("campaign_id", "")))
+    query = select(Contact)
+    if campaign_id is not None:
+        from app.models.campaign import CampaignContact
+
+        query = query.join(CampaignContact, CampaignContact.contact_id == Contact.id).where(
+            CampaignContact.campaign_id == campaign_id
+        )
+    contacts = list(db.scalars(query.limit(500)).all())
+    enqueued = 0
+    reused = 0
+    review = 0
+    for contact in contacts:
+        outcome = verification_service.prepare_and_enqueue_contact(db, contact, settings=settings)
+        if outcome.needs_review:
+            review += 1
+        elif outcome.reused_evidence is not None:
+            reused += 1
+        elif outcome.job is not None:
+            enqueued += 1
+    provider = verification_service.get_provider(settings)
+    verification_service.run_worker(
+        db, provider=provider, settings=settings, max_jobs=1000, worker_id=WORKER_ID
+    )
+    db.commit()
+    return _redirect(
+        "/verification",
+        ok=(
+            f"Bulk verification: {enqueued} enqueued, {reused} reused from cache, "
+            f"{review} routed to review."
+        ),
     )
 
 

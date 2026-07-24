@@ -104,6 +104,19 @@ in `.env` instead of inline and run `uvicorn app.main:app --reload --port 8000`.
 See `docs/WORKBENCH.md` for the pages, the CSV/XLSX preview -> confirm import
 flow, and the local-only reset safety rules.
 
+To run the Phase 2 email-intelligence + verification path locally, also enable
+its two switches (both default off):
+
+```bash
+FEATURES__WORKBENCH=true FEATURES__EMAIL_GENERATION=true \
+  FEATURES__MILLIONVERIFIER=true uvicorn app.main:app --reload --port 8000
+```
+
+Without a real key, verification runs a deterministic, network-free simulator.
+The exact API-key step and the single manual live smoke test are in
+`docs/VERIFICATION_RUNBOOK.md`. A synthetic end-to-end demo is available with
+`python scripts/phase2_verification_demo.py` (local only).
+
 ## 6. Run the checks (same as CI)
 
 ```bash
