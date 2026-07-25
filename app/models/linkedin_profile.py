@@ -109,6 +109,14 @@ class LinkedInProfileSnapshot(Base):
         ForeignKey("contacts.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # When reconciliation last ran for this snapshot (DAT-012E). Null = not yet.
+    reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Review-only weak-match candidates (name / name+company / …). These NEVER
+    # merge automatically — they exist solely for the operator to inspect.
+    review_candidates: Mapped[list[Any] | None] = mapped_column(JSONB, nullable=True)
+    # Per-field refresh decisions from the DAT-005 freshness policy (truthful:
+    # what changed, what was already newer, what was skipped and why).
+    refresh_summary: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
     experiences: Mapped[list[LinkedInProfileExperienceObservation]] = relationship(
         back_populates="snapshot",

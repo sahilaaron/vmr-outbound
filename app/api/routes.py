@@ -290,6 +290,10 @@ async def linkedin_profile_stage_route(request: Request, db: Session = Depends(g
             payload=payload,
             operator_base_url=settings.operator_base_url,
             timeout_seconds=settings.linkedin_profile_intake_timeout_seconds,
+            # DAT-012E: reconcile (exact-URL refresh + QA evaluation) only when
+            # the feature switch is deliberately enabled; otherwise snapshots
+            # stay at outcome "stored" with zero canonical changes.
+            reconcile=settings.features.linkedin_profile_refresh,
         )
     except profile_intake.ProfileIntakeError as exc:
         return _fail_profile_intake(db, exc, origin, payload)

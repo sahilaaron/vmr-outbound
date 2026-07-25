@@ -31,6 +31,12 @@ class FeatureFlags(BaseModel):
     # deliberately enabled for local operation. Turning it on stages immutable
     # snapshots only; it never updates a canonical contact by itself.
     linkedin_profile_intake: bool = False
+    # Exact-URL contact refresh from stored profile snapshots (DAT-012E) plus
+    # the versioned QA-policy evaluation (DAT-012F). Off by default: while off,
+    # accepted snapshots stay at outcome ``stored`` and no canonical contact
+    # field is touched. Turning it on never merges weak matches — only an exact
+    # normalized profile-URL match can refresh, and suppression stays authoritative.
+    linkedin_profile_refresh: bool = False
     # Operator workbench UI (server-rendered pages). Off by default so the UI
     # stays disabled until it is deliberately enabled for local operation.
     workbench: bool = False
