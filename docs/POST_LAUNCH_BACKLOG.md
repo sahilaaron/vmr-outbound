@@ -42,3 +42,19 @@ they are not lost or implemented opportunistically.
 
 Add new items as `- **Title.** One or two sentences, and which real trigger
 would justify building it.`
+
+- **Operator UI for resolving profile-snapshot review candidates.** Weak-match
+  and ambiguous snapshots (DAT-012E) are stored with review candidates but the
+  workbench only displays them; add confirm/reject actions (reusing the
+  DAT-004 identity-resolution flow) when real captures produce enough review
+  volume to justify it.
+- **QA-policy threshold configuration surface.** profile-employment-qa/1.0.0
+  thresholds are code defaults recorded per evaluation; expose them as
+  operator settings only if the pilot shows the defaults misfire.
+- **Contact-side company linking from profile captures.** Experience
+  observations carry company LinkedIn URLs/ids; linking them to the companies
+  table (beyond DAT-012G's evidence matching) is deferred until scoring or
+  research needs it.
+- **About/skills/education capture on person profiles.** First release
+  captures top card + experience only; add further sections when a concrete
+  scoring or drafting need exists.
