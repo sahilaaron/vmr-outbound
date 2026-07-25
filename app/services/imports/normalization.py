@@ -11,7 +11,7 @@ always preserved on the immutable raw row, so normalization can stay cautious.
 from __future__ import annotations
 
 import re
-from urllib.parse import urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 _WHITESPACE = re.compile(r"\s+")
 # A pragmatic email shape check: one @, non-space local and domain, a dotted
@@ -148,6 +148,60 @@ def normalize_linkedin_url(value: str | None) -> str | None:
     if parts.query:
         normalized += f"?{parts.query}"
     return normalized
+
+
+def normalize_linkedin_profile_url(value: str | None) -> str | None:
+    """Normalize a LinkedIn PERSON-profile URL into the exact identity key.
+
+    This is the single normalization applied to *every* side of profile-identity
+    matching (existing contacts, imports, SalesNav rows, and profile captures —
+    DAT-012E): builds on :func:`normalize_linkedin_url`, then requires a
+    linkedin.com host and a MAIN ``/in/<public-identifier>`` path, drops the
+    query string and fragment (tracking context, never identity), and lower-cases
+    the public identifier — LinkedIn identifiers are case-insensitive, so
+    ``/in/Jane-Doe`` and ``/in/jane-doe`` are the same person.
+
+    Returns ``None`` for anything that is not a main profile URL (company pages,
+    Sales Navigator lead URLs, sub-routes, non-LinkedIn hosts). It never repairs
+    or invents an identity.
+    """
+
+    base = normalize_linkedin_url(value)
+    if base is None:
+        return None
+    parts = urlsplit(base)
+    host = parts.netloc.lower()
+    if host != "linkedin.com" and not host.endswith(".linkedin.com"):
+        return None
+    match = re.fullmatch(r"/in/([^/]+)", parts.path.rstrip("/"))
+    if match is None or not match.group(1):
+        return None
+    slug = unquote(match.group(1)).lower()
+    return f"https://www.linkedin.com/in/{quote(slug, safe='')}"
+
+
+def normalize_linkedin_company_url(value: str | None) -> str | None:
+    """Normalize a LinkedIn COMPANY URL into the exact identity key.
+
+    Mirrors :func:`normalize_linkedin_profile_url` for ``/company/<id>`` pages:
+    canonical ``www`` host, no query/fragment, no trailing ``/about`` segment,
+    lower-cased identifier. Returns ``None`` for non-company URLs.
+    """
+
+    base = normalize_linkedin_url(value)
+    if base is None:
+        return None
+    parts = urlsplit(base)
+    host = parts.netloc.lower()
+    if host != "linkedin.com" and not host.endswith(".linkedin.com"):
+        return None
+    match = re.fullmatch(r"/company/([^/]+)(?:/about)?", parts.path.rstrip("/"))
+    if match is None or not match.group(1):
+        return None
+    slug = unquote(match.group(1)).lower()
+    if slug == "unavailable":
+        return None
+    return f"https://www.linkedin.com/company/{quote(slug, safe='')}"
 
 
 def build_natural_key(first_name: str, last_name: str, domain: str) -> str:

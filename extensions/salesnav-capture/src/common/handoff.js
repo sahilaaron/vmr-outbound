@@ -22,7 +22,7 @@
   const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
   // The only workbench destinations the extension will open: the real backend
   // batch page and the dev mock receiver's workbench link.
-  const WORKBENCH_PATH_PREFIXES = ["/imports/", "/workbench/"];
+  const WORKBENCH_PATH_PREFIXES = ["/imports/", "/workbench/", "/profiles/"];
 
   /**
    * Whether a backend-returned URL may be opened as the operator workbench.
@@ -67,6 +67,28 @@
     };
   }
 
+  /**
+   * Reduce a successful profile-snapshot staging response to a small, safe,
+   * recoverable summary (DAT-012). Stores only identifiers, the truthful
+   * outcome, and the workbench URL when openable — never captured values.
+   */
+  function sanitizeProfileStageResult(body, meta) {
+    const b = body || {};
+    const m = meta || {};
+    const url = b.operator_workbench_url || null;
+    return {
+      snapshotId: typeof b.snapshot_id === "string" ? b.snapshot_id : null,
+      clientCaptureId: typeof b.client_capture_id === "string" ? b.client_capture_id : null,
+      outcome: typeof b.outcome === "string" ? b.outcome : null,
+      warningCount: Array.isArray(b.warnings) ? b.warnings.length : 0,
+      alreadyReceived: b.already_received === true,
+      receivedAt: typeof b.received_at === "string" ? b.received_at : null,
+      workbenchUrl: isOpenableWorkbenchUrl(url) ? url : null,
+      stagedAt: typeof m.stagedAt === "string" ? m.stagedAt : null,
+      campaignId: typeof m.campaignId === "string" && m.campaignId ? m.campaignId : null,
+    };
+  }
+
   // Stable, PII-free classification of a send failure. `resp` is the service
   // worker's send result ({ ok:false, error, status?, body? }).
   const BACKEND_MESSAGES = {
@@ -77,6 +99,7 @@
     unauthorized: "The backend refused the request (local access or origin not allowed).",
     timeout: "The backend timed out staging the batch. It may be busy — retry.",
     client_batch_id_conflict: "This batch was already staged with different content. Clear or re-capture the batch before sending new content.",
+    client_capture_id_conflict: "This capture was already staged with different content. Re-capture the profile before sending new content.",
     rate_limited: "Too many attempts. Wait a moment, then retry.",
     internal_error: "The backend hit an unexpected error. Retry; the batch was not staged.",
   };
@@ -106,12 +129,25 @@
         if (backendCode === "validation_failed" && resp.body && Array.isArray(resp.body.details)) {
           detail = `${resp.body.details.length} validation issue(s).`;
         }
-        return { code: backendCode || "receiver_rejected", headline, detail, canRetry: backendCode !== "validation_failed" };
+        return {
+          code: backendCode || "receiver_rejected",
+          headline,
+          detail,
+          canRetry:
+            backendCode !== "validation_failed" &&
+            backendCode !== "client_capture_id_conflict",
+        };
       }
       default:
         return { code: resp.error || "unknown", headline: "Send failed.", detail: "", canRetry: true };
     }
   }
 
-  return { isOpenableWorkbenchUrl, sanitizeStageResult, describeSendError, WORKBENCH_PATH_PREFIXES };
+  return {
+    isOpenableWorkbenchUrl,
+    sanitizeStageResult,
+    sanitizeProfileStageResult,
+    describeSendError,
+    WORKBENCH_PATH_PREFIXES,
+  };
 });

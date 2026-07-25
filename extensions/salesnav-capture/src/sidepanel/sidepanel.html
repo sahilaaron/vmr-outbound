@@ -8,10 +8,101 @@
   </head>
   <body>
     <header class="app-header">
-      <h1>Sales Navigator Capture</h1>
+      <h1 id="app-title">VMR LinkedIn Capture</h1>
       <p class="subtitle">VMR Outbound Agent · staging intake</p>
     </header>
 
+    <!-- Mode banner: which supported surface is in the active tab -->
+    <section class="card" id="mode-card">
+      <div class="row space-between">
+        <span class="step-label">Mode</span>
+        <button id="refresh-mode" class="btn btn-ghost" type="button">Refresh</button>
+      </div>
+      <div id="mode-status" class="status status-neutral">Detecting the active page…</div>
+      <div id="mode-detail" class="muted small"></div>
+    </section>
+
+    <!-- Person-profile capture mode (DAT-012C) -->
+    <div id="profile-sections" hidden>
+      <section class="card">
+        <div class="row space-between">
+          <span class="step-label">1 · Capture profile</span>
+          <span id="profile-exp-badge" class="badge badge-muted"></span>
+        </div>
+        <button id="profile-capture-btn" class="btn btn-primary full" type="button">
+          Read this profile page
+        </button>
+        <div id="profile-capture-feedback" class="small muted"></div>
+        <p class="tiny muted">
+          Reads only what is visible on the page you opened. If Experience shows
+          as missing, scroll the page so it loads, then capture again.
+        </p>
+      </section>
+
+      <section class="card">
+        <div class="row space-between">
+          <span class="step-label">2 · Review</span>
+          <button id="profile-clear-btn" class="btn btn-ghost danger" type="button">Clear draft</button>
+        </div>
+        <div id="profile-review" class="records" aria-live="polite">
+          <p class="muted small">No profile captured yet.</p>
+        </div>
+        <label class="checkbox small" id="profile-exclude-exp-row" hidden>
+          <input type="checkbox" id="profile-exclude-exp" />
+          Exclude the experience section from the send
+        </label>
+      </section>
+
+      <section class="card">
+        <span class="step-label">3 · Campaign (optional)</span>
+        <div class="row gap">
+          <select id="profile-campaign-select" class="grow">
+            <option value="">— none selected —</option>
+          </select>
+          <button id="profile-fetch-campaigns" class="btn btn-ghost" type="button">Fetch</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <span class="step-label">4 · Send to VMR</span>
+        <button id="profile-send-btn" class="btn btn-primary full" type="button" disabled>
+          Send reviewed snapshot
+        </button>
+        <div id="profile-send-state" class="send-state" aria-live="polite"></div>
+        <div id="profile-send-actions" class="row gap"></div>
+        <p class="tiny muted">
+          Nothing is sent automatically. The backend stores an immutable snapshot;
+          it never updates a contact from browser code.
+        </p>
+      </section>
+    </div>
+
+    <!-- Company mode placeholder (capture ships with DAT-012G) -->
+    <section class="card" id="company-section" hidden>
+      <span class="step-label">LinkedIn company page</span>
+      <p class="small muted">
+        Company-page capture is not available yet (DAT-012G). Person profiles and
+        Sales Navigator people results can be captured today.
+      </p>
+    </section>
+
+    <!-- Unsupported / challenge notices -->
+    <section class="card" id="unsupported-section" hidden>
+      <span class="step-label">Unsupported page</span>
+      <p class="small muted" id="unsupported-detail">
+        Open a Sales Navigator people-search results page or a LinkedIn profile
+        (linkedin.com/in/…) to capture.
+      </p>
+    </section>
+    <section class="card" id="challenge-section" hidden>
+      <span class="step-label">Challenge / login required</span>
+      <p class="small muted">
+        LinkedIn is showing a login wall or security check. Resolve it in the page
+        yourself, then press Refresh. The extension never acts during a challenge.
+      </p>
+    </section>
+
+    <div id="salesnav-sections">
     <!-- 1. Page detection -->
     <section class="card" id="detect-card">
       <div class="row space-between">
@@ -96,6 +187,7 @@
         are ever stored or sent. Nothing is transmitted without pressing “Send”.
       </p>
     </details>
+    </div><!-- /salesnav-sections -->
 
     <footer class="tiny muted">
       Operator-driven capture only · no unattended scraping · no login automation
@@ -108,5 +200,6 @@
     <script src="../common/permissions.js"></script>
     <script src="../common/handoff.js"></script>
     <script src="sidepanel.js"></script>
+    <script src="sidepanel-profile.js"></script>
   </body>
 </html>

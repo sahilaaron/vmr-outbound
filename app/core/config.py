@@ -97,6 +97,21 @@ class Settings(BaseSettings):
         description="Wall-clock budget in seconds for one intake staging operation (default 15).",
     )
 
+    # --- LinkedIn profile capture intake (DAT-012D, local only) ---------------
+    # One reviewed profile snapshot (top card + experience entries with their
+    # verbatim raw lines) is far smaller than a 500-record batch; 1 MB is a
+    # generous ceiling. Oversized bodies are rejected with 413 before parsing.
+    linkedin_profile_intake_max_bytes: int = Field(
+        default=1 * 1024 * 1024,
+        gt=0,
+        description="Maximum LinkedIn profile intake body size in bytes (default 1 MB).",
+    )
+    linkedin_profile_intake_timeout_seconds: float = Field(
+        default=15.0,
+        gt=0,
+        description="Wall-clock budget in seconds for one profile snapshot staging (default 15).",
+    )
+
     # --- Company-domain enrichment via logo.dev (DAT-010, local only) --------
     # The official logo.dev Search Brands by Name API key. Read from
     # ``LOGO_DEV_API_KEY``. It is a SECRET: ``repr=False`` and ``exclude=True``
