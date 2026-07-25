@@ -57,8 +57,10 @@ Minimum Chrome version: 116 (side panel API).
 | `storage` | Persist non-secret preferences and the recoverable draft batch |
 | `sidePanel` | The review/controls UI |
 | `downloads` | JSON / CSV export |
-| `activeTab` + `scripting` | Inject the reader into the current SN tab if needed |
+| `activeTab` + `scripting` | Inject the reader into the current tab if needed |
 | host `https://www.linkedin.com/sales/*` (required) | Read the results page the operator opened (read-only), narrowly scoped |
+| host `https://www.linkedin.com/in/*` (required, DAT-012) | Read the MAIN profile page the operator opened (read-only) |
+| host `https://www.linkedin.com/company/*` (required, DAT-012) | Read the company page the operator opened (read-only) |
 | host `http://127.0.0.1/*`, `http://localhost/*` (**optional**) | POST the batch to the local VMR backend / mock receiver only |
 
 The loopback hosts are declared as **optional** host permissions and are
@@ -69,6 +71,27 @@ denied evidence in `docs/screenshots/` (`02_side_panel.png`,
 `03_side_panel_permission_denied.png`). No `history`, no broad `<all_urls>`, no
 analytics, no third-party hosts. LinkedIn is a read surface; the extension never
 POSTs to it.
+
+## Capture modes and supported surfaces (DAT-012)
+
+The side panel detects the active page and shows exactly one mode:
+
+| Mode | Surface | What it captures |
+| --- | --- | --- |
+| Sales Navigator Listings | `/sales/search/people`, `/sales/search/results/people` | Visible people-search result rows into a reviewable batch |
+| LinkedIn Person Profile | `https://www.linkedin.com/in/<id>` (MAIN page only) | Top card + nested experience entries into one reviewable snapshot (`linkedin-profile-capture/1.0.0`) |
+| LinkedIn Company Profile | `/company/<id>` home or About | Displayed firmographics into one reviewable snapshot (`linkedin-company-capture/1.0.0`) |
+| Unsupported Page | everything else (incl. `/in/<id>/details/...` sub-routes) | Nothing — the panel explains what to open |
+| Challenge / Login Required | checkpoint, captcha, authwall | Nothing — the operator resolves it themselves |
+
+Every mode is **operator-controlled**: the extension reads only the page the
+operator already opened, only on an explicit click, and sends only on an
+explicit Send. There is no navigation, no pagination, no timing simulation, and
+no automatic hop from a person profile to their company page. This extension
+does not authorize unattended LinkedIn automation of any kind. Identity
+matching, freshness resolution, suppression enforcement, canonical updates, QA
+evaluation, and audit logging all happen in the VMR backend
+(`docs/PROFILE_CONTRACT.md`); browser code never updates a canonical record.
 
 ## Supported Sales Navigator surfaces
 
@@ -114,6 +137,18 @@ See [`docs/BACKEND_CONTRACT.md`](./docs/BACKEND_CONTRACT.md),
 `docs/fixtures/`. Versioned as `salesnav-capture/1.0.0`; idempotent on
 `client_batch_id`; stages data only. The small backend adapter still required is
 listed at the end of that document.
+
+## Known fragility of page selectors (profile + company)
+
+The person-profile adapter anchors on `componentkey` attributes
+(`*topcard*`, `*entity-collection-item*`) with classic-DOM and heading-text
+fallbacks; the company adapter anchors on the About page's definition list
+(`dt`/`dd` label pairs) read by DOM adjacency. Timeline dates are parsed only
+from deterministic forms ("Jan 2021 - Present", "2019 - 2022"); anything else
+stays raw text with `dates_reliable: false`. When LinkedIn changes structure,
+captures fail VISIBLY (`structure_unrecognized`) — fix by updating the ordered
+strategy lists in `src/common/profile-extraction.js` /
+`src/common/company-extraction.js` and their fixtures, never by guessing.
 
 ## Known fragility of page selectors
 
