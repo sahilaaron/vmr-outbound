@@ -225,6 +225,49 @@ def record_import_observations(
         reconcile_field(session, contact=contact, field_name=field_name, actor=actor)
 
 
+def record_observation(
+    session: Session,
+    *,
+    contact_id: uuid.UUID,
+    field_name: str,
+    value: str | None,
+    source_name: str | None,
+    source_reference: str | None,
+    observed_at: datetime | None,
+    created_by: str | None,
+    confidence: float | None = None,
+) -> ContactFieldValue:
+    """Append one non-import, non-override observation of a tracked field.
+
+    Generic entry point for evidence sources that are not spreadsheet imports
+    (e.g. an operator-captured LinkedIn profile snapshot, DAT-012E). The
+    observation joins the same append-only ledger and competes under the same
+    freshness policy as every other source — callers still run
+    :func:`reconcile_field` to apply the winner.
+    """
+
+    if field_name not in TRACKED_FIELDS:
+        raise UnknownFieldError(
+            f"{field_name!r} is not a freshness-tracked field; "
+            f"tracked fields are: {', '.join(TRACKED_FIELDS)}"
+        )
+    return _append_observation(
+        session,
+        contact_id=contact_id,
+        field_name=field_name,
+        value=value,
+        import_batch_id=None,
+        import_row_id=None,
+        source_name=source_name,
+        source_reference=source_reference,
+        exported_by=None,
+        observed_at=observed_at,
+        confidence=confidence,
+        is_manual_override=False,
+        created_by=created_by,
+    )
+
+
 class UnknownFieldError(ValueError):
     """Raised when a manual override targets a field that is not tracked."""
 

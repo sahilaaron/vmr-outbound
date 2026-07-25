@@ -450,3 +450,26 @@ class LinkedInSnapshotOutcome(enum.StrEnum):
     UNMATCHED_STAGED = "unmatched_staged"
     AMBIGUOUS_REVIEW = "ambiguous_review"
     SUPPRESSED = "suppressed"
+
+
+class QAOutcome(enum.StrEnum):
+    """High-level outcome of one versioned QA-policy evaluation (DAT-012F).
+
+    These are policy *recommendations* backed by evidence — never hard
+    eligibility gates. A QA outcome cannot unsuppress, verify an email, approve
+    a draft, alter sending limits, or schedule outreach.
+    """
+
+    LIVE_CONTACT = "live_contact"
+    LEFT_COMPANY = "left_company"
+    TITLE_CHANGED = "title_changed"
+    COMPANY_UNRESOLVED = "company_unresolved"
+    MULTIPLE_CURRENT_ROLES = "multiple_current_roles"
+    EXPERIENCE_MISSING = "experience_missing"
+    EXPERIENCE_UNRECOGNIZED = "experience_unrecognized"
+    TENURE_REVIEW = "tenure_review"
+    NON_FULL_TIME_REVIEW = "non_full_time_review"
+    OPEN_TO_WORK_REVIEW = "open_to_work_review"
+    LOW_CONNECTIONS_REVIEW = "low_connections_review"
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+    NEEDS_REVIEW = "needs_review"

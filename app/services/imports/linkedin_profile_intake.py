@@ -42,6 +42,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from app.models.campaign import Campaign
+from app.models.contact import Contact
 from app.models.enums import CampaignStatus, LinkedInSnapshotOutcome
 from app.models.linkedin_profile import (
     LinkedInProfileExperienceObservation,
@@ -435,16 +436,26 @@ def stage_profile_snapshot(
     operator_base_url: str,
     timeout_seconds: float = 15.0,
     actor: str = _SOURCE_ACTOR,
+    reconcile: bool = False,
     _fault: Any = None,
 ) -> SnapshotResult:
     """Validate and persist one reviewed LinkedIn profile capture, immutably.
 
-    Creates exactly one snapshot row and its nested experience observations;
-    creates or updates zero contacts, companies, suppressions, verifications,
-    scores, approvals, or outreach state. Idempotent on ``client_capture_id``
-    (same id + same content replays; same id + different content conflicts).
-    Raises a :class:`ProfileIntakeError` subclass for every deterministic
-    failure. ``_fault`` is a test-only hook proving mid-write rollback.
+    Creates exactly one snapshot row and its nested experience observations.
+    Idempotent on ``client_capture_id`` (same id + same content replays; same
+    id + different content conflicts). Raises a :class:`ProfileIntakeError`
+    subclass for every deterministic failure. ``_fault`` is a test-only hook
+    proving mid-write rollback.
+
+    With ``reconcile=False`` (the default and the DAT-012D baseline) nothing
+    else happens and the outcome is ``stored``. With ``reconcile=True``
+    (DAT-012E, gated by the ``linkedin_profile_refresh`` feature switch) the
+    stored snapshot is immediately reconciled in the same transaction: exact
+    normalized-URL matching, DAT-005 freshness refresh, DAT-006 suppression
+    enforcement, review-only weak candidates, and the QA-policy evaluation for
+    a matched contact. Reconciliation still never creates/merges contacts on
+    weak evidence and never touches suppression, verification, approval, or
+    scheduling state.
     """
 
     deadline = _Deadline(timeout_seconds)
@@ -546,6 +557,20 @@ def stage_profile_snapshot(
             reason="operator-authorized LinkedIn profile capture stored immutably",
             context=_audit_context(snapshot, payload),
         )
+
+        if reconcile:
+            # DAT-012E: reconcile in the same transaction so the response's
+            # outcome is truthful and a failure rolls the whole intake back.
+            from app.services.profiles.refresh import reconcile_snapshot
+            from app.services.qa.policy import evaluate_contact_snapshot
+
+            deadline.check()
+            reconcile_result = reconcile_snapshot(session, snapshot)
+            if snapshot.matched_contact_id is not None:
+                matched = session.get(Contact, snapshot.matched_contact_id)
+                if matched is not None:
+                    evaluate_contact_snapshot(session, snapshot=snapshot, contact=matched)
+            del reconcile_result  # outcome now lives on the snapshot row
 
         if _fault is not None:
             _fault()

@@ -33,6 +33,41 @@
   </table>
 </div>
 
+{% if snapshot.review_candidates %}
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Review candidates (weak evidence — never merged automatically)</strong></div>
+  <table>
+    <thead><tr><th>Contact</th><th>Company</th><th>Title</th><th>Match basis</th></tr></thead>
+    <tbody>
+      {% for c in snapshot.review_candidates %}
+      <tr>
+        <td><a href="/contacts/{{ c.contact_id }}">{{ c.contact_name or c.contact_id }}</a></td>
+        <td class="wrap">{{ c.contact_company or "—" }}</td>
+        <td class="wrap">{{ c.contact_title or "—" }}</td>
+        <td class="mono">{{ c.match_basis | join(", ") }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% if snapshot.refresh_summary %}
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Refresh summary (freshness policy decisions)</strong></div>
+  <table>
+    <tbody>
+      <tr><td class="mono">refreshed_fields</td><td class="wrap">{{ snapshot.refresh_summary.refreshed_fields | join(", ") or "—" }}</td></tr>
+      <tr><td class="mono">unchanged_fields</td><td class="wrap">{{ snapshot.refresh_summary.unchanged_fields | join(", ") or "—" }}</td></tr>
+      <tr><td class="mono">skipped_fields</td><td class="wrap">{{ snapshot.refresh_summary.skipped_fields or "—" }}</td></tr>
+      {% if snapshot.refresh_summary.suppression_reason %}
+      <tr><td class="mono">suppression</td><td class="wrap">{{ snapshot.refresh_summary.suppression_reason }} (evidence recorded; canonical fields untouched)</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
 <div class="table-wrap">
   <div class="toolbar"><strong class="small">Profile observations</strong></div>
   <table>
