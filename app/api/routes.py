@@ -23,6 +23,7 @@ from app.core.config import get_settings
 from app.models.campaign import Campaign
 from app.models.enums import CampaignStatus
 from app.services.campaigns import CampaignError, create_campaign
+from app.services.imports import linkedin_company_intake as company_intake
 from app.services.imports import linkedin_profile_intake as profile_intake
 from app.services.imports.importer import (
     BatchProvenance,
@@ -297,6 +298,114 @@ async def linkedin_profile_stage_route(request: Request, db: Session = Depends(g
         )
     except profile_intake.ProfileIntakeError as exc:
         return _fail_profile_intake(db, exc, origin, payload)
+
+    return JSONResponse(
+        status_code=result.http_status, content=result.to_body(), headers=_cors_headers(origin)
+    )
+
+
+# --- LinkedIn company-page capture intake (DAT-012G) --------------------------
+
+COMPANY_INTAKE_PATH = "/api/intake/linkedin-company/stage"
+
+
+def _fail_company_intake(
+    db: Session,
+    exc: profile_intake.ProfileIntakeError,
+    origin: str | None,
+    payload: object = None,
+) -> JSONResponse:
+    company_intake.record_intake_failure(db, error=exc, payload=payload)
+    return JSONResponse(
+        status_code=exc.http_status, content=exc.to_body(), headers=_cors_headers(origin)
+    )
+
+
+@router.options(COMPANY_INTAKE_PATH, include_in_schema=False)
+async def linkedin_company_stage_preflight(request: Request) -> Response:
+    """CORS preflight for the capture extension. Reflects an allowed origin only."""
+
+    origin = request.headers.get("origin")
+    if not _origin_allowed(origin):
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={"error": "unauthorized", "status": 403},
+        )
+    return Response(status_code=status.HTTP_204_NO_CONTENT, headers=_cors_headers(origin))
+
+
+@router.post(COMPANY_INTAKE_PATH)
+async def linkedin_company_stage_route(request: Request, db: Session = Depends(get_db)) -> Response:
+    """Persist one reviewed LinkedIn company capture as immutable evidence.
+
+    Same boundary guards as the other intakes: feature switch (default off),
+    local-only, allowed origins, size limit, JSON parse. A success stores the
+    snapshot, links it to an existing company only via exact LinkedIn URL
+    lineage or an exact unique domain, and never rewrites a canonical company.
+    """
+
+    settings = get_settings()
+    origin = request.headers.get("origin")
+
+    if not settings.features.linkedin_company_intake:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"error": "not_found", "status": 404},
+        )
+
+    if settings.app_env.lower() != "local":
+        return _fail_company_intake(
+            db,
+            profile_intake.UnauthorizedError(
+                "the LinkedIn company intake endpoint is available only locally"
+            ),
+            origin,
+        )
+
+    if not _origin_allowed(origin):
+        return _fail_company_intake(
+            db, profile_intake.UnauthorizedError(f"origin {origin!r} is not allowed"), origin
+        )
+
+    limit = settings.linkedin_company_intake_max_bytes
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > limit:
+        return _fail_company_intake(
+            db,
+            profile_intake.PayloadTooLargeError(
+                f"request body exceeds the {limit}-byte intake limit"
+            ),
+            origin,
+        )
+    body = await request.body()
+    if len(body) > limit:
+        return _fail_company_intake(
+            db,
+            profile_intake.PayloadTooLargeError(
+                f"request body exceeds the {limit}-byte intake limit"
+            ),
+            origin,
+        )
+
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return _fail_company_intake(
+            db, profile_intake.InvalidJsonError("request body was not valid JSON"), origin
+        )
+    if not isinstance(payload, dict):
+        return _fail_company_intake(
+            db, profile_intake.InvalidJsonError("request body must be a JSON object"), origin
+        )
+
+    try:
+        result = company_intake.stage_company_snapshot(
+            db,
+            payload=payload,
+            operator_base_url=settings.operator_base_url,
+        )
+    except profile_intake.ProfileIntakeError as exc:
+        return _fail_company_intake(db, exc, origin, payload)
 
     return JSONResponse(
         status_code=result.http_status, content=result.to_body(), headers=_cors_headers(origin)

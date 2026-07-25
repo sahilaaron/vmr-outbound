@@ -37,6 +37,11 @@ class FeatureFlags(BaseModel):
     # field is touched. Turning it on never merges weak matches — only an exact
     # normalized profile-URL match can refresh, and suppression stays authoritative.
     linkedin_profile_refresh: bool = False
+    # Local LinkedIn company-page capture intake endpoint (DAT-012G). Off by
+    # default; when on it stores immutable firmographic evidence and links it
+    # to existing companies by exact LinkedIn URL lineage or exact unique
+    # domain only — it never rewrites a canonical company record.
+    linkedin_company_intake: bool = False
     # Operator workbench UI (server-rendered pages). Off by default so the UI
     # stays disabled until it is deliberately enabled for local operation.
     workbench: bool = False

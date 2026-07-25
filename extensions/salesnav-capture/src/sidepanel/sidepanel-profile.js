@@ -65,7 +65,7 @@
   function showSections(mode) {
     $("salesnav-sections").hidden = mode !== SURFACES.SALESNAV_PEOPLE_RESULTS;
     $("profile-sections").hidden = mode !== SURFACES.PERSON_PROFILE;
-    $("company-section").hidden = mode !== SURFACES.COMPANY_PROFILE;
+    $("company-sections").hidden = mode !== SURFACES.COMPANY_PROFILE;
     $("unsupported-section").hidden =
       mode !== SURFACES.UNSUPPORTED && mode !== SURFACES.UNAVAILABLE;
     $("challenge-section").hidden = mode !== SURFACES.CHALLENGE;
@@ -304,6 +304,135 @@
     }
   }
 
+  // ---- company mode (DAT-012G) ---------------------------------------------
+
+  function renderCompanyDraft(draftView) {
+    const box = $("company-review");
+    box.textContent = "";
+    $("company-send-btn").disabled = !draftView;
+    if (!draftView) {
+      box.appendChild(el("p", { class: "muted small", text: "No company captured yet." }));
+      return;
+    }
+    const c = draftView.company || {};
+    box.appendChild(
+      el("div", { class: "record" }, [
+        el("div", { class: "toprow" }, [el("span", { class: "name", text: c.name || "(no name)" })]),
+        reviewRow("LinkedIn", c.company_linkedin_url),
+        reviewRow("Website", c.website),
+        reviewRow("Industry", c.industry),
+        reviewRow("Size", c.size_range),
+        reviewRow("Displayed employees", c.employee_count_raw),
+        reviewRow("Headquarters (displayed)", c.headquarters_text),
+        reviewRow("Founded", c.founded_raw),
+        reviewRow("Specialties", c.specialties),
+        reviewRow("Captured at", draftView.capturedAt),
+        reviewRow("Capture status", draftView.status),
+      ])
+    );
+    if (draftView.missingSections.length) {
+      box.appendChild(
+        el("div", { class: "warns" }, draftView.missingSections.map((s) =>
+          el("span", { class: "badge badge-warn", text: "missing: " + s })
+        ))
+      );
+    }
+    const warnCodes = new Set();
+    for (const w of (c.warnings || []).concat(draftView.pageWarnings || [])) {
+      if (w && w.code) warnCodes.add(w.code + (w.field ? ":" + w.field : ""));
+    }
+    if (warnCodes.size) {
+      box.appendChild(
+        el("div", { class: "warns" }, Array.from(warnCodes).slice(0, 12).map((cd) =>
+          el("span", { class: "badge badge-warn", text: cd })
+        ))
+      );
+    }
+  }
+
+  async function doCompanyCapture() {
+    const fb = $("company-capture-feedback");
+    fb.textContent = "Reading the page…";
+    $("company-capture-btn").disabled = true;
+    const r = await send({ type: "COMPANY_CAPTURE" });
+    $("company-capture-btn").disabled = false;
+    if (!r || !r.ok) {
+      fb.textContent = (r && (r.message || r.error)) || "Capture failed.";
+      return;
+    }
+    const map = {
+      [CAPTURE_STATUS.CHALLENGE_DETECTED]: "Login/security check detected — nothing captured.",
+      [CAPTURE_STATUS.UNAVAILABLE_PROFILE]: "This company page is unavailable — nothing captured.",
+      [CAPTURE_STATUS.UNSUPPORTED_PAGE]: "Not a supported company page — nothing captured.",
+      [CAPTURE_STATUS.STRUCTURE_UNRECOGNIZED]:
+        "Company page detected but its structure was not recognized. Nothing captured.",
+    };
+    fb.textContent =
+      map[r.captureStatus] ||
+      (r.captureStatus === CAPTURE_STATUS.PARTIAL
+        ? "Captured with gaps — open the About page for full firmographics if needed."
+        : "Captured. Review before sending.");
+    renderCompanyDraft(r.draftView);
+    $("company-send-state").textContent = "";
+    $("company-send-actions").textContent = "";
+  }
+
+  async function doCompanyClear() {
+    if (!confirm("Clear the reviewed company draft?")) return;
+    const r = await send({ type: "COMPANY_CLEAR" });
+    if (r && r.ok) {
+      renderCompanyDraft(null);
+      $("company-send-state").textContent = "";
+      $("company-send-actions").textContent = "";
+    }
+  }
+
+  async function doCompanySend() {
+    const state = $("company-send-state");
+    const actions = $("company-send-actions");
+    actions.textContent = "";
+    const perm = await ensureHostPermission(backendBase() + constants.COMPANY_INTAKE_PATH);
+    if (!perm.granted) {
+      setStatus(state, "status-err", "Loopback access was not granted. Approve it to send.");
+      actions.appendChild(el("button", { class: "btn btn-ghost", text: "Retry", on: { click: doCompanySend } }));
+      return;
+    }
+    setStatus(state, "status-neutral", "Sending…");
+    const r = await send({ type: "COMPANY_SEND" });
+    if (r && r.ok) {
+      renderCompanyStagedResult(r.result);
+    } else {
+      const detail = handoff.describeSendError(r);
+      setStatus(state, "status-err", detail.headline);
+      if (detail.canRetry !== false) {
+        actions.appendChild(el("button", { class: "btn btn-ghost", text: "Retry", on: { click: doCompanySend } }));
+      }
+    }
+  }
+
+  function renderCompanyStagedResult(result) {
+    if (!result) return;
+    const state = $("company-send-state");
+    const actions = $("company-send-actions");
+    actions.textContent = "";
+    const already = result.alreadyReceived ? " (already received — idempotent)" : "";
+    setStatus(
+      state,
+      "status-ok",
+      `Stored${already}: outcome ${result.outcome || "stored"}` +
+        (result.snapshotId ? ` · id ${result.snapshotId}` : "")
+    );
+    if (result.workbenchUrl && handoff.isOpenableWorkbenchUrl(result.workbenchUrl)) {
+      actions.appendChild(
+        el("a", {
+          class: "btn btn-primary",
+          text: "Open snapshot record",
+          attrs: { href: result.workbenchUrl, target: "_blank", rel: "noreferrer" },
+        })
+      );
+    }
+  }
+
   // ---- campaigns (reuses the backend campaign endpoint) ---------------------
 
   async function fetchCampaigns() {
@@ -342,6 +471,10 @@
       if (r && r.ok) renderDraft(r.draftView);
     });
 
+    $("company-capture-btn").addEventListener("click", doCompanyCapture);
+    $("company-clear-btn").addEventListener("click", doCompanyClear);
+    $("company-send-btn").addEventListener("click", doCompanySend);
+
     const state = await send({ type: "PROFILE_GET_STATE" });
     if (state && state.ok) {
       profilePrefs = state.prefs;
@@ -349,6 +482,11 @@
       // Recovery: a staged result (and the reviewed draft that produced it)
       // survives panel close/reopen without recapture or resend.
       if (state.lastResult) renderStagedResult(state.lastResult);
+    }
+    const companyState = await send({ type: "COMPANY_GET_STATE" });
+    if (companyState && companyState.ok) {
+      renderCompanyDraft(companyState.draftView);
+      if (companyState.lastResult) renderCompanyStagedResult(companyState.lastResult);
     }
     refreshMode();
   }
