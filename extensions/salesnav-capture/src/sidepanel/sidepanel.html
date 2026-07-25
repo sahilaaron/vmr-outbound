@@ -77,14 +77,37 @@
       </section>
     </div>
 
-    <!-- Company mode placeholder (capture ships with DAT-012G) -->
-    <section class="card" id="company-section" hidden>
-      <span class="step-label">LinkedIn company page</span>
-      <p class="small muted">
-        Company-page capture is not available yet (DAT-012G). Person profiles and
-        Sales Navigator people results can be captured today.
-      </p>
-    </section>
+    <!-- Company-page capture mode (DAT-012G) -->
+    <div id="company-sections" hidden>
+      <section class="card">
+        <span class="step-label">1 · Capture company page</span>
+        <button id="company-capture-btn" class="btn btn-primary full" type="button">
+          Read this company page
+        </button>
+        <div id="company-capture-feedback" class="small muted"></div>
+        <p class="tiny muted">
+          Open the company page yourself (the extension never navigates there for
+          you). The About page carries website / industry / size / headquarters.
+        </p>
+      </section>
+      <section class="card">
+        <div class="row space-between">
+          <span class="step-label">2 · Review</span>
+          <button id="company-clear-btn" class="btn btn-ghost danger" type="button">Clear draft</button>
+        </div>
+        <div id="company-review" class="records" aria-live="polite">
+          <p class="muted small">No company captured yet.</p>
+        </div>
+      </section>
+      <section class="card">
+        <span class="step-label">3 · Send to VMR</span>
+        <button id="company-send-btn" class="btn btn-primary full" type="button" disabled>
+          Send reviewed company snapshot
+        </button>
+        <div id="company-send-state" class="send-state" aria-live="polite"></div>
+        <div id="company-send-actions" class="row gap"></div>
+      </section>
+    </div>
 
     <!-- Unsupported / challenge notices -->
     <section class="card" id="unsupported-section" hidden>

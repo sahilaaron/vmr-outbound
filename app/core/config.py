@@ -111,6 +111,12 @@ class Settings(BaseSettings):
         gt=0,
         description="Wall-clock budget in seconds for one profile snapshot staging (default 15).",
     )
+    # One company snapshot is small; 512 KB is a generous ceiling.
+    linkedin_company_intake_max_bytes: int = Field(
+        default=512 * 1024,
+        gt=0,
+        description="Maximum LinkedIn company intake body size in bytes (default 512 KB).",
+    )
 
     # --- Company-domain enrichment via logo.dev (DAT-010, local only) --------
     # The official logo.dev Search Brands by Name API key. Read from

@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div class="crumbs"><a href="/">Workbench</a><span>/</span>Company snapshot</div>
+  <h1>LinkedIn company snapshot <span class="badge">{{ snapshot.outcome.value }}</span></h1>
+  <div class="sub">
+    Immutable firmographic evidence from an operator-opened company page. Matching
+    links evidence to an existing company (exact LinkedIn URL lineage or exact
+    unique domain); it never rewrites a canonical company record.
+  </div>
+</div>
+
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Snapshot</strong></div>
+  <table>
+    <tbody>
+      <tr><td class="mono">snapshot_id</td><td class="wrap mono">{{ snapshot.id }}</td></tr>
+      <tr><td class="mono">normalized_company_url</td><td class="wrap">{{ snapshot.normalized_company_url or "—" }}</td></tr>
+      <tr><td class="mono">company_linkedin_id</td><td class="wrap">{{ snapshot.company_linkedin_id or "—" }}</td></tr>
+      <tr><td class="mono">website_domain</td><td class="wrap">{{ snapshot.website_domain or "—" }}</td></tr>
+      <tr><td class="mono">captured_at</td><td class="wrap">{{ snapshot.captured_at or "—" }}</td></tr>
+      <tr><td class="mono">ingested_at</td><td class="wrap">{{ snapshot.ingested_at }}</td></tr>
+      <tr><td class="mono">extraction_status</td><td class="wrap">{{ snapshot.extraction_status }}</td></tr>
+      <tr><td class="mono">matched_company_id</td><td class="wrap">{{ snapshot.matched_company_id or "—" }}</td></tr>
+      <tr><td class="mono">headquarters (parsed)</td><td class="wrap">{% if snapshot.hq_city %}{{ snapshot.hq_city }} / {{ snapshot.hq_region }} / {{ snapshot.hq_country }}{% else %}not deterministic — displayed value preserved below{% endif %}</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Firmographic observations (displayed values, verbatim)</strong></div>
+  <table>
+    <tbody>
+      {% for field, value in company_rows %}
+      <tr><td class="mono">{{ field }}</td><td class="wrap">{{ value if value not in (none, "") else "—" }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if snapshot.review_candidates %}
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Review candidates (never merged automatically)</strong></div>
+  <table>
+    <thead><tr><th>Company</th><th>Domain</th><th>Match basis</th></tr></thead>
+    <tbody>
+      {% for c in snapshot.review_candidates %}
+      <tr>
+        <td class="wrap">{{ c.company_name or c.company_id }}</td>
+        <td class="wrap">{{ c.company_domain or "—" }}</td>
+        <td class="mono">{{ c.match_basis | join(", ") }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}

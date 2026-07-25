@@ -36,6 +36,7 @@ from app.models.enums import (
     ImportSourceFormat,
     VerificationUsageEventType,
 )
+from app.models.linkedin_company import LinkedInCompanySnapshot
 from app.models.linkedin_profile import LinkedInProfileSnapshot
 from app.services import devtools, identity, workbench
 from app.services.campaigns import (
@@ -1749,6 +1750,36 @@ def profile_snapshot_page(
         db,
         "profile_snapshot.html",
         {"snapshot": snapshot, "profile_rows": profile_rows, "page_title": "Profile snapshot"},
+    )
+
+
+@router.get("/company-profiles/{snapshot_id}", response_class=HTMLResponse)
+def company_snapshot_page(
+    request: Request, snapshot_id: str, db: Session = Depends(get_db)
+) -> HTMLResponse:
+    """Read-only view of one immutable LinkedIn company capture snapshot."""
+
+    parsed_id = _parse_uuid(snapshot_id)
+    snapshot = db.get(LinkedInCompanySnapshot, parsed_id) if parsed_id else None
+    if snapshot is None:
+        return _not_found(request, db, "That company snapshot does not exist.")
+    fields = snapshot.company_fields or {}
+    company_rows = [
+        ("name", fields.get("name")),
+        ("website", fields.get("website")),
+        ("industry", fields.get("industry")),
+        ("size_range", fields.get("size_range")),
+        ("employee_count_raw", fields.get("employee_count_raw")),
+        ("headquarters_text", fields.get("headquarters_text")),
+        ("founded_raw", fields.get("founded_raw")),
+        ("specialties", fields.get("specialties")),
+        ("warnings", len(fields.get("warnings") or [])),
+    ]
+    return _render(
+        request,
+        db,
+        "company_snapshot.html",
+        {"snapshot": snapshot, "company_rows": company_rows, "page_title": "Company snapshot"},
     )
 
 

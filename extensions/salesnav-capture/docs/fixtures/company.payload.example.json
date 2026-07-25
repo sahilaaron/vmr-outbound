@@ -1,0 +1,48 @@
+{
+  "schema_version": "linkedin-company-capture/1.0.0",
+  "client_capture_id": "8a7b6c5d-0000-4000-8000-abcdefabcdef",
+  "campaign_id": null,
+  "captured_at": "2026-07-24T10:00:00.000Z",
+  "source": "chrome-extension:linkedin-company-capture",
+  "source_url": "https://www.linkedin.com/company/meridian-works/about/",
+  "extraction": {
+    "adapter_version": "linkedin-company-profile-adapter/1",
+    "extension_version": "1.0.0",
+    "status": "ok",
+    "surface": "linkedin_company_profile",
+    "missing_sections": [],
+    "excluded_sections": [],
+    "page_warnings": []
+  },
+  "company": {
+    "company_linkedin_url": "https://www.linkedin.com/company/meridian-works",
+    "company_linkedin_id": "meridian-works",
+    "name": "Meridian Works",
+    "website": "https://meridianworks.example",
+    "industry": "Facilities Services",
+    "size_range": "51-200 employees",
+    "employee_count_raw": "142 associated members",
+    "employee_count": 142,
+    "headquarters_text": "Austin, Texas, United States",
+    "founded_year": 2011,
+    "founded_raw": "2011",
+    "specialties": "Workplace ops, Vendor management, and Facilities analytics",
+    "observed_at": "2026-07-24T10:00:00.000Z",
+    "raw_lines": [
+      "Website",
+      "https://meridianworks.example",
+      "Industry",
+      "Facilities Services",
+      "Company size",
+      "51-200 employees",
+      "142 associated members",
+      "Headquarters",
+      "Austin, Texas, United States",
+      "Founded",
+      "2011",
+      "Specialties",
+      "Workplace ops, Vendor management, and Facilities analytics"
+    ],
+    "warnings": []
+  }
+}

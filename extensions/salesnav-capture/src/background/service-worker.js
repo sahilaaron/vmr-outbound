@@ -36,6 +36,7 @@ const {
   ALLOWED_BACKEND_ORIGIN_PATTERNS,
   INTAKE_PATH,
   PROFILE_INTAKE_PATH,
+  COMPANY_INTAKE_PATH,
 } = constants;
 
 const EXTENSION_VERSION = chrome.runtime.getManifest().version;
@@ -639,6 +640,158 @@ async function profileSend() {
   }
 }
 
+// ---- company capture mode (DAT-012G) ---------------------------------------
+//
+// Mirrors the person-profile mode with its own storage keys. The operator
+// opens the company page manually; the extension NEVER navigates there from a
+// person profile. Nothing is sent without an explicit COMPANY_SEND.
+
+async function getCompanyDraft() {
+  const data = await chrome.storage.local.get(PROFILE_STORAGE.DRAFT_COMPANY);
+  return data[PROFILE_STORAGE.DRAFT_COMPANY] || null;
+}
+async function setCompanyDraft(draft) {
+  await chrome.storage.local.set({ [PROFILE_STORAGE.DRAFT_COMPANY]: draft });
+  return draft;
+}
+async function getLastCompanyResult() {
+  const data = await chrome.storage.local.get(PROFILE_STORAGE.LAST_COMPANY_RESULT);
+  return data[PROFILE_STORAGE.LAST_COMPANY_RESULT] || null;
+}
+
+const COMPANY_CS_FILES = [
+  "src/common/constants.js",
+  "src/common/normalize.js",
+  "src/common/extraction.js",
+  "src/common/surface.js",
+  "src/common/company-extraction.js",
+  "src/content/company-content-script.js",
+];
+
+async function askCompanyContentScript(message) {
+  const tab = await findActiveTab();
+  if (!tab || !/^https:\/\/www\.linkedin\.com\/company\//.test(tab.url || "")) {
+    return {
+      ok: false,
+      error: "no_company_tab",
+      message: "Open a LinkedIn company page (linkedin.com/company/…) in the active tab.",
+    };
+  }
+  try {
+    const resp = await chrome.tabs.sendMessage(tab.id, message);
+    return { ok: true, tab, resp };
+  } catch (e) {
+    try {
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: COMPANY_CS_FILES });
+      const resp = await chrome.tabs.sendMessage(tab.id, message);
+      return { ok: true, tab, resp };
+    } catch (e2) {
+      return { ok: false, error: "content_script_unavailable", detail: String(e2 && e2.message) };
+    }
+  }
+}
+
+function buildCompanyDraftView(draft) {
+  if (!draft) return null;
+  const ex = draft.extraction;
+  return {
+    clientCaptureId: draft.clientCaptureId,
+    capturedAt: ex.capturedAt,
+    status: ex.status,
+    company: ex.company,
+    missingSections: ex.missingSections || [],
+    pageWarnings: ex.pageWarnings || [],
+  };
+}
+
+async function companyCapture() {
+  const r = await askCompanyContentScript({ type: "CO_CAPTURE" });
+  if (!r.ok) return { ok: false, error: r.error, message: r.message };
+  const result = r.resp;
+  if (result.status !== CAPTURE_STATUS.OK && result.status !== CAPTURE_STATUS.PARTIAL) {
+    return {
+      ok: true,
+      captureStatus: result.status,
+      pageWarnings: result.pageWarnings || [],
+      draftView: buildCompanyDraftView(await getCompanyDraft()),
+    };
+  }
+  const draft = {
+    clientCaptureId: profileSchema.newCaptureId(),
+    createdAt: new Date().toISOString(),
+    extraction: result,
+  };
+  await setCompanyDraft(draft);
+  await chrome.storage.local.remove(PROFILE_STORAGE.LAST_COMPANY_RESULT);
+  return {
+    ok: true,
+    captureStatus: result.status,
+    pageWarnings: result.pageWarnings || [],
+    draftView: buildCompanyDraftView(draft),
+  };
+}
+
+async function companyClear() {
+  await chrome.storage.local.remove(PROFILE_STORAGE.DRAFT_COMPANY);
+  await chrome.storage.local.remove(PROFILE_STORAGE.LAST_COMPANY_RESULT);
+  return { ok: true, draftView: null };
+}
+
+async function companySend() {
+  const draft = await getCompanyDraft();
+  if (!draft) return { ok: false, error: "empty_batch", message: "No reviewed capture to send." };
+  const prefs = await getPrefs();
+  const payload = profileSchema.buildCompanyPayload({
+    extraction: draft.extraction,
+    clientCaptureId: draft.clientCaptureId,
+    campaignId: prefs.lastCampaignId || null,
+    extensionVersion: EXTENSION_VERSION,
+  });
+  const validation = profileSchema.validateCompanyPayload(payload);
+  if (!validation.valid) {
+    return { ok: false, error: "invalid_payload", messages: validation.errors };
+  }
+  const serialized = profileSchema.serializePayload(payload);
+  if (!serialized.withinLimit) return { ok: false, error: "payload_too_large" };
+
+  const base = (prefs.backendBaseUrl || "").replace(/\/$/, "");
+  const url = base + COMPANY_INTAKE_PATH;
+  if (!isAllowedBackendOrigin(url)) return { ok: false, error: "origin_not_allowed" };
+  const perm = await hasHostPermission(url);
+  if (!perm.ok) return { ok: false, error: "permission_denied", originPattern: perm.pattern };
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": payload.client_capture_id,
+      },
+      body: serialized.json,
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    const text = await resp.text();
+    let body = null;
+    try { body = text ? JSON.parse(text) : null; } catch (_e) { body = { raw: text }; }
+    if (!resp.ok) return { ok: false, error: "receiver_rejected", status: resp.status, body };
+    const result = handoff.sanitizeProfileStageResult(body, {
+      campaignId: payload.campaign_id || null,
+      stagedAt: new Date().toISOString(),
+    });
+    await chrome.storage.local.set({ [PROFILE_STORAGE.LAST_COMPANY_RESULT]: result });
+    return { ok: true, status: resp.status, result };
+  } catch (e) {
+    clearTimeout(timer);
+    if (e && e.name === "AbortError") {
+      return { ok: false, error: "timeout", message: `No response within ${SEND_TIMEOUT_MS}ms.` };
+    }
+    return { ok: false, error: "network_error", message: String(e && e.message) };
+  }
+}
+
 // ---- downloads ------------------------------------------------------------
 
 function sanitizeFilename(name) {
@@ -744,6 +897,23 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         break;
       case "PROFILE_SEND":
         sendResponse(await profileSend());
+        break;
+      case "COMPANY_GET_STATE":
+        sendResponse({
+          ok: true,
+          prefs: await getPrefs(),
+          draftView: buildCompanyDraftView(await getCompanyDraft()),
+          lastResult: await getLastCompanyResult(),
+        });
+        break;
+      case "COMPANY_CAPTURE":
+        sendResponse(await companyCapture());
+        break;
+      case "COMPANY_CLEAR":
+        sendResponse(await companyClear());
+        break;
+      case "COMPANY_SEND":
+        sendResponse(await companySend());
         break;
       case "EXPORT_BATCH":
         sendResponse(await exportBatch(msg.format));

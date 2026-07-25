@@ -7,7 +7,8 @@
   "permissions": ["storage", "sidePanel", "downloads", "activeTab", "scripting"],
   "host_permissions": [
     "https://www.linkedin.com/sales/*",
-    "https://www.linkedin.com/in/*"
+    "https://www.linkedin.com/in/*",
+    "https://www.linkedin.com/company/*"
   ],
   "optional_host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
   "background": {
@@ -39,6 +40,18 @@
         "src/common/surface.js",
         "src/common/profile-extraction.js",
         "src/content/profile-content-script.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.linkedin.com/company/*"],
+      "js": [
+        "src/common/constants.js",
+        "src/common/normalize.js",
+        "src/common/extraction.js",
+        "src/common/surface.js",
+        "src/common/company-extraction.js",
+        "src/content/company-content-script.js"
       ],
       "run_at": "document_idle"
     }
