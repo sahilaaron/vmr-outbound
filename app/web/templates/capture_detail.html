@@ -1,0 +1,229 @@
+{% extends "base.html" %}
+{% from "_macros.html" import identity_badge, research_badge, qualification_badge, suppression_badge %}
+{% block content %}
+{#
+  A saved person who is not a canonical contact yet.
+
+  This page deliberately does not mirror the contact page. There is no email
+  section and no campaign history, because neither exists for someone who has
+  not been promoted — showing empty versions would imply data we do not have.
+  What the operator needs here is: who this is, why they are still pending, and
+  the ability to classify and annotate them in the meantime.
+#}
+<div class="page-head">
+  <div class="crumbs"><a href="/contacts">Contacts</a><span>/</span>{{ detail.full_name }}</div>
+  <h1>{{ detail.full_name }} <span class="badge muted">capture</span> {{ suppression_badge(detail.states) }}</h1>
+  <div class="sub">Saved from a capture. Not a canonical contact yet.</div>
+</div>
+
+<div class="notice warn" role="status">
+  {% if detail.is_ambiguous %}
+  <div><strong>This capture matches more than one existing contact.</strong><br>
+    It needs an operator decision. The backend will never merge on a name, title, company or location — only an exact normalized LinkedIn URL matches automatically.</div>
+  {% else %}
+  <div><strong>Waiting on company-domain resolution.</strong><br>
+    A canonical contact requires a resolved company domain, and a LinkedIn page never shows one. This person is kept exactly as captured until a domain is confirmed — nothing is guessed, and nothing is discarded.</div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Workflow</h2>
+    <span class="hint">Four independent dimensions — never one overall status</span>
+  </div>
+  <div class="card-body">
+    <table>
+      <tbody>
+        <tr><th scope="row">Identity</th><td>{{ identity_badge(detail.states.identity) }}</td></tr>
+        <tr><th scope="row">Research</th><td>{{ research_badge(detail.states.research) }} <span class="small muted-text">{{ detail.research_note }}</span></td></tr>
+        <tr><th scope="row">Qualification</th><td>{{ qualification_badge(detail.states.qualification) }} <span class="small muted-text">{{ detail.qualification_note }}</span></td></tr>
+        <tr><th scope="row">Email</th><td><code>{{ detail.states.email_precise.value }}</code> <span class="small muted-text">{{ detail.states.email_explanation }}</span></td></tr>
+        <tr><th scope="row">Suppression</th><td>{% if detail.states.suppressed %}{{ suppression_badge(detail.states) }}{% else %}<span class="badge ok">not suppressed</span>{% endif %}</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card" style="margin-top:20px">
+  <div class="card-head"><h2>Overview</h2></div>
+  <div class="card-body">
+    {% set fields = detail.capture.profile_fields or {} %}
+    <table>
+      <tbody>
+        <tr><th scope="row">Name</th><td>{{ detail.full_name }}</td></tr>
+        <tr><th scope="row">Headline</th><td>{{ fields.get("headline") or "—" }}</td></tr>
+        <tr><th scope="row">Location</th><td>{{ fields.get("displayed_location") or "—" }}</td></tr>
+        <tr><th scope="row">LinkedIn</th><td>{% if detail.capture.normalized_profile_url %}<a class="mono small" href="{{ detail.capture.normalized_profile_url }}" rel="noopener noreferrer nofollow" target="_blank">{{ detail.capture.normalized_profile_url }}</a>{% else %}—{% endif %}</td></tr>
+        <tr><th scope="row">Public identifier</th><td class="mono small">{{ detail.capture.public_identifier or "—" }}</td></tr>
+        <tr><th scope="row">First captured</th><td>{{ detail.capture.captured_at | dt if detail.capture.captured_at else "—" }}</td></tr>
+        <tr><th scope="row">Ingested</th><td>{{ detail.capture.ingested_at | dt }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{# --- Labels: the reason the APP-002 migration exists --------------------- #}
+<div class="card" style="margin-top:20px">
+  <div class="card-head">
+    <h2>Labels</h2>
+    <span class="hint">A pending person can still be classified</span>
+  </div>
+  <div class="card-body">
+    {% if detail.labels %}
+    <div class="toolbar" style="gap:6px">
+      {% for label in detail.labels %}
+      <form method="post" action="/captures/{{ detail.capture.id }}/labels/{{ label.slug }}/remove" style="display:inline">
+        <span class="chip">{{ label.name }} <button class="btn small secondary" type="submit" aria-label="Remove label {{ label.name }}">remove</button></span>
+      </form>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="small muted-text">No labels applied.</p>
+    {% endif %}
+    <form method="post" action="/captures/{{ detail.capture.id }}/labels" class="toolbar" style="margin-top:10px">
+      <label class="sr-only" for="add-label">Add a label</label>
+      <input type="text" id="add-label" name="label" list="known-labels" placeholder="Add a label…" maxlength="64" required>
+      <datalist id="known-labels">
+        {% for label in all_labels %}<option value="{{ label.name }}"></option>{% endfor %}
+      </datalist>
+      <button class="btn small" type="submit">Add label</button>
+    </form>
+  </div>
+</div>
+
+{# --- Ambiguity candidates ------------------------------------------------ #}
+{% if detail.candidate_contacts %}
+<div class="card" style="margin-top:20px">
+  <div class="card-head">
+    <h2>Possible matches</h2>
+    <span class="hint">For you to decide between — this is not a ranking to accept</span>
+  </div>
+  <div class="card-body">
+    <table>
+      <thead><tr><th>Name</th><th>Company</th><th>Email</th><th></th></tr></thead>
+      <tbody>
+        {% for candidate in detail.candidate_contacts %}
+        <tr>
+          <td>{{ candidate.first_name }} {{ candidate.last_name }}</td>
+          <td>{{ candidate.company_name }} <span class="mono small muted-text">{{ candidate.company_domain }}</span></td>
+          <td class="mono small">{{ candidate.email or "—" }}</td>
+          <td><a class="btn small secondary" href="/contacts/{{ candidate.id }}">Open</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{# --- Employment ---------------------------------------------------------- #}
+<div class="card" style="margin-top:20px">
+  <div class="card-head">
+    <h2>Employment</h2>
+    <span class="hint">Every observed role is kept as captured</span>
+  </div>
+  <div class="card-body">
+    {% if detail.employment %}
+    <table>
+      <thead><tr><th>Company</th><th>Title</th><th>Timeline</th><th>Current</th><th>Dates</th></tr></thead>
+      <tbody>
+        {% for role in detail.employment %}
+        <tr>
+          <td>{{ role.company_name or "—" }}{% if role.role_location %}<div class="small muted-text">{{ role.role_location }}</div>{% endif %}</td>
+          <td>{{ role.job_title or "—" }}{% if role.employment_type %}<div class="small muted-text">{{ role.employment_type }}</div>{% endif %}</td>
+          <td class="small">{{ role.timeline_text or "—" }}{% if role.duration_text %}<div class="muted-text">{{ role.duration_text }}</div>{% endif %}</td>
+          <td>{% if role.is_current %}<span class="badge ok">current</span>{% else %}<span class="badge muted">past</span>{% endif %}</td>
+          <td>{% if role.dates_reliable %}<span class="badge ok">reliable</span>{% else %}<span class="badge warn" title="The captured timeline was ambiguous; treat these dates with care.">unreliable</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty"><div class="empty-title">No employment observations</div><p>The capture carried no experience entries.</p></div>
+    {% endif %}
+  </div>
+</div>
+
+{# --- Company resolution -------------------------------------------------- #}
+{% if detail.company %}
+<div class="card" style="margin-top:20px">
+  <div class="card-head">
+    <h2>Company resolution</h2>
+    <span class="hint">Display only — resolution for captures outside an import batch is a later stage</span>
+  </div>
+  <div class="card-body">
+    <table>
+      <tbody>
+        <tr><th scope="row">Captured company</th><td>{{ detail.company.captured_name or "—" }}</td></tr>
+        <tr><th scope="row">Resolved domain</th><td class="mono">{{ detail.company.domain or "—" }}</td></tr>
+        <tr><th scope="row">LinkedIn company</th><td class="mono small">{{ detail.company.linkedin_company_url or "—" }}</td></tr>
+        <tr><th scope="row">Candidate lookup</th><td><span class="badge muted" title="No domain lookup has been requested for this capture.">not requested</span></td></tr>
+        <tr><th scope="row">Promotion</th><td><span class="badge warn">pending</span></td></tr>
+      </tbody>
+    </table>
+    <p class="small muted-text" style="margin-top:8px">{{ detail.company.resolution_note }}</p>
+  </div>
+</div>
+{% endif %}
+
+{# --- Evidence ------------------------------------------------------------ #}
+{% if detail.evidence %}
+<div class="card" style="margin-top:20px">
+  <div class="card-head">
+    <h2>Capture evidence</h2>
+    <span class="hint">Immutable — a refresh appends another capture, it never rewrites this one</span>
+  </div>
+  <div class="card-body">
+    <table>
+      <tbody>
+        <tr><th scope="row">Source</th><td>{{ detail.evidence.source }}</td></tr>
+        <tr><th scope="row">Source URL</th><td class="mono small">{{ detail.evidence.source_url or "—" }}</td></tr>
+        <tr><th scope="row">Schema version</th><td class="mono small">{{ detail.evidence.schema_version }}</td></tr>
+        <tr><th scope="row">Parser version</th><td class="mono small">{{ detail.evidence.adapter_version or "—" }}</td></tr>
+        <tr><th scope="row">Extraction status</th><td>{{ detail.evidence.extraction_status }}</td></tr>
+        <tr><th scope="row">Outcome</th><td><span class="badge muted">{{ detail.evidence.outcome.value.replace("_", " ") }}</span></td></tr>
+        <tr><th scope="row">Warnings</th><td class="small">{{ detail.evidence.warnings | join(" · ") if detail.evidence.warnings else "none" }}</td></tr>
+        <tr><th scope="row">Missing sections</th><td class="small">{{ detail.evidence.missing_sections | join(", ") if detail.evidence.missing_sections else "none" }}</td></tr>
+      </tbody>
+    </table>
+    <div class="toolbar" style="margin-top:10px">
+      <a class="btn small secondary" href="{{ detail.evidence.detail_url }}">Inspect raw snapshot</a>
+      {% if detail.submission %}
+      <a class="btn small secondary" href="/contact-captures/submissions/{{ detail.submission.id }}">Open submission</a>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{# --- Notes --------------------------------------------------------------- #}
+<div class="card" style="margin-top:20px">
+  <div class="card-head">
+    <h2>Notes</h2>
+    <span class="hint">Append-only — a correction is a new note, never an edit</span>
+  </div>
+  <div class="card-body">
+    {% if detail.notes %}
+    <table>
+      <thead><tr><th>When</th><th>Author</th><th>Note</th></tr></thead>
+      <tbody>
+        {% for note in detail.notes %}
+        <tr>
+          <td class="small muted-text">{{ note.created_at | dt }}</td>
+          <td class="small">{{ note.author or "—" }}</td>
+          <td>{{ note.note_text }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="small muted-text">No notes yet.</p>
+    {% endif %}
+    <form method="post" action="/captures/{{ detail.capture.id }}/notes" style="margin-top:10px">
+      <label class="sr-only" for="add-note">Add a note</label>
+      <textarea id="add-note" name="note" rows="3" maxlength="4000" placeholder="Add a note…" required></textarea>
+      <button class="btn small" type="submit" style="margin-top:6px">Add note</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

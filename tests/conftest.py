@@ -128,6 +128,28 @@ def db_session() -> Iterator[Session]:
 
 
 @pytest.fixture()
+def committed_session() -> Iterator[Session]:
+    """A Session whose commits are really committed, for web tests.
+
+    ``db_session`` wraps everything in a transaction it rolls back, which is
+    ideal for service-level tests but invisible to anything on another
+    connection. A ``TestClient`` request runs through the application's own
+    session, so data seeded via ``db_session`` simply does not exist as far as
+    the route is concerned — the page 404s and the test looks like a routing
+    bug.
+
+    This fixture commits for real and relies on ``_isolate_database`` to clear
+    up afterwards, which is exactly what that sweep is for.
+    """
+
+    session = Session(bind=engine, expire_on_commit=False)
+    try:
+        yield session
+    finally:
+        session.close()
+
+
+@pytest.fixture()
 def enable_csv_import(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Enable the ``csv_import`` feature switch for the duration of a test.
 

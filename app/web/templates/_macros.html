@@ -65,3 +65,53 @@
   </span>
 </div>
 {%- endmacro %}
+
+{# --- Contact CRM (APP-002) ------------------------------------------------
+   The workflow dimensions are rendered as separate badges on purpose. One
+   combined status cannot say "captured but not researched, and suppressed",
+   which is a real and common state. See ADR 0002. #}
+
+{% macro identity_badge(state) -%}
+  {%- set v = state.value -%}
+  {%- if v == "canonical" -%}<span class="badge ok" title="A permanent contact record exists.">canonical</span>
+  {%- elif v == "awaiting_company" -%}<span class="badge warn" title="Saved, but no company domain resolved yet — not a canonical contact.">awaiting company</span>
+  {%- elif v == "ambiguous_identity" -%}<span class="badge warn" title="Matched more than one existing contact; needs an operator decision.">ambiguous</span>
+  {%- else -%}<span class="badge muted" title="Suppressed at capture, or a duplicate within one submission.">rejected</span>{%- endif -%}
+{%- endmacro %}
+
+{% macro research_badge(state) -%}
+  {%- set v = state.value -%}
+  {%- if v == "not_requested" -%}<span class="badge muted" title="No research has been requested. The research stage is not built yet.">not requested</span>
+  {%- elif v in ("queued", "running") -%}<span class="badge info">{{ v }}</span>
+  {%- elif v == "completed" -%}<span class="badge ok">completed</span>
+  {%- elif v == "failed" -%}<span class="badge err">failed</span>
+  {%- else -%}<span class="badge warn">{{ v.replace("_", " ") }}</span>{%- endif -%}
+{%- endmacro %}
+
+{% macro qualification_badge(state) -%}
+  {%- set v = state.value -%}
+  {%- if v == "not_assessed" -%}<span class="badge muted" title="No qualification judgement has been recorded. Capture never implies a fit.">not assessed</span>
+  {%- elif v == "qualified" -%}<span class="badge ok">qualified</span>
+  {%- elif v == "disqualified" -%}<span class="badge err">disqualified</span>
+  {%- elif v == "borderline" -%}<span class="badge warn">borderline</span>
+  {%- else -%}<span class="badge info">{{ v.replace("_", " ") }}</span>{%- endif -%}
+{%- endmacro %}
+
+{# Suppression is authoritative and must never be quiet. When blocked it always
+   states the reason, so "suppressed" is never mistaken for "invalid". #}
+{% macro suppression_badge(states) -%}
+  {%- if states.suppressed -%}
+  <span class="badge err" title="Suppressed — {{ states.suppression_reason or 'reason unavailable' }}. This person cannot become outreach-ready.">suppressed{% if states.suppression_reason %}: {{ states.suppression_reason }}{% endif %}</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{# Age band for a saved person. Nothing is ever auto-archived; an old record is
+   flagged so an ageing queue is visible instead of silently accumulating. #}
+{% macro freshness_badge(row) -%}
+  {%- if row.freshness -%}
+  {%- set days = row.age_days -%}
+  {%- if row.freshness == "fresh" -%}<span class="badge ok" title="Saved {{ days }} day(s) ago.">fresh</span>
+  {%- elif row.freshness == "aging" -%}<span class="badge info" title="Saved {{ days }} day(s) ago.">aging · {{ days }}d</span>
+  {%- else -%}<span class="badge warn" title="Saved {{ days }} day(s) ago and still waiting.">stale · {{ days }}d</span>{%- endif -%}
+  {%- endif -%}
+{%- endmacro %}

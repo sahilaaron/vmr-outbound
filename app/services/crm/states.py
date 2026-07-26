@@ -83,6 +83,11 @@ class WorkflowStates:
     email_explanation: str
     suppressed: bool
     suppression_reason: str | None = None
+    #: The full verification read model, when this record has one. Carried so the
+    #: list can render the existing accessible status icon (which needs the
+    #: precise state and explanation for its aria-label) instead of a lossy
+    #: text-only summary. None for a pending capture, which has no address.
+    email_status: verification_status.StatusView | None = None
 
     @property
     def is_pending_capture(self) -> bool:
@@ -116,6 +121,7 @@ def states_for_contact(session: Session, contact: Contact) -> WorkflowStates:
         email_explanation=email_view.explanation,
         suppressed=decision.blocked,
         suppression_reason=decision.blocked_reason,
+        email_status=email_view,
     )
 
 

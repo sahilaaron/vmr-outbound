@@ -1,55 +1,134 @@
 {% extends "base.html" %}
-{% from "_macros.html" import pager, verify_icon %}
+{% from "_macros.html" import pager, verify_icon, identity_badge, research_badge, qualification_badge, suppression_badge, freshness_badge %}
 {% block content %}
+{#
+  The contact CRM list. Two kinds of record share this table: canonical
+  contacts, and pending captures — people the operator saved whose company
+  domain is not resolved yet. A pending capture is never hidden merely because
+  it is not canonical; keeping it visible is the point of the contact-first
+  model.
+
+  Nothing on this page reads or requires a campaign.
+#}
 <div class="page-head">
   <h1>Contacts</h1>
-  <div class="sub">Canonical, normalized person records. Original imported values, provenance, and suppression state live on each contact's detail page.</div>
+  <div class="sub">Permanent people. A contact exists on its own — campaigns come later and are never required here. People still awaiting company-domain resolution stay visible, and can be labelled and annotated.</div>
 </div>
 
+{% set filtered = filters.search or filters.label_slug or filters.company or filters.source or filters.older_than_days or filters.has_email is not none or filters.has_linkedin is not none %}
+
 <div class="table-wrap">
+  <nav class="toolbar" aria-label="Contact views">
+    {% set view_labels = {"all": "All", "awaiting_company": "Awaiting company resolution", "ambiguous": "Ambiguous identity", "suppressed": "Suppressed"} %}
+    {% for v in views %}
+    <a class="chip" href="/contacts?view={{ v }}" {% if filters.view == v %}aria-current="page"{% endif %}>{{ view_labels[v] }}</a>
+    {% endfor %}
+  </nav>
+
   <div class="toolbar">
     <form method="get" action="/contacts">
-      <label class="sr-only" for="q">Search contacts</label>
-      <input type="search" id="q" name="q" value="{{ q or '' }}" placeholder="Search name, email, company, domain…">
-      <label class="sr-only" for="f-campaign">Campaign</label>
-      <select id="f-campaign" name="campaign_id">
-        <option value="">All campaigns</option>
-        {% for row in campaigns %}
-        <option value="{{ row.campaign.id }}" {{ "selected" if campaign_filter == row.campaign.id | string }}>{{ row.campaign.name }}</option>
+      <input type="hidden" name="view" value="{{ filters.view }}">
+      <label class="sr-only" for="q">Search</label>
+      <input type="search" id="q" name="q" value="{{ filters.search or '' }}" placeholder="Search name, company, title, email…">
+
+      <label class="sr-only" for="f-label">Label</label>
+      <select id="f-label" name="label">
+        <option value="">Any label</option>
+        {% for label in labels %}
+        <option value="{{ label.slug }}" {{ "selected" if filters.label_slug == label.slug }}>{{ label.name }}</option>
         {% endfor %}
       </select>
-      <label class="sr-only" for="f-state">Workflow state</label>
-      <select id="f-state" name="state">
-        <option value="">Any state</option>
-        {% for state in workflow_states %}
-        <option value="{{ state.value }}" {{ "selected" if state_filter == state.value }}>{{ state.value.replace("_", " ") }}</option>
-        {% endfor %}
+
+      <label class="sr-only" for="f-company">Company</label>
+      <input type="search" id="f-company" name="company" value="{{ filters.company or '' }}" placeholder="Company or domain">
+
+      <label class="sr-only" for="f-source">Acquisition source</label>
+      <select id="f-source" name="source">
+        <option value="">Any source</option>
+        <option value="capture" {{ "selected" if filters.source == "capture" }}>captured</option>
+        <option value="import" {{ "selected" if filters.source == "import" }}>imported</option>
       </select>
+
       <label class="sr-only" for="f-email">Email presence</label>
       <select id="f-email" name="has_email">
         <option value="">Email: any</option>
-        <option value="yes" {{ "selected" if has_email_filter == "yes" }}>has email</option>
-        <option value="no" {{ "selected" if has_email_filter == "no" }}>no email</option>
+        <option value="yes" {{ "selected" if filters.has_email is true }}>has email</option>
+        <option value="no" {{ "selected" if filters.has_email is false }}>no email</option>
       </select>
+
+      <label class="sr-only" for="f-linkedin">LinkedIn URL</label>
+      <select id="f-linkedin" name="has_linkedin">
+        <option value="">LinkedIn: any</option>
+        <option value="yes" {{ "selected" if filters.has_linkedin is true }}>has LinkedIn</option>
+        <option value="no" {{ "selected" if filters.has_linkedin is false }}>no LinkedIn</option>
+      </select>
+
+      <label class="sr-only" for="f-age">Waiting longer than</label>
+      <select id="f-age" name="older_than_days">
+        <option value="">Any age</option>
+        <option value="14" {{ "selected" if filters.older_than_days == 14 }}>older than 14 days</option>
+        <option value="30" {{ "selected" if filters.older_than_days == 30 }}>older than 30 days</option>
+        <option value="60" {{ "selected" if filters.older_than_days == 60 }}>older than 60 days</option>
+        <option value="90" {{ "selected" if filters.older_than_days == 90 }}>older than 90 days</option>
+      </select>
+
+      <label class="sr-only" for="f-sort">Sort</label>
+      <select id="f-sort" name="sort">
+        <option value="recent" {{ "selected" if filters.sort == "recent" }}>most recent</option>
+        <option value="name" {{ "selected" if filters.sort == "name" }}>name</option>
+        <option value="company" {{ "selected" if filters.sort == "company" }}>company</option>
+      </select>
+
       <button class="btn small" type="submit">Filter</button>
-      {% if q or campaign_filter or state_filter or has_email_filter %}<a class="chip" href="/contacts">Clear</a>{% endif %}
+      {% if filtered %}<a class="chip" href="/contacts?view={{ filters.view }}">Clear</a>{% endif %}
     </form>
   </div>
-  {% if contacts %}
+
+  {% if rows %}
   <table>
-    <thead><tr><th>Name</th><th>Email</th><th>Company</th><th>Title</th><th>Country</th><th>Created</th></tr></thead>
-    <tbody>
-      {% for c in contacts %}
+    <thead>
       <tr>
-        <td><a href="/contacts/{{ c.id }}">{{ c.first_name }} {{ c.last_name }}</a></td>
-        <td class="mono">
-          {%- set st = statuses.get(c.id) -%}
-          {% if st %}{{ verify_icon(st) }} {% endif %}{{ c.email or (st.email if st and st.email else "—") }}
+        <th>Name</th>
+        <th>Company</th>
+        <th>Identity</th>
+        <th>Research</th>
+        <th>Qualification</th>
+        <th>Email</th>
+        <th>Labels</th>
+        <th>Age</th>
+        <th>Updated</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>
+          <a href="{{ row.detail_url }}">{{ row.full_name }}</a>
+          {% if row.kind == "pending_capture" %}<span class="badge muted" title="Saved from a capture; not a canonical contact yet.">capture</span>{% endif %}
+          <div class="small muted-text">{{ row.title or "—" }}{% if row.location %} · {{ row.location }}{% endif %}</div>
+          {% for warning in row.warnings %}<div class="small muted-text">{{ warning }}</div>{% endfor %}
         </td>
-        <td>{{ c.company_name }}<div class="small muted-text mono">{{ c.company_domain }}</div></td>
-        <td class="small">{{ c.title or "—" }}</td>
-        <td class="small">{{ c.country or "—" }}</td>
-        <td class="small muted-text">{{ c.created_at | dt }}</td>
+        <td>
+          {{ row.company_name or "—" }}
+          {% if row.company_domain %}
+          <div class="small muted-text mono">{{ row.company_domain }}</div>
+          {% elif row.kind == "pending_capture" %}
+          <div class="small muted-text">no domain resolved</div>
+          {% endif %}
+        </td>
+        <td>{{ identity_badge(row.states.identity) }} {{ suppression_badge(row.states) }}</td>
+        <td>{{ research_badge(row.states.research) }}</td>
+        <td>{{ qualification_badge(row.states.qualification) }}</td>
+        <td class="mono small">
+          {# The accessible icon carries the precise underlying state in its
+             aria-label, so a catch-all or provider error never reads as a valid
+             mailbox. A pending capture has no address and so no icon. #}
+          {% if row.states.email_status %}{{ verify_icon(row.states.email_status) }} {% endif %}{{ row.email or "—" }}
+          <div class="small muted-text">{{ row.states.email_precise.value.replace("_", " ") }}</div>
+        </td>
+        <td class="small">{% for label in row.labels %}<span class="chip">{{ label }}</span>{% else %}—{% endfor %}</td>
+        <td class="small">{{ freshness_badge(row) }}</td>
+        <td class="small muted-text">{{ row.last_updated | dt }}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -57,9 +136,23 @@
   {{ pager(page, pages, total, filter_url, "contacts") }}
   {% else %}
   <div class="empty">
-    <div class="empty-title">{% if q or campaign_filter or state_filter or has_email_filter %}No contacts match these filters{% else %}No contacts yet{% endif %}</div>
-    <p>{% if q or campaign_filter or state_filter or has_email_filter %}Broaden the search or clear the filters.{% else %}Contacts appear here after your first confirmed import.{% endif %}</p>
-    {% if not (q or campaign_filter or state_filter or has_email_filter) %}<a class="btn" href="/imports/new">Start an import</a>{% endif %}
+    {% if filtered %}
+    <div class="empty-title">Nobody matches these filters</div>
+    <p>Broaden the search or clear the filters.</p>
+    <a class="btn" href="/contacts?view={{ filters.view }}">Clear filters</a>
+    {% elif filters.view == "awaiting_company" %}
+    <div class="empty-title">Nothing is waiting on company resolution</div>
+    <p>Captured people appear here when no company domain could be resolved for them. Nothing is queued right now.</p>
+    {% elif filters.view == "ambiguous" %}
+    <div class="empty-title">No identities need a decision</div>
+    <p>A capture lands here when it matches more than one existing contact. Only an exact LinkedIn URL ever matches automatically.</p>
+    {% elif filters.view == "suppressed" %}
+    <div class="empty-title">No suppressed contacts</div>
+    <p>Suppressed people remain visible in the CRM and are clearly marked; nobody is suppressed right now.</p>
+    {% else %}
+    <div class="empty-title">No contacts yet</div>
+    <p>People appear here as soon as they are captured or imported — no campaign required.</p>
+    {% endif %}
   </div>
   {% endif %}
 </div>

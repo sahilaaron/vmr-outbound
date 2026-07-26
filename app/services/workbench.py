@@ -297,7 +297,7 @@ class ContactDetail:
     """Everything the contact inspection page shows, from real records."""
 
     contact: Contact
-    memberships: list[tuple[CampaignContact, Campaign]] = field(default_factory=list)
+    memberships: list[tuple[CampaignContact, Campaign | None]] = field(default_factory=list)
     provenance: list[ProvenanceRecord] = field(default_factory=list)
     observations: list[tuple[ImportRowValidation, ImportRow, ImportBatch]] = field(
         default_factory=list
@@ -315,11 +315,21 @@ def get_contact_detail(session: Session, contact_id: uuid.UUID) -> ContactDetail
 
     detail = ContactDetail(contact=contact)
 
+    # OUTER join as defence in depth, not a bug fix. `campaign_contacts
+    # .campaign_id` is NOT NULL with ON DELETE CASCADE, so a membership whose
+    # campaign row is missing cannot currently arise, and the inner join was not
+    # dropping anything today. The outer join is kept because under the
+    # contact-first model the contact is the permanent record: its page should
+    # degrade to "campaign missing" rather than silently omit history if that
+    # invariant is ever relaxed. The genuine campaign-coupling defect was in
+    # `list_contacts`, which joined CampaignContact whenever `state` was
+    # filtered and so dropped every campaign-less contact; the CRM list
+    # (services/crm/records.py) avoids that join entirely. See ADR 0002.
     detail.memberships = [
         (membership, campaign)
         for membership, campaign in session.execute(
             select(CampaignContact, Campaign)
-            .join(Campaign, Campaign.id == CampaignContact.campaign_id)
+            .outerjoin(Campaign, Campaign.id == CampaignContact.campaign_id)
             .where(CampaignContact.contact_id == contact_id)
             .order_by(CampaignContact.created_at.desc())
         ).all()
