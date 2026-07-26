@@ -127,6 +127,10 @@
     UNPARSED_TIMELINE: "unparsed_timeline",
     UNRECOGNIZED_LAYOUT: "unrecognized_layout",
     UNPARSED_VALUE: "unparsed_value",
+    // The page rendered an explicit placeholder where a value would go (for
+    // example LinkedIn's literal "--" for an empty headline). The field stays
+    // null: a placeholder is not content, and storing it would look like one.
+    PLACEHOLDER_VALUE: "placeholder_value",
   };
 
   // Page-level capture status.

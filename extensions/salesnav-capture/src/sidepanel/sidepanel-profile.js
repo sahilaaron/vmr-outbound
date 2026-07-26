@@ -27,6 +27,65 @@
   let currentDraft = null;
   let currentMode = null;
 
+  // ---- warning presentation ------------------------------------------------
+  //
+  // Warning codes are stable machine strings meant for the backend. The
+  // operator reviewing a capture needs to know what was not read and why, so
+  // each code renders as a sentence with the raw code kept on the title
+  // attribute. A code with no entry falls back to the raw string: a new warning
+  // must stay visible rather than be swallowed.
+
+  const WARNING_LABELS = {
+    missing_field: (what) => `${what || "a field"} was not on the page`,
+    unparsed_value: (what) => `${what || "a value"} was shown but could not be read`,
+    placeholder_value: (what) => `${what || "a field"} showed a placeholder, not a value`,
+    selector_failure: (what) => `${what || "a field"} could not be located`,
+    malformed_url: () => "the profile URL could not be normalized",
+    missing_section: (what) => `${what || "a section"} was not on the page`,
+    unparsed_timeline: () => "a role's dates could not be read",
+    unrecognized_layout: (what) => `${what || "a block"} used an unrecognised layout`,
+    no_stable_identity: () => "no stable identity could be established",
+  };
+
+  // Wire-contract field names read as machine identifiers. The operator sees
+  // the field as it is labelled in the review card above.
+  const FIELD_LABELS = {
+    full_name: "name",
+    displayed_location: "location",
+    connection_count: "connections",
+    connection_count_raw: "connections",
+    linkedin_profile_url: "profile URL",
+    timeline_text: "role dates",
+    company_name: "company",
+    job_title: "job title",
+    experience_entry: "an experience entry",
+  };
+
+  function fieldLabel(field) {
+    if (!field) return null;
+    return FIELD_LABELS[field] || String(field).replace(/_/g, " ");
+  }
+
+  function warningBadges(warningLists) {
+    const seen = new Map();
+    for (const list of warningLists) {
+      for (const w of list || []) {
+        if (!w || !w.code) continue;
+        const raw = w.field || w.section || null;
+        const what = fieldLabel(raw);
+        const key = w.code + (raw ? ":" + raw : "");
+        if (seen.has(key)) continue;
+        const build = WARNING_LABELS[w.code];
+        seen.set(key, build ? build(what) : key);
+      }
+    }
+    return Array.from(seen.entries())
+      .slice(0, 12)
+      .map(([key, label]) =>
+        el("span", { class: "badge badge-warn", text: label, attrs: { title: key } })
+      );
+  }
+
   // ---- mode switching ------------------------------------------------------
 
   const MODE_LABELS = {
@@ -146,19 +205,11 @@
         ))
       );
     }
-    const warnCodes = new Set();
-    for (const w of (p.warnings || []).concat(draftView.pageWarnings || [])) {
-      if (w && w.code) warnCodes.add(w.code + (w.field ? ":" + w.field : ""));
-    }
-    for (const e of draftView.experiences) {
-      for (const w of e.warnings || []) if (w && w.code) warnCodes.add(w.code + (w.field ? ":" + w.field : ""));
-    }
-    if (warnCodes.size) {
-      box.appendChild(
-        el("div", { class: "warns" }, Array.from(warnCodes).slice(0, 12).map((c) =>
-          el("span", { class: "badge badge-warn", text: c })
-        ))
-      );
+    const badges = warningBadges(
+      [p.warnings, draftView.pageWarnings].concat(draftView.experiences.map((e) => e.warnings))
+    );
+    if (badges.length) {
+      box.appendChild(el("div", { class: "warns" }, badges));
     }
 
     for (const e of draftView.experiences) {
@@ -302,16 +353,9 @@
         ))
       );
     }
-    const warnCodes = new Set();
-    for (const w of (c.warnings || []).concat(draftView.pageWarnings || [])) {
-      if (w && w.code) warnCodes.add(w.code + (w.field ? ":" + w.field : ""));
-    }
-    if (warnCodes.size) {
-      box.appendChild(
-        el("div", { class: "warns" }, Array.from(warnCodes).slice(0, 12).map((cd) =>
-          el("span", { class: "badge badge-warn", text: cd })
-        ))
-      );
+    const companyBadges = warningBadges([c.warnings, draftView.pageWarnings]);
+    if (companyBadges.length) {
+      box.appendChild(el("div", { class: "warns" }, companyBadges));
     }
   }
 

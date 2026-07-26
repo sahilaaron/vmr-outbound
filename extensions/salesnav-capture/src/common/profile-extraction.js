@@ -185,112 +185,550 @@
     return m ? m[1] : null;
   }
 
-  // ---- Topcard -------------------------------------------------------------
+  // ---- Topcard (DAT-016: structural, never positional) ----------------------
+  //
+  // The current profile top card carries no semantic classes at all: every
+  // class is a hashed build token, the name sits in an `<h2>` rather than an
+  // `<h1>`, and there is no `<section>` wrapper. Worse for parsing, the *number
+  // and order* of text blocks differ between profiles. Across the real top
+  // cards inspected while designing this:
+  //
+  //   - the degree badge appears zero, one or two times;
+  //   - an extra unlabelled line can sit between the name and the degree badge;
+  //   - the company · school line is present on some views and absent on others;
+  //   - the connection region renders as one, two or four separate nodes — or
+  //     as a completely empty container;
+  //   - the headline can be LinkedIn's literal `--` placeholder;
+  //   - the action-button set is open-ended and differs per profile.
+  //
+  // Between the widest and the narrowest, the position of the location line
+  // moves by more than four. So nothing below indexes into a flat list of
+  // lines. Each field is resolved by ordered strategies over DOM structure and
+  // over content patterns; the first that resolves wins; anything unresolved
+  // stays null and raises a warning. A hashed class is never used to select a
+  // field — see docs/SELECTORS.md.
 
-  const TOPCARD_NOISE = new Set([
-    "contact info", "connect", "message", "more", "follow", "connections",
-    "followers", "mutual connections", "open to", "add profile section",
-    "enhance profile", "resources", "pending", "view my verifications",
+  // Content patterns. These describe LinkedIn's own rendering, not our markup.
+  const DEGREE_RE = /^·?\s*(1st|2nd|3rd)(\s+degree)?$/i;
+  const SEPARATOR_RE = /^[·•|-]$/;
+  const CONTACT_INFO_RE = /^(see\s+)?contact info$/i;
+  const MUTUAL_RE = /\b(mutual connections?|is a mutual connection)\b/i;
+  // LinkedIn renders an absent headline as a literal "--". That is a
+  // placeholder, not content, and must not be stored as a headline.
+  const HEADLINE_PLACEHOLDER_RE = /^-{2,}$/;
+
+  const COUNT_RE = /^\d[\d,]*\+?$/;
+  const COUNT_LABEL_RE = /^(followers?|connections?)$/i;
+  const COUNT_WITH_LABEL_RE = /^(\d[\d,]*\+?)\s+(followers?|connections?)$/i;
+
+  // Matched as an exact set rather than by substring: a headline like
+  // "Founder/CEO" must never be mistaken for a pronoun line.
+  const PRONOUN_SET = new Set([
+    "he/him", "she/her", "they/them", "he/they", "she/they",
+    "they/he", "they/she", "ze/hir", "ze/zir", "xe/xem",
   ]);
-  const PRONOUN_MARKERS = ["he/him", "she/her", "they/them"];
-  const DEGREE_MARKERS = ["· 1st", "· 2nd", "· 3rd", "1st degree", "2nd degree", "3rd degree"];
 
-  function findTopcardElement(doc) {
-    // Strategy A (2025 DOM): componentkey containing 'topcard'. When several
-    // match, prefer the one containing an h1/h2 (the main card), then the one
-    // with the most text (the nav mini-card is short) — mirrors the legacy
-    // "index [1]" workaround without hardcoding an index.
-    const byKey = Array.from(doc.querySelectorAll("[componentkey]")).filter((el) =>
-      lowerComponentKey(el).includes("topcard")
-    );
-    if (byKey.length) {
-      const withHeading = byKey.filter((el) => el.querySelector && el.querySelector("h1, h2"));
-      const pool = withHeading.length ? withHeading : byKey;
-      return pool.reduce((best, el) =>
-        (el.textContent || "").length > (best.textContent || "").length ? el : best
-      );
+  // Fallback only: buttons are recognised structurally first (see
+  // `isActionBlock`). This set exists for markup that renders an action as
+  // plain text.
+  const ACTION_TEXT = new Set([
+    "connect", "message", "more", "follow", "following", "pending",
+    "open to", "open to work", "add profile section", "enhance profile",
+    "resources", "view my verifications", "save to pdf", "about this profile",
+    "send profile in a message", "edit", "promoted",
+  ]);
+
+  function directText(el) {
+    if (!el || !el.childNodes) return "";
+    let out = "";
+    for (const child of Array.from(el.childNodes)) {
+      if (child.nodeType === 3) out += child.nodeValue || "";
     }
-    // Strategy B (classic DOM): the section containing the pv-top-card block.
-    const classic = doc.querySelector(
-      ".pv-top-card, section.pv-top-card, [class*='pv-top-card']"
-    );
-    if (classic) return classic;
-    // Strategy C: the section containing the page <h1>.
-    const h1 = doc.querySelector("main h1, h1");
-    if (h1) {
-      let node = h1;
-      while (node && node.parentElement && node.tagName !== "SECTION") node = node.parentElement;
-      return node || h1;
+    return normalize.cleanText(out);
+  }
+
+  function hasAnyText(el) {
+    return !!normalize.cleanText(el && el.textContent);
+  }
+
+  /**
+   * Ordered, leaf-ish text blocks inside a container.
+   *
+   * A "block" is the smallest element that owns a run of visible text. An
+   * element that mixes its own text with text-bearing children is emitted once,
+   * whole, so a line such as `Company · <a>School</a>` stays one block instead
+   * of fragmenting. Returned in document order.
+   */
+  function collectBlocks(root) {
+    const out = [];
+    const visit = (el) => {
+      const children = Array.from((el && el.children) || []);
+      const own = directText(el);
+      const childrenHaveText = children.some(hasAnyText);
+      if (own && childrenHaveText) {
+        out.push({ el, text: normalize.cleanText(el.textContent) });
+        return;
+      }
+      if (own) {
+        out.push({ el, text: own });
+        return;
+      }
+      children.forEach(visit);
+    };
+    if (root) visit(root);
+    return out;
+  }
+
+  /** True when the block sits inside an interactive control. */
+  function isActionBlock(el, topcardEl) {
+    let node = el;
+    const stop = topcardEl && topcardEl.parentElement;
+    while (node && node !== stop) {
+      const tag = (node.tagName || "").toLowerCase();
+      if (tag === "button") return true;
+      if (tag === "a" && (attr(node, "role") || "").toLowerCase() === "button") return true;
+      node = node.parentElement;
+    }
+    return false;
+  }
+
+  function isPronounText(text) {
+    return PRONOUN_SET.has(String(text).replace(/[()]/g, "").trim().toLowerCase());
+  }
+
+  /**
+   * Classify every block so field resolution only ever considers text that is
+   * genuinely unaccounted for. Classification is by *shape and role*, never by
+   * position.
+   */
+  function classifyBlocks(blocks, topcardEl, headingEl) {
+    const credentials = findCredentialElements(topcardEl, blocks);
+    return blocks.map((b) => {
+      const text = b.text;
+      let kind = null;
+      if (headingEl && (b.el === headingEl || headingEl.contains(b.el))) kind = "name";
+      else if (credentials.has(b.el)) kind = "credentials";
+      else if (SEPARATOR_RE.test(text)) kind = "separator";
+      else if (DEGREE_RE.test(text)) kind = "degree";
+      else if (isPronounText(text)) kind = "pronoun";
+      else if (CONTACT_INFO_RE.test(text)) kind = "contact_info";
+      else if (COUNT_WITH_LABEL_RE.test(text)) kind = "count";
+      else if (COUNT_RE.test(text)) kind = "count";
+      else if (COUNT_LABEL_RE.test(text)) kind = "count";
+      else if (MUTUAL_RE.test(text)) kind = "mutuals";
+      else if (isActionBlock(b.el, topcardEl)) kind = "action";
+      else if (ACTION_TEXT.has(text.toLowerCase())) kind = "action";
+      return Object.assign({}, b, { kind });
+    });
+  }
+
+  // Headings that introduce a *section* of the profile rather than name the
+  // person. If the first heading found is one of these, the container is not
+  // the top card — returning it would capture the section title as the
+  // person's name, which is precisely the kind of silent wrong answer #167
+  // exists to remove.
+  const SECTION_HEADINGS = new Set([
+    "about", "activity", "experience", "education", "skills", "interests",
+    "recommendations", "licenses & certifications", "licenses and certifications",
+    "volunteering", "volunteer experience", "courses", "projects", "languages",
+    "honors & awards", "honors and awards", "publications", "patents",
+    "organizations", "test scores", "causes", "featured", "highlights",
+    "people also viewed", "more profiles for you", "analytics", "resources",
+    "suggested for you", "top voice", "recommended for you",
+  ]);
+
+  function isSectionHeading(el) {
+    const text = normalize.cleanText(el && el.textContent).toLowerCase();
+    return SECTION_HEADINGS.has(text);
+  }
+
+  /**
+   * The heading that names the person.
+   *
+   * The name is an `<h2>` on the current DOM and an `<h1>` on older markup;
+   * `[role=heading]` covers a div styled as a heading. Whichever it is, a
+   * section heading is never the name.
+   */
+  function findHeadingElement(container) {
+    if (!container || typeof container.querySelectorAll !== "function") return null;
+    const headings = Array.from(container.querySelectorAll("h1, h2, h3, [role='heading']"));
+    for (const el of headings) {
+      if (!isSectionHeading(el)) return el;
     }
     return null;
   }
 
-  function isNoiseLine(line) {
-    const l = line.toLowerCase();
-    if (TOPCARD_NOISE.has(l)) return true;
-    if (l === "·") return true;
-    if (/^\d[\d,]*\+?\s+(connections|followers)$/.test(l)) return true;
-    if (/^(contact info|connect|message|more|follow)$/.test(l)) return true;
-    return false;
+  /**
+   * The verification badge, when present.
+   *
+   * `svg[id]` is the only semantically stable hook in the top card —
+   * `verified-small`, `verified-medium`, `company-accent-*`, `school-accent-*`
+   * survive the class rotation that destroys everything else. The badge is
+   * sometimes a bare `<svg>` and sometimes nested inside an `<a>` carrying the
+   * profile handle; matching the icon rather than the wrapper covers both.
+   *
+   * Used here to locate the *name row*, not to read a value: the wrapper's
+   * attributes carry identity and are never touched.
+   */
+  function findVerificationIcon(topcardEl) {
+    if (!topcardEl || typeof topcardEl.querySelector !== "function") return null;
+    return topcardEl.querySelector("svg[id^='verified-']");
   }
 
-  function parseTopcard(topcardEl, warnings) {
-    const rawLines = cleanLines(topcardEl);
-    const clean = rawLines.filter((l) => !isNoiseLine(l));
+  /**
+   * Blocks belonging to the company · school line, identified by the logo slots
+   * beside them rather than by their position or their text.
+   *
+   * A `<figure>` containing `svg[id^="company-"]` or `svg[id^="school-"]` marks
+   * the row. Note that the slot existing does not mean a logo rendered — one
+   * observed profile has the placeholder `<svg>` and no `<img>` — so presence
+   * of the figure is used only to locate the row.
+   */
+  function findCredentialElements(topcardEl, blocks) {
+    const marked = new Set();
+    if (!topcardEl || typeof topcardEl.querySelectorAll !== "function") return marked;
+    const figures = Array.from(topcardEl.querySelectorAll("figure")).filter(
+      (f) => f.querySelector && f.querySelector("svg[id^='company-'], svg[id^='school-']")
+    );
+    for (const figure of figures) {
+      let node = figure.parentElement;
+      let steps = 0;
+      while (node && steps < 3 && topcardEl.contains(node)) {
+        const inside = blocks.filter((b) => node.contains(b.el));
+        if (inside.length) {
+          // A row that already holds several lines is not the credential row —
+          // it is a wrapper. Stop rather than classifying the whole card.
+          if (inside.length <= MAX_CREDENTIAL_ROW_BLOCKS) {
+            inside.forEach((b) => marked.add(b.el));
+          }
+          break;
+        }
+        node = node.parentElement;
+        steps += 1;
+      }
+    }
+    return marked;
+  }
 
-    // Prefer the explicit heading for the name when present.
-    let fullName = null;
-    const heading = topcardEl && topcardEl.querySelector && topcardEl.querySelector("h1, h2");
-    if (heading) fullName = normalize.cleanText(heading.textContent);
-    if (!fullName) fullName = clean[0] || null;
-    if (!fullName) warnings.push({ code: WARNINGS.MISSING_FIELD, field: "full_name" });
+  const MAX_CREDENTIAL_ROW_BLOCKS = 3;
 
-    const afterName = [];
-    let seenName = !fullName;
-    for (const line of clean) {
-      if (!seenName) {
-        if (line === fullName) seenName = true;
+  /** Count text-bearing blocks without building the array (cheap enough here). */
+  function blockCount(el) {
+    return collectBlocks(el).length;
+  }
+
+  function findTopcardElement(doc) {
+    // Strategy A (componentkey DOM): a key containing 'topcard'. Prefer the one
+    // that actually holds the name heading — that excludes the nav mini-card,
+    // which repeats the name in a <p> — and among those prefer the *smallest*,
+    // since a wider match means the card's own wrapper was missed.
+    const byKey = Array.from(doc.querySelectorAll("[componentkey]")).filter((el) =>
+      lowerComponentKey(el).includes("topcard")
+    );
+    if (byKey.length) {
+      const withHeading = byKey.filter((el) => findHeadingElement(el));
+      const pool = withHeading.length ? withHeading : byKey;
+      return pool.reduce((best, el) =>
+        (el.textContent || "").length < (best.textContent || "").length ? el : best
+      );
+    }
+    // Strategy B (classic DOM): the pv-top-card block.
+    const classic = doc.querySelector(
+      ".pv-top-card, section.pv-top-card, [class*='pv-top-card']"
+    );
+    if (classic) return classic;
+    // Strategy C: climb from the name heading, and stop at the block boundary.
+    //
+    // The old implementation climbed to the nearest <section>. The current DOM
+    // has no <section> in the top card, so that climb ran to <main> and
+    // swallowed the About section and the activity feed — which is how a
+    // 20-node top card became a 200-node capture.
+    //
+    // Two independent measurements decide where the card ends:
+    //
+    //   headings — every sibling block on a profile (About, Experience,
+    //     Education, …) is introduced by its own heading, while the top card
+    //     contains exactly one: the name. An ancestor holding two or more
+    //     headings has therefore absorbed a neighbouring block.
+    //   size — a genuine top card is a bounded number of text blocks; a sudden
+    //     jump between two rungs is a second, independent signal of the same
+    //     boundary, used to trim the ladder before the heading rule is applied.
+    //
+    // The floor matters as much as the boundary: without it, the first rung — a
+    // wrapper holding only the name — looks like a valid card and the capture
+    // collapses to the name alone.
+    const heading = findHeadingElement(doc.querySelector("main") || doc) || findHeadingElement(doc);
+    if (!heading) return null;
+    const ladder = [];
+    let node = heading.parentElement;
+    while (node && node.tagName !== "MAIN" && node.tagName !== "BODY" && node.tagName !== "HTML") {
+      ladder.push({ el: node, blocks: blockCount(node), headings: headingCount(node) });
+      node = node.parentElement;
+    }
+    if (!ladder.length) return heading;
+
+    let cut = ladder.length - 1;
+    for (let i = 0; i + 1 < ladder.length; i += 1) {
+      if (ladder[i].blocks < TOPCARD_MIN_BLOCKS) continue;
+      if (ladder[i + 1].blocks > ladder[i].blocks * TOPCARD_JUMP_RATIO + TOPCARD_JUMP_SLACK) {
+        cut = i;
+        break;
+      }
+    }
+    const trimmed = ladder.slice(0, cut + 1);
+    const bounded = trimmed.filter((r) => r.headings <= 1 && r.blocks <= TOPCARD_MAX_BLOCKS);
+
+    // Widest rung that is still plausibly the card, preferring one large enough
+    // to hold a card's worth of text.
+    const sized = bounded.filter((r) => r.blocks >= TOPCARD_MIN_BLOCKS);
+    if (sized.length) return sized[sized.length - 1].el;
+    if (bounded.length) return bounded[bounded.length - 1].el;
+    return ladder[0].el;
+  }
+
+  // Bounds for the measured climb above. A genuine top card is roughly 6–25
+  // text blocks; About or the activity feed arriving pushes it far past that.
+  const TOPCARD_MIN_BLOCKS = 6;
+  const TOPCARD_MAX_BLOCKS = 40;
+  const TOPCARD_JUMP_RATIO = 1.6;
+  const TOPCARD_JUMP_SLACK = 4;
+
+  function headingCount(el) {
+    if (!el || typeof el.querySelectorAll !== "function") return 0;
+    return el.querySelectorAll("h1, h2, h3, [role='heading']").length;
+  }
+
+  // The name row is the wrapper holding the heading together with its badges.
+  // Anything inside it that we did not classify (an unlabelled line observed on
+  // at least one real profile) must not be mistaken for the headline. Bounded
+  // so that a flat card — where the "row" would be the whole top card — falls
+  // back to excluding nothing beyond the heading itself.
+  const MAX_NAME_ROW_BLOCKS = 6;
+
+  /**
+   * Smallest ancestor of the heading that also holds a degree or pronoun badge.
+   * Returns the heading itself when no such bounded wrapper exists, which is the
+   * safe answer: it excludes nothing that was not already classified.
+   */
+  function findNameRow(topcardEl, headingEl, classified, verificationIcon) {
+    if (!headingEl) return null;
+    const markers = classified
+      .filter((b) => b.kind === "degree" || b.kind === "pronoun")
+      .map((b) => b.el);
+    // The verification badge is a name-row marker too, and it is the only one
+    // available on a profile that shows neither a degree badge nor pronouns.
+    if (verificationIcon) markers.push(verificationIcon);
+    if (!markers.length) return headingEl;
+    let node = headingEl.parentElement;
+    let steps = 0;
+    while (node && steps < 6 && topcardEl && topcardEl.contains(node)) {
+      if (node !== topcardEl && markers.some((el) => node.contains(el))) {
+        return blockCount(node) <= MAX_NAME_ROW_BLOCKS ? node : headingEl;
+      }
+      node = node.parentElement;
+      steps += 1;
+    }
+    return headingEl;
+  }
+
+  /**
+   * The location line, resolved structurally.
+   *
+   * Strategy 1: the unclassified block that shares a row with the "Contact
+   * info" link. This is what the live DOM actually guarantees, and it is
+   * immune to every count/badge/company-line variation above it.
+   *
+   * Strategy 2: the last unclassified block before the connection region —
+   * used only when at least two unclassified blocks exist, so a profile with a
+   * headline and no location does not have its headline read as a location.
+   */
+  function findLocationBlock(topcardEl, classified, candidates) {
+    const contact = classified.find((b) => b.kind === "contact_info");
+    if (contact) {
+      let node = contact.el.parentElement;
+      let steps = 0;
+      while (node && steps < 5 && topcardEl && topcardEl.contains(node)) {
+        const inside = candidates.filter((b) => node.contains(b.el));
+        if (inside.length === 1) return inside[0];
+        if (inside.length > 1) break; // the row widened past the location — stop
+        node = node.parentElement;
+        steps += 1;
+      }
+    }
+    if (candidates.length >= 2) return candidates[candidates.length - 1];
+    return null;
+  }
+
+  /**
+   * Followers and connections, read as tokens rather than as a fixed arity.
+   *
+   * Observed shapes: `500+ connections` (one node); `500+` + `connections`
+   * (two); `29,777 followers` + `·` + `500+` + `connections` (four); and an
+   * entirely empty container. A count with no label is left unpaired rather
+   * than assumed to be connections.
+   */
+  function parseCountRegion(blocks) {
+    const out = {
+      connections: null,
+      connectionsRaw: null,
+      followers: null,
+      followersRaw: null,
+      sawRegion: false,
+      unpaired: false,
+    };
+    const toNumber = (raw) => {
+      const n = parseInt(String(raw).replace(/[,+]/g, ""), 10);
+      return Number.isFinite(n) ? n : null;
+    };
+    const assign = (label, raw) => {
+      const l = String(label).toLowerCase();
+      const value = toNumber(raw);
+      if (value == null) return;
+      if (l.startsWith("connection")) {
+        if (out.connections == null) {
+          out.connections = value;
+          out.connectionsRaw = `${raw} connections`;
+        }
+      } else if (out.followers == null) {
+        out.followers = value;
+        out.followersRaw = `${raw} followers`;
+      }
+    };
+
+    for (let i = 0; i < blocks.length; i += 1) {
+      const text = blocks[i].text;
+      const combined = text.match(COUNT_WITH_LABEL_RE);
+      if (combined) {
+        out.sawRegion = true;
+        assign(combined[2], combined[1]);
         continue;
       }
-      const l = line.toLowerCase();
-      if (PRONOUN_MARKERS.some((m) => l.includes(m))) continue;
-      if (DEGREE_MARKERS.some((m) => l.includes(m))) continue;
-      if (/^(1st|2nd|3rd)$/.test(l)) continue;
-      afterName.push(line);
+      if (COUNT_LABEL_RE.test(text)) {
+        out.sawRegion = true;
+        continue;
+      }
+      if (!COUNT_RE.test(text)) continue;
+      out.sawRegion = true;
+      let paired = false;
+      for (let j = i + 1; j < blocks.length && j <= i + 3; j += 1) {
+        const next = blocks[j].text;
+        if (SEPARATOR_RE.test(next)) continue;
+        if (COUNT_LABEL_RE.test(next)) {
+          assign(next, text);
+          paired = true;
+        }
+        break;
+      }
+      if (!paired) out.unpaired = true;
     }
-
-    const headline = afterName[0] || null;
-    const displayedLocation = afterName[1] || null;
-    if (!headline) warnings.push({ code: WARNINGS.MISSING_FIELD, field: "headline" });
-    if (!displayedLocation) warnings.push({ code: WARNINGS.MISSING_FIELD, field: "displayed_location" });
-
-    return { fullName, headline, displayedLocation, rawLines };
+    return out;
   }
 
-  // Connection count: regex over the topcard/body text (legacy behaviour, but
-  // WITHOUT the legacy `>= 15` clamp — the true visible value is preserved and
-  // policy decisions belong to the backend).
-  function parseConnections(doc, topcardEl) {
-    const scopes = [];
-    if (topcardEl && topcardEl.textContent) scopes.push(topcardEl.textContent);
-    if (doc && doc.body && doc.body.textContent) scopes.push(doc.body.textContent);
-    for (const text of scopes) {
-      const m = String(text).toLowerCase().match(/(\d[\d,]*\+?)\s+connections/);
-      if (m) {
-        const raw = m[1];
-        const n = parseInt(raw.replace(/,/g, "").replace(/\+/g, ""), 10);
-        if (Number.isFinite(n)) {
-          return { count: n, raw: `${raw} connections` };
-        }
-      }
+  /**
+   * Resolve the top card. `warnings` is appended to, never replaced: an
+   * unresolved field is always null *plus* a warning, never a guess.
+   */
+  function parseTopcard(topcardEl, warnings) {
+    const rawLines = cleanLines(topcardEl);
+    const headingEl = findHeadingElement(topcardEl);
+    const blocks = collectBlocks(topcardEl);
+    const classified = classifyBlocks(blocks, topcardEl, headingEl);
+
+    // --- name ---------------------------------------------------------------
+    // Verbatim, as one string. Names carry commas, professional suffixes and
+    // parenthesised alternates; none of that may be split or normalized here.
+    // Read the heading's own text first so a verification badge nested inside
+    // the heading cannot contribute to it.
+    let fullName = null;
+    if (headingEl) {
+      const inner = collectBlocks(headingEl);
+      fullName = directText(headingEl) || (inner[0] && inner[0].text) || normalize.cleanText(headingEl.textContent);
     }
-    return { count: null, raw: null };
+    if (!fullName) {
+      const firstUnclassified = classified.find((b) => b.kind == null);
+      fullName = (firstUnclassified && firstUnclassified.text) || null;
+    }
+    if (!fullName) warnings.push({ code: WARNINGS.MISSING_FIELD, field: "full_name" });
+
+    // --- candidate pool -----------------------------------------------------
+    const nameRow = findNameRow(topcardEl, headingEl, classified, findVerificationIcon(topcardEl));
+    const headingIndex = headingEl ? classified.findIndex((b) => b.el === headingEl || headingEl.contains(b.el)) : -1;
+    const firstCountIndex = classified.findIndex((b) => b.kind === "count");
+
+    const candidates = classified.filter((b, index) => {
+      if (b.kind != null) return false;
+      if (headingIndex >= 0 && index <= headingIndex) return false;
+      if (nameRow && nameRow !== headingEl && nameRow.contains(b.el)) return false;
+      if (firstCountIndex >= 0 && index > firstCountIndex) return false;
+      return true;
+    });
+
+    // --- location -----------------------------------------------------------
+    const locationBlock = findLocationBlock(topcardEl, classified, candidates);
+    const displayedLocation = locationBlock ? locationBlock.text : null;
+
+    // --- headline -----------------------------------------------------------
+    // The first unaccounted-for block outside the name row. Everything that
+    // could precede it — badges, pronouns, an unlabelled name-row line — is
+    // already excluded structurally, and everything that follows it (company ·
+    // school, "Talks about", location) is either classified or later in
+    // document order.
+    const headlineBlock = candidates.find((b) => b !== locationBlock) || null;
+    let headline = headlineBlock ? headlineBlock.text : null;
+    let headlinePlaceholder = false;
+    if (headline && HEADLINE_PLACEHOLDER_RE.test(headline)) {
+      headlinePlaceholder = true;
+      headline = null;
+    }
+
+    if (headlinePlaceholder) {
+      warnings.push({
+        code: WARNINGS.PLACEHOLDER_VALUE,
+        field: "headline",
+        raw: headlineBlock.text,
+        message: "LinkedIn rendered an empty-headline placeholder; no headline was captured.",
+      });
+    } else if (!headline) {
+      warnings.push({ code: WARNINGS.MISSING_FIELD, field: "headline" });
+    }
+    if (!displayedLocation) {
+      warnings.push({ code: WARNINGS.MISSING_FIELD, field: "displayed_location" });
+    }
+
+    return { fullName, headline, displayedLocation, rawLines, blocks: classified };
+  }
+
+  /**
+   * Connection count, scoped to the top card only.
+   *
+   * Deliberately not falling back to the whole document: other people's
+   * connection counts appear elsewhere on a profile page, and a wrong count
+   * attributed to this person is worse than no count. An empty connection
+   * region yields null — never zero, because "hidden" and "zero" are different
+   * facts.
+   */
+  function parseConnections(doc, topcardEl, precomputedBlocks) {
+    if (!topcardEl) return { count: null, raw: null, followers: null, sawRegion: false, unpaired: false };
+    const blocks = precomputedBlocks || collectBlocks(topcardEl);
+    const region = parseCountRegion(blocks);
+    return {
+      count: region.connections,
+      raw: region.connectionsRaw,
+      followers: region.followers,
+      sawRegion: region.sawRegion,
+      unpaired: region.unpaired,
+    };
   }
 
   function detectOpenToWork(doc, topcardEl) {
     if (topcardEl && /open to work/i.test(topcardEl.textContent || "")) return true;
-    const img = doc.querySelector('img[class*="pv-top-card-profile-picture"]');
-    if (img) {
+    const images = [];
+    if (topcardEl && typeof topcardEl.querySelectorAll === "function") {
+      images.push(...Array.from(topcardEl.querySelectorAll("img")));
+    }
+    const legacy = doc.querySelector('img[class*="pv-top-card-profile-picture"]');
+    if (legacy) images.push(legacy);
+    for (const img of images) {
       const badge = `${attr(img, "alt")} ${attr(img, "title")}`.toLowerCase();
       if (badge.includes("open to work") || badge.includes("#open_to_work")) return true;
     }
@@ -631,7 +1069,7 @@
     }
 
     const topcard = parseTopcard(topcardEl, profileWarnings);
-    const connections = parseConnections(doc, topcardEl);
+    const connections = parseConnections(doc, topcardEl, topcard.blocks);
     const openToWork = detectOpenToWork(doc, topcardEl);
 
     const profile = {
@@ -651,7 +1089,20 @@
       profileWarnings.push({ code: WARNINGS.MALFORMED_URL, field: "linkedin_profile_url", raw: sourceUrl });
     }
     if (connections.count == null) {
-      profileWarnings.push({ code: WARNINGS.MISSING_FIELD, field: "connection_count" });
+      // Distinguish "the page did not show a connection region at all" from
+      // "it showed something we could not pair". Both leave the count null;
+      // only the second means the parser met a shape it did not understand.
+      profileWarnings.push(
+        connections.sawRegion
+          ? {
+              code: WARNINGS.UNPARSED_VALUE,
+              field: "connection_count",
+              message:
+                "A connection region was present but no count could be paired with a " +
+                "'connections' label. Nothing was assumed.",
+            }
+          : { code: WARNINGS.MISSING_FIELD, field: "connection_count" }
+      );
     }
 
     // Experience.
@@ -736,6 +1187,11 @@
       looksLikeLocation,
       parseTopcard,
       parseConnections,
+      parseCountRegion,
+      collectBlocks,
+      classifyBlocks,
+      findHeadingElement,
+      findNameRow,
       detectOpenToWork,
       findTopcardElement,
       findExperienceSection,
