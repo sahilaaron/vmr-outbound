@@ -8,6 +8,7 @@ raised error.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 
 import pytest
 from app.models.enums import EnrichmentLookupStatus
@@ -121,3 +122,49 @@ def test_api_key_never_leaks_into_url_or_result() -> None:
     assert secret not in str(captured["url"])
     assert secret in captured["headers"]["Authorization"]  # type: ignore[index]
     assert secret not in repr(result)
+
+
+def test_request_identifies_this_application_by_user_agent() -> None:
+    """logo.dev's edge refuses the bare urllib default (Cloudflare 1010).
+
+    Without an explicit User-Agent every live lookup was rejected before the API
+    could evaluate the key, so it surfaced as API_UNAVAILABLE and no domain could
+    ever be resolved. The header must be sent, must identify this application,
+    and must not pretend to be a browser.
+    """
+
+    captured: dict[str, object] = {}
+
+    def _spy(url: str, headers: dict, timeout: float) -> logodev.RawResponse:  # type: ignore[type-arg]
+        captured["headers"] = dict(headers)
+        return logodev.RawResponse(200, json.dumps([{"domain": "a.com"}]))
+
+    logodev.search_brands("Query", api_key="sk_live_x", transport=_spy)
+
+    sent = captured["headers"]
+    agent = sent["User-Agent"]  # type: ignore[index]
+    assert agent == logodev.USER_AGENT
+    assert agent.startswith("vmr-outbound/")
+    # Never impersonate a browser: that would be evading a bot check rather than
+    # identifying ourselves.
+    for token in ("Mozilla/", "Chrome/", "Safari/", "AppleWebKit", "Gecko/", "Edg/"):
+        assert token not in agent
+
+
+def test_edge_refusal_of_an_identified_client_is_reported_not_retried() -> None:
+    """A 403 stays API_UNAVAILABLE. No second attempt under another signature."""
+
+    calls: list[Mapping[str, str]] = []
+
+    def _blocked(url: str, headers: dict, timeout: float) -> logodev.RawResponse:  # type: ignore[type-arg]
+        calls.append(dict(headers))
+        return logodev.RawResponse(
+            403,
+            json.dumps({"error_code": 1010, "error_name": "browser_signature_banned"}),
+        )
+
+    result = logodev.search_brands("Query", api_key="sk_live_x", transport=_blocked)
+
+    assert result.status is EnrichmentLookupStatus.API_UNAVAILABLE
+    assert result.candidates == ()
+    assert len(calls) == 1, "a refusal must not be retried under a different signature"
