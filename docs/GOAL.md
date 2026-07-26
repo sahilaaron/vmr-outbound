@@ -3,6 +3,25 @@
 Launch one safe, measurable outbound campaign through a cohesive semi-automated
 system.
 
+### Architecture-validation checkpoint (2026-07-26)
+
+Development of the end-to-end campaign flow is **paused** while three parts of
+the product are validated separately:
+
+1. a company-domain insights engine;
+2. a **contact-first** LinkedIn / Sales Navigator acquisition layer;
+3. a redesigned core application and data flow.
+
+Part 2 is authorized and built (DAT-013). Its purpose is to make acquisition
+independently useful and stable before the final application workflow is locked
+down. The pause changes the ORDER of the remaining work, not the launch goal or
+any non-goal below.
+
+**Contacts are permanent; campaigns consume saved audiences later.** Acquisition
+therefore never selects, requires, or records a campaign. A capture stores
+immutable evidence and may refresh an existing contact only on an exact
+normalized LinkedIn profile URL; it never makes a contact outreach-eligible.
+
 The first version must take an authorized contact batch from import to
 Saleshandy scheduling while preserving data provenance, deterministic
 eligibility, email-verification safety, explainable scoring, evidence-based
@@ -15,9 +34,10 @@ completeness or full autonomy.
 
 1. Create a campaign with targeting rules, scoring threshold, offer, tone, and
 sending configuration reference.
-2. Import a contact batch — an authorized CSV/XLSX upload or an
-operator-driven Sales Navigator capture-extension batch — and see row-level
-validation errors.
+2. Acquire contacts — an authorized CSV/XLSX upload into a campaign, or an
+operator-driven **contact-first** capture from the extension, which saves people
+permanently without a campaign — and see row-level validation errors or truthful
+per-person capture outcomes.
 3. Normalize and deduplicate contacts; match them to companies and existing
 historical records.
 4. Apply suppressions and hard eligibility gates.
@@ -57,6 +77,9 @@ observations, insights, scores, draft versions, approvals, external events,
 and audit events
 * CSV staging import with provenance, validation, normalization, deduplication,
 and identity resolution
+* Contact-first capture intake: permanent per-person capture evidence, exact-URL
+matching only, operator labels and append-only notes, and truthful per-capture
+outcomes — with no campaign anywhere in the path
 * A repeatable path for importing representative historical marketing data
 * Deterministic email-format generation and candidate ranking
 * Safe exact-address verification cache with configurable TTLs

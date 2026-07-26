@@ -1,4 +1,9 @@
-# LinkedIn profile & company capture — acceptance (DAT-012H)
+# LinkedIn capture — acceptance
+
+Layer 3 (DAT-013) is the **current** contact-first acceptance. Layers 1 and 2
+below are the DAT-012 campaign-era evidence, retained because the extraction
+adapters, safety behaviour, and company-evidence path they cover are unchanged.
+The DAT-012 profile *intake* path they exercise is now legacy.
 
 Two layers of acceptance evidence for the DAT-012 epic:
 
@@ -79,3 +84,122 @@ Every step is an explicit operator action.
 
 Record PASS/FAIL per step (redacting profile names/URLs) and file defects as
 GitHub issues against epic #139 before closing #147.
+
+---
+
+# Layer 3 — contact-first capture acceptance (DAT-013)
+
+The refactor moved acquisition from campaign-first ingestion to permanent-contact
+acquisition, so the DAT-012 acceptance criteria no longer describe the shipped
+path. This layer replaces them for the person surfaces.
+
+Same sensitive-data policy as above: fixtures use fictitious people and
+companies, and **no credentials, cookies, auth headers, browser storage, private
+messages, contact-info panel data, or unnecessary raw personal information may be
+pasted into evidence**.
+
+## Layer 3A — sanitized backend acceptance (completed, reproducible)
+
+Environment: local Postgres (fresh `vmr_accept` database, `alembic upgrade
+head`), app started with `FEATURES__CONTACT_CAPTURE_INTAKE=true`,
+`FEATURES__WORKBENCH=true`, `FEATURES__SUPPRESSIONS=true`, `APP_ENV=local`.
+Seed: one contact ("Morgan Vale", stale title `Operations Manager`,
+`linkedin_url` stored with mixed case, a trailing slash, and a tracking query
+string) plus a same-name decoy with no LinkedIn URL. Payloads: the committed
+`extensions/salesnav-capture/docs/fixtures/contact-capture.*.example.json`
+with fresh client ids.
+
+Reproduce:
+
+```bash
+python scripts/contact_capture_acceptance.py --base-url http://127.0.0.1:8000
+```
+
+The script refuses any non-loopback base URL and asserts every outcome, so it
+fails loudly rather than reporting a pass it did not earn.
+
+| # | Scenario | Result |
+| --- | --- | --- |
+| 1 | Manually opened profile saved without a campaign | HTTP 201 · outcome `exact_match_refreshed` · capture record link returned |
+| 2 | Exact normalized URL refreshes one contact | `refreshed_exact_match` = 1; the seeded contact's stale title was replaced, the same-name decoy untouched |
+| 3 | Identical retry is idempotent | HTTP 201 then 200 · `already_received: true` · same submission id · one snapshot, one note |
+| 4 | Reused submission id with changed content | HTTP 409 `client_submission_id_conflict` |
+| 5 | Older evidence cannot replace newer | Back-dated capture → `exact_match_unchanged`; the newer title stands |
+| 6 | Sales Navigator rows saved without a campaign | HTTP 201 · 2 contacts · `staged_unmatched` = 2; the row with no `/in/` URL keeps a null identity |
+| 7 | Same person twice in one submission | `duplicate_in_submission` = 1 · evidence preserved · reconciled once |
+| 8 | Capture with no visible identity | HTTP 422 `validation_failed`, nothing stored |
+| 9 | Submission carrying a campaign | HTTP 422 — the contract declares no campaign property |
+| 10 | Legacy campaign-era payload posted to the new route | HTTP 422 `unsupported_contract` naming `/api/intake/linkedin-profile/stage` |
+| 11 | Label registry is backend-owned and reusable | HTTP 200 · `Conference Lead`, `Healthcare`, `High Priority`, `Market Entry` |
+| 12 | Save-vs-refresh lookup | HTTP 200 · `match: exact` · existence only, no contact field returned |
+| 13 | Resulting capture and submission records open | Both operator pages render HTTP 200 |
+
+Directly verified against the live database after the run:
+
+| Check | Result |
+| --- | --- |
+| Matched contact's title | `Operations Manager` → `Director of Operations` |
+| Same-name decoy | untouched (`Analyst`) |
+| Labels applied to the matched contact | `Healthcare`, `Market Entry` (registry also learned the labels requested on unmatched captures) |
+| Notes | append-only; every submission appended, none overwritten |
+| Email candidates / campaign memberships created | 0 / 0 |
+| Suppressed contact (active `email opt_out`) | outcome `suppressed`, title unchanged, `labels_applied` = 0, evidence still linked |
+| Capture record page | renders capture mode, operator labels, append-only notes, reconciliation summary, person observations, experience observations |
+
+Automated backstops at this branch head: backend `pytest` **506 passed**
+(463 before; `tests/test_contact_capture_intake.py` adds 43); extension
+`node --test` **186 passed** (109 before; 77 new); `ruff`, `ruff format --check`
+and `mypy --strict` clean; `alembic` upgrade / check / downgrade round trips
+clean on a fresh database.
+
+## Layer 3B — authenticated operator runbook (manual, ~15 min, Sahil)
+
+Prereqs: local backend running with the switches above; the extension loaded
+unpacked; you are logged in to LinkedIn in the same Chrome profile. Every step
+is an explicit operator action. **Not yet performed.**
+
+- **C1.** Open a MAIN profile page (`linkedin.com/in/…`) of someone already in
+  your data → panel shows *LinkedIn Person Profile* → *Read this profile page* →
+  verify name / headline / location / current role / LinkedIn URL / About
+  excerpt / experience count / connections / open-to-work / warnings against the
+  page.
+- **C2.** Confirm the primary action reads **Refresh Contact** (the backend
+  recognised the exact URL). Save → the result reports `refreshed` with links to
+  the contact and the capture record.
+- **C3.** Press Save again without recapturing → "already saved — idempotent",
+  same submission.
+- **C4.** Open a profile that is NOT in your data → the action reads **Save
+  Contact** → Save → `staged (new person)`; confirm any same-name candidates
+  appear as review-only and no contact was created.
+- **C5.** Add two labels and a note before saving → confirm both appear on the
+  capture record, that the labels are offered again next time, and that a second
+  capture of the same person appends a second note rather than replacing the
+  first.
+- **C6.** Open a Sales Navigator people-search results page → *Capture visible
+  contacts* → exclude at least one row → confirm the Save button counts only the
+  included rows → Save → counts match what you included.
+- **C7.** Stop the backend, press Save → clear failure, draft and review stay
+  intact → restart the backend → Retry → succeeds with the SAME submission id.
+- **C8.** Open an unsupported page (a profile sub-route, or a Sales Navigator
+  account search) → the panel explains which page to open and captures nothing.
+- **C9.** If LinkedIn shows a login/checkpoint during the pass, confirm the panel
+  switches to *Challenge / Login Required* and no capture is possible until you
+  resolve it yourself.
+- **C10.** Open the company page yourself → *LinkedIn Company Profile* → capture
+  → confirm it saves company **evidence**, not a contact.
+- **C11.** If you previously used the campaign-era extension: confirm the
+  one-time "Workflow updated" notice appears, that *Download archived drafts*
+  produces your old drafts, and that no campaign selector exists anywhere.
+
+Record PASS/FAIL per step (redacting profile names/URLs) and file defects as
+GitHub issues before closing the DAT-013 issues.
+
+## Why the DAT-012 acceptance trial was paused
+
+The DAT-011 / DAT-012 trial validated a **campaign-first** path: select a
+campaign, stage a batch into its import workbench, then reconcile. The product
+moved to permanent-contact acquisition, so that acceptance criterion can no
+longer be satisfied honestly by the shipped code — the extension has no campaign
+selector to exercise. The paused criteria are superseded by Layer 3 rather than
+marked complete, and the legacy routes remain only so previously staged batches
+and snapshots stay readable.

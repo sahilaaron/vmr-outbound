@@ -113,10 +113,22 @@ integration hub or the system of record.
 
 ## Browser and Data Acquisition
 
-Targeting criteria and Sales Navigator result URLs are created by the user.
-Data is acquired through an external chrome extension. (`extensions/salesnav-capture/`);
-both feed the same staged import pipeline. Keep the downstream import
-contract independent of the acquisition method.
+Targeting criteria and Sales Navigator result URLs are created by the user. Data
+is acquired through the operator-driven Chrome extension
+(`extensions/salesnav-capture/`, product name "VMR Contact Capture").
+
+The extension is **contact-first**: it captures a person the operator has
+deliberately opened or selected, preserves the visible evidence, and submits them
+as a permanent Contact through `POST /api/intake/contact-captures`
+(`linkedin-contact-capture/2.0.0`). It never selects or requires a campaign, and
+research, qualification, email discovery, verification, audience building, and
+outreach are all downstream of it.
+
+The extension captures observations; the backend owns identity resolution,
+provenance and freshness, label resolution, suppression, and every canonical
+record. Keep the downstream contract independent of the acquisition method: a
+spreadsheet import and a capture converge on the same rules, not the same
+payload.
 
 For public-web research, obey source access restrictions and store provenance.
 Do not collect sensitive personal data that is unnecessary for legitimate B2B

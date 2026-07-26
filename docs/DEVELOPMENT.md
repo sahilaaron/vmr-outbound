@@ -131,6 +131,65 @@ python -m pytest
 CI runs exactly these steps against a Postgres 16 service — see
 `.github/workflows/ci.yml`.
 
+## 7. Run the contact-capture extension against the local backend (DAT-013)
+
+Windows (CMD), from the repository root. The backend must be local; the intake
+endpoint refuses any other environment.
+
+```bat
+:: 1. Backend dependencies and database (once)
+python -m venv .venv
+.venv\Scripts\activate
+pip install -e ".[dev]"
+psql -U postgres -c "CREATE DATABASE vmr_dev ENCODING 'UTF8' TEMPLATE template0;"
+alembic upgrade head
+
+:: 2. Run the checks
+ruff check .
+ruff format --check .
+mypy app
+python -m pytest
+
+:: 3. Start the backend with the capture switches on
+set APP_ENV=local
+set FEATURES__CONTACT_CAPTURE_INTAKE=true
+set FEATURES__WORKBENCH=true
+set FEATURES__SUPPRESSIONS=true
+set OPERATOR_BASE_URL=http://127.0.0.1:8000
+uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+
+:: 4. Extension tests (a second terminal)
+cd extensions\salesnav-capture
+npm install
+npm test
+
+:: 5. Sanitized live acceptance (a second terminal, backend running)
+python scripts\contact_capture_acceptance.py --base-url http://127.0.0.1:8000
+```
+
+Load the extension:
+
+1. Open `chrome://extensions` and turn on **Developer mode**.
+2. **Load unpacked** → select `extensions\salesnav-capture`.
+3. Pin it and click the icon to open the side panel.
+4. In the panel's **Settings**, set *Local backend base URL* to
+   `http://127.0.0.1:8000` and *Save target* to **Local VMR backend**, then
+   *Save settings*. (Leave the target on **Mock receiver** and run
+   `npm run mock-receiver` to exercise the flow with no backend at all.)
+5. The first save prompts for loopback access — approve it. Nothing is
+   transmitted before that prompt, and declining blocks the save with a Retry.
+
+Capture and inspect:
+
+- **A profile** — open `linkedin.com/in/<id>` yourself → *Read this profile
+  page* → review → optionally add labels and a note → *Save Contact* (or
+  *Refresh Contact*).
+- **Sales Navigator contacts** — open a people-search results page yourself →
+  *Capture visible contacts* → exclude any rows → *Save N included contacts*.
+- **Inspect the result** — follow *Open contact* / *Open capture record* in the
+  panel, or browse `http://127.0.0.1:8000/contact-captures/<capture_id>` and
+  `http://127.0.0.1:8000/contact-captures/submissions/<submission_id>`.
+
 ## Notes
 
 - **Secrets**: never commit `.env` or any key. `.env.example` documents variable

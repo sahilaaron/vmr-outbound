@@ -10,17 +10,21 @@ manual and compliant.
 ## Source and authorization
 
 - Contacts arrive through one of two **authorized acquisition paths**, both
-  feeding the same staged-import pipeline:
+  converging on the same normalization, identity, provenance, and suppression
+  rules:
   1. An **authorized spreadsheet** — **CSV or XLSX** (both parse through one
      shared pipeline since the workbench slice) — exported by a human operator
      from an authorized source (e.g. a manual Sales Navigator export the
-     operator is licensed to use, or another explicitly permitted list).
-  2. An **operator-driven capture batch** from the Sales Navigator capture
-     extension (`extensions/salesnav-capture/`): the operator browses and
-     authenticates themselves, the extension reads only visible pages, the
-     operator reviews the batch, and it is handed over as a JSON/CSV export or
-     via a narrow intake endpoint. No unattended pagination, credential
-     storage, or undocumented APIs.
+     operator is licensed to use, or another explicitly permitted list). This
+     path stages into a campaign's import workbench.
+  2. An **operator-driven contact capture** from the capture extension
+     (`extensions/salesnav-capture/`): the operator browses and authenticates
+     themselves, the extension reads only visible pages, the operator reviews
+     and may exclude each person, and they are submitted as **permanent
+     Contacts** through a narrow intake endpoint (or handed over as a JSON/CSV
+     export). No unattended pagination, credential storage, or undocumented
+     APIs — and **no campaign**: see
+     `extensions/salesnav-capture/docs/CONTACT_CAPTURE_CONTRACT.md`.
 - Legacy `.xls`, Google Sheets direct import, and other spreadsheet formats are
   out of scope until explicitly approved.
 - The system does **not** perform unattended scraping, anti-bot evasion, CAPTCHA
@@ -78,6 +82,29 @@ observation time (AGENTS.md; DAT-005).
   not silently dropped or guessed.
 - No verification, scoring, research, or sending happens at import. Import only
   stages raw rows plus a normalized view for later phases.
+
+## Contact-first capture (DAT-013)
+
+The capture path does not use the columns above: a LinkedIn page shows a person,
+not a spreadsheet row. It has its own versioned contract
+(`linkedin-contact-capture/2.0.0`) and these rules:
+
+- A capture is **permanent, immutable evidence**. It never overwrites earlier
+  evidence; the DAT-005 freshness policy decides which observation wins.
+- Only an **exact normalized LinkedIn profile URL** may match and refresh an
+  existing contact. Name / company / title / location similarity produces
+  review candidates only.
+- A person with no visible profile URL (common on a Sales Navigator result row)
+  stays honestly **unmatched and staged**. Identity is never repaired from a
+  lead URL.
+- A canonical contact is **not created** from a capture, because a contact
+  requires a company domain and a LinkedIn page never shows one. Inventing a
+  domain would be fabricated evidence, so unmatched people wait for domain
+  resolution and operator promotion.
+- Optional **labels** classify permanent contacts (they are not campaigns) and
+  optional **notes** are append-only.
+- Suppression stays authoritative, and no capture makes a contact
+  outreach-eligible.
 
 ## Explicitly out of scope for the contract
 
