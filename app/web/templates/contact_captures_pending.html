@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div class="crumbs"><a href="/">Workbench</a><span>/</span>Captures awaiting promotion</div>
+  <h1>Captures awaiting promotion</h1>
+  <div class="sub">
+    People saved by the capture extension who are not yet canonical contacts. A
+    contact needs a company domain, and a LinkedIn page never shows one — so each
+    capture waits here until its domain is resolved. Nothing is promoted
+    automatically and no domain is ever invented.
+  </div>
+</div>
+
+{% if not lookup_available %}
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Domain lookup unavailable</strong></div>
+  <p class="small muted-text" style="padding: 0 12px 12px;">
+    Company-domain enrichment is disabled or no provider key is configured. You can still open a
+    capture and enter a domain by hand.
+  </p>
+</div>
+{% endif %}
+
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Pending ({{ rows | length }})</strong></div>
+  <table>
+    <thead>
+      <tr>
+        <th>Person</th><th>Title</th><th>Captured company</th>
+        <th>Company resolution</th><th>Confirmed domain</th><th>Capture</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td class="wrap">{{ row.identity.full_name or "—" }}</td>
+        <td class="wrap">{{ row.identity.title or "—" }}</td>
+        <td class="wrap">{{ row.hints.name or "—" }}</td>
+        <td><span class="badge">{{ row.promotion.company_outcome.value }}</span></td>
+        <td class="mono wrap">{{ row.promotion.resolved_domain or "—" }}</td>
+        <td><a href="/contact-captures/{{ row.snapshot.id }}">resolve</a></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="muted-text">
+        Nothing is waiting. Every capture is either linked to a contact or already promoted.
+      </td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

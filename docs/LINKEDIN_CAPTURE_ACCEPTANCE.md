@@ -203,3 +203,151 @@ longer be satisfied honestly by the shipped code — the extension has no campai
 selector to exercise. The paused criteria are superseded by Layer 3 rather than
 marked complete, and the legacy routes remain only so previously staged batches
 and snapshots stay readable.
+
+---
+
+# Layer 4 — capture promotion acceptance (DAT-014)
+
+The bridge from a staged capture to a canonical Contact, through the existing
+DAT-010 logo.dev candidate flow. Policy and outcome vocabulary:
+[`CAPTURE_PROMOTION.md`](./CAPTURE_PROMOTION.md).
+
+## Layer 4A — sanitized live acceptance (completed, reproducible)
+
+Environment: fresh `vmr_accept` database, `alembic upgrade head`, app started
+with `APP_ENV=local`, `FEATURES__CONTACT_CAPTURE_INTAKE=true`,
+`FEATURES__CONTACT_CAPTURE_PROMOTION=true`, `FEATURES__WORKBENCH=true`,
+`FEATURES__SUPPRESSIONS=true`, `FEATURES__SALESNAV_DOMAIN_ENRICHMENT=true`, and
+`LOGO_DEV_SEARCH_URL` pointed at the script's local stub.
+
+**The provider is stubbed at the HTTP boundary.** The real logo.dev client, the
+real enrichment service, the real workbench routes and the real database are all
+exercised; only the provider itself is local, returning the documented Search
+Brands response shape. No API key is used and no live logo.dev call is made.
+
+Reproduce (backend running, as above):
+
+```bash
+python scripts/capture_promotion_acceptance.py --base-url http://127.0.0.1:8000
+```
+
+| # | Scenario | Result |
+| --- | --- | --- |
+| 1 | Unmatched capture is eligible for domain resolution | pending page lists it · `pending_lookup` · captured company shown |
+| 2 | Provider candidates are stored, ranked, and left for review | `multiple_candidates_review_required` · 2 candidates · confidence shown as *not provided by this provider* |
+| 3 | Promotion is refused while candidates await a decision | capture stays unpromoted; the reason is shown |
+| 4 | A rejected candidate is preserved with its reason | moved to *Rejected candidates* with reason, actor and time |
+| 5 | Operator confirmation resolves the company | `domain_candidate_confirmed` · source `candidate` · confirming operator recorded |
+| 6 | Promotion creates the Contact and Company | `contact_created` · labels and notes carried over · capture linked |
+| 7 | Retrying a promotion is idempotent | `already_promoted` · no second contact |
+| 8 | A previously confirmed company is reused | `existing_company_resolved` · source `prior_mapping` · no provider call |
+| 9 | The reused company promotes without a second lookup | `contact_created` against the same canonical Company |
+| 10 | Promoted captures leave the pending queue | neither promoted person is listed as pending |
+
+Database assertions taken directly after the run:
+
+| Check | Result |
+| --- | --- |
+| Companies created | 1 (`Meridian Works` / `meridianworks.example`) — the second capture reused it |
+| Contacts created | 2, both on the resolved domain, both with the captured title and profile URL, neither with an invented email |
+| Enrichment records | 2, both capture-owned (`batch_id` null); one `ok` with source `candidate`, one `not_started` with source `prior_mapping` — the reuse cost no provider call |
+| Rejected candidate | preserved with reason `different company, similar name` and the deciding actor |
+| Label assignments | 4 (two labels × two contacts) |
+| Notes | 2 of 2 linked to their promoted contact, text and timestamps unchanged |
+| Provenance observations | `title`, `company_name`, `linkedin_url` appended to the DAT-005 ledger |
+| Campaign memberships / email candidates | 0 / 0 |
+| Captures | 2 of 2 linked to a contact, payloads intact |
+| Promotion audit events | 2 |
+
+Automated backstops at this branch head: backend `pytest` **555 passed**
+(506 before; `tests/test_capture_promotion.py` adds 49); extension `node --test`
+**186 passed** (unchanged — the extension is not part of DAT-014); `ruff`,
+`ruff format --check` and `mypy --strict` clean; `alembic` upgrade / check /
+downgrade round trips clean on a fresh database, with no orphaned enum types
+after a downgrade to base.
+
+## Layer 4B — live provider call (PERFORMED 2026-07-26, PASS — complete)
+
+Run against the real endpoint (`https://api.logo.dev/search`) at commit
+`823c315`, on the dedicated `vmr_dat014` database, with the fictitious fixture
+identities. **One** live provider call served the whole pass.
+
+| Step | Requirement | Result |
+| --- | --- | --- |
+| P1 | Backend on the real endpoint with a real key | PASS — provider `logo.dev`, lookup version `logo.dev/search-brands/v1` |
+| P2 | One lookup; candidates recorded truthfully | PASS — `ok`, 10 candidates, provider order preserved as `rank` |
+| P2a | Confidence not invented | PASS — the provider returned **no** score/confidence field on any result; stored as explicit `null` |
+| P2b | Nothing auto-confirmed | PASS — `multiple_candidates_review_required`, promote disabled, promotion refused |
+| P3 | Operator confirmation recorded with source, actor, time | PASS — `domain_candidate_confirmed`, source `candidate`; two rejections preserved with reason, actor and time |
+| P4 | Promotion creates Company and Contact; labels and notes carry over | PASS — one Company on the confirmed domain, Contact on that domain with no invented email, 2 labels and 1 append-only note carried |
+| P4a | Capture immutable | PASS — only `matched_contact` changed |
+| P5 | No permission granted | PASS — no campaign membership, email candidate, verification, score, draft or approval |
+| P6 | Prior mapping reused with no second call | PASS — `existing_company_resolved` / `prior_mapping` at `not_started · 0 attempt(s)` before any operator action |
+
+**Attempt history, recorded honestly.** Workbench attempt 1 returned
+`api_unavailable`: the request was refused at the CDN edge (Cloudflare 1010,
+`browser_signature_banned`, HTTP 403) because the client sent urllib's default
+`Python-urllib/x.y` User-Agent. A publishable (`pk_`) key was configured at that
+moment, but the request never reached provider authentication, so the key type
+is **not** the proven cause. Diagnostic probes were made outside the application
+and did not increment `lookup_attempts`. Workbench attempt 2 succeeded, running
+commit `823c315`, which sends a truthful application `User-Agent`. Until that
+commit, no live logo.dev lookup could succeed at all.
+
+**Ambiguity was real.** The provider returned four different domains all named
+"Mozilla". Auto-accepting the top-ranked name match would have chosen a domain
+no operator sanctioned — the confirmation requirement is vindicated by live data,
+not only by fixtures.
+
+Sanitized evidence lives outside the repository in `layer4b/`
+(`dat014_live_evidence.txt`, `dat014_live_evidence_db.txt`), because it is
+operator run-evidence rather than source. Both shell verifications have now run
+and **both passed**:
+
+* `capture_state.py --compare` — byte-level capture immutability: only the
+  canonical contact link changed.
+* `run_assertions.py` — a thin shim over the committed, tested harness at
+  [`scripts/layer4b_assertions.py`](../scripts/layer4b_assertions.py). Result at
+  commit `44507fd`: checks **A, B, C, C2, D, E, F, G, H, I, L all PASS**, none
+  failed, none empty, **OVERALL: PASS**. Check C2 recorded scoped provider
+  attempts 2 against authorised attempts 2, with 1 record reused without a
+  lookup. The sanitized informational section reported 1 excluded capture
+  carrying 1 excluded provider attempt.
+
+Nothing in Layer 4B is outstanding.
+
+### The first aggregate assertion run failed on a harness defect, not a product defect
+
+The harness originally graded **every** capture-owned row in the database. That
+local database also holds captures created while exercising the extension
+against real LinkedIn pages, so the first run reported:
+
+* check A failed — an unrelated capture's lookup was `API_UNAVAILABLE`;
+* check C failed — that same capture was never confirmed;
+* check C2 reported 3 aggregate attempts (Morgan's 2 plus an unrelated 1).
+
+Morgan's and Riley's own sanctioned fixture flows passed throughout. The three
+failures were scoping defects in the harness: acceptance-scope questions were
+being answered with database-wide data.
+
+**No product data was changed to resolve this.** The unrelated captures were not
+deleted, altered, reset or "repaired" — they are legitimate records and remain
+exactly as they were. The harness was corrected instead: every graded check is
+now scoped to the two sanctioned synthetic acceptance captures, and unrelated
+rows appear only in a sanitized informational section reporting a count of
+excluded captures and their aggregate attempts — no name, URL, company, payload
+or other personal data. `tests/test_layer4b_assertions.py` holds the scoping in
+place and, equally, proves it did not merely disable the checks: a sanctioned row
+with a wrong status, a missing confirmation, invented candidate confidence, a
+missing rank, an unreasoned rejection, an invented email or a wrong attempt count
+still fails, and asking for the aggregate figure instead of the scoped one fails
+too.
+
+With the corrected scope, check C2 counts Morgan's 2 attempts plus Riley's 0 for
+a total of 2, matching what was authorised — which is exactly what the rerun
+reported. The unrelated capture and its single attempt appear only as counts in
+the excluded section, where they cannot influence any verdict.
+
+This layer accepts **DAT-014 provider resolution and contact promotion only**.
+It says nothing about extension extraction correctness — see DAT-016 (#167),
+which is open, and Layer 3B, whose step C1 fails.

@@ -78,6 +78,19 @@ Transport = Callable[[str, Mapping[str, str], float], RawResponse]
 _RETRYABLE_STATUS = 429
 _SERVER_ERROR_FLOOR = 500
 
+# Identify this application on every request. With no explicit value urllib sends
+# "Python-urllib/x.y", which logo.dev's edge refuses outright — Cloudflare error
+# 1010, ``browser_signature_banned`` — before the API can evaluate the key. Every
+# live lookup therefore reported API_UNAVAILABLE and no domain could ever be
+# resolved. Verified against the live endpoint: the same request differing only
+# in this header returns 200.
+#
+# This is a truthful self-identification and deliberately NOT a browser string.
+# The adapter does not impersonate a browser, solve or evade a bot check, or
+# retry a refusal under a different signature. If an identified client is still
+# refused, that is reported as API_UNAVAILABLE like any other provider condition.
+USER_AGENT = "vmr-outbound/1.0 (+operator workbench; logo.dev Brand Search)"
+
 
 def _urllib_transport(url: str, headers: Mapping[str, str], timeout: float) -> RawResponse:
     """Default transport over urllib. Never logs; never leaks the auth header."""
@@ -177,7 +190,11 @@ def search_brands(
 
     call = transport or _urllib_transport
     url = f"{search_url}?{urlencode({'q': cleaned})}"
-    headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",
+        "User-Agent": USER_AGENT,
+    }
 
     try:
         response = call(url, headers, timeout)

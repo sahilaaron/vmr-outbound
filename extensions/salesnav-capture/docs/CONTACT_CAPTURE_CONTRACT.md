@@ -130,14 +130,22 @@ capture path, and the contract makes that structurally unrepresentable.
 `rejected_invalid` is not an outcome: a rejected submission is never persisted,
 so it is reported as an HTTP error instead of a stored row.
 
-### Why `created` is always 0 today
+### Why `created` is always 0 here
 
 A canonical contact requires a company **domain** — it is the deduplication and
 email-generation key and is `NOT NULL`. A LinkedIn page never shows one, and
 inferring a domain from a company name would be fabricated evidence. So an
-unmatched person is stored as a permanent, reviewable capture awaiting domain
-resolution and operator promotion, and the response reports `created: 0`
-honestly. Promotion is tracked as follow-up work, not silently faked here.
+unmatched person is stored as a permanent, reviewable capture, and the response
+reports `created: 0` honestly.
+
+`created: 0` is the **capture boundary**, not a dead end. Domain resolution and
+promotion happen afterwards, in the backend, through DAT-010 + DAT-014: the
+captured company name and LinkedIn hints go to the logo.dev candidate flow, the
+operator confirms a domain, and the capture becomes a canonical Contact. See
+[`docs/CAPTURE_PROMOTION.md`](../../../docs/CAPTURE_PROMOTION.md).
+
+The extension plays no part in that: it never calls logo.dev, never holds a
+provider key, and never resolves a domain.
 
 ## Labels
 

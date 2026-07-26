@@ -1,11 +1,24 @@
-"""Sales Navigator company-domain enrichment records (DAT-010).
+"""Company-domain enrichment records (DAT-010, extended by DAT-014).
 
-A Sales Navigator capture never exposes ``company_domain``, so every captured
-company must have a domain supplied before its rows can pass validation. This
-table records — once per unique company per staged batch — the logo.dev lookup
-and the operator's explicit confirmation, entirely separately from the immutable
-Sales Navigator raw rows (:class:`~app.models.import_batch.ImportRow`, never
-mutated) and from a contact's :class:`~app.models.provenance.ProvenanceRecord`.
+A LinkedIn or Sales Navigator capture never exposes ``company_domain``, so every
+captured company must have a domain supplied before it can become canonical.
+This table records the logo.dev lookup and the operator's explicit confirmation,
+entirely separately from the immutable raw evidence
+(:class:`~app.models.import_batch.ImportRow` and
+:class:`~app.models.linkedin_profile.LinkedInProfileSnapshot`, never mutated) and
+from a contact's :class:`~app.models.provenance.ProvenanceRecord`.
+
+One record is owned by **exactly one** of two things, enforced by a check
+constraint:
+
+* a staged import batch (DAT-010) — one record per unique company per batch, so
+  a confirmed domain propagates to every matching staged row exactly once;
+* a contact capture (DAT-014) — one record per capture, resolving the single
+  company that capture observed.
+
+The table name is historical: it began as Sales-Navigator-only and is now the
+one company-domain resolution store for both acquisition paths. There is
+deliberately no second candidate store.
 
 It is provenance/audit metadata: it holds what was searched, what candidates
 logo.dev returned, and which domain the operator confirmed (a candidate, a manual
@@ -24,6 +37,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
+    CheckConstraint,
     DateTime,
     Enum,
     ForeignKey,
@@ -45,7 +59,7 @@ from app.models.enums import (
 
 
 class SalesNavCompanyEnrichment(Base):
-    """One unique company within one staged batch, plus its lookup + decision."""
+    """One company to resolve, plus its provider lookup and operator decision."""
 
     __tablename__ = "salesnav_company_enrichments"
     __table_args__ = (
@@ -56,13 +70,34 @@ class SalesNavCompanyEnrichment(Base):
             "batch_id", "company_key", name="uq_salesnav_company_enrichments_batch_company"
         ),
         Index("ix_salesnav_company_enrichments_batch_id", "batch_id"),
+        # DAT-014: one record per contact capture. A partial unique index (rather
+        # than a constraint) so batch-owned rows, whose capture_id is NULL, are
+        # unaffected.
+        Index(
+            "uq_salesnav_company_enrichments_capture",
+            "capture_id",
+            unique=True,
+            postgresql_where="capture_id IS NOT NULL",
+        ),
+        # Exactly one owner. A record with neither owner would be unreachable
+        # evidence; one with both would let a confirmation leak across paths.
+        CheckConstraint(
+            "(batch_id IS NULL) <> (capture_id IS NULL)",
+            name="ck_salesnav_company_enrichments_single_owner",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    batch_id: Mapped[uuid.UUID] = mapped_column(
+    batch_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("import_batches.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
+    )
+    # DAT-014: the contact capture whose company this record resolves.
+    capture_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("linkedin_profile_snapshots.id", ondelete="CASCADE"),
+        nullable=True,
     )
     # Normalized grouping key (collapsed, case-folded company name). Rows whose
     # mapped company_name matches this key receive the confirmed domain.
@@ -72,17 +107,39 @@ class SalesNavCompanyEnrichment(Base):
     company_name: Mapped[str] = mapped_column(String(512), nullable=False)
     row_count: Mapped[int] = mapped_column(nullable=False, default=0)
 
+    # --- Captured identity hints (DAT-014) -----------------------------------
+    # What the capture actually showed about the company, preserved so a later
+    # reviewer can judge a candidate without reopening LinkedIn. These are
+    # HINTS: none of them resolves a domain on its own.
+    company_linkedin_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    company_linkedin_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # The person's displayed location or the role's location, whichever the
+    # capture showed. Context for disambiguating same-named companies.
+    location_hint: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
     # --- Lookup state --------------------------------------------------------
     lookup_status: Mapped[EnrichmentLookupStatus] = mapped_column(
         Enum(EnrichmentLookupStatus, name="enrichment_lookup_status"),
         nullable=False,
         default=EnrichmentLookupStatus.NOT_STARTED,
     )
-    # Candidates returned by logo.dev, as a list of {"domain", "name"} objects.
-    # Never includes a logo URL, score, or the API key.
+    # Candidates returned by the provider, as a list of objects carrying
+    # ``domain``, ``name``, ``rank`` (1-based provider order) and ``confidence``.
+    # logo.dev's Search Brands API returns no score, so ``confidence`` is null —
+    # recorded explicitly rather than omitted, so nobody later mistakes rank for
+    # confidence. Never includes a logo URL or the API key.
     candidates: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
-    # The exact query string sent to logo.dev (the company name). Non-secret.
+    # Candidates the operator explicitly rejected, each with the reason, actor
+    # and time. Preserved as provenance: a rejection is a decision, not a gap.
+    rejected_candidates: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
+    # The exact query string sent to the provider (the company name). Non-secret.
     lookup_query: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # The normalized form of that query, so an identical company is recognisable
+    # across captures even when the visible spelling differs.
+    normalized_query: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Which provider answered, and the version of the lookup contract used.
+    provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lookup_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     looked_up_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Count of lookups run for this company (refresh/retry increments it).
     lookup_attempts: Mapped[int] = mapped_column(nullable=False, default=0)
@@ -112,9 +169,15 @@ class SalesNavCompanyEnrichment(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
+    @property
+    def owner_label(self) -> str:
+        """Which acquisition path owns this record ("batch" or "capture")."""
+
+        return "capture" if self.capture_id is not None else "batch"
+
     def __repr__(self) -> str:  # pragma: no cover - debug helper
         return (
-            f"SalesNavCompanyEnrichment(batch_id={self.batch_id!r}, "
+            f"SalesNavCompanyEnrichment(owner={self.owner_label}, "
             f"company_key={self.company_key!r}, lookup_status={self.lookup_status.value!r}, "
             f"confirmation_status={self.confirmation_status.value!r})"
         )
