@@ -167,6 +167,11 @@ The initial research threshold is an absolute score of **85/100**, not the top
 - An existing contact may be matched and refreshed automatically ONLY on an
   exact normalized LinkedIn profile URL. Name, company, title, location, and
   headline — alone or combined — may surface review candidates and nothing more.
+- Never fabricate a company domain, and never treat a provider's top-ranked
+  name match as authoritative because it ranks first. A domain becomes truth
+  only when an operator confirms it, or when the backend replays a domain that
+  operator already confirmed for the same company. Every candidate and every
+  decision — including rejections — is preserved as provenance.
 - Never send or schedule outreach without explicit approval of the exact draft version.
 - Editing an approved draft invalidates that approval.
 - Never contact an opted-out, suppressed, hard-bounced, or legally excluded address.
