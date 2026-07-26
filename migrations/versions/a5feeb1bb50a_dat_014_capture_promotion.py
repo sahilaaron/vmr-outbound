@@ -1,7 +1,7 @@
 """DAT-014 capture promotion and capture-scoped domain enrichment
 
 Revision ID: a5feeb1bb50a
-Revises: 26f8ab7044f1
+Revises: 4b7d1e92c530
 Create Date: 2026-07-26 11:56:31.708109
 
 Bridges a DAT-013 contact capture to a canonical Contact through the existing
@@ -35,7 +35,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = "a5feeb1bb50a"
-down_revision: str | Sequence[str] | None = "26f8ab7044f1"
+down_revision: str | Sequence[str] | None = "4b7d1e92c530"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
