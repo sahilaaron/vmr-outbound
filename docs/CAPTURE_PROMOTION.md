@@ -184,8 +184,24 @@ therefore retains the resolved company relationship on the **promotion record**
 
 That is a narrow compatibility seam, not a recommendation. Whether a contact
 should reference a company directly is an application-domain decision belonging
-to APP-001 (#157), which was **not readable from the session that built this**:
-the GitHub API is not available to it, so the issue could not be consulted.
+to APP-001 (#157).
+
+**The issue body itself was not readable from the session that built this** —
+the GitHub API is not available to it — but the APP-001/APP-002 working notes
+carried over from the session doing that work record its substance, and they
+corroborate this seam rather than contradict it:
+
+* #157 forbids casually making `Contact.company_domain` nullable or bypassing
+  DAT-010. The sanctioned domain path is exactly the one implemented here:
+  captured company name → DAT-010 logo.dev candidates → operator confirmation →
+  canonical Company → promotion (DAT-014).
+* Pending captures must remain `LinkedInProfileSnapshot` rows and must **not**
+  become provisional `Contact` rows. DAT-014 creates a contact only on an
+  explicit operator promotion with a confirmed domain, so it holds that line.
+* `ContactWorkflowState` lives on `CampaignContact`, so a campaign-less contact
+  has no workflow state. That is APP-001's problem to solve; DAT-014 does not
+  invent a parallel one.
+
 DAT-014 consequently avoids every application-level choice it could:
 
 * no `Contact.company_id` column or relationship;
@@ -197,6 +213,19 @@ DAT-014 consequently avoids every application-level choice it could:
 If APP-001 introduces a contact→company relationship, `resolved_company_id` is
 the migration source: it already records, per promoted contact, which company it
 resolved to and how.
+
+### Two DAT-013 anchor gaps that belong to APP-002 (#158), not here
+
+* `ContactLabelAssignment.contact_id` is `NOT NULL`, so a capture cannot be
+  labelled before it is promoted. DAT-014 works within that: requested labels
+  stay on the capture as evidence and are assigned at promotion.
+* `ContactCaptureNote.capture_id` is `NOT NULL`, so a contact with no capture
+  (a CSV import) cannot carry one of these notes.
+
+Both need an additive migration making each anchor nullable with a check that
+exactly one is set. That is APP-002 scope. DAT-014 deliberately does not change
+those constraints, because doing so from this branch would collide with the
+APP-002 migration.
 
 ## Known limitations
 
