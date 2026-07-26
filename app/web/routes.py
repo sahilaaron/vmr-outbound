@@ -48,6 +48,9 @@ from app.services.campaigns import (
     get_campaign_overview,
     list_campaigns,
 )
+from app.services.crm import annotations as crm_annotations
+from app.services.crm import detail as crm_detail
+from app.services.crm import records as crm_records
 from app.services.enrichment import companies as enrichment
 from app.services.imports import mapping as mapping_service
 from app.services.imports import parsing, staging, validation
@@ -153,6 +156,31 @@ def _not_found(request: Request, db: Session, message: str) -> HTMLResponse:
     return _render(
         request, db, "not_found.html", {"message": message, "active_nav": ""}, status_code=404
     )
+
+
+def _tri_state(raw: str | None) -> bool | None:
+    """Map a yes/no query parameter to a tri-state filter.
+
+    Anything unrecognised — including an empty string from a "no preference"
+    select — means no filter rather than False, so a blank dropdown does not
+    silently exclude half the list.
+    """
+
+    return {"yes": True, "no": False}.get((raw or "").strip().lower())
+
+
+def _positive_int(raw: str | None) -> int | None:
+    """A positive integer from a query parameter, or None.
+
+    Operator-editable input: a negative or non-numeric value is ignored rather
+    than raising, because a hand-edited URL should not produce an error page.
+    """
+
+    try:
+        value = int((raw or "").strip())
+    except ValueError:
+        return None
+    return value if value > 0 else None
 
 
 def _page_number(request: Request) -> int:
@@ -1368,64 +1396,62 @@ async def review_resolve(request: Request, row_id: str, db: Session = Depends(ge
 
 @router.get("/contacts", response_class=HTMLResponse)
 def contacts_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    q = request.query_params.get("q") or None
-    campaign_filter = request.query_params.get("campaign_id") or None
-    state_filter = request.query_params.get("state") or None
-    has_email_filter = request.query_params.get("has_email") or None
+    """The contact CRM list: canonical contacts and pending captures together.
 
-    campaign_uuid = _parse_uuid(campaign_filter)
-    if campaign_filter and campaign_uuid is None:
-        campaign_filter = None
-    state = None
-    if state_filter:
-        try:
-            state = ContactWorkflowState(state_filter)
-        except ValueError:
-            state_filter = None
-    has_email = {"yes": True, "no": False}.get(has_email_filter or "")
+    No campaign is read, accepted or required anywhere on this page. A person
+    the operator saved appears here whether or not the system has finished
+    resolving them, which is the whole point of the contact-first model.
+    """
+
+    params = request.query_params
+    filters = crm_records.CrmFilters(
+        view=params.get("view") or crm_records.VIEW_ALL,
+        search=params.get("q") or None,
+        label_slug=params.get("label") or None,
+        company=params.get("company") or None,
+        source=params.get("source") or None,
+        has_linkedin=_tri_state(params.get("has_linkedin")),
+        has_email=_tri_state(params.get("has_email")),
+        older_than_days=_positive_int(params.get("older_than_days")),
+        sort=params.get("sort") or crm_records.SORT_RECENT,
+    ).normalized()
 
     page = _page_number(request)
-    contacts, total = workbench.list_contacts(
-        db,
-        search=q,
-        campaign_id=campaign_uuid,
-        state=state,
-        has_email=has_email,
-        limit=PAGE_SIZE,
-        offset=(page - 1) * PAGE_SIZE,
+    rows, total = crm_records.list_crm_rows(
+        db, filters=filters, limit=PAGE_SIZE, offset=(page - 1) * PAGE_SIZE
     )
 
     filter_params = {
         key: value
         for key, value in (
-            ("q", q),
-            ("campaign_id", campaign_filter),
-            ("state", state_filter),
-            ("has_email", has_email_filter),
+            ("view", filters.view if filters.view != crm_records.VIEW_ALL else None),
+            ("q", filters.search),
+            ("label", filters.label_slug),
+            ("company", filters.company),
+            ("source", filters.source),
+            ("has_linkedin", params.get("has_linkedin") or None),
+            ("has_email", params.get("has_email") or None),
+            ("older_than_days", filters.older_than_days),
+            ("sort", filters.sort if filters.sort != crm_records.SORT_RECENT else None),
         )
         if value
     }
     filter_url = "/contacts" + (f"?{urlencode(filter_params)}" if filter_params else "")
-
-    statuses = verification_console.statuses_for_contacts(db, contacts)
 
     return _render(
         request,
         db,
         "contacts.html",
         {
-            "contacts": contacts,
-            "statuses": statuses,
+            "rows": rows,
             "total": total,
             "page": page,
             "pages": _pages(total),
-            "q": q,
-            "campaign_filter": campaign_filter,
-            "state_filter": state_filter,
-            "has_email_filter": has_email_filter,
+            "filters": filters,
             "filter_url": filter_url,
-            "campaigns": list_campaigns(db),
-            "workflow_states": list(ContactWorkflowState),
+            "views": crm_records.VIEWS,
+            "sorts": crm_records.SORTS,
+            "labels": crm_annotations.all_labels(db),
             "active_nav": "contacts",
             "page_title": "Contacts",
         },
@@ -1437,9 +1463,10 @@ def contact_detail_page(
     request: Request, contact_id: str, db: Session = Depends(get_db)
 ) -> HTMLResponse:
     parsed_id = _parse_uuid(contact_id)
-    detail = workbench.get_contact_detail(db, parsed_id) if parsed_id else None
+    detail = crm_detail.get_contact_detail(db, parsed_id) if parsed_id else None
     if detail is None:
         return _not_found(request, db, "That contact does not exist.")
+
     settings = get_settings()
     intel = verification_console.contact_email_intel(db, detail.contact)
     return _render(
@@ -1449,14 +1476,156 @@ def contact_detail_page(
         {
             "detail": detail,
             "intel": intel,
+            "all_labels": crm_annotations.all_labels(db),
             "verification_enabled": settings.features.email_generation
             or settings.features.millionverifier,
             "generation_enabled": settings.features.email_generation,
             "millionverifier_enabled": settings.features.millionverifier,
             "active_nav": "contacts",
-            "page_title": f"{detail.contact.first_name} {detail.contact.last_name}",
+            "page_title": detail.full_name,
         },
     )
+
+
+@router.get("/captures/{capture_id}", response_class=HTMLResponse)
+def capture_detail_page(
+    request: Request, capture_id: str, db: Session = Depends(get_db)
+) -> HTMLResponse:
+    """A saved person who is not a canonical contact yet.
+
+    Separate from the contact page on purpose: this record has no email, no
+    company domain and no campaign history, and a page that borrowed the contact
+    layout would imply data that does not exist.
+    """
+
+    parsed_id = _parse_uuid(capture_id)
+    detail = crm_detail.get_capture_detail(db, parsed_id) if parsed_id else None
+    if detail is None:
+        return _not_found(request, db, "That capture does not exist.")
+
+    return _render(
+        request,
+        db,
+        "capture_detail.html",
+        {
+            "detail": detail,
+            "all_labels": crm_annotations.all_labels(db),
+            "active_nav": "contacts",
+            "page_title": detail.full_name,
+        },
+    )
+
+
+# --- Labels and notes (contact or pending capture) ---------------------------
+
+
+def _annotation_subject(
+    db: Session, *, contact_id: str | None = None, capture_id: str | None = None
+) -> tuple[crm_annotations.Subject | None, str]:
+    """Resolve the annotation subject and the URL to return the operator to."""
+
+    if contact_id is not None:
+        parsed = _parse_uuid(contact_id)
+        back = f"/contacts/{contact_id}"
+        if parsed is None:
+            return None, back
+        try:
+            return crm_annotations.resolve_subject(db, contact_id=parsed), back
+        except crm_annotations.AnnotationError:
+            return None, back
+
+    parsed = _parse_uuid(capture_id or "")
+    back = f"/captures/{capture_id}"
+    if parsed is None:
+        return None, back
+    try:
+        return crm_annotations.resolve_subject(db, capture_id=parsed), back
+    except crm_annotations.AnnotationError:
+        return None, back
+
+
+def _apply_label(db: Session, subject: crm_annotations.Subject, name: str, back: str) -> Response:
+    try:
+        label, applied = crm_annotations.add_label(db, subject, name=name)
+    except crm_annotations.AnnotationError as exc:
+        return _redirect(back, err=str(exc))
+    db.commit()
+    if not applied:
+        return _redirect(back, ok=f"{label.name} was already applied.")
+    return _redirect(back, ok=f"Applied {label.name}.")
+
+
+@router.post("/contacts/{contact_id}/labels")
+async def contact_add_label(
+    request: Request, contact_id: str, db: Session = Depends(get_db)
+) -> Response:
+    subject, back = _annotation_subject(db, contact_id=contact_id)
+    if subject is None:
+        return _redirect("/contacts", err="That contact does not exist.")
+    form = await request.form()
+    return _apply_label(db, subject, str(form.get("label") or ""), back)
+
+
+@router.post("/captures/{capture_id}/labels")
+async def capture_add_label(
+    request: Request, capture_id: str, db: Session = Depends(get_db)
+) -> Response:
+    subject, back = _annotation_subject(db, capture_id=capture_id)
+    if subject is None:
+        return _redirect("/contacts", err="That capture does not exist.")
+    form = await request.form()
+    return _apply_label(db, subject, str(form.get("label") or ""), back)
+
+
+@router.post("/contacts/{contact_id}/labels/{slug}/remove")
+def contact_remove_label(contact_id: str, slug: str, db: Session = Depends(get_db)) -> Response:
+    subject, back = _annotation_subject(db, contact_id=contact_id)
+    if subject is None:
+        return _redirect("/contacts", err="That contact does not exist.")
+    removed = crm_annotations.remove_label(db, subject, slug=slug)
+    db.commit()
+    return _redirect(back, ok="Label removed." if removed else "That label was not applied.")
+
+
+@router.post("/captures/{capture_id}/labels/{slug}/remove")
+def capture_remove_label(capture_id: str, slug: str, db: Session = Depends(get_db)) -> Response:
+    subject, back = _annotation_subject(db, capture_id=capture_id)
+    if subject is None:
+        return _redirect("/contacts", err="That capture does not exist.")
+    removed = crm_annotations.remove_label(db, subject, slug=slug)
+    db.commit()
+    return _redirect(back, ok="Label removed." if removed else "That label was not applied.")
+
+
+def _append_note(db: Session, subject: crm_annotations.Subject, text: str, back: str) -> Response:
+    try:
+        crm_annotations.add_note(db, subject, text=text)
+    except crm_annotations.AnnotationError as exc:
+        return _redirect(back, err=str(exc))
+    db.commit()
+    return _redirect(back, ok="Note added.")
+
+
+@router.post("/contacts/{contact_id}/notes")
+async def contact_add_note(
+    request: Request, contact_id: str, db: Session = Depends(get_db)
+) -> Response:
+    subject, back = _annotation_subject(db, contact_id=contact_id)
+    if subject is None:
+        return _redirect("/contacts", err="That contact does not exist.")
+    form = await request.form()
+    return _append_note(db, subject, str(form.get("note") or ""), back)
+
+
+@router.post("/captures/{capture_id}/notes")
+async def capture_add_note(
+    request: Request, capture_id: str, db: Session = Depends(get_db)
+) -> Response:
+    subject, back = _annotation_subject(db, capture_id=capture_id)
+    if subject is None:
+        return _redirect("/contacts", err="That capture does not exist.")
+    form = await request.form()
+    return _append_note(db, subject, str(form.get("note") or ""), back)
 
 
 # --- Phase 2: email verification --------------------------------------------

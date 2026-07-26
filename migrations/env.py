@@ -12,6 +12,7 @@ from logging.config import fileConfig
 import app.db.base  # noqa: E402, F401
 from alembic import context
 from app.core.config import get_settings
+from app.db.alembic_url import escape_for_alembic_config
 from app.db.base import Base
 from sqlalchemy import engine_from_config, pool
 
@@ -23,7 +24,7 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Inject the application's database URL at runtime (never hard-coded in the ini).
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+config.set_main_option("sqlalchemy.url", escape_for_alembic_config(get_settings().database_url))
 
 target_metadata = Base.metadata
 

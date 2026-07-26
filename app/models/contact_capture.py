@@ -31,6 +31,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -39,6 +40,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -120,17 +122,46 @@ class ContactLabel(Base):
 
 
 class ContactLabelAssignment(Base):
-    """One label applied to one permanent contact (idempotent, additive)."""
+    """One label applied to one permanent contact or one pending capture.
+
+    A capture that is still awaiting company-domain resolution has no contact
+    row yet, but the operator can still classify it (APP-002). Exactly one of
+    the two anchors identifies the subject: ``contact_id`` when the person is
+    canonical, ``capture_id`` when they are not.
+
+    ``capture_id`` does double duty. On a contact-anchored row it is
+    *provenance* — which capture produced the label — so a row may legitimately
+    carry both columns. That is why the anchor check is an inclusive OR, and why
+    uniqueness is enforced by two partial indexes rather than one constraint:
+    contact-anchored and capture-anchored assignments occupy separate spaces.
+    """
 
     __tablename__ = "contact_label_assignments"
     __table_args__ = (
-        UniqueConstraint("contact_id", "label_id", name="uq_contact_label_assignments_contact_id"),
+        CheckConstraint(
+            "contact_id IS NOT NULL OR capture_id IS NOT NULL",
+            name="ck_contact_label_assignments_anchor",
+        ),
+        Index(
+            "uq_contact_label_assignments_contact",
+            "contact_id",
+            "label_id",
+            unique=True,
+            postgresql_where=text("contact_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_contact_label_assignments_capture",
+            "capture_id",
+            "label_id",
+            unique=True,
+            postgresql_where=text("contact_id IS NULL"),
+        ),
         Index("ix_contact_label_assignments_label_id", "label_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    contact_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("contacts.id", ondelete="CASCADE"), nullable=False
+    contact_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("contacts.id", ondelete="CASCADE"), nullable=True
     )
     label_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("contact_labels.id", ondelete="CASCADE"), nullable=False
@@ -148,23 +179,33 @@ class ContactLabelAssignment(Base):
 
 
 class ContactCaptureNote(Base):
-    """An append-only operator note attached to one capture.
+    """An append-only operator note attached to a capture, a contact, or both.
 
-    Notes are never updated or deleted by the capture path: refreshing a contact
-    appends a new note row and leaves every earlier note intact.
+    Notes are never updated or deleted: refreshing a contact appends a new note
+    row and leaves every earlier note intact, and a correction is another note
+    rather than an edit.
+
+    A note written by the capture path is anchored to the capture it came from.
+    A note written by an operator in the contact CRM is anchored to the contact,
+    which may have been created by a spreadsheet import and have no capture at
+    all (APP-002). At least one anchor is always present.
     """
 
     __tablename__ = "contact_capture_notes"
     __table_args__ = (
+        CheckConstraint(
+            "capture_id IS NOT NULL OR contact_id IS NOT NULL",
+            name="ck_contact_capture_notes_anchor",
+        ),
         Index("ix_contact_capture_notes_capture_id", "capture_id"),
         Index("ix_contact_capture_notes_contact_id", "contact_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    capture_id: Mapped[uuid.UUID] = mapped_column(
+    capture_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("linkedin_profile_snapshots.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
     submission_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
