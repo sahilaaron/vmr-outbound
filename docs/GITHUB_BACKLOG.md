@@ -67,9 +67,14 @@ Use `Deferred` for intentionally parked cards.
 | DAT-006 | P0 | Build and enforce the suppression ledger | Opt-outs, hard bounces, customers, competitors, and internal exclusions block every route into outreach. |
 | DAT-007 | P0 | Import one representative historical dataset | One real file shape is staged, cleaned, reconciled, and reported as accepted, rejected, merged, ambiguous, or suppressed. |
 | DAT-008 | P1 | Support additional historical file shapes | Add mappers only for formats proven necessary after the representative import succeeds. |
+| DAT-009 | P0 | Add Sales Navigator backend intake | A reviewed extension submission enters the backend as a pending staged import with immutable raw rows, provenance, idempotency, and safe failure handling. |
+| DAT-010 | P0 | Resolve captured company names to domain candidates | The operator can request truthful logo.dev candidates, inspect provider evidence, and confirm or reject a domain without automatic acceptance or invented confidence. |
+| DAT-011 | P0 | Complete authenticated extension acceptance | The unpacked extension passes the documented live operator steps against logged-in LinkedIn and Sales Navigator pages with sanitized evidence. |
+| DAT-012 | P0 | Capture operator-opened LinkedIn profiles | Ordinary LinkedIn person and company pages can be explicitly reviewed and sent to immutable backend capture storage without unattended navigation or scraping. |
 | DAT-013 | P0 | Refactor acquisition from campaign-first to contact-first | The extension saves a person with no campaign; the backend persists permanent per-person capture evidence, matches only on an exact normalized LinkedIn profile URL, applies optional labels and append-only notes, and returns truthful per-capture outcomes. |
 | DAT-014 | P0 | Promote a staged contact capture into a permanent Contact | An unmatched capture can become a canonical contact once a company domain is resolved (DAT-010) and the operator confirms — without inventing a domain. Built: company resolution and contact identity are reported separately, ambiguity and suppression block promotion, labels and notes carry over, retries are idempotent, and the capture stays immutable. |
 | DAT-015 | P1 | Capture education, visible contact information, and recent activity | Only if each can be read from the already-open page without navigation, modal automation, or weakening the truthful-extraction standard. |
+| DAT-016 | P0 | Harden LinkedIn profile top-card extraction against the real DOM | Each field uses a documented structural strategy; uncertain values become null with warnings; sanitized real-structure fixtures and shifted-index regressions pass; Layer 3B C1 succeeds. |
 
 ## EPIC 03 — Campaign and Contact Workflow
 
