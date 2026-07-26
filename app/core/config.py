@@ -11,6 +11,7 @@ the repository.
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 
 from pydantic import Field
@@ -19,11 +20,29 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from app.core.features import FeatureFlags
 
 
+def _env_file_for_environment() -> str | None:
+    """Which dotenv file to read, or ``None`` under test.
+
+    The automated suite must never inherit the operator's ``.env``. If it did:
+    feature switches that default off would arrive on; provider credentials
+    would be reachable from a test and could spend real MillionVerifier credits;
+    and ``monkeypatch.delenv`` would appear to disable a flag while ``.env``
+    silently re-enabled it — because a real environment variable outranks
+    dotenv, so deleting that variable falls straight back to the file.
+
+    ``VMR_TEST_MODE`` is set by the root ``conftest.py`` before any application
+    module is imported, so the first ``Settings()`` built in the process already
+    sees it. Nothing sets it outside tests, so normal behaviour is unchanged.
+    """
+
+    return None if os.getenv("VMR_TEST_MODE") == "1" else ".env"
+
+
 class Settings(BaseSettings):
     """Typed application settings loaded from the environment."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_env_file_for_environment(),
         env_file_encoding="utf-8",
         env_nested_delimiter="__",
         extra="ignore",

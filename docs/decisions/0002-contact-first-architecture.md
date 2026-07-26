@@ -360,7 +360,7 @@ Two constraints block #158's acceptance criteria. Both were verified in
 ```python
 class ContactLabelAssignment(Base):
     __table_args__ = (UniqueConstraint("contact_id", "label_id", ...), ...)
-    contact_id: Mapped[uuid.UUID] = mapped_column(..., nullable=False)   # ← blocks
+    contact_id: Mapped[uuid.UUID] = mapped_column(..., nullable=False)  # ← blocks
     capture_id: Mapped[uuid.UUID | None] = mapped_column(..., nullable=True)  # provenance only
 ```
 
@@ -372,7 +372,7 @@ label — but #158 requires pending captures to remain "visible **and actionable
 
 ```python
 class ContactCaptureNote(Base):
-    capture_id: Mapped[uuid.UUID] = mapped_column(..., nullable=False)   # ← blocks
+    capture_id: Mapped[uuid.UUID] = mapped_column(..., nullable=False)  # ← blocks
     contact_id: Mapped[uuid.UUID | None] = mapped_column(..., nullable=True)
 ```
 
