@@ -47,11 +47,38 @@ class TestDatabaseSafety:
             root_conftest._assert_safe(url)
 
     @pytest.mark.parametrize("host", ["postgres", "db", "database", "POSTGRES"])
-    def test_a_development_service_host_is_refused(self, host: str) -> None:
-        """`postgres` is the Compose service name for real development data."""
+    def test_a_service_host_is_refused_outside_ci(self, host: str) -> None:
+        """`postgres` is a container service name, not a machine.
+
+        On a developer box it resolves to the real development database, so it
+        is refused — even though the database name itself is acceptable.
+        """
 
         with pytest.raises(root_conftest.UnsafeTestDatabase):
-            root_conftest._assert_safe(f"postgresql+psycopg://u@{host}:5432/vmr_test")
+            root_conftest._assert_safe(
+                f"postgresql+psycopg://u@{host}:5432/vmr_test", trusted_ci=False
+            )
+
+    def test_a_service_host_is_accepted_inside_verified_ci(self) -> None:
+        """GitHub Actions legitimately addresses its own throwaway service."""
+
+        root_conftest._assert_safe(
+            "postgresql+psycopg://dev:dev@postgres:5432/vmr_test", trusted_ci=True
+        )
+
+    @pytest.mark.parametrize("name", ["vmr_dev", "postgres", "vmroutbound"])
+    def test_ci_never_unlocks_a_non_test_database_name(self, name: str) -> None:
+        """The CI allowance narrows the *host* rule only.
+
+        A verified CI run may use the service host; it may not use a database
+        the suite is not allowed to truncate. If this ever passed, a workflow
+        misconfiguration could wipe a real database.
+        """
+
+        with pytest.raises(root_conftest.UnsafeTestDatabase):
+            root_conftest._assert_safe(
+                f"postgresql+psycopg://dev:dev@postgres:5432/{name}", trusted_ci=True
+            )
 
     @pytest.mark.parametrize("name", ["vmr_test", "vmr_test_local", "vmr_test_ci_2"])
     def test_clearly_named_test_databases_are_accepted(self, name: str) -> None:
@@ -204,3 +231,109 @@ class TestAlembicPercentEscaping:
         parser.add_section("alembic")
         parser.set("alembic", "sqlalchemy.url", escape_for_alembic_config(url))
         assert parser.get("alembic", "sqlalchemy.url") == url
+
+
+class TestTrustedCiDetection:
+    """What counts as a verified GitHub Actions run.
+
+    Every condition must hold together. A single exported variable must not
+    unlock the service-host allowance, or a developer who habitually sets CI=true
+    would silently lose the protection.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_ci_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for name in ("CI", "GITHUB_ACTIONS"):
+            monkeypatch.delenv(name, raising=False)
+        for name in root_conftest.PROVIDER_KEY_VARS:
+            monkeypatch.delenv(name, raising=False)
+
+    def test_both_variables_together_are_trusted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CI", "true")
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        assert root_conftest.is_trusted_ci() is True
+
+    @pytest.mark.parametrize("only", ["CI", "GITHUB_ACTIONS"])
+    def test_spoofing_one_variable_is_not_enough(
+        self, monkeypatch: pytest.MonkeyPatch, only: str
+    ) -> None:
+        monkeypatch.setenv(only, "true")
+        assert root_conftest.is_trusted_ci() is False
+
+    def test_a_provider_credential_revokes_trust(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A live key present means the scrub did not happen — so this is not our CI."""
+
+        monkeypatch.setenv("CI", "true")
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        monkeypatch.setenv("MILLIONVERIFIER_API_KEY", "real-key")
+        assert root_conftest.is_trusted_ci() is False
+
+    def test_an_inherited_feature_flag_revokes_trust(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CI", "true")
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        monkeypatch.setenv("FEATURES__WORKBENCH", "true")
+        assert root_conftest.is_trusted_ci() is False
+
+    @pytest.mark.parametrize("value", ["1", "yes", "True", "TRUE", ""])
+    def test_only_the_exact_string_true_counts(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        """GitHub sets exactly "true"; anything else is someone else's variable."""
+
+        monkeypatch.setenv("CI", value)
+        monkeypatch.setenv("GITHUB_ACTIONS", value)
+        assert root_conftest.is_trusted_ci() is False
+
+    def test_a_service_host_is_refused_when_ci_is_only_half_spoofed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """End to end: the guard consults is_trusted_ci when not told explicitly."""
+
+        monkeypatch.setenv("CI", "true")
+        with pytest.raises(root_conftest.UnsafeTestDatabase):
+            root_conftest._assert_safe("postgresql+psycopg://u@postgres:5432/vmr_test")
+
+
+class TestDatabaseUrlResolution:
+    """The suite borrows a server, never a database name."""
+
+    def test_an_inherited_url_contributes_credentials_but_not_its_database(self) -> None:
+        """The fix for CI #81.
+
+        The runner's Postgres service has its own superuser (`dev`), so the
+        previously hard-coded `postgres` login could not even open a maintenance
+        connection. Borrowing the inherited credentials fixes that; replacing the
+        database name keeps `vmr_dev` unreachable.
+        """
+
+        resolved = root_conftest.resolve_test_database_url(
+            inherited="postgresql+psycopg://dev:dev@127.0.0.1:5433/vmr_dev"
+        )
+        assert resolved == "postgresql+psycopg://dev:dev@127.0.0.1:5433/vmr_test"
+        root_conftest._assert_safe(resolved)
+
+    def test_an_explicit_override_wins(self) -> None:
+        resolved = root_conftest.resolve_test_database_url(
+            explicit="postgresql+psycopg://me@127.0.0.1:5434/vmr_test_local",
+            inherited="postgresql+psycopg://dev:dev@127.0.0.1:5433/vmr_dev",
+        )
+        assert resolved.endswith("/vmr_test_local")
+
+    def test_the_default_is_used_when_nothing_is_inherited(self) -> None:
+        assert root_conftest.resolve_test_database_url() == root_conftest.DEFAULT_TEST_URL
+
+    def test_an_rds_url_contributes_only_its_server_and_is_then_guarded(self) -> None:
+        """Even a production URL cannot nominate the database."""
+
+        resolved = root_conftest.resolve_test_database_url(
+            inherited="postgresql+psycopg://u:p@rds.amazonaws.com:5432/vmroutbound"
+        )
+        assert _name_of(resolved) == "vmr_test"
+        # The name now passes, but the host is not a service name either, so the
+        # guard permits it. That is intentional: the protection is that the
+        # suite can only ever touch a database it created and may truncate.
+        root_conftest._assert_safe(resolved)
+
+
+def _name_of(url: str) -> str:
+    return root_conftest._database_name(url)
