@@ -24,7 +24,9 @@ Before changing the repository, read:
 5. `docs/decisions/0002-contact-first-architecture.md` — the contact-first
    domain and workflow model (APP-001), when the work touches contacts,
    companies, captures, evidence, labels, notes, workflow state, or campaigns.
-6. Documents explicitly referenced by the current goal.
+6. `docs/CONTACT_CRM.md` — what the contact CRM (APP-002) actually does, its
+   product rules, and its accepted limitations.
+7. Documents explicitly referenced by the current goal.
 
 The root `CLAUDE.md` is a condensed pointer into these documents; it never
 overrides them.
