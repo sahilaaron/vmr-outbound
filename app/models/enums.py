@@ -479,3 +479,69 @@ class QAOutcome(enum.StrEnum):
     LOW_CONNECTIONS_REVIEW = "low_connections_review"
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
     NEEDS_REVIEW = "needs_review"
+
+
+class CaptureIdentityState(enum.StrEnum):
+    """How far one person has travelled from observation to canonical record.
+
+    This is the *identity* dimension only. It says nothing about whether the
+    person is researched, qualified, emailable, or safe to contact — those are
+    separate dimensions with their own vocabularies (APP-001, ADR 0002).
+
+    It is derived from the capture evidence, never stored on the contact, so
+    there is exactly one source of truth for it.
+    """
+
+    CANONICAL = "canonical"
+    """A permanent contact row exists."""
+
+    AWAITING_COMPANY = "awaiting_company"
+    """Captured, but no canonical company domain yet, so no contact row.
+
+    Resolution runs through DAT-010's logo.dev candidates and an operator
+    confirmation. The person is saved; only the promotion is outstanding.
+    """
+
+    AMBIGUOUS_IDENTITY = "ambiguous_identity"
+    """The capture matched more than one existing contact and needs a decision.
+
+    An exact normalized profile URL may match automatically. A name, title,
+    company, location or headline may not.
+    """
+
+    REJECTED = "rejected"
+    """Suppressed at capture time, or a duplicate within one submission."""
+
+
+class ResearchState(enum.StrEnum):
+    """Progress of company and contact research for one person.
+
+    No research engine exists yet (APP-004 owns it), so every record currently
+    reports ``NOT_REQUESTED``. The dimension is defined here so the CRM shows a
+    truthful empty state instead of implying research that has not happened.
+    """
+
+    NOT_REQUESTED = "not_requested"
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    COMPLETED_WITH_WARNINGS = "completed_with_warnings"
+    FAILED = "failed"
+    STALE = "stale"
+
+
+class QualificationState(enum.StrEnum):
+    """Whether a person has been judged a fit, and how confidently.
+
+    Distinct from :class:`QAOutcome`, which is a versioned *employment* QA
+    signal over capture evidence. A qualification assessment is the broader
+    judgement APP-006 will build; until then every record reports
+    ``NOT_ASSESSED``.
+    """
+
+    NOT_ASSESSED = "not_assessed"
+    PENDING = "pending"
+    QUALIFIED = "qualified"
+    BORDERLINE = "borderline"
+    DISQUALIFIED = "disqualified"
+    NEEDS_REVIEW = "needs_review"
