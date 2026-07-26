@@ -229,8 +229,11 @@ APP-002 migration.
 
 ## Known limitations
 
-* A live logo.dev call requires `LOGO_DEV_API_KEY`. Automated tests always stub
-  the provider, and the sanitized acceptance run stubs it at the HTTP boundary.
+* A live logo.dev call requires `LOGO_DEV_API_KEY`, and Brand Search needs the
+  **secret** key (`sk_…`), not the publishable key used for logo image URLs.
+  Automated tests always stub the provider, and the Layer 4A acceptance run stubs
+  it at the HTTP boundary. The live pass (Layer 4B) was performed on 2026-07-26
+  and passed; see `docs/LINKEDIN_CAPTURE_ACCEPTANCE.md`.
 * A Sales Navigator results-row capture has no experience history, so its title
   and company come from the visible employment hint.
 * Promotion resolves one company per capture — the current employer the page

@@ -266,25 +266,45 @@ Automated backstops at this branch head: backend `pytest` **555 passed**
 downgrade round trips clean on a fresh database, with no orphaned enum types
 after a downgrade to base.
 
-## Layer 4B — live provider call (NOT PERFORMED)
+## Layer 4B — live provider call (PERFORMED 2026-07-26, PASS)
 
-A real logo.dev lookup needs `LOGO_DEV_API_KEY`, which the build session does
-not have. Sahil's step, once a key is configured locally:
+Run against the real endpoint (`https://api.logo.dev/search`) at commit
+`823c315`, on the dedicated `vmr_dat014` database, with the fictitious fixture
+identities. **One** live provider call served the whole pass.
 
-- **P1.** Start the backend with `FEATURES__SALESNAV_DOMAIN_ENRICHMENT=true`,
-  `FEATURES__CONTACT_CAPTURE_PROMOTION=true` and a real `LOGO_DEV_API_KEY`
-  (leave `LOGO_DEV_SEARCH_URL` at its default).
-- **P2.** Open a pending capture and press *Run domain lookup*. Record the
-  query, the returned candidate names and domains, and the lookup status.
-  **Redact nothing about the provider; redact any real person's details.**
-- **P3.** Confirm the correct candidate and check the recorded confirmation
-  source, actor and time.
-- **P4.** Promote, then open the resulting Contact and Company and confirm the
-  labels, notes and provenance carried over.
-- **P5.** Confirm no campaign membership, email candidate, verification, score
-  or approval was created.
-- **P6.** Repeat with a second person at the same company and confirm
-  `existing_company_resolved` / `prior_mapping` with no second provider call.
+| Step | Requirement | Result |
+| --- | --- | --- |
+| P1 | Backend on the real endpoint with a real key | PASS — provider `logo.dev`, lookup version `logo.dev/search-brands/v1` |
+| P2 | One lookup; candidates recorded truthfully | PASS — `ok`, 10 candidates, provider order preserved as `rank` |
+| P2a | Confidence not invented | PASS — the provider returned **no** score/confidence field on any result; stored as explicit `null` |
+| P2b | Nothing auto-confirmed | PASS — `multiple_candidates_review_required`, promote disabled, promotion refused |
+| P3 | Operator confirmation recorded with source, actor, time | PASS — `domain_candidate_confirmed`, source `candidate`; two rejections preserved with reason, actor and time |
+| P4 | Promotion creates Company and Contact; labels and notes carry over | PASS — one Company on the confirmed domain, Contact on that domain with no invented email, 2 labels and 1 append-only note carried |
+| P4a | Capture immutable | PASS — only `matched_contact` changed |
+| P5 | No permission granted | PASS — no campaign membership, email candidate, verification, score, draft or approval |
+| P6 | Prior mapping reused with no second call | PASS — `existing_company_resolved` / `prior_mapping` at `not_started · 0 attempt(s)` before any operator action |
 
-Record PASS/FAIL per step. Everything above Layer 4B has been run; nothing in
-Layer 4B has.
+**Attempt history, recorded honestly.** Workbench attempt 1 returned
+`api_unavailable`: the request was refused at the CDN edge (Cloudflare 1010,
+`browser_signature_banned`, HTTP 403) because the client sent urllib's default
+`Python-urllib/x.y` User-Agent. A publishable (`pk_`) key was configured at that
+moment, but the request never reached provider authentication, so the key type
+is **not** the proven cause. Diagnostic probes were made outside the application
+and did not increment `lookup_attempts`. Workbench attempt 2 succeeded, running
+commit `823c315`, which sends a truthful application `User-Agent`. Until that
+commit, no live logo.dev lookup could succeed at all.
+
+**Ambiguity was real.** The provider returned four different domains all named
+"Mozilla". Auto-accepting the top-ranked name match would have chosen a domain
+no operator sanctioned — the confirmation requirement is vindicated by live data,
+not only by fixtures.
+
+Sanitized evidence lives outside the repository in `layer4b/`
+(`dat014_live_evidence.txt`), because it is operator run-evidence rather than
+source. Two shell verifications remain outstanding and are noted there:
+`run_assertions.py` (database checks A–N) and `capture_state.py --compare`
+(byte-level capture immutability).
+
+This layer accepts **DAT-014 provider resolution and contact promotion only**.
+It says nothing about extension extraction correctness — see DAT-016 (#167),
+which is open, and Layer 3B, whose step C1 fails.
