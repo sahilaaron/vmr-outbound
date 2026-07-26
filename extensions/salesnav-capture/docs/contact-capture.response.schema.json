@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vmr.local/schemas/linkedin-contact-capture/response.json",
+  "title": "LinkedIn contact capture — intake response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "submission_id",
+    "client_submission_id",
+    "received_at",
+    "already_received",
+    "counts",
+    "results",
+    "operator_workbench_url"
+  ],
+  "properties": {
+    "submission_id": { "type": "string" },
+    "client_submission_id": { "type": "string" },
+    "received_at": { "type": "string", "format": "date-time" },
+    "already_received": {
+      "type": "boolean",
+      "description": "True when the same client_submission_id and identical content were already accepted; the original outcome is replayed unchanged."
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "submitted",
+        "created",
+        "refreshed_exact_match",
+        "exact_match_unchanged",
+        "staged_unmatched",
+        "staged_ambiguous",
+        "duplicate_in_submission",
+        "suppressed",
+        "labels_applied",
+        "notes_recorded"
+      ],
+      "properties": {
+        "submitted": { "type": "integer", "minimum": 0 },
+        "created": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Canonical contacts created by this submission. Always 0 in the current release: a canonical contact requires a company domain, which a LinkedIn page never shows, so unmatched people are staged instead of created. See docs/CONTACT_CAPTURE_CONTRACT.md."
+        },
+        "refreshed_exact_match": { "type": "integer", "minimum": 0 },
+        "exact_match_unchanged": { "type": "integer", "minimum": 0 },
+        "staged_unmatched": { "type": "integer", "minimum": 0 },
+        "staged_ambiguous": { "type": "integer", "minimum": 0 },
+        "duplicate_in_submission": { "type": "integer", "minimum": 0 },
+        "suppressed": { "type": "integer", "minimum": 0 },
+        "labels_applied": { "type": "integer", "minimum": 0 },
+        "notes_recorded": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["client_capture_id", "capture_id", "outcome", "warnings", "capture_url"],
+        "properties": {
+          "client_capture_id": { "type": "string" },
+          "capture_id": { "type": ["string", "null"] },
+          "outcome": {
+            "enum": [
+              "stored",
+              "exact_match_refreshed",
+              "exact_match_unchanged",
+              "unmatched_staged",
+              "ambiguous_review",
+              "duplicate_in_submission",
+              "suppressed"
+            ]
+          },
+          "matched_contact_id": { "type": ["string", "null"] },
+          "contact_url": { "type": ["string", "null"] },
+          "capture_url": { "type": ["string", "null"] },
+          "review_candidate_count": { "type": "integer", "minimum": 0 },
+          "labels_applied": { "type": "array", "items": { "type": "string" } },
+          "warnings": { "type": "array", "items": { "type": "object" } }
+        }
+      }
+    },
+    "operator_workbench_url": { "type": ["string", "null"] }
+  }
+}

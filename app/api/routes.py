@@ -23,6 +23,8 @@ from app.core.config import get_settings
 from app.models.campaign import Campaign
 from app.models.enums import CampaignStatus
 from app.services.campaigns import CampaignError, create_campaign
+from app.services.captures import intake as captures_intake
+from app.services.captures import labels as labels_service
 from app.services.imports import linkedin_company_intake as company_intake
 from app.services.imports import linkedin_profile_intake as profile_intake
 from app.services.imports.importer import (
@@ -31,6 +33,7 @@ from app.services.imports.importer import (
     FeatureDisabledError,
     run_import,
 )
+from app.services.imports.normalization import normalize_linkedin_profile_url
 from app.services.imports.salesnav_intake import (
     InvalidJsonError,
     PayloadTooLargeError,
@@ -39,6 +42,7 @@ from app.services.imports.salesnav_intake import (
     record_intake_failure,
     stage_salesnav_batch,
 )
+from app.services.profiles import refresh as profile_refresh
 
 router = APIRouter()
 
@@ -409,6 +413,214 @@ async def linkedin_company_stage_route(request: Request, db: Session = Depends(g
 
     return JSONResponse(
         status_code=result.http_status, content=result.to_body(), headers=_cors_headers(origin)
+    )
+
+
+# --- Contact-first capture intake (DAT-013) -----------------------------------
+
+CONTACT_CAPTURE_PATH = "/api/intake/contact-captures"
+CONTACT_LABELS_PATH = "/api/contact-labels"
+CONTACT_LOOKUP_PATH = "/api/contacts/lookup"
+
+
+def _fail_contact_capture(
+    db: Session,
+    exc: captures_intake.ContactCaptureError,
+    origin: str | None,
+    payload: object = None,
+) -> JSONResponse:
+    """Safe failure audit (best-effort, PII-free) + the deterministic error body."""
+
+    captures_intake.record_intake_failure(db, error=exc, payload=payload)
+    return JSONResponse(
+        status_code=exc.http_status, content=exc.to_body(), headers=_cors_headers(origin)
+    )
+
+
+def _contact_capture_guard(request: Request) -> JSONResponse | None:
+    """Shared boundary guards for every contact-capture route.
+
+    Returns an error response, or ``None`` when the request may proceed. Kept in
+    one place so the intake, label, and lookup routes cannot drift apart on the
+    feature switch, the local-only rule, or the origin allow-list.
+    """
+
+    settings = get_settings()
+    origin = request.headers.get("origin")
+    if not settings.features.contact_capture_intake:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"error": "not_found", "status": 404},
+        )
+    if settings.app_env.lower() != "local":
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={"error": "unauthorized", "status": 403},
+            headers=_cors_headers(origin),
+        )
+    if not _origin_allowed(origin):
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={"error": "unauthorized", "status": 403},
+        )
+    return None
+
+
+@router.options(CONTACT_CAPTURE_PATH, include_in_schema=False)
+async def contact_capture_preflight(request: Request) -> Response:
+    """CORS preflight for the contact-capture extension."""
+
+    origin = request.headers.get("origin")
+    if not _origin_allowed(origin):
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={"error": "unauthorized", "status": 403},
+        )
+    return Response(status_code=status.HTTP_204_NO_CONTENT, headers=_cors_headers(origin))
+
+
+@router.post(CONTACT_CAPTURE_PATH)
+async def contact_capture_route(request: Request, db: Session = Depends(get_db)) -> Response:
+    """Accept one operator-reviewed contact-capture submission (DAT-013).
+
+    Contact-first: there is no campaign in the contract and none is required. A
+    success persists immutable per-person capture evidence, matches only on an
+    exact normalized LinkedIn profile URL, and returns a truthful per-capture
+    outcome. It never creates a campaign membership, scores, qualifies, verifies,
+    or makes a contact outreach-eligible.
+    """
+
+    settings = get_settings()
+    origin = request.headers.get("origin")
+
+    guard = _contact_capture_guard(request)
+    if guard is not None:
+        return guard
+
+    limit = settings.contact_capture_intake_max_bytes
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > limit:
+        return _fail_contact_capture(
+            db,
+            captures_intake.PayloadTooLargeError(
+                f"request body exceeds the {limit}-byte intake limit"
+            ),
+            origin,
+        )
+    body = await request.body()
+    if len(body) > limit:
+        return _fail_contact_capture(
+            db,
+            captures_intake.PayloadTooLargeError(
+                f"request body exceeds the {limit}-byte intake limit"
+            ),
+            origin,
+        )
+
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return _fail_contact_capture(
+            db, captures_intake.InvalidJsonError("request body was not valid JSON"), origin
+        )
+    if not isinstance(payload, dict):
+        return _fail_contact_capture(
+            db, captures_intake.InvalidJsonError("request body must be a JSON object"), origin
+        )
+
+    try:
+        result = captures_intake.stage_contact_captures(
+            db,
+            payload=payload,
+            operator_base_url=settings.operator_base_url,
+            timeout_seconds=settings.contact_capture_intake_timeout_seconds,
+        )
+    except captures_intake.ContactCaptureError as exc:
+        return _fail_contact_capture(db, exc, origin, payload)
+
+    return JSONResponse(
+        status_code=result.http_status, content=result.to_body(), headers=_cors_headers(origin)
+    )
+
+
+@router.options(CONTACT_LABELS_PATH, include_in_schema=False)
+async def contact_labels_preflight(request: Request) -> Response:
+    """CORS preflight for the extension's label picker."""
+
+    origin = request.headers.get("origin")
+    if not _origin_allowed(origin):
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={"error": "unauthorized", "status": 403},
+        )
+    return Response(status_code=status.HTTP_204_NO_CONTENT, headers=_cors_headers(origin))
+
+
+@router.get(CONTACT_LABELS_PATH)
+def contact_labels_route(request: Request, db: Session = Depends(get_db)) -> Response:
+    """Return the known contact labels so the operator can reuse one.
+
+    Read-only and deliberately minimal: the extension may offer existing labels
+    and request new ones by name, but only the backend creates or assigns them.
+    """
+
+    guard = _contact_capture_guard(request)
+    if guard is not None:
+        return guard
+    origin = request.headers.get("origin")
+    labels = labels_service.list_labels(db)
+    return JSONResponse(
+        status_code=200,
+        content={"labels": [{"slug": lb.slug, "name": lb.name} for lb in labels]},
+        headers=_cors_headers(origin),
+    )
+
+
+@router.options(CONTACT_LOOKUP_PATH, include_in_schema=False)
+async def contact_lookup_preflight(request: Request) -> Response:
+    """CORS preflight for the extension's save-vs-refresh check."""
+
+    origin = request.headers.get("origin")
+    if not _origin_allowed(origin):
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={"error": "unauthorized", "status": 403},
+        )
+    return Response(status_code=status.HTTP_204_NO_CONTENT, headers=_cors_headers(origin))
+
+
+@router.get(CONTACT_LOOKUP_PATH)
+def contact_lookup_route(
+    request: Request, linkedin_profile_url: str | None = None, db: Session = Depends(get_db)
+) -> Response:
+    """Report whether an exact normalized profile URL already has a contact.
+
+    Existence only — no name, company, email, or any other contact field leaves
+    the backend. The extension uses it for one thing: labelling the primary
+    action "Save Contact" or "Refresh Contact" before the operator commits.
+    """
+
+    guard = _contact_capture_guard(request)
+    if guard is not None:
+        return guard
+    origin = request.headers.get("origin")
+    normalized = normalize_linkedin_profile_url(linkedin_profile_url)
+    if normalized is None:
+        return JSONResponse(
+            status_code=200,
+            content={"match": "unknown", "contact_count": 0, "normalized_profile_url": None},
+            headers=_cors_headers(origin),
+        )
+    matches = profile_refresh.find_exact_matches(db, normalized)
+    match = "none" if not matches else ("exact" if len(matches) == 1 else "ambiguous")
+    return JSONResponse(
+        status_code=200,
+        content={
+            "match": match,
+            "contact_count": len(matches),
+            "normalized_profile_url": normalized,
+        },
+        headers=_cors_headers(origin),
     )
 
 

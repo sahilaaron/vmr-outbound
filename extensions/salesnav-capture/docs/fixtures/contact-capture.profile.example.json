@@ -1,0 +1,125 @@
+{
+  "schema_version": "linkedin-contact-capture/2.0.0",
+  "client_submission_id": "1b2c3d4e-0000-4000-8000-aaaabbbbcccc",
+  "capture_mode": "linkedin_profile",
+  "submitted_at": "2026-07-26T10:05:00.000Z",
+  "source": "chrome-extension:linkedin-contact-capture",
+  "extension_version": "2.0.0",
+  "operator_metadata": {
+    "labels": ["Healthcare", "Market Entry"],
+    "note": "Met at SaaStr. Posted recently about market-entry research."
+  },
+  "contacts": [
+    {
+      "client_capture_id": "9f8e7d6c-0000-4000-8000-123456789abc",
+      "captured_at": "2026-07-26T10:00:00.000Z",
+      "source": {
+        "surface": "linkedin_person_profile",
+        "url": "https://www.linkedin.com/in/morgan-vale",
+        "page_title": "Morgan Vale | LinkedIn",
+        "operator_triggered": true
+      },
+      "person": {
+        "linkedin_profile_url": "https://www.linkedin.com/in/morgan-vale",
+        "linkedin_public_identifier": "morgan-vale",
+        "salesnav_lead_url": null,
+        "full_name": "Morgan Vale",
+        "first_name": "Morgan",
+        "last_name": "Vale",
+        "headline": "Director of Operations at Meridian Works",
+        "location": "Austin, Texas, United States",
+        "connection_count": 500,
+        "connection_count_raw": "500+ connections",
+        "open_to_work_visible": false,
+        "about_text": "Operations leader focused on scaling service delivery.",
+        "raw_lines": [
+          "Morgan Vale",
+          "· 3rd",
+          "Director of Operations at Meridian Works",
+          "Austin, Texas, United States",
+          "500+ connections"
+        ],
+        "warnings": []
+      },
+      "current_employment_hint": {
+        "company_name": "Meridian Works",
+        "company_linkedin_url": "https://www.linkedin.com/company/meridian-works",
+        "company_linkedin_id": "meridian-works",
+        "title": "Director of Operations",
+        "role_location": "Austin, Texas, United States",
+        "workplace_type": "Hybrid",
+        "employment_type": "Full-time",
+        "tenure_text": "5 yrs 7 mos"
+      },
+      "experience_observations": [
+        {
+          "position_index": 1,
+          "layout": "basic",
+          "company_name": "Meridian Works",
+          "company_linkedin_url": "https://www.linkedin.com/company/meridian-works",
+          "company_linkedin_id": "meridian-works",
+          "job_title": "Director of Operations",
+          "timeline_text": "Jan 2021 - Present",
+          "start_date": { "year": 2021, "month": 1 },
+          "end_date": null,
+          "dates_reliable": true,
+          "duration_text": "5 yrs 7 mos",
+          "employment_type": "Full-time",
+          "role_location": "Austin, Texas, United States",
+          "workplace_type": "Hybrid",
+          "is_current": true,
+          "raw_lines": [
+            "Director of Operations",
+            "Meridian Works · Full-time",
+            "Jan 2021 - Present · 5 yrs 7 mos",
+            "Austin, Texas, United States · Hybrid"
+          ],
+          "warnings": [],
+          "observed_at": "2026-07-26T10:00:00.000Z"
+        },
+        {
+          "position_index": 2,
+          "layout": "basic",
+          "company_name": "Harbor Analytics",
+          "company_linkedin_url": "https://www.linkedin.com/company/harbor-analytics",
+          "company_linkedin_id": "harbor-analytics",
+          "job_title": "Operations Manager",
+          "timeline_text": "Mar 2016 - Dec 2020",
+          "start_date": { "year": 2016, "month": 3 },
+          "end_date": { "year": 2020, "month": 12 },
+          "dates_reliable": true,
+          "duration_text": "4 yrs 10 mos",
+          "employment_type": "Full-time",
+          "role_location": "Denver, Colorado, United States",
+          "workplace_type": "On-site",
+          "is_current": false,
+          "raw_lines": [
+            "Operations Manager",
+            "Harbor Analytics · Full-time",
+            "Mar 2016 - Dec 2020 · 4 yrs 10 mos",
+            "Denver, Colorado, United States · On-site"
+          ],
+          "warnings": [],
+          "observed_at": "2026-07-26T10:00:00.000Z"
+        }
+      ],
+      "extraction": {
+        "adapter_version": "linkedin-person-profile-adapter/1",
+        "status": "ok",
+        "missing_sections": [],
+        "excluded_sections": [],
+        "page_warnings": []
+      },
+      "operator_metadata": {
+        "labels": [],
+        "note": null
+      },
+      "raw_snapshot": {
+        "surface": "linkedin_person_profile",
+        "adapterVersion": "linkedin-person-profile-adapter/1",
+        "status": "ok",
+        "capturedAt": "2026-07-26T10:00:00.000Z"
+      }
+    }
+  ]
+}

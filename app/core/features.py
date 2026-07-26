@@ -42,6 +42,14 @@ class FeatureFlags(BaseModel):
     # to existing companies by exact LinkedIn URL lineage or exact unique
     # domain only — it never rewrites a canonical company record.
     linkedin_company_intake: bool = False
+    # Contact-first capture intake (DAT-013): the endpoint the contact
+    # acquisition extension submits to. Off by default. When on, one reviewed
+    # submission persists immutable per-person capture evidence, matches only on
+    # an exact normalized LinkedIn profile URL, refreshes canonical fields under
+    # the DAT-005 freshness policy, and applies operator labels and notes. It
+    # never creates a campaign membership, verifies an email, or makes any
+    # contact outreach-eligible; suppression stays authoritative.
+    contact_capture_intake: bool = False
     # Operator workbench UI (server-rendered pages). Off by default so the UI
     # stays disabled until it is deliberately enabled for local operation.
     workbench: bool = False

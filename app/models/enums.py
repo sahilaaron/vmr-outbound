@@ -439,9 +439,14 @@ class LinkedInSnapshotOutcome(enum.StrEnum):
     """Truthful backend outcome of ingesting one LinkedIn capture snapshot.
 
     ``STORED`` is the DAT-012D baseline: the snapshot is persisted immutably and
-    nothing else happens. The reconciliation outcomes are produced only once
-    exact-URL matching lands (DAT-012E); ``rejected`` payloads are never
-    persisted, so no member exists for them.
+    nothing else happens. The reconciliation outcomes are produced once exact-URL
+    matching runs (DAT-012E, and every contact-first capture in DAT-013);
+    ``rejected`` payloads are never persisted, so no member exists for them.
+
+    ``DUPLICATE_IN_SUBMISSION`` (DAT-013) marks the second and later captures of
+    the SAME person inside one contact-first submission. The evidence is still
+    stored; only the first capture is reconciled, so one submission can never
+    refresh or stage the same person twice.
     """
 
     STORED = "stored"
@@ -450,6 +455,7 @@ class LinkedInSnapshotOutcome(enum.StrEnum):
     UNMATCHED_STAGED = "unmatched_staged"
     AMBIGUOUS_REVIEW = "ambiguous_review"
     SUPPRESSED = "suppressed"
+    DUPLICATE_IN_SUBMISSION = "duplicate_in_submission"
 
 
 class QAOutcome(enum.StrEnum):

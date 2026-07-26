@@ -36,6 +36,7 @@ from app.models.enums import QAOutcome
 from app.models.linkedin_profile import LinkedInProfileSnapshot
 from app.models.qa_evaluation import ContactQAEvaluation
 from app.services.audit import record_audit_event
+from app.services.profiles.refresh import snapshot_experiences
 
 POLICY_NAME = "profile-employment-qa"
 POLICY_VERSION = f"{POLICY_NAME}/1.0.0"
@@ -449,7 +450,8 @@ def evaluate_contact_snapshot(
     excluded = "experience" in (extraction.get("excluded_sections") or [])
     result = evaluate(
         profile_fields=snapshot.profile_fields or {},
-        experiences=payload.get("experiences") or [],
+        # Works for both capture contracts (see ``snapshot_experiences``).
+        experiences=snapshot_experiences(snapshot),
         experience_excluded=excluded,
         expected_company=contact.company_name,
         expected_title=contact.title,

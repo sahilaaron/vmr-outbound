@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div class="crumbs">
+    <a href="/">Workbench</a><span>/</span>
+    {% if snapshot.submission_id %}<a href="/contact-captures/submissions/{{ snapshot.submission_id }}">Submission</a><span>/</span>{% endif %}
+    Contact capture
+  </div>
+  <h1>Contact capture
+    <span class="badge">{{ snapshot.outcome.value }}</span>
+  </h1>
+  <div class="sub">
+    Permanent, immutable acquisition evidence — exactly what the operator
+    reviewed and submitted. A capture never makes a contact outreach-eligible,
+    never verifies an email, and never belongs to a campaign.
+  </div>
+</div>
+
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Capture</strong></div>
+  <table>
+    <tbody>
+      <tr><td class="mono">capture_id</td><td class="wrap mono">{{ snapshot.id }}</td></tr>
+      <tr><td class="mono">client_capture_id</td><td class="wrap mono">{{ snapshot.client_capture_id }}</td></tr>
+      <tr><td class="mono">schema_version</td><td class="wrap">{{ snapshot.schema_version }}</td></tr>
+      <tr><td class="mono">capture_mode</td><td class="wrap">{{ snapshot.capture_mode or "—" }}</td></tr>
+      <tr><td class="mono">source_surface</td><td class="wrap">{{ snapshot.source_surface or "—" }}</td></tr>
+      <tr><td class="mono">normalized_profile_url</td><td class="wrap">{{ snapshot.normalized_profile_url or "— (identity uncertain: no main profile URL was visible)" }}</td></tr>
+      <tr><td class="mono">salesnav_lead_url</td><td class="wrap">{{ snapshot.salesnav_lead_url or "—" }}</td></tr>
+      <tr><td class="mono">captured_at</td><td class="wrap">{{ snapshot.captured_at or "—" }}</td></tr>
+      <tr><td class="mono">ingested_at</td><td class="wrap">{{ snapshot.ingested_at }}</td></tr>
+      <tr><td class="mono">extraction_status</td><td class="wrap">{{ snapshot.extraction_status }}</td></tr>
+      <tr><td class="mono">missing_sections</td><td class="wrap">{{ snapshot.missing_sections or "—" }}</td></tr>
+      <tr><td class="mono">matched_contact</td><td class="wrap">
+        {% if snapshot.matched_contact_id %}<a href="/contacts/{{ snapshot.matched_contact_id }}">{{ snapshot.matched_contact_id }}</a>{% else %}—{% endif %}
+      </td></tr>
+      {% if snapshot.duplicate_of_id %}
+      <tr><td class="mono">duplicate_of</td><td class="wrap"><a href="/contact-captures/{{ snapshot.duplicate_of_id }}">{{ snapshot.duplicate_of_id }}</a> (same person earlier in this submission)</td></tr>
+      {% endif %}
+      <tr><td class="mono">operator_labels</td><td class="wrap">
+        {% if snapshot.operator_labels %}{{ snapshot.operator_labels | join(", ") }}{% else %}—{% endif %}
+        {% if snapshot.operator_labels and not snapshot.matched_contact_id %}
+        <span class="muted-text">(requested; applied to a contact only once this capture is matched)</span>
+        {% endif %}
+      </td></tr>
+    </tbody>
+  </table>
+</div>
+
+{% if notes %}
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Operator notes ({{ notes | length }}) — append-only</strong></div>
+  <table>
+    <thead><tr><th>Recorded</th><th>Scope</th><th>Note</th></tr></thead>
+    <tbody>
+      {% for note in notes %}
+      <tr>
+        <td class="mono">{{ note.created_at }}</td>
+        <td class="mono">{{ note.scope }}</td>
+        <td class="wrap">{{ note.note_text }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% if snapshot.review_candidates %}
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Review candidates (weak evidence — never merged automatically)</strong></div>
+  <table>
+    <thead><tr><th>Contact</th><th>Company</th><th>Title</th><th>Match basis</th></tr></thead>
+    <tbody>
+      {% for c in snapshot.review_candidates %}
+      <tr>
+        <td><a href="/contacts/{{ c.contact_id }}">{{ c.contact_name or c.contact_id }}</a></td>
+        <td class="wrap">{{ c.contact_company or "—" }}</td>
+        <td class="wrap">{{ c.contact_title or "—" }}</td>
+        <td class="mono">{{ c.match_basis | join(", ") }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% if snapshot.refresh_summary %}
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Reconciliation summary (freshness policy decisions)</strong></div>
+  <table>
+    <tbody>
+      <tr><td class="mono">refreshed_fields</td><td class="wrap">{{ snapshot.refresh_summary.refreshed_fields | join(", ") or "—" }}</td></tr>
+      <tr><td class="mono">unchanged_fields</td><td class="wrap">{{ snapshot.refresh_summary.unchanged_fields | join(", ") or "—" }}</td></tr>
+      <tr><td class="mono">skipped_fields</td><td class="wrap">{{ snapshot.refresh_summary.skipped_fields or "—" }}</td></tr>
+      {% if snapshot.refresh_summary.suppression_reason %}
+      <tr><td class="mono">suppression</td><td class="wrap">{{ snapshot.refresh_summary.suppression_reason }} (evidence recorded; canonical fields untouched)</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Person observations</strong></div>
+  <table>
+    <tbody>
+      {% for field, value in profile_rows %}
+      <tr><td class="mono">{{ field }}</td><td class="wrap">{{ value if value not in (none, "") else "—" }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Experience observations ({{ snapshot.experiences | length }})</strong></div>
+  <table>
+    <thead><tr><th>#</th><th>Title</th><th>Company</th><th>Timeline</th><th>Type</th><th>Location</th><th>Current</th><th>Warnings</th></tr></thead>
+    <tbody>
+      {% for e in snapshot.experiences %}
+      <tr>
+        <td>{{ e.position_index }}</td>
+        <td class="wrap">{{ e.job_title or "—" }}</td>
+        <td class="wrap">{{ e.company_name or "—" }}{% if e.company_linkedin_id %} <span class="muted-text mono">({{ e.company_linkedin_id }})</span>{% endif %}</td>
+        <td class="wrap">{{ e.timeline_text or "—" }}{% if e.duration_text %} · {{ e.duration_text }}{% endif %}</td>
+        <td>{{ e.employment_type or "—" }}</td>
+        <td class="wrap">{{ e.role_location or "—" }}{% if e.workplace_type %} · {{ e.workplace_type }}{% endif %}</td>
+        <td>{% if e.is_current %}yes{% elif e.is_current is sameas false %}no{% else %}—{% endif %}</td>
+        <td>{{ (e.warnings or []) | length }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="8" class="muted-text">No experience history was visible on the captured surface.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db
 from app.core.config import get_settings
 from app.models.contact import Contact
+from app.models.contact_capture import ContactCaptureNote, ContactCaptureSubmission
 from app.models.enums import (
     CampaignStatus,
     ContactWorkflowState,
@@ -1780,6 +1781,86 @@ def company_snapshot_page(
         db,
         "company_snapshot.html",
         {"snapshot": snapshot, "company_rows": company_rows, "page_title": "Company snapshot"},
+    )
+
+
+# --- Contact-first captures (DAT-013, read-only) ------------------------------
+
+
+def _capture_profile_rows(fields: dict[str, Any]) -> list[tuple[str, Any]]:
+    return [
+        ("full_name", fields.get("full_name")),
+        ("headline", fields.get("headline")),
+        ("displayed_location", fields.get("displayed_location")),
+        ("connection_count", fields.get("connection_count")),
+        ("open_to_work", fields.get("open_to_work")),
+        ("about_text", fields.get("about_text")),
+        ("warnings", len(fields.get("warnings") or [])),
+    ]
+
+
+@router.get("/contact-captures/submissions/{submission_id}", response_class=HTMLResponse)
+def contact_capture_submission_page(
+    request: Request, submission_id: str, db: Session = Depends(get_db)
+) -> HTMLResponse:
+    """Read-only view of one contact-capture submission and its per-person outcomes."""
+
+    parsed_id = _parse_uuid(submission_id)
+    submission = db.get(ContactCaptureSubmission, parsed_id) if parsed_id else None
+    if submission is None:
+        return _not_found(request, db, "That contact capture submission does not exist.")
+    captures = list(
+        db.scalars(
+            select(LinkedInProfileSnapshot)
+            .where(LinkedInProfileSnapshot.submission_id == submission.id)
+            .order_by(LinkedInProfileSnapshot.ingested_at)
+        )
+    )
+    counts = sorted(((submission.response_body or {}).get("counts") or {}).items())
+    return _render(
+        request,
+        db,
+        "contact_capture_submission.html",
+        {
+            "submission": submission,
+            "captures": captures,
+            "counts": counts,
+            "page_title": "Contact capture submission",
+        },
+    )
+
+
+@router.get("/contact-captures/{capture_id}", response_class=HTMLResponse)
+def contact_capture_page(
+    request: Request, capture_id: str, db: Session = Depends(get_db)
+) -> HTMLResponse:
+    """Read-only view of one permanent contact capture.
+
+    Evidence only: nothing on this page changes a contact, a suppression, a
+    verification, an approval, or a campaign.
+    """
+
+    parsed_id = _parse_uuid(capture_id)
+    snapshot = db.get(LinkedInProfileSnapshot, parsed_id) if parsed_id else None
+    if snapshot is None:
+        return _not_found(request, db, "That contact capture does not exist.")
+    notes = list(
+        db.scalars(
+            select(ContactCaptureNote)
+            .where(ContactCaptureNote.capture_id == snapshot.id)
+            .order_by(ContactCaptureNote.created_at)
+        )
+    )
+    return _render(
+        request,
+        db,
+        "contact_capture.html",
+        {
+            "snapshot": snapshot,
+            "notes": notes,
+            "profile_rows": _capture_profile_rows(snapshot.profile_fields or {}),
+            "page_title": "Contact capture",
+        },
     )
 
 
