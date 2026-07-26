@@ -1,6 +1,6 @@
 # ADR 0002 — Contact-first domain and workflow model (APP-001)
 
-Status: Proposed (awaiting review)
+Status: Accepted (open decisions U1–U3 and D4 confirmed by Sahil, 2026-07-26)
 Date: 2026-07-26
 Issue: [#157](https://github.com/sahilaaron/vmr-outbound/issues/157)
 Baseline: `feat/dat-013-contact-first-capture` @ `2cdf83f`, Alembic head `26f8ab7044f1`
@@ -584,12 +584,12 @@ Company Domain Insights Engine ──▶ (Company Dossier contract, APP-003) ─
 | --- | --- | --- |
 | **APP-001** | This ADR | — |
 | **APP-002** | Contact CRM foundation | APP-001, DAT-013 |
-| APP-003 | Company workspace + Dossier contract | APP-002, company engine |
+| **DAT-014** | Capture → Contact promotion; batch-independent company resolution | APP-002, DAT-010 |
+| APP-003 | Company workspace + Dossier contract | **DAT-014**, company engine |
 | APP-004 | Research jobs + dossiers | APP-003 |
 | APP-005 | Qualification assessments | APP-004 |
 | APP-006 | Saved Audiences (reuses APP-002 filter predicates) | APP-005 |
 | APP-007 | Campaign reattachment + full decoupling | APP-006 |
-| DAT-014 | Capture → Contact promotion; batch-independent company resolution | DAT-010 |
 
 ---
 
@@ -603,11 +603,27 @@ Company Domain Insights Engine ──▶ (Company Dossier contract, APP-003) ─
 | R4 | Company resolution for non-batch captures is display-only (D4) | Recorded as an accepted APP-002 limitation; DAT-014 owns it. |
 | R5 | Two unpushed branches (`cmp-001-003`, `fnd-009`) may conflict later | Neither touches contact CRM surfaces; flagged for Sahil. |
 
-**Unresolved, needing Sahil's decision:**
+**Resolved by Sahil, 2026-07-26:**
 
-1. **U1 — pending-capture retention.** How long may an unmatched capture stay pending before it is archived? No policy exists. APP-002 keeps them indefinitely.
-2. **U2 — `import_batches.campaign_id`.** Confirm it stays required until APP-007.
-3. **U3 — DAT-014 sequencing.** Whether promotion lands before APP-003.
+1. **U1 — pending-capture retention: keep indefinitely.** Unmatched captures are
+   never auto-deleted or auto-archived. Instead APP-002 surfaces age and
+   freshness so an ageing queue is visible rather than silently accumulating: a
+   `fresh` / `aging` / `stale` band (≤14 days, ≤60 days, beyond) and an
+   `older_than_days` filter that combines with any view. A real retention policy
+   may only be introduced once real usage data exists to base one on.
+   These thresholds are display bands, not policy, and are deliberately *not*
+   taken from `provenance/freshness.py` — that module decides which field
+   observation wins for a contact, which is a different question from how long a
+   record has been waiting in a queue.
+2. **U2 — `import_batches.campaign_id` stays required until APP-007.** It belongs
+   to the legacy campaign-scoped import path and does not block DAT-013 intake.
+3. **U3 — sequencing is APP-002 → DAT-014 → APP-003.** APP-002 establishes the
+   operator workspace; DAT-014 then makes the "Awaiting Company Resolution" queue
+   actionable; APP-003 builds the Company workspace over resolved Companies.
+4. **D4 — the batch-scoped logo.dev limitation is accepted for APP-002 only.**
+   APP-002 displays truthful states (`not_requested`, `pending`, unavailable) and
+   **must not introduce a second enrichment mechanism**. DAT-014 must make
+   company resolution work independently of legacy import batches.
 
 ---
 

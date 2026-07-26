@@ -27,7 +27,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from sqlalchemy import Select, and_, exists, func, literal, or_, select, union_all
@@ -66,6 +66,45 @@ SORTS: tuple[str, ...] = (SORT_RECENT, SORT_NAME, SORT_COMPANY)
 
 MAX_PAGE_SIZE = 200
 
+# Age bands for the CRM's freshness indicator.
+#
+# A pending capture is never auto-deleted or auto-archived: the operator saved
+# that person deliberately, and no retention policy exists yet because no real
+# usage data exists to base one on. What the workspace owes them instead is an
+# honest signal of how long something has been waiting, plus a filter to find
+# the old ones — so a stale queue is visible rather than silently accumulating.
+#
+# These thresholds are display bands, not policy. They are deliberately not
+# taken from provenance/freshness.py: that module decides which *field
+# observation* wins for a contact, which is a different question from how long a
+# *record* has been sitting in a queue. Reusing it here would couple two
+# unrelated concerns.
+FRESHNESS_FRESH_DAYS = 14
+FRESHNESS_AGING_DAYS = 60
+
+FRESHNESS_FRESH = "fresh"
+FRESHNESS_AGING = "aging"
+FRESHNESS_STALE = "stale"
+
+
+def _age_band(age_days: int | None) -> str | None:
+    """Which display band an age falls into, or None when the age is unknown."""
+
+    if age_days is None:
+        return None
+    if age_days <= FRESHNESS_FRESH_DAYS:
+        return FRESHNESS_FRESH
+    if age_days <= FRESHNESS_AGING_DAYS:
+        return FRESHNESS_AGING
+    return FRESHNESS_STALE
+
+
+def _days_since(moment: datetime | None) -> int | None:
+    if moment is None:
+        return None
+    reference = moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+    return max(0, (datetime.now(UTC) - reference).days)
+
 
 @dataclass(frozen=True)
 class CrmRow:
@@ -90,6 +129,19 @@ class CrmRow:
     labels: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     last_updated: datetime | None = None
+    first_seen: datetime | None = None
+
+    @property
+    def age_days(self) -> int | None:
+        """How long this person has been in the system, in whole days."""
+
+        return _days_since(self.first_seen)
+
+    @property
+    def freshness(self) -> str | None:
+        """``fresh`` / ``aging`` / ``stale`` — a signal, never an action."""
+
+        return _age_band(self.age_days)
 
     @property
     def contact_id(self) -> uuid.UUID | None:
@@ -122,6 +174,7 @@ class CrmFilters:
     has_linkedin: bool | None = None
     has_email: bool | None = None
     identity: CaptureIdentityState | None = None
+    older_than_days: int | None = None
     sort: str = SORT_RECENT
 
     def normalized(self) -> CrmFilters:
@@ -140,6 +193,11 @@ class CrmFilters:
             has_linkedin=self.has_linkedin,
             has_email=self.has_email,
             identity=self.identity,
+            older_than_days=(
+                self.older_than_days
+                if self.older_than_days is not None and self.older_than_days > 0
+                else None
+            ),
             sort=self.sort if self.sort in SORTS else SORT_RECENT,
         )
 
@@ -216,6 +274,7 @@ def _contact_leg(filters: CrmFilters) -> Select[Any] | None:
         sort_name.label("sort_name"),
         func.lower(func.coalesce(Contact.company_name, literal(""))).label("sort_company"),
         Contact.updated_at.label("last_updated"),
+        Contact.created_at.label("first_seen"),
     ).where(Contact.merged_into_id.is_(None))  # tombstones are not people
 
     suppressed = _suppressed_predicate(Contact.email, Contact.company_domain)
@@ -256,6 +315,10 @@ def _contact_leg(filters: CrmFilters) -> Select[Any] | None:
         leg = leg.where(Contact.email.is_not(None))
     elif filters.has_email is False:
         leg = leg.where(Contact.email.is_(None))
+    if filters.older_than_days is not None:
+        leg = leg.where(
+            Contact.created_at < datetime.now(UTC) - timedelta(days=filters.older_than_days)
+        )
     if filters.source:
         # A contact's acquisition source is "capture" when any capture resolved
         # to it, and "import" otherwise. Expressed as EXISTS so it stays a
@@ -340,6 +403,7 @@ def _capture_leg(filters: CrmFilters) -> Select[Any] | None:
         full_name.label("sort_name"),
         company.label("sort_company"),
         LinkedInProfileSnapshot.ingested_at.label("last_updated"),
+        LinkedInProfileSnapshot.ingested_at.label("first_seen"),
     ).where(
         LinkedInProfileSnapshot.outcome.in_(wanted),
         LinkedInProfileSnapshot.matched_contact_id.is_(None),
@@ -363,6 +427,11 @@ def _capture_leg(filters: CrmFilters) -> Select[Any] | None:
     if filters.label_slug:
         leg = leg.where(
             _label_predicate(LinkedInProfileSnapshot.id, filters.label_slug, capture_anchor=True)
+        )
+    if filters.older_than_days is not None:
+        leg = leg.where(
+            LinkedInProfileSnapshot.ingested_at
+            < datetime.now(UTC) - timedelta(days=filters.older_than_days)
         )
     if filters.has_linkedin is True:
         leg = leg.where(LinkedInProfileSnapshot.normalized_profile_url.is_not(None))
@@ -514,6 +583,7 @@ def _contact_row(session: Session, contact: Contact, labels: list[str]) -> CrmRo
         labels=labels,
         warnings=[],
         last_updated=contact.updated_at,
+        first_seen=contact.created_at,
     )
 
 
@@ -540,6 +610,7 @@ def _capture_row(session: Session, snapshot: LinkedInProfileSnapshot, labels: li
         labels=labels,
         warnings=warnings,
         last_updated=snapshot.ingested_at,
+        first_seen=snapshot.ingested_at,
     )
 
 

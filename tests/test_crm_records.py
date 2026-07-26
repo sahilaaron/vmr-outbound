@@ -8,6 +8,7 @@ resolving them, and nothing in the CRM needs a campaign.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -26,6 +27,9 @@ from app.models.linkedin_profile import (
     LinkedInProfileSnapshot,
 )
 from app.services.crm.records import (
+    FRESHNESS_AGING,
+    FRESHNESS_FRESH,
+    FRESHNESS_STALE,
     SORT_NAME,
     VIEW_ALL,
     VIEW_AMBIGUOUS,
@@ -499,3 +503,74 @@ def test_a_contacts_source_reflects_how_it_was_acquired(db_session: Session) -> 
 
     rows, total = list_crm_rows(db_session, filters=CrmFilters(source="import"))
     assert total == 1 and rows[0].record_id == imported.id
+
+
+# --------------------------------------------------------------------------
+# Age and freshness — pending captures are kept, not hidden
+# --------------------------------------------------------------------------
+
+
+def test_a_freshly_captured_person_reads_as_fresh(db_session: Session) -> None:
+    _capture(db_session, "Grace Hopper")
+    rows, _ = list_crm_rows(db_session)
+    assert rows[0].age_days == 0
+    assert rows[0].freshness == FRESHNESS_FRESH
+
+
+def test_an_old_pending_capture_is_banded_and_still_listed(db_session: Session) -> None:
+    """Nothing is auto-archived: an old capture is flagged, never removed."""
+
+    old = _capture(db_session, "Grace Hopper")
+    old.ingested_at = datetime.now(UTC) - timedelta(days=200)
+    db_session.flush()
+
+    rows, total = list_crm_rows(db_session)
+    assert total == 1  # still there
+    assert rows[0].freshness == FRESHNESS_STALE
+    assert rows[0].age_days is not None and rows[0].age_days >= 200
+
+
+def test_the_aging_band_sits_between_fresh_and_stale(db_session: Session) -> None:
+    capture = _capture(db_session, "Grace Hopper")
+    capture.ingested_at = datetime.now(UTC) - timedelta(days=30)
+    db_session.flush()
+
+    rows, _ = list_crm_rows(db_session)
+    assert rows[0].freshness == FRESHNESS_AGING
+
+
+def test_older_than_days_finds_the_backlog_across_both_kinds(db_session: Session) -> None:
+    recent = _capture(db_session, "Recent Person")
+    stale_capture = _capture(db_session, "Stale Person")
+    stale_capture.ingested_at = datetime.now(UTC) - timedelta(days=120)
+    stale_contact = _contact(db_session, "Old", "Contact")
+    stale_contact.created_at = datetime.now(UTC) - timedelta(days=120)
+    db_session.flush()
+
+    rows, total = list_crm_rows(db_session, filters=CrmFilters(older_than_days=90))
+    assert total == 2
+    assert {r.full_name for r in rows} == {"Stale Person", "Old Contact"}
+    assert recent.id not in {r.record_id for r in rows}
+
+
+def test_older_than_days_combines_with_the_awaiting_company_view(db_session: Session) -> None:
+    """The operator's real question: what has been stuck in this queue too long?"""
+
+    stuck = _capture(db_session, "Stuck Person")
+    stuck.ingested_at = datetime.now(UTC) - timedelta(days=120)
+    _capture(db_session, "Recent Person")
+    db_session.flush()
+
+    rows, total = list_crm_rows(
+        db_session, filters=CrmFilters(view=VIEW_AWAITING_COMPANY, older_than_days=90)
+    )
+    assert total == 1
+    assert rows[0].full_name == "Stuck Person"
+
+
+def test_a_nonsensical_age_filter_is_ignored_rather_than_erroring(db_session: Session) -> None:
+    _capture(db_session, "Grace Hopper")
+    _, total = list_crm_rows(db_session, filters=CrmFilters(older_than_days=0))
+    assert total == 1
+    _, total = list_crm_rows(db_session, filters=CrmFilters(older_than_days=-5))
+    assert total == 1
