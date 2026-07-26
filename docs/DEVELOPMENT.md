@@ -190,6 +190,39 @@ Capture and inspect:
   panel, or browse `http://127.0.0.1:8000/contact-captures/<capture_id>` and
   `http://127.0.0.1:8000/contact-captures/submissions/<submission_id>`.
 
+## 8. Resolve and promote a capture (DAT-014)
+
+A captured person becomes a canonical contact only after their company domain is
+resolved. Add these to the backend environment from step 7:
+
+```bat
+set FEATURES__CONTACT_CAPTURE_PROMOTION=true
+:: Only needed to call the provider. Without it you can still enter a domain by
+:: hand or leave a capture pending — a domain is never invented.
+set FEATURES__SALESNAV_DOMAIN_ENRICHMENT=true
+set LOGO_DEV_API_KEY=your-local-key
+```
+
+Then, in the workbench:
+
+1. Open `http://127.0.0.1:8000/contact-captures/pending`.
+2. Open a capture to see the person, title, captured company, LinkedIn company
+   hint, labels, note, identity warnings and company-resolution status.
+3. *Run domain lookup* → review the ranked candidates (logo.dev returns no
+   confidence score, and the page says so rather than inventing one).
+4. *Confirm* the right candidate, *Reject* a wrong one with a reason, enter a
+   domain by hand, or *Leave unresolved*.
+5. *Promote to contact* → open the resulting Contact and Company from the card.
+
+Sanitized acceptance with the provider stubbed on loopback (no API key needed):
+
+```bat
+set LOGO_DEV_SEARCH_URL=http://127.0.0.1:8788/search
+set LOGO_DEV_API_KEY=local-stub-key-not-real
+:: restart the backend so it picks the stub URL up, then:
+python scripts\capture_promotion_acceptance.py --base-url http://127.0.0.1:8000
+```
+
 ## Notes
 
 - **Secrets**: never commit `.env` or any key. `.env.example` documents variable

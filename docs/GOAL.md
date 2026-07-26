@@ -38,6 +38,8 @@ sending configuration reference.
 operator-driven **contact-first** capture from the extension, which saves people
 permanently without a campaign — and see row-level validation errors or truthful
 per-person capture outcomes.
+2a. Resolve each captured person's company domain through the operator-confirmed
+logo.dev candidate flow, and promote the capture into a canonical Contact.
 3. Normalize and deduplicate contacts; match them to companies and existing
 historical records.
 4. Apply suppressions and hard eligibility gates.
@@ -80,6 +82,10 @@ and identity resolution
 * Contact-first capture intake: permanent per-person capture evidence, exact-URL
 matching only, operator labels and append-only notes, and truthful per-capture
 outcomes — with no campaign anywhere in the path
+* Capture promotion: resolving a captured company's domain through the operator-
+confirmed logo.dev candidate flow, then creating or safely matching the canonical
+Company and Contact — never fabricating a domain and never merging on weak
+evidence
 * A repeatable path for importing representative historical marketing data
 * Deterministic email-format generation and candidate ranking
 * Safe exact-address verification cache with configurable TTLs

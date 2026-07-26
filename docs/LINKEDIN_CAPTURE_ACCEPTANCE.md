@@ -203,3 +203,88 @@ longer be satisfied honestly by the shipped code — the extension has no campai
 selector to exercise. The paused criteria are superseded by Layer 3 rather than
 marked complete, and the legacy routes remain only so previously staged batches
 and snapshots stay readable.
+
+---
+
+# Layer 4 — capture promotion acceptance (DAT-014)
+
+The bridge from a staged capture to a canonical Contact, through the existing
+DAT-010 logo.dev candidate flow. Policy and outcome vocabulary:
+[`CAPTURE_PROMOTION.md`](./CAPTURE_PROMOTION.md).
+
+## Layer 4A — sanitized live acceptance (completed, reproducible)
+
+Environment: fresh `vmr_accept` database, `alembic upgrade head`, app started
+with `APP_ENV=local`, `FEATURES__CONTACT_CAPTURE_INTAKE=true`,
+`FEATURES__CONTACT_CAPTURE_PROMOTION=true`, `FEATURES__WORKBENCH=true`,
+`FEATURES__SUPPRESSIONS=true`, `FEATURES__SALESNAV_DOMAIN_ENRICHMENT=true`, and
+`LOGO_DEV_SEARCH_URL` pointed at the script's local stub.
+
+**The provider is stubbed at the HTTP boundary.** The real logo.dev client, the
+real enrichment service, the real workbench routes and the real database are all
+exercised; only the provider itself is local, returning the documented Search
+Brands response shape. No API key is used and no live logo.dev call is made.
+
+Reproduce (backend running, as above):
+
+```bash
+python scripts/capture_promotion_acceptance.py --base-url http://127.0.0.1:8000
+```
+
+| # | Scenario | Result |
+| --- | --- | --- |
+| 1 | Unmatched capture is eligible for domain resolution | pending page lists it · `pending_lookup` · captured company shown |
+| 2 | Provider candidates are stored, ranked, and left for review | `multiple_candidates_review_required` · 2 candidates · confidence shown as *not provided by this provider* |
+| 3 | Promotion is refused while candidates await a decision | capture stays unpromoted; the reason is shown |
+| 4 | A rejected candidate is preserved with its reason | moved to *Rejected candidates* with reason, actor and time |
+| 5 | Operator confirmation resolves the company | `domain_candidate_confirmed` · source `candidate` · confirming operator recorded |
+| 6 | Promotion creates the Contact and Company | `contact_created` · labels and notes carried over · capture linked |
+| 7 | Retrying a promotion is idempotent | `already_promoted` · no second contact |
+| 8 | A previously confirmed company is reused | `existing_company_resolved` · source `prior_mapping` · no provider call |
+| 9 | The reused company promotes without a second lookup | `contact_created` against the same canonical Company |
+| 10 | Promoted captures leave the pending queue | neither promoted person is listed as pending |
+
+Database assertions taken directly after the run:
+
+| Check | Result |
+| --- | --- |
+| Companies created | 1 (`Meridian Works` / `meridianworks.example`) — the second capture reused it |
+| Contacts created | 2, both on the resolved domain, both with the captured title and profile URL, neither with an invented email |
+| Enrichment records | 2, both capture-owned (`batch_id` null); one `ok` with source `candidate`, one `not_started` with source `prior_mapping` — the reuse cost no provider call |
+| Rejected candidate | preserved with reason `different company, similar name` and the deciding actor |
+| Label assignments | 4 (two labels × two contacts) |
+| Notes | 2 of 2 linked to their promoted contact, text and timestamps unchanged |
+| Provenance observations | `title`, `company_name`, `linkedin_url` appended to the DAT-005 ledger |
+| Campaign memberships / email candidates | 0 / 0 |
+| Captures | 2 of 2 linked to a contact, payloads intact |
+| Promotion audit events | 2 |
+
+Automated backstops at this branch head: backend `pytest` **555 passed**
+(506 before; `tests/test_capture_promotion.py` adds 49); extension `node --test`
+**186 passed** (unchanged — the extension is not part of DAT-014); `ruff`,
+`ruff format --check` and `mypy --strict` clean; `alembic` upgrade / check /
+downgrade round trips clean on a fresh database, with no orphaned enum types
+after a downgrade to base.
+
+## Layer 4B — live provider call (NOT PERFORMED)
+
+A real logo.dev lookup needs `LOGO_DEV_API_KEY`, which the build session does
+not have. Sahil's step, once a key is configured locally:
+
+- **P1.** Start the backend with `FEATURES__SALESNAV_DOMAIN_ENRICHMENT=true`,
+  `FEATURES__CONTACT_CAPTURE_PROMOTION=true` and a real `LOGO_DEV_API_KEY`
+  (leave `LOGO_DEV_SEARCH_URL` at its default).
+- **P2.** Open a pending capture and press *Run domain lookup*. Record the
+  query, the returned candidate names and domains, and the lookup status.
+  **Redact nothing about the provider; redact any real person's details.**
+- **P3.** Confirm the correct candidate and check the recorded confirmation
+  source, actor and time.
+- **P4.** Promote, then open the resulting Contact and Company and confirm the
+  labels, notes and provenance carried over.
+- **P5.** Confirm no campaign membership, email candidate, verification, score
+  or approval was created.
+- **P6.** Repeat with a second person at the same company and confirm
+  `existing_company_resolved` / `prior_mapping` with no second provider call.
+
+Record PASS/FAIL per step. Everything above Layer 4B has been run; nothing in
+Layer 4B has.
