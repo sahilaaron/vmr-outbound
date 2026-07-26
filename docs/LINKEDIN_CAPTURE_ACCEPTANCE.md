@@ -266,7 +266,7 @@ Automated backstops at this branch head: backend `pytest` **555 passed**
 downgrade round trips clean on a fresh database, with no orphaned enum types
 after a downgrade to base.
 
-## Layer 4B — live provider call (PERFORMED 2026-07-26, PASS)
+## Layer 4B — live provider call (PERFORMED 2026-07-26, PASS — complete)
 
 Run against the real endpoint (`https://api.logo.dev/search`) at commit
 `823c315`, on the dedicated `vmr_dat014` database, with the fictitious fixture
@@ -300,11 +300,21 @@ no operator sanctioned — the confirmation requirement is vindicated by live da
 not only by fixtures.
 
 Sanitized evidence lives outside the repository in `layer4b/`
-(`dat014_live_evidence.txt`), because it is operator run-evidence rather than
-source. The shell verifications are `capture_state.py --compare` (byte-level
-capture immutability, **passed** — only the canonical contact link changed) and
-`run_assertions.py`, which is a thin shim over the committed, tested harness at
-[`scripts/layer4b_assertions.py`](../scripts/layer4b_assertions.py).
+(`dat014_live_evidence.txt`, `dat014_live_evidence_db.txt`), because it is
+operator run-evidence rather than source. Both shell verifications have now run
+and **both passed**:
+
+* `capture_state.py --compare` — byte-level capture immutability: only the
+  canonical contact link changed.
+* `run_assertions.py` — a thin shim over the committed, tested harness at
+  [`scripts/layer4b_assertions.py`](../scripts/layer4b_assertions.py). Result at
+  commit `44507fd`: checks **A, B, C, C2, D, E, F, G, H, I, L all PASS**, none
+  failed, none empty, **OVERALL: PASS**. Check C2 recorded scoped provider
+  attempts 2 against authorised attempts 2, with 1 record reused without a
+  lookup. The sanitized informational section reported 1 excluded capture
+  carrying 1 excluded provider attempt.
+
+Nothing in Layer 4B is outstanding.
 
 ### The first aggregate assertion run failed on a harness defect, not a product defect
 
@@ -334,7 +344,9 @@ still fails, and asking for the aggregate figure instead of the scoped one fails
 too.
 
 With the corrected scope, check C2 counts Morgan's 2 attempts plus Riley's 0 for
-a total of 2, matching what was authorised.
+a total of 2, matching what was authorised — which is exactly what the rerun
+reported. The unrelated capture and its single attempt appear only as counts in
+the excluded section, where they cannot influence any verdict.
 
 This layer accepts **DAT-014 provider resolution and contact promotion only**.
 It says nothing about extension extraction correctness — see DAT-016 (#167),
