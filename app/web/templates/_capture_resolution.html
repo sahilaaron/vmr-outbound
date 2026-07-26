@@ -1,0 +1,165 @@
+{# Company-resolution and promotion controls for one contact capture (DAT-014).
+
+   Everything here acts on the promotion record, never on the captured evidence.
+   No control on this page can invent a domain, accept a provider result on the
+   operator's behalf, merge an ambiguous identity, or make a contact
+   outreach-eligible. #}
+
+{% macro resolution_card(resolution, lookup_available) %}
+{% set promotion = resolution.promotion %}
+{% set record = resolution.record %}
+<div class="table-wrap">
+  <div class="toolbar">
+    <strong class="small">Company resolution and promotion</strong>
+    <span class="badge">{{ promotion.company_outcome.value }}</span>
+    <span class="badge">{{ promotion.contact_outcome.value }}</span>
+  </div>
+  <table>
+    <tbody>
+      <tr><td class="mono">person</td><td class="wrap">
+        {{ resolution.identity.full_name or "—" }}
+        {% if resolution.identity.first_name and resolution.identity.last_name %}
+          <span class="muted-text">({{ resolution.identity.first_name }} / {{ resolution.identity.last_name }})</span>
+        {% endif %}
+      </td></tr>
+      <tr><td class="mono">current title</td><td class="wrap">{{ resolution.identity.title or "—" }}</td></tr>
+      <tr><td class="mono">captured company</td><td class="wrap">{{ resolution.hints.name or "—" }}</td></tr>
+      <tr><td class="mono">linkedin company hint</td><td class="wrap">
+        {{ resolution.hints.linkedin_url or resolution.hints.linkedin_id or "—" }}
+      </td></tr>
+      <tr><td class="mono">location hint</td><td class="wrap">{{ resolution.hints.location or "—" }}</td></tr>
+      <tr><td class="mono">capture source</td><td class="wrap">
+        {{ resolution.snapshot.capture_mode or "—" }} · {{ resolution.snapshot.source_url or "—" }}
+      </td></tr>
+      <tr><td class="mono">labels</td><td class="wrap">
+        {{ resolution.snapshot.operator_labels | join(", ") if resolution.snapshot.operator_labels else "—" }}
+      </td></tr>
+      <tr><td class="mono">note</td><td class="wrap">
+        {% if resolution.notes %}{{ resolution.notes[-1].note_text }}{% else %}—{% endif %}
+      </td></tr>
+      <tr><td class="mono">identity warnings</td><td class="wrap">
+        {% if resolution.warnings %}
+          {% for warning in resolution.warnings %}<div>{{ warning }}</div>{% endfor %}
+        {% else %}none{% endif %}
+      </td></tr>
+      <tr><td class="mono">confirmed domain</td><td class="wrap">
+        {{ promotion.resolved_domain or "—" }}
+        {% if record and record.confirmation_source %}
+          <span class="muted-text">({{ record.confirmation_source.value }})</span>
+        {% endif %}
+      </td></tr>
+      <tr><td class="mono">resolved company</td><td class="wrap">
+        {% if promotion.resolved_company_id %}{{ promotion.resolved_company_id }}{% else %}—{% endif %}
+      </td></tr>
+      <tr><td class="mono">promoted contact</td><td class="wrap">
+        {% if promotion.promoted_contact_id %}
+          <a href="/contacts/{{ promotion.promoted_contact_id }}">{{ promotion.promoted_contact_id }}</a>
+          <span class="muted-text">· {{ promotion.notes_linked }} note(s) linked ·
+            labels {{ promotion.labels_applied | join(", ") if promotion.labels_applied else "none" }}</span>
+        {% else %}not promoted{% endif %}
+      </td></tr>
+      {% if promotion.blocked_reason %}
+      <tr><td class="mono">why not promoted</td><td class="wrap">{{ promotion.blocked_reason }}</td></tr>
+      {% endif %}
+      {% if record %}
+      <tr><td class="mono">lookup</td><td class="wrap">
+        {{ record.lookup_status.value }} · {{ record.lookup_attempts }} attempt(s)
+        {% if record.provider %} · {{ record.provider }} ({{ record.lookup_version }}){% endif %}
+        {% if record.looked_up_at %} · {{ record.looked_up_at }}{% endif %}
+      </td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
+{% if promotion.promoted_contact_id is none %}
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Domain candidates</strong></div>
+  <table>
+    <thead><tr><th>Rank</th><th>Domain</th><th>Provider name</th><th>Confidence</th><th>Decision</th></tr></thead>
+    <tbody>
+      {% for candidate in resolution.candidates %}
+      <tr>
+        <td>{{ candidate.rank or loop.index }}</td>
+        <td class="mono wrap">{{ candidate.domain }}</td>
+        <td class="wrap">{{ candidate.name or "—" }}</td>
+        <td class="muted-text">not provided by this provider</td>
+        <td>
+          <form method="post" action="/contact-captures/{{ resolution.snapshot.id }}/company/confirm" class="row gap">
+            <input type="hidden" name="decision" value="candidate" />
+            <input type="hidden" name="domain" value="{{ candidate.domain }}" />
+            <button class="btn btn-primary" type="submit">Confirm</button>
+          </form>
+          <form method="post" action="/contact-captures/{{ resolution.snapshot.id }}/company/reject" class="row gap">
+            <input type="hidden" name="domain" value="{{ candidate.domain }}" />
+            <input class="input" type="text" name="reason" placeholder="why not?" />
+            <button class="btn btn-ghost danger" type="submit">Reject</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="muted-text">
+        No candidate is awaiting a decision. Run a lookup, enter a domain by hand, or leave this
+        capture pending — a domain is never invented for you.
+      </td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if resolution.rejected %}
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Rejected candidates (kept as decisions)</strong></div>
+  <table>
+    <thead><tr><th>Domain</th><th>Reason</th><th>By</th><th>When</th></tr></thead>
+    <tbody>
+      {% for candidate in resolution.rejected %}
+      <tr>
+        <td class="mono wrap">{{ candidate.domain }}</td>
+        <td class="wrap">{{ candidate.rejection_reason or "—" }}</td>
+        <td class="wrap">{{ candidate.rejected_by or "—" }}</td>
+        <td class="mono">{{ candidate.rejected_at or "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Actions</strong></div>
+  <div class="row gap wrap" style="padding: 12px;">
+    <form method="post" action="/contact-captures/{{ resolution.snapshot.id }}/company/lookup">
+      <button class="btn" type="submit" {% if not lookup_available %}disabled{% endif %}>
+        {% if record and record.lookup_attempts %}Retry domain lookup{% else %}Run domain lookup{% endif %}
+      </button>
+    </form>
+    <form method="post" action="/contact-captures/{{ resolution.snapshot.id }}/company/confirm" class="row gap">
+      <input type="hidden" name="decision" value="manual" />
+      <input class="input" type="text" name="domain" placeholder="example.com" />
+      <button class="btn" type="submit">Use this domain</button>
+    </form>
+    <form method="post" action="/contact-captures/{{ resolution.snapshot.id }}/company/confirm" class="row gap">
+      <input type="hidden" name="decision" value="unresolved" />
+      <input class="input" type="text" name="note" placeholder="why leave it unresolved?" />
+      <button class="btn btn-ghost" type="submit">Leave unresolved</button>
+    </form>
+    <form method="post" action="/contact-captures/{{ resolution.snapshot.id }}/promote">
+      <button class="btn btn-primary" type="submit" {% if not resolution.can_promote %}disabled{% endif %}>
+        Promote to contact
+      </button>
+    </form>
+  </div>
+  {% if not lookup_available %}
+  <p class="small muted-text" style="padding: 0 12px 12px;">
+    The domain lookup is unavailable (enrichment disabled or no provider key configured). You can
+    still enter a domain by hand or leave this capture pending.
+  </p>
+  {% endif %}
+  <p class="small muted-text" style="padding: 0 12px 12px;">
+    Promotion creates identity, not permission: it never adds a campaign membership, generates or
+    verifies an email, scores or qualifies anyone, or lifts a suppression.
+  </p>
+</div>
+{% endif %}
+{% endmacro %}

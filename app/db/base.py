@@ -29,6 +29,7 @@ class Base(DeclarativeBase):
 # are added in later phases.
 from app.models import audit_event as _audit_event  # noqa: E402,F401
 from app.models import campaign as _campaign  # noqa: E402,F401
+from app.models import capture_promotion as _capture_promotion  # noqa: E402,F401
 from app.models import company as _company  # noqa: E402,F401
 from app.models import contact as _contact  # noqa: E402,F401
 from app.models import contact_capture as _contact_capture  # noqa: E402,F401
