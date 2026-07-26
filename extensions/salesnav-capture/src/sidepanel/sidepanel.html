@@ -3,14 +3,26 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>VMR Sales Navigator Capture</title>
+    <title>VMR Contact Capture</title>
     <link rel="stylesheet" href="sidepanel.css" />
   </head>
   <body>
     <header class="app-header">
-      <h1 id="app-title">VMR LinkedIn Capture</h1>
-      <p class="subtitle">VMR Outbound Agent · staging intake</p>
+      <h1 id="app-title">VMR Contact Capture</h1>
+      <p class="subtitle">Save the person first · decide what to do with them later</p>
     </header>
+
+    <!-- One-time notice after campaign-era local state is retired -->
+    <section class="card" id="migration-card" hidden>
+      <span class="step-label">Workflow updated</span>
+      <p class="small" id="migration-message"></p>
+      <div class="row gap wrap">
+        <button id="migration-export" class="btn" type="button" hidden>
+          Download archived drafts
+        </button>
+        <button id="migration-dismiss" class="btn btn-ghost" type="button">Dismiss</button>
+      </div>
+    </section>
 
     <!-- Mode banner: which supported surface is in the active tab -->
     <section class="card" id="mode-card">
@@ -22,7 +34,7 @@
       <div id="mode-detail" class="muted small"></div>
     </section>
 
-    <!-- Person-profile capture mode (DAT-012C) -->
+    <!-- Person-profile capture mode -->
     <div id="profile-sections" hidden>
       <section class="card">
         <div class="row space-between">
@@ -49,35 +61,104 @@
         </div>
         <label class="checkbox small" id="profile-exclude-exp-row" hidden>
           <input type="checkbox" id="profile-exclude-exp" />
-          Exclude the experience section from the send
+          Exclude the experience section from the save
         </label>
-      </section>
-
-      <section class="card">
-        <span class="step-label">3 · Campaign (optional)</span>
-        <div class="row gap">
-          <select id="profile-campaign-select" class="grow">
-            <option value="">— none selected —</option>
-          </select>
-          <button id="profile-fetch-campaigns" class="btn btn-ghost" type="button">Fetch</button>
-        </div>
-      </section>
-
-      <section class="card">
-        <span class="step-label">4 · Send to VMR</span>
-        <button id="profile-send-btn" class="btn btn-primary full" type="button" disabled>
-          Send reviewed snapshot
-        </button>
-        <div id="profile-send-state" class="send-state" aria-live="polite"></div>
-        <div id="profile-send-actions" class="row gap"></div>
-        <p class="tiny muted">
-          Nothing is sent automatically. The backend stores an immutable snapshot;
-          it never updates a contact from browser code.
-        </p>
       </section>
     </div>
 
-    <!-- Company-page capture mode (DAT-012G) -->
+    <div id="salesnav-sections" hidden>
+      <section class="card" id="detect-card">
+        <div class="row space-between">
+          <span class="step-label">1 · Page</span>
+          <button id="refresh-detect" class="btn btn-ghost" type="button">Refresh</button>
+        </div>
+        <div id="detect-status" class="status status-neutral">Checking active tab…</div>
+        <div id="detect-detail" class="muted small"></div>
+      </section>
+
+      <section class="card">
+        <div class="row space-between">
+          <span class="step-label">2 · Capture</span>
+          <span id="page-badge" class="badge badge-muted">page ?</span>
+        </div>
+        <button id="capture-btn" class="btn btn-primary full" type="button" disabled>
+          Capture visible contacts
+        </button>
+        <div id="capture-feedback" class="small muted"></div>
+        <p class="tiny muted">
+          Reads only the rows currently visible on the page you opened. You
+          control navigation and paging; the extension never turns a page.
+        </p>
+      </section>
+
+      <section class="card">
+        <div class="row space-between">
+          <span class="step-label">3 · Review and exclude</span>
+          <button id="clear-btn" class="btn btn-ghost danger" type="button">Clear batch</button>
+        </div>
+        <div id="summary" class="summary-grid"></div>
+        <div class="row wrap gap" id="filter-row">
+          <label class="checkbox small">
+            <input type="checkbox" id="only-issues" /> Only contacts with warnings
+          </label>
+        </div>
+        <div id="records" class="records" aria-live="polite"></div>
+      </section>
+    </div>
+
+    <!-- Optional labels + note, shared by both contact workflows -->
+    <section class="card" id="metadata-card" hidden>
+      <div class="row space-between">
+        <span class="step-label">Labels and note (optional)</span>
+        <button id="metadata-clear" class="btn btn-ghost" type="button">Clear</button>
+      </div>
+      <div id="label-chips" class="warns" aria-live="polite"></div>
+      <div class="row gap">
+        <input
+          id="label-input"
+          class="input grow"
+          type="text"
+          maxlength="64"
+          placeholder="Add a label (e.g. Healthcare) and press Enter"
+          list="label-suggestions"
+        />
+        <button id="label-add" class="btn btn-ghost" type="button">Add</button>
+      </div>
+      <datalist id="label-suggestions"></datalist>
+      <label class="small muted" for="note-input">Note</label>
+      <textarea
+        id="note-input"
+        class="input"
+        rows="2"
+        maxlength="2000"
+        placeholder="Met at SaaStr. Follow up after September."
+      ></textarea>
+      <p class="tiny muted">
+        Labels classify permanent contacts — they are not campaigns. Notes are
+        kept append-only: a later capture never overwrites an earlier one.
+      </p>
+    </section>
+
+    <!-- Save action, shared by both contact workflows -->
+    <section class="card" id="save-card" hidden>
+      <span class="step-label">Save to VMR</span>
+      <button id="save-btn" class="btn btn-primary full" type="button" disabled>
+        Save Contact
+      </button>
+      <div id="save-state" class="send-state" aria-live="polite"></div>
+      <div id="save-actions" class="row gap wrap"></div>
+      <div class="row gap wrap" id="export-row" hidden>
+        <button id="export-json" class="btn" type="button">Download JSON</button>
+        <button id="export-csv" class="btn" type="button">Download CSV</button>
+      </div>
+      <p class="tiny muted">
+        Nothing is saved automatically. The backend stores immutable evidence,
+        decides identity, and owns every canonical record. Saving a contact
+        never makes them outreach-eligible.
+      </p>
+    </section>
+
+    <!-- Company-page capture mode: company evidence, not a person -->
     <div id="company-sections" hidden>
       <section class="card">
         <span class="step-label">1 · Capture company page</span>
@@ -88,6 +169,7 @@
         <p class="tiny muted">
           Open the company page yourself (the extension never navigates there for
           you). The About page carries website / industry / size / headquarters.
+          This saves company evidence, not a contact.
         </p>
       </section>
       <section class="card">
@@ -100,9 +182,9 @@
         </div>
       </section>
       <section class="card">
-        <span class="step-label">3 · Send to VMR</span>
+        <span class="step-label">3 · Save company evidence</span>
         <button id="company-send-btn" class="btn btn-primary full" type="button" disabled>
-          Send reviewed company snapshot
+          Save company evidence
         </button>
         <div id="company-send-state" class="send-state" aria-live="polite"></div>
         <div id="company-send-actions" class="row gap"></div>
@@ -113,8 +195,8 @@
     <section class="card" id="unsupported-section" hidden>
       <span class="step-label">Unsupported page</span>
       <p class="small muted" id="unsupported-detail">
-        Open a Sales Navigator people-search results page or a LinkedIn profile
-        (linkedin.com/in/…) to capture.
+        Open a LinkedIn profile (linkedin.com/in/…) or a Sales Navigator
+        people-search results page to capture a contact.
       </p>
     </section>
     <section class="card" id="challenge-section" hidden>
@@ -125,92 +207,25 @@
       </p>
     </section>
 
-    <div id="salesnav-sections">
-    <!-- 1. Page detection -->
-    <section class="card" id="detect-card">
-      <div class="row space-between">
-        <span class="step-label">1 · Page</span>
-        <button id="refresh-detect" class="btn btn-ghost" type="button">Refresh</button>
-      </div>
-      <div id="detect-status" class="status status-neutral">Checking active tab…</div>
-      <div id="detect-detail" class="muted small"></div>
-    </section>
-
-    <!-- 2. Capture -->
-    <section class="card">
-      <div class="row space-between">
-        <span class="step-label">2 · Capture</span>
-        <span id="page-badge" class="badge badge-muted">page ?</span>
-      </div>
-      <button id="capture-btn" class="btn btn-primary full" type="button" disabled>
-        Capture visible records
-      </button>
-      <div id="capture-feedback" class="small muted"></div>
-    </section>
-
-    <!-- 3. Review batch -->
-    <section class="card">
-      <div class="row space-between">
-        <span class="step-label">3 · Review batch</span>
-        <button id="clear-btn" class="btn btn-ghost danger" type="button">Clear batch</button>
-      </div>
-      <div id="summary" class="summary-grid"></div>
-      <div class="row wrap gap" id="filter-row">
-        <label class="checkbox small">
-          <input type="checkbox" id="only-issues" /> Only records with warnings
-        </label>
-      </div>
-      <div id="records" class="records" aria-live="polite"></div>
-    </section>
-
-    <!-- 4. Campaign -->
-    <section class="card">
-      <span class="step-label">4 · Campaign</span>
-      <div class="row gap">
-        <select id="campaign-select" class="grow">
-          <option value="">— none selected —</option>
-        </select>
-        <button id="fetch-campaigns" class="btn btn-ghost" type="button">Fetch</button>
-      </div>
-      <label class="small muted" for="campaign-manual">Or enter a campaign ID manually</label>
-      <input id="campaign-manual" class="input" type="text" placeholder="campaign id" />
-    </section>
-
-    <!-- 5. Send / export -->
-    <section class="card">
-      <span class="step-label">5 · Send to VMR or export</span>
-      <div class="row gap wrap">
-        <button id="export-json" class="btn" type="button">Download JSON</button>
-        <button id="export-csv" class="btn" type="button">Download CSV</button>
-      </div>
-      <div class="send-target row gap wrap">
-        <label class="small">Target</label>
-        <select id="send-target">
-          <option value="mock">Mock receiver (test)</option>
-          <option value="backend">Local VMR backend</option>
-        </select>
-        <button id="send-btn" class="btn btn-primary" type="button">Send batch</button>
-      </div>
-      <div id="send-state" class="send-state" aria-live="polite"></div>
-      <div id="send-actions" class="row gap"></div>
-    </section>
-
-    <!-- 6. Settings (collapsible) -->
     <details class="card" id="settings">
       <summary class="step-label">Settings</summary>
       <label class="small muted" for="backend-url">Local backend base URL</label>
       <input id="backend-url" class="input" type="text" placeholder="http://127.0.0.1:8000" />
       <label class="small muted" for="mock-url">Mock receiver URL</label>
       <input id="mock-url" class="input" type="text" placeholder="http://127.0.0.1:8787/…" />
-      <label class="small muted" for="max-records">Max records per batch</label>
+      <label class="small muted" for="send-target">Save target</label>
+      <select id="send-target">
+        <option value="mock">Mock receiver (test)</option>
+        <option value="backend">Local VMR backend</option>
+      </select>
+      <label class="small muted" for="max-records">Max contacts per capture batch</label>
       <input id="max-records" class="input" type="number" min="1" max="500" />
       <button id="save-settings" class="btn btn-ghost" type="button">Save settings</button>
       <p class="tiny muted">
         Only loopback origins are permitted. No credentials, cookies, or tokens
-        are ever stored or sent. Nothing is transmitted without pressing “Send”.
+        are ever stored or sent. Nothing is transmitted without pressing “Save”.
       </p>
     </details>
-    </div><!-- /salesnav-sections -->
 
     <footer class="tiny muted">
       Operator-driven capture only · no unattended scraping · no login automation
@@ -220,6 +235,7 @@
     <script src="../common/normalize.js"></script>
     <script src="../common/dedupe.js"></script>
     <script src="../common/schema.js"></script>
+    <script src="../common/contact-schema.js"></script>
     <script src="../common/permissions.js"></script>
     <script src="../common/handoff.js"></script>
     <script src="sidepanel.js"></script>

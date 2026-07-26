@@ -93,7 +93,11 @@ External systems are adapters, not authoritative sources of truth.
 - **Saleshandy** owns scheduling, mailbox rotation, warm-up, sending, and delivery
   operations. Relevant outcomes must return to the application database.
 - **Sales Navigator and source adapters** may collect authorized prospect data,
-  but must send it through the same staged import and reconciliation pipeline.
+  but must send it through the same reconciliation rules the rest of the system
+  uses (shared normalization, identity, provenance/freshness, suppression). A
+  spreadsheet import stages into a campaign's workbench; a contact-first capture
+  saves a permanent person with no campaign at all. Neither may bypass those
+  rules or reach the database from client code.
 
 ## Development Operating Loop
 
@@ -152,6 +156,12 @@ The initial research threshold is an absolute score of **85/100**, not the top
 
 ## Non-Negotiable Guardrails
 
+- Contacts are permanent; campaigns are a later, temporary use of a saved
+  audience. Acquiring a contact never requires, creates, or records a campaign,
+  and never makes that contact outreach-eligible.
+- An existing contact may be matched and refreshed automatically ONLY on an
+  exact normalized LinkedIn profile URL. Name, company, title, location, and
+  headline — alone or combined — may surface review candidates and nothing more.
 - Never send or schedule outreach without explicit approval of the exact draft version.
 - Editing an approved draft invalidates that approval.
 - Never contact an opted-out, suppressed, hard-bounced, or legally excluded address.

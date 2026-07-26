@@ -526,6 +526,46 @@
     return results;
   }
 
+  // ---- About section -------------------------------------------------------
+
+  // Longest About text kept, mirroring the wire contract's bound. A profile
+  // longer than this is truncated at a whole line rather than mid-sentence.
+  const MAX_ABOUT_CHARS = 8000;
+
+  /** The rendered About section, or null. Heading text first, component key second. */
+  function findAboutSection(doc) {
+    if (!doc || typeof doc.querySelectorAll !== "function") return null;
+    for (const sec of Array.from(doc.querySelectorAll("section"))) {
+      const heading = sec.querySelector("h2, .pvs-header__title-text");
+      const t = heading && normalize.cleanText(heading.textContent);
+      if (t && /^about$/i.test(t)) return sec;
+      if (lowerComponentKey(sec).includes("about")) return sec;
+    }
+    return null;
+  }
+
+  /**
+   * The visible About body, verbatim, minus the section heading and the
+   * expand/collapse affordances LinkedIn renders inside it. Returns null when
+   * the section is present but shows no readable body.
+   */
+  function aboutTextFrom(sectionEl) {
+    const lines = cleanLines(sectionEl).filter((line) => {
+      if (/^about$/i.test(line)) return false;
+      if (/^(…|\.\.\.)?\s*see more$/i.test(line)) return false;
+      if (/^see less$/i.test(line)) return false;
+      return true;
+    });
+    if (!lines.length) return null;
+    let text = lines.join("\n");
+    if (text.length > MAX_ABOUT_CHARS) {
+      const cut = text.slice(0, MAX_ABOUT_CHARS);
+      const lastBreak = cut.lastIndexOf("\n");
+      text = lastBreak > 0 ? cut.slice(0, lastBreak) : cut;
+    }
+    return text || null;
+  }
+
   // ---- Public entry point --------------------------------------------------
 
   /**
@@ -644,15 +684,14 @@
       });
     }
 
-    // About section presence (content itself is out of first-release scope,
-    // but its absence is reported so the operator sees what was on the page).
-    const hasAbout = Array.from(doc.querySelectorAll("section")).some((sec) => {
-      const heading = sec.querySelector("h2, .pvs-header__title-text");
-      const t = heading && normalize.cleanText(heading.textContent);
-      if (t && /^about$/i.test(t)) return true;
-      return lowerComponentKey(sec).includes("about");
-    });
-    if (!hasAbout) missingSections.push("about");
+    // About section. Only what is already rendered on the opened page is read:
+    // the extension never expands "see more", never fetches, and never
+    // summarizes. An absent section is reported rather than guessed at.
+    const aboutSection = findAboutSection(doc);
+    const aboutText = aboutSection ? aboutTextFrom(aboutSection) : null;
+    if (!aboutSection) missingSections.push("about");
+    else if (!aboutText) missingSections.push("about_text");
+    profile.about_text = aboutText;
 
     const status =
       missingSections.length || pageWarnings.length || profileWarnings.length
@@ -704,6 +743,8 @@
       entryLayout,
       companyIdFromUrl,
       cleanLines,
+      findAboutSection,
+      aboutTextFrom,
     },
   };
 });

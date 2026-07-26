@@ -1,22 +1,36 @@
-# VMR Sales Navigator Capture — Chrome extension
+# VMR Contact Capture — Chrome extension
 
-Operator-driven capture of **visible** Sales Navigator records for the VMR
-Outbound Agent. It is the contact-acquisition **edge** of the system: it reads
-what the operator is already looking at, lets them review it, and hands an
-authorized batch to a narrow VMR intake endpoint (or a JSON/CSV export). Its
-responsibility ends there.
+Operator-driven acquisition of **visible** LinkedIn and Sales Navigator people
+for the VMR Outbound Agent. It is the contact-acquisition **edge** of the
+system: it reads what the operator is already looking at, lets them review and
+annotate it, and submits those people to a narrow VMR intake endpoint (or a
+JSON/CSV export). Its responsibility ends there.
+
+> **Save the person first. Decide what to do with them later.**
+>
+> Contacts are permanent. Campaigns are a later, temporary use of a saved
+> audience — the extension does not select one, require one, or store one.
 
 > Manifest V3 · no bundler · **zero runtime dependencies** · no remote code.
+
+The folder name (`salesnav-capture`) is historical: the extension began as a
+Sales Navigator listing capture. The path is kept so the committed contract
+schemas, backend loaders, and issue history stay continuous.
 
 ## Project boundary — what this does NOT do
 
 By deliberate design, the extension does **not**: connect to PostgreSQL/RDS,
 create or update contacts, run authoritative normalization, deduplicate database
-records, enforce or bypass suppressions, verify emails, score contacts, or
-schedule outreach. Those remain in the VMR backend. It also does **not** store
-LinkedIn credentials/cookies/tokens, automate login, solve CAPTCHAs, evade rate
-limits, auto-paginate, or call undocumented LinkedIn APIs. It operates only
-through pages the operator has opened and authenticated themselves.
+records, resolve identity, resolve or create labels, enforce or bypass
+suppressions, discover or verify emails, research companies, score or qualify
+contacts, or generate, approve, or schedule outreach. It also does not select,
+create, or require a campaign. All of that stays in the VMR backend or later in
+the workflow.
+
+It does **not** store LinkedIn credentials/cookies/tokens, automate login, solve
+CAPTCHAs, evade rate limits, auto-paginate, or call undocumented LinkedIn APIs.
+It operates only through pages the operator has opened and authenticated
+themselves.
 
 ## How the notebook was translated (conceptually)
 
@@ -61,11 +75,11 @@ Minimum Chrome version: 116 (side panel API).
 | host `https://www.linkedin.com/sales/*` (required) | Read the results page the operator opened (read-only), narrowly scoped |
 | host `https://www.linkedin.com/in/*` (required, DAT-012) | Read the MAIN profile page the operator opened (read-only) |
 | host `https://www.linkedin.com/company/*` (required, DAT-012) | Read the company page the operator opened (read-only) |
-| host `http://127.0.0.1/*`, `http://localhost/*` (**optional**) | POST the batch to the local VMR backend / mock receiver only |
+| host `http://127.0.0.1/*`, `http://localhost/*` (**optional**) | POST the submission to the local VMR backend / mock receiver, and read the label list and the existence-only lookup |
 
 The loopback hosts are declared as **optional** host permissions and are
-**requested explicitly, with a user gesture, before the first backend/mock send**
-(and before fetching campaigns). If the operator declines, the send is blocked
+**requested explicitly, with a user gesture, before the first backend/mock
+save** (and before reading the label list). If the operator declines, the send is blocked
 with a clear message and a Retry — nothing is transmitted. See the granted vs
 denied evidence in `docs/screenshots/` (`02_side_panel.png`,
 `03_side_panel_permission_denied.png`). No `history`, no broad `<all_urls>`, no
@@ -78,11 +92,15 @@ The side panel detects the active page and shows exactly one mode:
 
 | Mode | Surface | What it captures |
 | --- | --- | --- |
-| Sales Navigator Listings | `/sales/search/people`, `/sales/search/results/people` | Visible people-search result rows into a reviewable batch |
-| LinkedIn Person Profile | `https://www.linkedin.com/in/<id>` (MAIN page only) | Top card + nested experience entries into one reviewable snapshot (`linkedin-profile-capture/1.0.0`) |
-| LinkedIn Company Profile | `/company/<id>` home or About | Displayed firmographics into one reviewable snapshot (`linkedin-company-capture/1.0.0`) |
+| Sales Navigator Listings | `/sales/search/people`, `/sales/search/results/people` | Visible people-search result rows into a reviewable batch, saved as contacts |
+| LinkedIn Person Profile | `https://www.linkedin.com/in/<id>` (MAIN page only) | Top card, visible About text, and nested experience entries, saved as one contact |
+| LinkedIn Company Profile | `/company/<id>` home or About | Displayed firmographics as company evidence — **not** a contact (`linkedin-company-capture/1.0.0`) |
 | Unsupported Page | everything else (incl. `/in/<id>/details/...` sub-routes) | Nothing — the panel explains what to open |
 | Challenge / Login Required | checkpoint, captcha, authwall | Nothing — the operator resolves it themselves |
+
+Both person surfaces submit the same contact-first contract,
+`linkedin-contact-capture/2.0.0` — see
+[`docs/CONTACT_CAPTURE_CONTRACT.md`](./docs/CONTACT_CAPTURE_CONTRACT.md).
 
 Every mode is **operator-controlled**: the extension reads only the page the
 operator already opened, only on an explicit click, and sends only on an
@@ -106,21 +124,49 @@ not silently processed.
 
 ## Operating instructions
 
-1. **Page** — open and authenticate a Sales Navigator people search; the panel
-   confirms a supported page (or warns / halts on a challenge).
-2. **Capture** — click *Capture visible records*. The reader scrolls the current
-   page once (bounded) to materialize lazy rows, then extracts them.
-3. **Review** — inspect counts (included / excluded / missing fields / uncertain
-   identity / selector fails / pages), per-record warnings, and exclude any rows.
-   Move to the next page in Sales Navigator yourself and capture again — records
-   accumulate into one draft batch, de-duplicated by stable URL.
-4. **Campaign** — pick a campaign (fetched from the local backend) or type an ID.
-5. **Send or export** — *Download JSON* / *Download CSV*, or *Send batch* to the
-   mock receiver / local backend. Nothing is sent without this explicit action.
-6. **Workbench** — on success, open the staged batch in the operator workbench.
+### Save one person from their profile
+
+1. Open the person's MAIN profile page yourself (`linkedin.com/in/…`). The panel
+   shows **LinkedIn Person Profile**.
+2. Click *Read this profile page*. If Experience shows as missing, scroll the
+   page so it loads and capture again.
+3. Review the name, headline, location, current role, LinkedIn URL, About
+   excerpt, connections, open-to-work, and any warnings. Optionally exclude the
+   experience section.
+4. Optionally add **labels** and a **note** (both optional, both plain text).
+5. Click *Save Contact* — or *Refresh Contact*, which the panel offers when the
+   backend already knows that exact profile URL.
+6. The result reports what actually happened (created / refreshed / staged /
+   ambiguous / duplicate / suppressed) and links to the contact and the capture
+   record.
+
+### Save several people from a results page
+
+1. Open and authenticate a Sales Navigator people search; the panel confirms a
+   supported page (or warns / halts on a challenge).
+2. Click *Capture visible contacts*. The reader scrolls the current page once
+   (bounded) to materialize lazy rows, then extracts them.
+3. Review counts (included / excluded / missing fields / uncertain identity /
+   selector fails / pages) and per-row warnings, and **exclude** any row you do
+   not want. Move to the next page in Sales Navigator yourself and capture
+   again — rows accumulate into one draft batch, de-duplicated by stable URL.
+4. Optionally add labels and a note for the submission.
+5. Click *Save N included contacts*, or *Download JSON* / *Download CSV*.
+   Nothing is sent without this explicit action.
+6. Open the saved contacts from the returned submission record.
 
 The draft batch is persisted in `chrome.storage.local`, so it survives closing
 the side panel or refreshing the page. Use *Clear batch* to start over.
+
+### Upgrading from the campaign-era extension
+
+On install and on browser start, campaign-era local state is retired
+**explicitly**: any v1 draft is archived verbatim under one storage key (and can
+be downloaded from the panel's one-time notice), the live draft keys and stale
+staged-result summaries are cleared, and the remembered campaign is dropped. A
+v1 draft is never resubmitted — its idempotency keys may already have been
+accepted under the old contract, so replaying it would conflict or split one
+person's evidence in two. Capture again to save those people contact-first.
 
 ## Export fallback and mock receiver
 
@@ -130,34 +176,46 @@ Until the backend adapter lands, three output modes exist: **Download JSON**,
 explicit operator action, and no remote URL is embedded — only loopback origins
 are permitted.
 
-## Planned VMR backend contract
+## VMR backend contracts
 
-See [`docs/BACKEND_CONTRACT.md`](./docs/BACKEND_CONTRACT.md),
-[`docs/intake.schema.json`](./docs/intake.schema.json), and the fixtures in
-`docs/fixtures/`. Versioned as `salesnav-capture/1.0.0`; idempotent on
-`client_batch_id`; stages data only. The small backend adapter still required is
-listed at the end of that document.
+The live contract is
+[`docs/CONTACT_CAPTURE_CONTRACT.md`](./docs/CONTACT_CAPTURE_CONTRACT.md)
+(`linkedin-contact-capture/2.0.0`, `POST /api/intake/contact-captures`),
+idempotent on `client_submission_id`, with no campaign field of any kind.
 
-## Known fragility of page selectors (profile + company)
+Company evidence keeps its own contract
+([`docs/PROFILE_CONTRACT.md`](./docs/PROFILE_CONTRACT.md), company section) —
+a company page is not a person.
 
-The person-profile adapter anchors on `componentkey` attributes
-(`*topcard*`, `*entity-collection-item*`) with classic-DOM and heading-text
-fallbacks; the company adapter anchors on the About page's definition list
-(`dt`/`dd` label pairs) read by DOM adjacency. Timeline dates are parsed only
-from deterministic forms ("Jan 2021 - Present", "2019 - 2022"); anything else
-stays raw text with `dates_reliable: false`. When LinkedIn changes structure,
-captures fail VISIBLY (`structure_unrecognized`) — fix by updating the ordered
-strategy lists in `src/common/profile-extraction.js` /
-`src/common/company-extraction.js` and their fixtures, never by guessing.
+[`docs/BACKEND_CONTRACT.md`](./docs/BACKEND_CONTRACT.md) and the
+`linkedin-profile-capture/1.0.0` half of `PROFILE_CONTRACT.md` are the **legacy**
+campaign-era contracts. They stay documented and accepted at their own routes so
+previously staged batches and snapshots remain readable; the extension no longer
+produces them.
 
 ## Known fragility of page selectors
 
-LinkedIn markup changes without notice. The `data-anonymize` attributes are the
-most stable hooks but are not guaranteed. If they disappear, extraction falls
-back to structural/class strategies; if **nothing** matches on a results page,
-the capture **fails visibly** (`structure_unrecognized`) rather than returning
-empty "success". Treat a sudden drop in captured fields as a signal to update
-`src/common/extraction.js` selectors (and its tests).
+LinkedIn markup changes without notice, and the extension is built to fail
+visibly when it does rather than to guess.
+
+- **Results rows** — `data-anonymize` attributes are the most stable hooks but
+  are not guaranteed. If they disappear, extraction falls back to
+  structural/class strategies; if **nothing** matches, the capture fails with
+  `structure_unrecognized` rather than returning an empty "success". Treat a
+  sudden drop in captured fields as a signal to update
+  `src/common/extraction.js` and its tests.
+- **Person profiles** — the adapter anchors on `componentkey` attributes
+  (`*topcard*`, `*entity-collection-item*`, `*about*`) with classic-DOM and
+  heading-text fallbacks. Timeline dates are parsed only from deterministic
+  forms ("Jan 2021 - Present", "2019 - 2022"); anything else stays raw text with
+  `dates_reliable: false`. Visible About text is read only from the section the
+  page already rendered — never expanded, fetched, or summarized.
+- **Company pages** — the adapter anchors on the About page's definition list
+  (`dt`/`dd` label pairs) read by DOM adjacency.
+
+Fix a break by updating the ordered strategy lists in
+`src/common/extraction.js` / `src/common/profile-extraction.js` /
+`src/common/company-extraction.js` and their fixtures, never by guessing.
 
 ## Safe failure behaviour
 
@@ -177,7 +235,8 @@ or platform-limit bypass, no credential/cookie/token storage, no analytics.
 
 ```bash
 npm install          # dev-only (jsdom); the extension ships no runtime deps
-npm test             # node --test: extraction, normalize, dedupe, schema, receiver
+npm test             # node --test: extraction, normalize, dedupe, contracts,
+                     # campaign decoupling, local-state migration, receiver
 npm run mock-receiver
 ```
 

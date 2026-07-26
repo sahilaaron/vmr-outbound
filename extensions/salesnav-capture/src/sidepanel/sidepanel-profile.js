@@ -1,55 +1,31 @@
 /**
- * Side-panel controller for the dual-mode workflow (DAT-012C).
+ * Side-panel mode controller: which supported surface is in the active tab, the
+ * person-profile capture workflow, and the company-evidence workflow.
  *
- * Owns the mode banner (which supported surface is in the active tab) and the
- * person-profile capture mode. The existing SalesNav controller (sidepanel.js)
- * is untouched; this module only toggles section visibility so exactly one
- * mode's workflow is shown:
+ * Contact-first: the primary action for a person is "Save Contact", or "Refresh
+ * Contact" when the backend already knows that exact profile URL. No campaign is
+ * selected, required, or stored anywhere in this panel.
  *
+ * Exactly one mode's sections are visible at a time:
  *   Sales Navigator Listings · LinkedIn Person Profile · LinkedIn Company
  *   Profile · Unsupported Page · Challenge / Login Required
  *
- * All scraped text is rendered with textContent (never innerHTML). Nothing is
- * transmitted without the operator pressing Send.
+ * All captured text is rendered with textContent (never innerHTML). Nothing is
+ * transmitted without the operator pressing Save.
  */
 (function () {
   "use strict";
 
   const { constants, handoff, permissions } = self.SNCapture;
   const { SURFACES, CAPTURE_STATUS } = constants;
+  const panel = self.VMRPanel;
   const $ = (id) => document.getElementById(id);
+  const el = panel.el;
+  const send = panel.send;
+  const setStatus = panel.setStatus;
 
   let currentDraft = null;
-  let profilePrefs = null;
-
-  function send(message) {
-    return new Promise((resolve) => {
-      chrome.runtime.sendMessage(message, (resp) => {
-        if (chrome.runtime.lastError) {
-          resolve({ ok: false, error: "runtime_error", detail: chrome.runtime.lastError.message });
-        } else {
-          resolve(resp);
-        }
-      });
-    });
-  }
-
-  function el(tag, opts, children) {
-    const node = document.createElement(tag);
-    if (opts) {
-      if (opts.class) node.className = opts.class;
-      if (opts.text != null) node.textContent = opts.text;
-      if (opts.attrs) for (const [k, v] of Object.entries(opts.attrs)) node.setAttribute(k, v);
-      if (opts.on) for (const [k, v] of Object.entries(opts.on)) node.addEventListener(k, v);
-    }
-    for (const c of children || []) if (c) node.appendChild(c);
-    return node;
-  }
-
-  function setStatus(elm, cls, text) {
-    elm.className = "status " + cls;
-    elm.textContent = text;
-  }
+  let currentMode = null;
 
   // ---- mode switching ------------------------------------------------------
 
@@ -62,13 +38,24 @@
     [SURFACES.UNSUPPORTED]: "Unsupported Page",
   };
 
+  // The labels/note and Save cards belong to the two CONTACT workflows only.
+  // Company evidence is not a person, so it keeps its own save button.
+  const CONTACT_MODES = new Set([SURFACES.SALESNAV_PEOPLE_RESULTS, SURFACES.PERSON_PROFILE]);
+
   function showSections(mode) {
+    currentMode = mode;
     $("salesnav-sections").hidden = mode !== SURFACES.SALESNAV_PEOPLE_RESULTS;
     $("profile-sections").hidden = mode !== SURFACES.PERSON_PROFILE;
     $("company-sections").hidden = mode !== SURFACES.COMPANY_PROFILE;
+    $("metadata-card").hidden = !CONTACT_MODES.has(mode);
+    $("save-card").hidden = !CONTACT_MODES.has(mode);
     $("unsupported-section").hidden =
       mode !== SURFACES.UNSUPPORTED && mode !== SURFACES.UNAVAILABLE;
     $("challenge-section").hidden = mode !== SURFACES.CHALLENGE;
+
+    if (mode === SURFACES.SALESNAV_PEOPLE_RESULTS) panel.syncBatchSaveAction();
+    else if (mode === SURFACES.PERSON_PROFILE) syncProfileSaveAction();
+    else panel.setSaveHandler({ handler: null, reset: true });
   }
 
   async function refreshMode() {
@@ -86,6 +73,8 @@
     setStatus(statusEl, cls, label);
     detailEl.textContent = (r && r.url) || "";
     showSections(mode);
+
+    if (mode === SURFACES.SALESNAV_PEOPLE_RESULTS) panel.refreshDetect();
 
     if (mode === SURFACES.PERSON_PROFILE) {
       // DOM-level refinement (login wall / structure) + entry count badge.
@@ -122,10 +111,10 @@
     currentDraft = draftView;
     const box = $("profile-review");
     box.textContent = "";
-    $("profile-send-btn").disabled = !draftView;
     $("profile-exclude-exp-row").hidden = !draftView;
     if (!draftView) {
       box.appendChild(el("p", { class: "muted small", text: "No profile captured yet." }));
+      syncProfileSaveAction();
       return;
     }
     const p = draftView.profile || {};
@@ -140,9 +129,11 @@
         currentRole ? [currentRole.job_title, currentRole.company_name].filter(Boolean).join(" @ ") : null
       ),
       reviewRow("Current company", currentRole ? currentRole.company_name : null),
+      reviewRow("LinkedIn URL", p.linkedin_profile_url),
       reviewRow("Experience entries", draftView.experienceCount),
       reviewRow("Connections", p.connection_count),
       reviewRow("Open to work", p.open_to_work === true ? "yes" : p.open_to_work === false ? "no" : null),
+      reviewRow("About", p.about_text ? truncate(p.about_text, 240) : null),
       reviewRow("Captured at", draftView.capturedAt),
       reviewRow("Capture status", draftView.status),
     ]);
@@ -186,6 +177,41 @@
     }
 
     $("profile-exclude-exp").checked = draftView.excludedSections.includes("experience");
+    syncProfileSaveAction();
+  }
+
+  function truncate(text, max) {
+    const s = String(text);
+    return s.length > max ? s.slice(0, max) + "…" : s;
+  }
+
+  /**
+   * Label the shared Save button for the captured person. The backend is asked
+   * only whether this exact profile URL already has a contact — existence, never
+   * contact data — so the operator knows in advance whether they are creating a
+   * record or refreshing one. If the backend cannot answer, the action stays
+   * "Save Contact" rather than guessing.
+   */
+  async function syncProfileSaveAction() {
+    if (currentMode !== SURFACES.PERSON_PROFILE) return;
+    if (!currentDraft) {
+      panel.setSaveHandler({ handler: null, label: "Save Contact", disabled: true });
+      return;
+    }
+    panel.setSaveHandler({
+      handler: () => send({ type: "SAVE_CONTACT" }),
+      label: "Save Contact",
+    });
+    const match = await send({ type: "PROFILE_MATCH_STATE" });
+    if (currentMode !== SURFACES.PERSON_PROFILE || !currentDraft) return;
+    if (match && match.ok && match.match === "exact") {
+      panel.setSaveHandler({ handler: () => send({ type: "SAVE_CONTACT" }), label: "Refresh Contact" });
+    } else if (match && match.ok && match.match === "ambiguous") {
+      panel.setSaveHandler({
+        handler: () => send({ type: "SAVE_CONTACT" }),
+        label: "Save Contact (identity ambiguous)",
+      });
+    }
   }
 
   // ---- actions -------------------------------------------------------------
@@ -213,12 +239,11 @@
       fb.textContent =
         r.captureStatus === CAPTURE_STATUS.PARTIAL
           ? "Captured with gaps — review the missing sections below."
-          : "Captured. Review before sending.";
+          : "Captured. Review before saving.";
     }
     renderDraft(r.draftView);
-    // A new capture invalidates any previously staged-result display.
-    $("profile-send-state").textContent = "";
-    $("profile-send-actions").textContent = "";
+    panel.setSaveHandler({ handler: () => send({ type: "SAVE_CONTACT" }), label: "Save Contact", reset: true });
+    syncProfileSaveAction();
   }
 
   async function doClear() {
@@ -226,8 +251,7 @@
     const r = await send({ type: "PROFILE_CLEAR" });
     if (r && r.ok) {
       renderDraft(null);
-      $("profile-send-state").textContent = "";
-      $("profile-send-actions").textContent = "";
+      panel.setSaveHandler({ handler: null, label: "Save Contact", disabled: true, reset: true });
       $("profile-capture-feedback").textContent = "Draft cleared.";
     }
   }
@@ -245,66 +269,7 @@
     }
   }
 
-  function backendBase() {
-    return String((profilePrefs || {}).backendBaseUrl || "").replace(/\/$/, "");
-  }
-
-  async function doSend() {
-    const state = $("profile-send-state");
-    const actions = $("profile-send-actions");
-    actions.textContent = "";
-    const perm = await ensureHostPermission(backendBase() + constants.PROFILE_INTAKE_PATH);
-    if (!perm.granted) {
-      setStatus(
-        state,
-        "status-err",
-        perm.pattern
-          ? `Loopback access to ${perm.pattern} was not granted. Approve it to send.`
-          : "Backend URL must be a loopback (127.0.0.1 / localhost) URL."
-      );
-      actions.appendChild(el("button", { class: "btn btn-ghost", text: "Retry", on: { click: doSend } }));
-      return;
-    }
-    setStatus(state, "status-neutral", "Sending…");
-    const r = await send({ type: "PROFILE_SEND" });
-    if (r && r.ok) {
-      renderStagedResult(r.result);
-    } else {
-      const detail = handoff.describeSendError(r);
-      setStatus(state, "status-err", detail.headline);
-      if (detail.detail) state.appendChild(el("div", { class: "small muted", text: detail.detail }));
-      // The reviewed draft is preserved: a retry re-sends the SAME
-      // client_capture_id, which the backend treats idempotently.
-      if (detail.canRetry !== false) {
-        actions.appendChild(el("button", { class: "btn btn-ghost", text: "Retry", on: { click: doSend } }));
-      }
-    }
-  }
-
-  function renderStagedResult(result) {
-    if (!result) return;
-    const state = $("profile-send-state");
-    const actions = $("profile-send-actions");
-    actions.textContent = "";
-    const already = result.alreadyReceived ? " (already received — idempotent)" : "";
-    setStatus(
-      state,
-      "status-ok",
-      `Stored${already}: outcome ${result.outcome || "stored"}` +
-        (result.snapshotId ? ` · id ${result.snapshotId}` : "")
-    );
-    if (result.workbenchUrl && handoff.isOpenableWorkbenchUrl(result.workbenchUrl)) {
-      actions.appendChild(
-        el("a", {
-          class: "btn btn-primary",
-          text: "Open snapshot record",
-          attrs: { href: result.workbenchUrl, target: "_blank", rel: "noreferrer" },
-        })
-      );
-    }
-  }
-
-  // ---- company mode (DAT-012G) ---------------------------------------------
+  // ---- company mode: company evidence, never a contact ---------------------
 
   function renderCompanyDraft(draftView) {
     const box = $("company-review");
@@ -371,7 +336,7 @@
       map[r.captureStatus] ||
       (r.captureStatus === CAPTURE_STATUS.PARTIAL
         ? "Captured with gaps — open the About page for full firmographics if needed."
-        : "Captured. Review before sending.");
+        : "Captured. Review before saving.");
     renderCompanyDraft(r.draftView);
     $("company-send-state").textContent = "";
     $("company-send-actions").textContent = "";
@@ -391,13 +356,13 @@
     const state = $("company-send-state");
     const actions = $("company-send-actions");
     actions.textContent = "";
-    const perm = await ensureHostPermission(backendBase() + constants.COMPANY_INTAKE_PATH);
+    const perm = await ensureHostPermission(panel.backendBase() + constants.COMPANY_INTAKE_PATH);
     if (!perm.granted) {
-      setStatus(state, "status-err", "Loopback access was not granted. Approve it to send.");
+      setStatus(state, "status-err", "Loopback access was not granted. Approve it to save.");
       actions.appendChild(el("button", { class: "btn btn-ghost", text: "Retry", on: { click: doCompanySend } }));
       return;
     }
-    setStatus(state, "status-neutral", "Sending…");
+    setStatus(state, "status-neutral", "Saving…");
     const r = await send({ type: "COMPANY_SEND" });
     if (r && r.ok) {
       renderCompanyStagedResult(r.result);
@@ -426,33 +391,11 @@
       actions.appendChild(
         el("a", {
           class: "btn btn-primary",
-          text: "Open snapshot record",
+          text: "Open company record",
           attrs: { href: result.workbenchUrl, target: "_blank", rel: "noreferrer" },
         })
       );
     }
-  }
-
-  // ---- campaigns (reuses the backend campaign endpoint) ---------------------
-
-  async function fetchCampaigns() {
-    const sel = $("profile-campaign-select");
-    const perm = await ensureHostPermission(backendBase() + "/api/campaigns");
-    if (!perm.granted) {
-      sel.title = "Grant loopback access to fetch campaigns.";
-      return;
-    }
-    const r = await send({ type: "FETCH_CAMPAIGNS" });
-    if (!r || !r.ok) {
-      sel.title = "Could not fetch campaigns (" + ((r && r.error) || "error") + ").";
-      return;
-    }
-    sel.textContent = "";
-    sel.appendChild(el("option", { text: "— none selected —", attrs: { value: "" } }));
-    for (const c of r.campaigns) {
-      sel.appendChild(el("option", { text: `${c.name} (${c.status})`, attrs: { value: c.id } }));
-    }
-    if (profilePrefs && profilePrefs.lastCampaignId) sel.value = profilePrefs.lastCampaignId;
   }
 
   // ---- wire up -------------------------------------------------------------
@@ -461,11 +404,6 @@
     $("refresh-mode").addEventListener("click", refreshMode);
     $("profile-capture-btn").addEventListener("click", doCapture);
     $("profile-clear-btn").addEventListener("click", doClear);
-    $("profile-send-btn").addEventListener("click", doSend);
-    $("profile-fetch-campaigns").addEventListener("click", fetchCampaigns);
-    $("profile-campaign-select").addEventListener("change", async (e) => {
-      profilePrefs = (await send({ type: "SET_PREFS", prefs: { lastCampaignId: e.target.value || "" } })).prefs;
-    });
     $("profile-exclude-exp").addEventListener("change", async () => {
       const r = await send({ type: "PROFILE_TOGGLE_SECTION", section: "experience" });
       if (r && r.ok) renderDraft(r.draftView);
@@ -477,11 +415,12 @@
 
     const state = await send({ type: "PROFILE_GET_STATE" });
     if (state && state.ok) {
-      profilePrefs = state.prefs;
+      panel.setPrefs(state.prefs);
+      if (state.metadata) panel.setMetadata(state.metadata);
       renderDraft(state.draftView);
-      // Recovery: a staged result (and the reviewed draft that produced it)
-      // survives panel close/reopen without recapture or resend.
-      if (state.lastResult) renderStagedResult(state.lastResult);
+      // Recovery: a saved outcome (and the reviewed draft that produced it)
+      // survives panel close/reopen without recapture or resave.
+      if (state.lastResult) panel.renderSaveResult(state.lastResult);
     }
     const companyState = await send({ type: "COMPANY_GET_STATE" });
     if (companyState && companyState.ok) {

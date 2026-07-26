@@ -1,5 +1,17 @@
 # LinkedIn profile & company capture contracts (DAT-012A)
 
+> **PARTLY SUPERSEDED (DAT-013).** `linkedin-profile-capture/1.0.0` is now
+> **legacy**: a person captured on a profile page is submitted through the
+> contact-first contract instead — see
+> [`CONTACT_CAPTURE_CONTRACT.md`](./CONTACT_CAPTURE_CONTRACT.md). Its route and
+> this section remain so previously stored snapshots stay readable and the
+> transition is explicit.
+>
+> `linkedin-company-capture/1.0.0` is **current and unchanged**: a company page
+> is not a person, so company evidence keeps its own contract. Its
+> `campaign_id` is now always null — company evidence never belonged to a
+> campaign and the extension no longer sends one.
+
 This document defines the versioned contracts between the extension and the
 VMR backend for **operator-opened ordinary LinkedIn pages**:
 

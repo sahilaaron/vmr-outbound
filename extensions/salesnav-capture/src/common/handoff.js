@@ -20,9 +20,16 @@
   "use strict";
 
   const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
-  // The only workbench destinations the extension will open: the real backend
-  // batch page and the dev mock receiver's workbench link.
-  const WORKBENCH_PATH_PREFIXES = ["/imports/", "/workbench/", "/profiles/"];
+  // The only workbench destinations the extension will open: the contact-first
+  // capture and contact records, the legacy batch/profile pages, and the dev
+  // mock receiver's workbench link.
+  const WORKBENCH_PATH_PREFIXES = [
+    "/contact-captures/",
+    "/contacts/",
+    "/imports/",
+    "/workbench/",
+    "/profiles/",
+  ];
 
   /**
    * Whether a backend-returned URL may be opened as the operator workbench.
@@ -89,11 +96,52 @@
     };
   }
 
+  /**
+   * Reduce a successful contact-capture submission to a small, safe, recoverable
+   * summary (DAT-013). Stores identifiers, truthful counts, and per-capture
+   * outcomes with openable record links only — never captured personal values.
+   */
+  function sanitizeContactSubmissionResult(body, meta) {
+    const b = body || {};
+    const m = meta || {};
+    const counts = b.counts && typeof b.counts === "object" ? b.counts : {};
+    const safeCounts = {};
+    for (const [key, value] of Object.entries(counts)) {
+      if (Number.isFinite(value)) safeCounts[key] = value;
+    }
+    const results = Array.isArray(b.results) ? b.results : [];
+    return {
+      submissionId: typeof b.submission_id === "string" ? b.submission_id : null,
+      clientSubmissionId:
+        typeof b.client_submission_id === "string" ? b.client_submission_id : null,
+      alreadyReceived: b.already_received === true,
+      receivedAt: typeof b.received_at === "string" ? b.received_at : null,
+      counts: safeCounts,
+      results: results.slice(0, 500).map((r) => ({
+        outcome: typeof r.outcome === "string" ? r.outcome : null,
+        captureUrl: isOpenableWorkbenchUrl(r.capture_url) ? r.capture_url : null,
+        contactUrl: isOpenableWorkbenchUrl(r.contact_url) ? r.contact_url : null,
+        reviewCandidateCount: Number.isFinite(r.review_candidate_count)
+          ? r.review_candidate_count
+          : 0,
+        labelsApplied: Array.isArray(r.labels_applied) ? r.labels_applied.length : 0,
+      })),
+      workbenchUrl: isOpenableWorkbenchUrl(b.operator_workbench_url)
+        ? b.operator_workbench_url
+        : null,
+      submittedAt: typeof m.submittedAt === "string" ? m.submittedAt : null,
+    };
+  }
+
   // Stable, PII-free classification of a send failure. `resp` is the service
   // worker's send result ({ ok:false, error, status?, body? }).
   const BACKEND_MESSAGES = {
     invalid_json: "The backend could not read the batch (invalid request). This is a bug — retry, and report it if it persists.",
     validation_failed: "The batch failed backend validation (unsupported or invalid contract).",
+    unsupported_contract:
+      "The backend does not accept this capture contract. Reload the extension so it matches the backend version.",
+    client_submission_id_conflict:
+      "This submission was already saved with different content. Capture again before saving new content.",
     campaign_invalid: "The selected campaign is invalid or unavailable. Choose a valid campaign and retry.",
     payload_too_large: "The batch is too large for the backend. Capture fewer records and retry.",
     unauthorized: "The backend refused the request (local access or origin not allowed).",
@@ -135,7 +183,9 @@
           detail,
           canRetry:
             backendCode !== "validation_failed" &&
-            backendCode !== "client_capture_id_conflict",
+            backendCode !== "unsupported_contract" &&
+            backendCode !== "client_capture_id_conflict" &&
+            backendCode !== "client_submission_id_conflict",
         };
       }
       default:
@@ -147,6 +197,7 @@
     isOpenableWorkbenchUrl,
     sanitizeStageResult,
     sanitizeProfileStageResult,
+    sanitizeContactSubmissionResult,
     describeSendError,
     WORKBENCH_PATH_PREFIXES,
   };

@@ -53,6 +53,7 @@ class LinkedInProfileSnapshot(Base):
         Index("ix_li_profile_snapshots_normalized_url", "normalized_profile_url"),
         Index("ix_li_profile_snapshots_public_identifier", "public_identifier"),
         Index("ix_li_profile_snapshots_matched_contact_id", "matched_contact_id"),
+        Index("ix_li_profile_snapshots_submission_id", "submission_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -69,9 +70,39 @@ class LinkedInProfileSnapshot(Base):
     # The backend-normalized identity URL used for exact matching (DAT-012E).
     normalized_profile_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     public_identifier: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # Legacy (``linkedin-profile-capture/1.0.0``) captures could carry an
+    # optional campaign selection. The contact-first contract has no campaign at
+    # all; the column is retained, nullable, so existing rows stay readable.
     campaign_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("campaigns.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # --- Contact-first submission grouping (DAT-013) --------------------------
+    # Set for captures that arrived through the contact-first contract. Legacy
+    # single-profile captures leave it null.
+    submission_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("contact_capture_submissions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # "linkedin_profile" | "salesnav_people_search" — the reviewed workflow.
+    capture_mode: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    # The page surface the evidence came from, verbatim from the contract.
+    source_surface: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    # The Sales Navigator lead URL when the row showed one. NEVER an identity
+    # key: it cannot match a contact and is preserved as context only.
+    salesnav_lead_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Label NAMES the operator requested for this capture, verbatim. Canonical
+    # label rows and assignments live in the contact_labels tables.
+    operator_labels: Mapped[list[Any] | None] = mapped_column(JSONB, nullable=True)
+    # When two captures in ONE submission resolve to the same identity, the
+    # later ones point at the first and are not reconciled a second time. The
+    # evidence is still preserved — nothing is dropped.
+    duplicate_of_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("linkedin_profile_snapshots.id", ondelete="SET NULL"),
         nullable=True,
     )
 

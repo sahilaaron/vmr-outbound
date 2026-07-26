@@ -118,6 +118,24 @@ class Settings(BaseSettings):
         description="Maximum LinkedIn company intake body size in bytes (default 512 KB).",
     )
 
+    # --- Contact-first capture intake (DAT-013, local only) -------------------
+    # One submission may carry up to 500 reviewed people, each with its verbatim
+    # raw snapshot, so the ceiling is larger than a single-profile capture.
+    # Oversized bodies are rejected with 413 before parsing.
+    contact_capture_intake_max_bytes: int = Field(
+        default=8 * 1024 * 1024,
+        gt=0,
+        description="Maximum contact-capture submission body size in bytes (default 8 MB).",
+    )
+    # Wall-clock budget for one submission. Reconciling a 500-person submission
+    # does far more work than staging a single profile, so the budget is larger;
+    # a breach rolls the whole submission back and returns 504.
+    contact_capture_intake_timeout_seconds: float = Field(
+        default=60.0,
+        gt=0,
+        description="Wall-clock budget in seconds for one contact-capture submission.",
+    )
+
     # --- Company-domain enrichment via logo.dev (DAT-010, local only) --------
     # The official logo.dev Search Brands by Name API key. Read from
     # ``LOGO_DEV_API_KEY``. It is a SECRET: ``repr=False`` and ``exclude=True``

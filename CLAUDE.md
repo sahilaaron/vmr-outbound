@@ -41,6 +41,9 @@ represents an unpushed local commit as present on GitHub.
 - Never fabricate evidence, verification outcomes, scores, or completion.
 - Catch-all/unknown stay uncertain; a domain pattern never verifies a mailbox.
 - No unattended scraping, CAPTCHA/anti-bot evasion, or platform-terms bypass.
+- Contacts are permanent and never require a campaign; acquiring one never makes
+  it outreach-eligible. Only an exact normalized LinkedIn profile URL may
+  auto-match an existing contact.
 - No paid model APIs or new paid services without explicit approval.
 - Secrets never in source, prompts, logs, fixtures, or Git history.
 - No Claude/AI/tool attribution anywhere in commits, PRs, issues, or code.

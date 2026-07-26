@@ -1,16 +1,19 @@
 /**
- * Service worker: extension state hub + backend/mock communication + downloads.
+ * Service worker: extension state hub + backend communication + downloads.
  *
  * Responsibilities:
- *  - Own the recoverable draft batch in chrome.storage.local.
- *  - Relay capture/detect requests to the active Sales Navigator tab's content
- *    script and merge results (dedupe) into the batch.
- *  - Build the intake payload and POST it — ONLY on explicit operator action —
- *    to the configured mock receiver or local backend.
- *  - Produce JSON / CSV downloads.
+ *  - Own the recoverable reviewed drafts in chrome.storage.local.
+ *  - Relay capture/detect requests to the active tab's content script and merge
+ *    result rows (dedupe) into the reviewed batch.
+ *  - Build the CONTACT-FIRST submission and POST it — ONLY on explicit operator
+ *    action — to the local backend or the dev mock receiver.
+ *  - Produce JSON / CSV downloads as an offline fallback.
+ *  - Migrate campaign-era local state explicitly (never silently reinterpret it).
  *
- * Never stores credentials/cookies/tokens. Never posts to LinkedIn. Nothing is
- * ever sent without an explicit SEND_BATCH message triggered by the operator.
+ * There is no campaign anywhere in this worker: acquisition saves a person, and
+ * a campaign consumes a saved audience much later. Never stores
+ * credentials/cookies/tokens. Never posts to LinkedIn. Nothing is ever sent
+ * without an explicit operator-triggered message.
  */
 importScripts(
   "../common/constants.js",
@@ -20,34 +23,61 @@ importScripts(
   "../common/dedupe.js",
   "../common/schema.js",
   "../common/profile-schema.js",
+  "../common/contact-schema.js",
+  "../common/migration.js",
   "../common/permissions.js",
   "../common/handoff.js"
 );
 
-const { constants, dedupe, schema, profileSchema, permissions, handoff, surface } =
-  self.SNCapture;
+const {
+  constants,
+  dedupe,
+  schema,
+  profileSchema,
+  contactSchema,
+  migration,
+  permissions,
+  handoff,
+  surface,
+} = self.SNCapture;
 const {
   STORAGE,
   PROFILE_STORAGE,
+  CONTACT_STORAGE,
   DEFAULT_PREFERENCES,
   LIMITS,
   CAPTURE_STATUS,
+  CAPTURE_MODES,
   SURFACES,
   ALLOWED_BACKEND_ORIGIN_PATTERNS,
-  INTAKE_PATH,
-  PROFILE_INTAKE_PATH,
+  CONTACT_CAPTURE_PATH,
+  CONTACT_LABELS_PATH,
+  CONTACT_LOOKUP_PATH,
   COMPANY_INTAKE_PATH,
 } = constants;
 
 const EXTENSION_VERSION = chrome.runtime.getManifest().version;
 const SEND_TIMEOUT_MS = 15000;
 
-// Open the side panel when the toolbar icon is clicked.
+async function migrateLegacyState() {
+  try {
+    await migration.runMigration(chrome.storage.local, {
+      migratedAt: new Date().toISOString(),
+    });
+  } catch (_e) {
+    // Migration is best-effort: a failure must never block the panel opening.
+  }
+}
+
+// Open the side panel when the toolbar icon is clicked, and retire any
+// campaign-era local state on install/update and on browser start.
 chrome.runtime.onInstalled.addListener(() => {
   if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {
     chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
   }
+  migrateLegacyState();
 });
+if (chrome.runtime.onStartup) chrome.runtime.onStartup.addListener(migrateLegacyState);
 
 // ---- storage helpers ------------------------------------------------------
 
@@ -184,8 +214,17 @@ async function captureActivePage() {
     overLimit = true;
   }
 
+  // Mint one stable capture id per row now, so a retry of the same reviewed
+  // content re-sends the SAME ids and the backend replays it idempotently.
+  for (const rec of incoming) {
+    if (!rec._captureId) rec._captureId = contactSchema.newId();
+  }
+
   const merged = dedupe.mergeBatch(batch.records, incoming);
   batch.records = merged.records;
+  // The reviewed content changed, so the previous submission id no longer
+  // describes it. A new id is minted at send time.
+  batch.clientSubmissionId = null;
   if (result.sourcePageNumber != null && !batch.pagesCaptured.includes(result.sourcePageNumber)) {
     batch.pagesCaptured.push(result.sourcePageNumber);
   }
@@ -229,6 +268,8 @@ async function toggleExclude(stableKey, index) {
   if (stableKey) rec = batch.records.find((r) => r._stableKey === stableKey);
   if (!rec && Number.isInteger(index)) rec = batch.records[index];
   if (rec) rec._excluded = !rec._excluded;
+  // Including or excluding a row changes what would be submitted.
+  batch.clientSubmissionId = null;
   await setBatch(batch);
   return buildBatchView(batch);
 }
@@ -256,25 +297,75 @@ function warningsSummary(records) {
   return counts;
 }
 
-async function buildCurrentPayload() {
-  const batch = await ensureBatch();
-  const prefs = await getPrefs();
-  const records = includedRecords(batch);
-  const payload = schema.buildPayload({
-    records,
-    clientBatchId: batch.clientBatchId,
-    campaignId: prefs.lastCampaignId || null,
-    capturedAt: batch.createdAt,
-    currentSearchUrl: batch.lastSearchUrl,
-    extractionMeta: {
-      extension_version: EXTENSION_VERSION,
-      pages_captured: batch.pagesCaptured.length,
-      record_count: records.length,
-      capture_statuses: batch.statuses.map((s) => s.status),
-      warnings_summary: warningsSummary(records),
-    },
+// ---- operator metadata (labels + note for the next submission) -------------
+//
+// Plain label NAMES and one short note. The backend owns the canonical label
+// registry; the extension only ever requests a name.
+
+async function getOperatorMetadata() {
+  const data = await chrome.storage.local.get(CONTACT_STORAGE.OPERATOR_METADATA);
+  const stored = data[CONTACT_STORAGE.OPERATOR_METADATA] || {};
+  return contactSchema.operatorMetadata(stored);
+}
+
+async function setOperatorMetadata(patch) {
+  const current = await getOperatorMetadata();
+  const next = contactSchema.operatorMetadata({
+    labels: patch && patch.labels !== undefined ? patch.labels : current.labels,
+    note: patch && patch.note !== undefined ? patch.note : current.note,
   });
-  return { batch, prefs, payload, records };
+  await chrome.storage.local.set({ [CONTACT_STORAGE.OPERATOR_METADATA]: next });
+  return next;
+}
+
+async function clearOperatorMetadata() {
+  await chrome.storage.local.remove(CONTACT_STORAGE.OPERATOR_METADATA);
+  return contactSchema.operatorMetadata(null);
+}
+
+/** Remember the labels just used so the operator can reapply them next time. */
+async function rememberLabels(labels) {
+  if (!labels || !labels.length) return;
+  const prefs = await getPrefs();
+  const merged = contactSchema.sanitizeLabels([...labels, ...(prefs.recentLabels || [])]);
+  await setPrefs({ recentLabels: merged.slice(0, LIMITS.MAX_LABELS) });
+}
+
+// ---- contact-first submission ----------------------------------------------
+
+/**
+ * Build the contact-first submission for the reviewed results batch. Only the
+ * rows the operator left included are ever sent; excluded rows never leave the
+ * browser.
+ */
+async function buildBatchSubmission() {
+  const batch = await ensureBatch();
+  const records = includedRecords(batch);
+  const metadata = await getOperatorMetadata();
+  const submissionId = batch.clientSubmissionId || contactSchema.newId();
+  if (!batch.clientSubmissionId) {
+    batch.clientSubmissionId = submissionId;
+    await setBatch(batch);
+  }
+  const contacts = records.map((rec) =>
+    contactSchema.buildResultRowCapture({
+      record: rec,
+      clientCaptureId: rec._captureId,
+      capturedAt: batch.createdAt,
+      sourceSearchUrl: batch.lastSearchUrl,
+      adapterVersion: "salesnav-people-results-adapter/1",
+      metadata: null,
+    })
+  );
+  const payload = contactSchema.buildSubmission({
+    clientSubmissionId: submissionId,
+    captureMode: CAPTURE_MODES.SALESNAV_PEOPLE_SEARCH,
+    submittedAt: batch.createdAt,
+    extensionVersion: EXTENSION_VERSION,
+    metadata,
+    contacts,
+  });
+  return { batch, payload, records, metadata };
 }
 
 function isAllowedBackendOrigin(urlStr) {
@@ -303,35 +394,38 @@ async function hasHostPermission(url) {
   }
 }
 
-async function sendBatch(explicitTarget) {
-  const { payload, records } = await buildCurrentPayload();
+/** Resolve the POST target for the contact-first submission. */
+async function contactCaptureUrl(explicitTarget) {
+  const prefs = await getPrefs();
+  const target = explicitTarget || prefs.sendTarget || "mock";
+  if (target === "mock") return { target, url: prefs.mockReceiverUrl };
+  const base = (prefs.backendBaseUrl || "").replace(/\/$/, "");
+  return { target, url: base + CONTACT_CAPTURE_PATH };
+}
 
-  if (records.length === 0) {
-    return { ok: false, error: "empty_batch", message: "No included records to send." };
+/**
+ * POST one reviewed contact-first submission. Shared by both workflows so the
+ * validation, loopback, permission, timeout, and idempotency behaviour cannot
+ * drift between saving one profile and saving a page of results.
+ */
+async function postSubmission(payload, explicitTarget) {
+  if (!payload.contacts.length) {
+    return { ok: false, error: "empty_batch", message: "No included contacts to save." };
   }
-  const validation = schema.validatePayload(payload);
+  const validation = contactSchema.validateSubmission(payload);
   if (!validation.valid) {
     return { ok: false, error: "invalid_payload", messages: validation.errors };
   }
-  const serialized = schema.serializePayload(payload);
+  const serialized = contactSchema.serializePayload(payload);
   if (!serialized.withinLimit) {
     return {
       ok: false,
       error: "payload_too_large",
-      message: `Payload ${serialized.bytes} bytes exceeds ${LIMITS.MAX_PAYLOAD_BYTES}. Reduce the batch.`,
+      message: `Payload ${serialized.bytes} bytes exceeds ${LIMITS.MAX_PAYLOAD_BYTES}. Save fewer contacts.`,
     };
   }
 
-  const prefs = await getPrefs();
-  const target = explicitTarget || prefs.sendTarget || "mock";
-  let url;
-  if (target === "mock") {
-    url = prefs.mockReceiverUrl;
-  } else {
-    const base = (prefs.backendBaseUrl || "").replace(/\/$/, "");
-    url = base + INTAKE_PATH;
-  }
-
+  const { target, url } = await contactCaptureUrl(explicitTarget);
   if (!isAllowedBackendOrigin(url)) {
     return {
       ok: false,
@@ -339,14 +433,13 @@ async function sendBatch(explicitTarget) {
       message: `Refusing to send to ${url}. Only loopback origins are permitted.`,
     };
   }
-
   const perm = await hasHostPermission(url);
   if (!perm.ok) {
     return {
       ok: false,
       error: "permission_denied",
       originPattern: perm.pattern,
-      message: `Loopback access not granted for ${perm.pattern || url}. Approve the permission prompt, then send again.`,
+      message: `Loopback access not granted for ${perm.pattern || url}. Approve the permission prompt, then save again.`,
     };
   }
 
@@ -357,8 +450,7 @@ async function sendBatch(explicitTarget) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Client-Batch-Id": payload.client_batch_id,
-        "Idempotency-Key": payload.client_batch_id,
+        "Idempotency-Key": payload.client_submission_id,
       },
       body: serialized.json,
       signal: controller.signal,
@@ -368,16 +460,14 @@ async function sendBatch(explicitTarget) {
     let body = null;
     try { body = text ? JSON.parse(text) : null; } catch (_e) { body = { raw: text }; }
     if (!resp.ok) {
+      // The reviewed draft is preserved so a recoverable failure can be retried
+      // with the SAME client_submission_id (idempotent).
       return { ok: false, error: "receiver_rejected", status: resp.status, body };
     }
-    // Persist a safe, recoverable summary of the staged batch (ids + counts +
-    // an openable workbench URL only — never the raw body or records).
-    const result = handoff.sanitizeStageResult(body, {
-      campaignId: payload.campaign_id || null,
-      stagedAt: new Date().toISOString(),
+    const result = handoff.sanitizeContactSubmissionResult(body, {
+      submittedAt: new Date().toISOString(),
     });
-    await setLastResult(result);
-    return { ok: true, status: resp.status, body, target, url, result };
+    return { ok: true, status: resp.status, target, url, result };
   } catch (e) {
     clearTimeout(timer);
     if (e && e.name === "AbortError") {
@@ -387,19 +477,27 @@ async function sendBatch(explicitTarget) {
   }
 }
 
-// ---- campaigns ------------------------------------------------------------
+/** Save the included rows of the reviewed results batch as contacts. */
+async function saveIncludedContacts(explicitTarget) {
+  const { payload, metadata } = await buildBatchSubmission();
+  const response = await postSubmission(payload, explicitTarget);
+  if (response.ok) {
+    await setLastResult(response.result);
+    await rememberLabels(metadata.labels);
+  }
+  return response;
+}
 
-async function fetchCampaigns() {
+// ---- label registry + save-vs-refresh lookup --------------------------------
+
+/** Fetch existing labels so the operator can reuse one. Read-only. */
+async function fetchLabels() {
   const prefs = await getPrefs();
   const base = (prefs.backendBaseUrl || "").replace(/\/$/, "");
-  const url = base + "/api/campaigns?fields=id,name,status";
-  if (!isAllowedBackendOrigin(url)) {
-    return { ok: false, error: "origin_not_allowed" };
-  }
+  const url = base + CONTACT_LABELS_PATH;
+  if (!isAllowedBackendOrigin(url)) return { ok: false, error: "origin_not_allowed" };
   const perm = await hasHostPermission(url);
-  if (!perm.ok) {
-    return { ok: false, error: "permission_denied", originPattern: perm.pattern };
-  }
+  if (!perm.ok) return { ok: false, error: "permission_denied", originPattern: perm.pattern };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
   try {
@@ -407,13 +505,39 @@ async function fetchCampaigns() {
     clearTimeout(timer);
     if (!resp.ok) return { ok: false, error: "http_" + resp.status };
     const body = await resp.json();
-    // Accept only minimal fields.
-    const campaigns = (Array.isArray(body) ? body : body.campaigns || []).map((c) => ({
-      id: String(c.id),
-      name: String(c.name || ""),
-      status: String(c.status || ""),
-    }));
-    return { ok: true, campaigns };
+    const labels = (Array.isArray(body) ? body : body.labels || [])
+      .map((l) => String(l && l.name ? l.name : ""))
+      .filter(Boolean);
+    return { ok: true, labels: contactSchema.sanitizeLabels(labels) };
+  } catch (e) {
+    clearTimeout(timer);
+    return { ok: false, error: e && e.name === "AbortError" ? "timeout" : "network_error" };
+  }
+}
+
+/**
+ * Ask whether an exact normalized profile URL already has a contact, so the
+ * panel can label its primary action Save or Refresh. The backend returns
+ * existence only — no contact field is ever fetched into the browser. A failure
+ * is not an error the operator must act on: the panel simply says "Save".
+ */
+async function lookupContact(profileUrl) {
+  if (!profileUrl) return { ok: true, match: "unknown" };
+  const prefs = await getPrefs();
+  const base = (prefs.backendBaseUrl || "").replace(/\/$/, "");
+  const url = base + CONTACT_LOOKUP_PATH + "?linkedin_profile_url=" + encodeURIComponent(profileUrl);
+  if (!isAllowedBackendOrigin(url)) return { ok: false, error: "origin_not_allowed" };
+  const perm = await hasHostPermission(url);
+  if (!perm.ok) return { ok: false, error: "permission_denied", originPattern: perm.pattern };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
+  try {
+    const resp = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!resp.ok) return { ok: false, error: "http_" + resp.status };
+    const body = await resp.json();
+    const match = typeof body.match === "string" ? body.match : "unknown";
+    return { ok: true, match, contactCount: Number(body.contact_count) || 0 };
   } catch (e) {
     clearTimeout(timer);
     return { ok: false, error: e && e.name === "AbortError" ? "timeout" : "network_error" };
@@ -423,8 +547,8 @@ async function fetchCampaigns() {
 // ---- person-profile capture mode (DAT-012C) --------------------------------
 //
 // A profile draft is ONE reviewed capture (not a batch). It lives in its own
-// storage keys so the SalesNav batch workflow is never affected. Nothing is
-// sent without an explicit PROFILE_SEND from the operator.
+// storage keys so the results-page workflow is never affected. Nothing is sent
+// without an explicit SAVE_CONTACT from the operator.
 
 async function getProfileDraft() {
   const data = await chrome.storage.local.get(PROFILE_STORAGE.DRAFT_PROFILE);
@@ -535,9 +659,11 @@ async function profileCapture() {
   // A NEW capture replaces the draft and mints a fresh client_capture_id (a
   // changed reviewed content must never reuse the previous idempotency key).
   const draft = {
-    clientCaptureId: profileSchema.newCaptureId(),
+    clientCaptureId: contactSchema.newId(),
+    clientSubmissionId: null,
     createdAt: new Date().toISOString(),
     excludedSections: [],
+    pageTitle: r.tab && r.tab.title ? r.tab.title : null,
     extraction: result,
   };
   await setProfileDraft(draft);
@@ -557,6 +683,7 @@ async function profileToggleSection(section) {
   if (set.has(section)) set.delete(section);
   else set.add(section);
   draft.excludedSections = Array.from(set);
+  draft.clientSubmissionId = null;
   await setProfileDraft(draft);
   return { ok: true, draftView: buildProfileDraftView(draft) };
 }
@@ -567,77 +694,64 @@ async function profileClear() {
   return { ok: true, draftView: null };
 }
 
-async function buildProfilePayloadFromDraft() {
+/**
+ * Build the contact-first submission for the one reviewed profile draft. The
+ * draft carries the person; the submission carries the operator's labels and
+ * note. No campaign is involved at any point.
+ */
+async function buildProfileSubmission() {
   const draft = await getProfileDraft();
-  if (!draft) return { draft: null, payload: null };
-  const prefs = await getPrefs();
-  const payload = profileSchema.buildProfilePayload({
+  if (!draft) return { draft: null, payload: null, metadata: null };
+  const metadata = await getOperatorMetadata();
+  const submissionId = draft.clientSubmissionId || contactSchema.newId();
+  if (!draft.clientSubmissionId) {
+    draft.clientSubmissionId = submissionId;
+    await setProfileDraft(draft);
+  }
+  const capture = contactSchema.buildProfileCapture({
     extraction: draft.extraction,
     clientCaptureId: draft.clientCaptureId,
-    campaignId: prefs.lastCampaignId || null,
-    extensionVersion: EXTENSION_VERSION,
     excludedSections: draft.excludedSections || [],
+    pageTitle: draft.pageTitle || null,
+    metadata: null,
   });
-  return { draft, payload, prefs };
+  const payload = contactSchema.buildSubmission({
+    clientSubmissionId: submissionId,
+    captureMode: CAPTURE_MODES.LINKEDIN_PROFILE,
+    submittedAt: draft.createdAt,
+    extensionVersion: EXTENSION_VERSION,
+    metadata,
+    contacts: [capture],
+  });
+  return { draft, payload, metadata };
 }
 
-async function profileSend() {
-  const { draft, payload, prefs } = await buildProfilePayloadFromDraft();
-  if (!draft) return { ok: false, error: "empty_batch", message: "No reviewed capture to send." };
+/** Save (or refresh) the reviewed profile as a permanent contact capture. */
+async function saveProfileContact(explicitTarget) {
+  const { draft, payload, metadata } = await buildProfileSubmission();
+  if (!draft) {
+    return { ok: false, error: "empty_batch", message: "No reviewed capture to save." };
+  }
+  const response = await postSubmission(payload, explicitTarget);
+  if (response.ok) {
+    await setLastProfileResult(response.result);
+    await rememberLabels(metadata.labels);
+  }
+  return response;
+}
 
-  const validation = profileSchema.validateProfilePayload(payload);
-  if (!validation.valid) {
-    return { ok: false, error: "invalid_payload", messages: validation.errors };
-  }
-  const serialized = profileSchema.serializePayload(payload);
-  if (!serialized.withinLimit) {
-    return { ok: false, error: "payload_too_large" };
-  }
-
-  const base = (prefs.backendBaseUrl || "").replace(/\/$/, "");
-  const url = base + PROFILE_INTAKE_PATH;
-  if (!isAllowedBackendOrigin(url)) {
-    return { ok: false, error: "origin_not_allowed" };
-  }
-  const perm = await hasHostPermission(url);
-  if (!perm.ok) {
-    return { ok: false, error: "permission_denied", originPattern: perm.pattern };
-  }
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
-  try {
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Idempotency-Key": payload.client_capture_id,
-      },
-      body: serialized.json,
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
-    const text = await resp.text();
-    let body = null;
-    try { body = text ? JSON.parse(text) : null; } catch (_e) { body = { raw: text }; }
-    if (!resp.ok) {
-      // The reviewed draft is preserved so a recoverable failure can be
-      // retried with the SAME client_capture_id (idempotent).
-      return { ok: false, error: "receiver_rejected", status: resp.status, body };
-    }
-    const result = handoff.sanitizeProfileStageResult(body, {
-      campaignId: payload.campaign_id || null,
-      stagedAt: new Date().toISOString(),
-    });
-    await setLastProfileResult(result);
-    return { ok: true, status: resp.status, result };
-  } catch (e) {
-    clearTimeout(timer);
-    if (e && e.name === "AbortError") {
-      return { ok: false, error: "timeout", message: `No response within ${SEND_TIMEOUT_MS}ms.` };
-    }
-    return { ok: false, error: "network_error", message: String(e && e.message) };
-  }
+/**
+ * Whether the captured person already exists, so the panel can offer "Refresh
+ * Contact" instead of "Save Contact". Purely advisory: an unavailable backend
+ * simply leaves the action as Save.
+ */
+async function profileMatchState() {
+  const draft = await getProfileDraft();
+  const url = draft && draft.extraction && draft.extraction.profile
+    ? draft.extraction.profile.linkedin_profile_url
+    : null;
+  if (!url) return { ok: true, match: "unknown" };
+  return lookupContact(url);
 }
 
 // ---- company capture mode (DAT-012G) ---------------------------------------
@@ -744,7 +858,9 @@ async function companySend() {
   const payload = profileSchema.buildCompanyPayload({
     extraction: draft.extraction,
     clientCaptureId: draft.clientCaptureId,
-    campaignId: prefs.lastCampaignId || null,
+    // Company evidence is firmographic context for a company record. It has
+    // never belonged to a campaign and now cannot: the field stays null.
+    campaignId: null,
     extensionVersion: EXTENSION_VERSION,
   });
   const validation = profileSchema.validateCompanyPayload(payload);
@@ -778,7 +894,6 @@ async function companySend() {
     try { body = text ? JSON.parse(text) : null; } catch (_e) { body = { raw: text }; }
     if (!resp.ok) return { ok: false, error: "receiver_rejected", status: resp.status, body };
     const result = handoff.sanitizeProfileStageResult(body, {
-      campaignId: payload.campaign_id || null,
       stagedAt: new Date().toISOString(),
     });
     await chrome.storage.local.set({ [PROFILE_STORAGE.LAST_COMPANY_RESULT]: result });
@@ -806,14 +921,19 @@ function dataUrl(mime, text) {
   return `data:${mime};charset=utf-8,` + encodeURIComponent(text);
 }
 
+/**
+ * Offline fallback: download the reviewed submission the operator would have
+ * saved. JSON is the exact contact-first body (so it can be inspected or
+ * replayed by hand); CSV is a flat review sheet of the included rows.
+ */
 async function exportBatch(format) {
-  const { payload, batch } = await buildCurrentPayload();
+  const { payload, batch, records } = await buildBatchSubmission();
   const stamp = batch.createdAt.replace(/[:.]/g, "-");
-  const base = sanitizeFilename(`salesnav_capture_${stamp}`);
+  const base = sanitizeFilename(`contact_capture_${stamp}`);
   let mime, text, ext;
   if (format === "csv") {
     mime = "text/csv";
-    text = schema.toCsv(payload.records);
+    text = schema.toCsv(records);
     ext = "csv";
   } else {
     mime = "application/json";
@@ -826,7 +946,37 @@ async function exportBatch(format) {
     filename,
     saveAs: true,
   });
-  return { ok: true, filename, records: payload.records.length };
+  return { ok: true, filename, records: payload.contacts.length };
+}
+
+/** Download the archived campaign-era drafts so nothing is lost on migration. */
+async function exportLegacyArchive() {
+  const data = await chrome.storage.local.get(CONTACT_STORAGE.LEGACY_ARCHIVE);
+  const archive = data[CONTACT_STORAGE.LEGACY_ARCHIVE];
+  if (!archive) return { ok: false, error: "no_legacy_archive" };
+  const filename = sanitizeFilename("vmr_legacy_capture_drafts") + ".json";
+  await chrome.downloads.download({
+    url: dataUrl("application/json", JSON.stringify(archive, null, 2)),
+    filename,
+    saveAs: true,
+  });
+  return { ok: true, filename };
+}
+
+async function getMigrationNotice() {
+  const data = await chrome.storage.local.get([
+    CONTACT_STORAGE.MIGRATION_NOTICE,
+    CONTACT_STORAGE.LEGACY_ARCHIVE,
+  ]);
+  return {
+    notice: data[CONTACT_STORAGE.MIGRATION_NOTICE] || null,
+    hasArchive: !!data[CONTACT_STORAGE.LEGACY_ARCHIVE],
+  };
+}
+
+async function dismissMigrationNotice() {
+  await chrome.storage.local.remove(CONTACT_STORAGE.MIGRATION_NOTICE);
+  return { ok: true };
 }
 
 // ---- message router -------------------------------------------------------
@@ -838,7 +988,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         const batch = await ensureBatch();
         const prefs = await getPrefs();
         const lastResult = await getLastResult();
-        sendResponse({ ok: true, prefs, batchView: buildBatchView(batch), lastResult });
+        sendResponse({
+          ok: true,
+          prefs,
+          batchView: buildBatchView(batch),
+          lastResult,
+          metadata: await getOperatorMetadata(),
+          migration: await getMigrationNotice(),
+        });
         break;
       }
       case "DETECT_ACTIVE_PAGE":
@@ -857,17 +1014,32 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         sendResponse({ ok: true, batchView: await clearBatch() });
         break;
       case "PREVIEW_PAYLOAD": {
-        const { payload } = await buildCurrentPayload();
-        const validation = schema.validatePayload(payload);
-        const serialized = schema.serializePayload(payload);
+        const { payload } = await buildBatchSubmission();
+        const validation = contactSchema.validateSubmission(payload);
+        const serialized = contactSchema.serializePayload(payload);
         sendResponse({ ok: true, payload, validation, bytes: serialized.bytes });
         break;
       }
-      case "SEND_BATCH":
-        sendResponse(await sendBatch(msg.target));
+      case "SAVE_INCLUDED_CONTACTS":
+        sendResponse(await saveIncludedContacts(msg.target));
         break;
-      case "FETCH_CAMPAIGNS":
-        sendResponse(await fetchCampaigns());
+      case "GET_OPERATOR_METADATA":
+        sendResponse({ ok: true, metadata: await getOperatorMetadata() });
+        break;
+      case "SET_OPERATOR_METADATA":
+        sendResponse({ ok: true, metadata: await setOperatorMetadata(msg.metadata) });
+        break;
+      case "CLEAR_OPERATOR_METADATA":
+        sendResponse({ ok: true, metadata: await clearOperatorMetadata() });
+        break;
+      case "FETCH_LABELS":
+        sendResponse(await fetchLabels());
+        break;
+      case "EXPORT_LEGACY_ARCHIVE":
+        sendResponse(await exportLegacyArchive());
+        break;
+      case "DISMISS_MIGRATION_NOTICE":
+        sendResponse(await dismissMigrationNotice());
         break;
       case "DETECT_SURFACE":
         sendResponse(await detectActiveSurface());
@@ -880,9 +1052,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           prefs: await getPrefs(),
           draftView: buildProfileDraftView(draft),
           lastResult,
+          metadata: await getOperatorMetadata(),
+          migration: await getMigrationNotice(),
         });
         break;
       }
+      case "PROFILE_MATCH_STATE":
+        sendResponse(await profileMatchState());
+        break;
       case "PROFILE_DETECT":
         sendResponse(await profileDetect());
         break;
@@ -895,8 +1072,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case "PROFILE_CLEAR":
         sendResponse(await profileClear());
         break;
-      case "PROFILE_SEND":
-        sendResponse(await profileSend());
+      case "SAVE_CONTACT":
+        sendResponse(await saveProfileContact(msg.target));
         break;
       case "COMPANY_GET_STATE":
         sendResponse({

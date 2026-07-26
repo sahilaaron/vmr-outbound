@@ -67,6 +67,9 @@ Use `Deferred` for intentionally parked cards.
 | DAT-006 | P0 | Build and enforce the suppression ledger | Opt-outs, hard bounces, customers, competitors, and internal exclusions block every route into outreach. |
 | DAT-007 | P0 | Import one representative historical dataset | One real file shape is staged, cleaned, reconciled, and reported as accepted, rejected, merged, ambiguous, or suppressed. |
 | DAT-008 | P1 | Support additional historical file shapes | Add mappers only for formats proven necessary after the representative import succeeds. |
+| DAT-013 | P0 | Refactor acquisition from campaign-first to contact-first | The extension saves a person with no campaign; the backend persists permanent per-person capture evidence, matches only on an exact normalized LinkedIn profile URL, applies optional labels and append-only notes, and returns truthful per-capture outcomes. |
+| DAT-014 | P0 | Promote a staged contact capture into a permanent Contact | An unmatched capture can become a canonical contact once a company domain is resolved (DAT-010) and the operator confirms — without inventing a domain. |
+| DAT-015 | P1 | Capture education, visible contact information, and recent activity | Only if each can be read from the already-open page without navigation, modal automation, or weakening the truthful-extraction standard. |
 
 ## EPIC 03 — Campaign and Contact Workflow
 

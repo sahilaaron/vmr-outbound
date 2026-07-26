@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div class="crumbs"><a href="/">Workbench</a><span>/</span>Contact capture submission</div>
+  <h1>Contact capture submission
+    <span class="badge">{{ submission.capture_mode }}</span>
+  </h1>
+  <div class="sub">
+    One reviewed acquisition submission. Contacts are permanent; campaigns
+    consume saved audiences much later and play no part here. Nothing on this
+    page has made any contact outreach-eligible.
+  </div>
+</div>
+
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Submission</strong></div>
+  <table>
+    <tbody>
+      <tr><td class="mono">submission_id</td><td class="wrap mono">{{ submission.id }}</td></tr>
+      <tr><td class="mono">client_submission_id</td><td class="wrap mono">{{ submission.client_submission_id }}</td></tr>
+      <tr><td class="mono">schema_version</td><td class="wrap">{{ submission.schema_version }}</td></tr>
+      <tr><td class="mono">extension_version</td><td class="wrap">{{ submission.extension_version or "—" }}</td></tr>
+      <tr><td class="mono">submitted_at</td><td class="wrap">{{ submission.submitted_at or "—" }}</td></tr>
+      <tr><td class="mono">received_at</td><td class="wrap">{{ submission.received_at }}</td></tr>
+      <tr><td class="mono">contacts</td><td class="wrap">{{ submission.contact_count }}</td></tr>
+      <tr><td class="mono">labels</td><td class="wrap">{{ submission.requested_labels | join(", ") if submission.requested_labels else "—" }}</td></tr>
+      <tr><td class="mono">note</td><td class="wrap">{{ submission.operator_note or "—" }}</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Outcome counts</strong></div>
+  <table>
+    <tbody>
+      {% for key, value in counts %}
+      <tr><td class="mono">{{ key }}</td><td class="wrap">{{ value }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Captures ({{ captures | length }})</strong></div>
+  <table>
+    <thead><tr><th>Person</th><th>Outcome</th><th>Identity</th><th>Matched contact</th><th>Capture</th></tr></thead>
+    <tbody>
+      {% for c in captures %}
+      <tr>
+        <td class="wrap">{{ (c.profile_fields or {}).get("full_name") or "—" }}</td>
+        <td><span class="badge">{{ c.outcome.value }}</span></td>
+        <td class="wrap">{{ c.normalized_profile_url or "uncertain" }}</td>
+        <td class="wrap">{% if c.matched_contact_id %}<a href="/contacts/{{ c.matched_contact_id }}">contact</a>{% else %}—{% endif %}</td>
+        <td><a href="/contact-captures/{{ c.id }}">open</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

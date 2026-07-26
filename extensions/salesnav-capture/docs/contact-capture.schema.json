@@ -1,0 +1,264 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "vmr:intake:linkedin-contact-capture:2.0.0",
+  "title": "LinkedIn contact capture intake payload",
+  "description": "One operator-reviewed submission of one or more people captured from a LinkedIn or Sales Navigator page the operator opened themselves. Contact-first: there is no campaign in this contract. The extension submits observations only; identity matching, provenance/freshness resolution, suppression enforcement, label resolution, canonical updates and audit logging are backend responsibilities. See docs/CONTACT_CAPTURE_CONTRACT.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "client_submission_id",
+    "capture_mode",
+    "submitted_at",
+    "source",
+    "extension_version",
+    "operator_metadata",
+    "contacts"
+  ],
+  "properties": {
+    "schema_version": { "const": "linkedin-contact-capture/2.0.0" },
+    "client_submission_id": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128,
+      "description": "Client-minted stable id for this reviewed submission (idempotency key). Unchanged across retries of the same reviewed content."
+    },
+    "capture_mode": {
+      "enum": ["linkedin_profile", "salesnav_people_search"],
+      "description": "Which reviewed workflow produced the submission. Never implies navigation: the operator opened the page."
+    },
+    "submitted_at": { "type": "string", "format": "date-time" },
+    "source": { "const": "chrome-extension:linkedin-contact-capture" },
+    "extension_version": { "type": ["string", "null"] },
+    "operator_metadata": { "$ref": "#/$defs/operatorMetadata" },
+    "contacts": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 500,
+      "description": "The contacts the operator explicitly included. Excluded rows are never sent.",
+      "items": { "$ref": "#/$defs/contactCapture" }
+    }
+  },
+  "$defs": {
+    "operatorMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["labels", "note"],
+      "properties": {
+        "labels": {
+          "type": "array",
+          "maxItems": 25,
+          "description": "Requested label NAMES. The backend resolves or creates the canonical label; the extension never mutates the registry.",
+          "items": { "type": "string", "minLength": 1, "maxLength": 64 }
+        },
+        "note": {
+          "type": ["string", "null"],
+          "maxLength": 2000,
+          "description": "Optional operator note. Stored append-only; a later capture never overwrites an earlier note."
+        }
+      }
+    },
+    "warning": { "type": "object" },
+    "datePart": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["year", "month"],
+          "properties": {
+            "year": { "type": "integer", "minimum": 1900, "maximum": 2100 },
+            "month": { "type": ["integer", "null"], "minimum": 1, "maximum": 12 }
+          }
+        }
+      ]
+    },
+    "contactCapture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "client_capture_id",
+        "captured_at",
+        "source",
+        "person",
+        "current_employment_hint",
+        "experience_observations",
+        "extraction",
+        "operator_metadata",
+        "raw_snapshot"
+      ],
+      "properties": {
+        "client_capture_id": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 128,
+          "description": "Stable idempotency key for this single reviewed capture."
+        },
+        "captured_at": { "type": "string", "format": "date-time" },
+        "source": { "$ref": "#/$defs/captureSource" },
+        "person": { "$ref": "#/$defs/person" },
+        "current_employment_hint": { "$ref": "#/$defs/employmentHint" },
+        "experience_observations": {
+          "type": "array",
+          "maxItems": 100,
+          "description": "Nested experience entries in on-page order. Never flattened into one string. Empty for a results-row capture, which shows no experience history.",
+          "items": { "$ref": "#/$defs/experienceObservation" }
+        },
+        "extraction": { "$ref": "#/$defs/extraction" },
+        "operator_metadata": { "$ref": "#/$defs/operatorMetadata" },
+        "raw_snapshot": {
+          "type": "object",
+          "description": "The verbatim adapter output for this capture, preserved as immutable evidence."
+        }
+      }
+    },
+    "captureSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["surface", "url", "page_title", "operator_triggered"],
+      "properties": {
+        "surface": { "enum": ["linkedin_person_profile", "salesnav_people_results"] },
+        "url": { "type": ["string", "null"] },
+        "page_title": { "type": ["string", "null"], "maxLength": 512 },
+        "operator_triggered": {
+          "const": true,
+          "description": "Always true. The extension has no unattended capture path."
+        }
+      }
+    },
+    "person": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "linkedin_profile_url",
+        "linkedin_public_identifier",
+        "salesnav_lead_url",
+        "full_name",
+        "first_name",
+        "last_name",
+        "headline",
+        "location",
+        "connection_count",
+        "connection_count_raw",
+        "open_to_work_visible",
+        "about_text",
+        "raw_lines",
+        "warnings"
+      ],
+      "properties": {
+        "linkedin_profile_url": {
+          "type": ["string", "null"],
+          "pattern": "^https://([a-z0-9-]+\\.)*linkedin\\.com/in/[^/]+/?$",
+          "description": "Client-normalized MAIN profile URL, or null when the page did not show one (common on Sales Navigator result rows). Null keeps identity honestly uncertain; it is never invented. The backend re-normalizes authoritatively before any matching."
+        },
+        "linkedin_public_identifier": { "type": ["string", "null"] },
+        "salesnav_lead_url": {
+          "type": ["string", "null"],
+          "description": "Sales Navigator lead URL when visible. Never a canonical person identity: it cannot match a contact."
+        },
+        "full_name": { "type": ["string", "null"] },
+        "first_name": { "type": ["string", "null"] },
+        "last_name": { "type": ["string", "null"] },
+        "headline": { "type": ["string", "null"] },
+        "location": { "type": ["string", "null"] },
+        "connection_count": { "type": ["integer", "null"], "minimum": 0 },
+        "connection_count_raw": { "type": ["string", "null"] },
+        "open_to_work_visible": { "type": ["boolean", "null"] },
+        "about_text": {
+          "type": ["string", "null"],
+          "maxLength": 8000,
+          "description": "Verbatim visible About text when the section is rendered on the opened page. Never fetched, expanded, or summarized."
+        },
+        "raw_lines": { "type": "array", "items": { "type": "string" } },
+        "warnings": { "type": "array", "items": { "$ref": "#/$defs/warning" } }
+      }
+    },
+    "employmentHint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "company_name",
+        "company_linkedin_url",
+        "company_linkedin_id",
+        "title",
+        "role_location",
+        "workplace_type",
+        "employment_type",
+        "tenure_text"
+      ],
+      "description": "A hint, not a decision: the backend decides what becomes canonical.",
+      "properties": {
+        "company_name": { "type": ["string", "null"] },
+        "company_linkedin_url": { "type": ["string", "null"] },
+        "company_linkedin_id": { "type": ["string", "null"] },
+        "title": { "type": ["string", "null"] },
+        "role_location": { "type": ["string", "null"] },
+        "workplace_type": { "type": ["string", "null"] },
+        "employment_type": { "type": ["string", "null"] },
+        "tenure_text": { "type": ["string", "null"] }
+      }
+    },
+    "experienceObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "position_index",
+        "layout",
+        "company_name",
+        "company_linkedin_url",
+        "company_linkedin_id",
+        "job_title",
+        "timeline_text",
+        "start_date",
+        "end_date",
+        "dates_reliable",
+        "duration_text",
+        "employment_type",
+        "role_location",
+        "workplace_type",
+        "is_current",
+        "raw_lines",
+        "warnings",
+        "observed_at"
+      ],
+      "properties": {
+        "position_index": { "type": "integer", "minimum": 1 },
+        "layout": { "enum": ["basic", "chained"] },
+        "company_name": { "type": ["string", "null"] },
+        "company_linkedin_url": { "type": ["string", "null"] },
+        "company_linkedin_id": { "type": ["string", "null"] },
+        "job_title": { "type": ["string", "null"] },
+        "timeline_text": { "type": ["string", "null"] },
+        "start_date": { "$ref": "#/$defs/datePart" },
+        "end_date": { "$ref": "#/$defs/datePart" },
+        "dates_reliable": { "type": "boolean" },
+        "duration_text": { "type": ["string", "null"] },
+        "employment_type": { "type": ["string", "null"] },
+        "role_location": { "type": ["string", "null"] },
+        "workplace_type": { "type": ["string", "null"] },
+        "is_current": { "type": ["boolean", "null"] },
+        "raw_lines": { "type": "array", "items": { "type": "string" } },
+        "warnings": { "type": "array", "items": { "$ref": "#/$defs/warning" } },
+        "observed_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "extraction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "adapter_version",
+        "status",
+        "missing_sections",
+        "excluded_sections",
+        "page_warnings"
+      ],
+      "properties": {
+        "adapter_version": { "type": ["string", "null"] },
+        "status": { "enum": ["ok", "partial"] },
+        "missing_sections": { "type": "array", "items": { "type": "string" } },
+        "excluded_sections": { "type": "array", "items": { "type": "string" } },
+        "page_warnings": { "type": "array", "items": { "$ref": "#/$defs/warning" } }
+      }
+    }
+  }
+}

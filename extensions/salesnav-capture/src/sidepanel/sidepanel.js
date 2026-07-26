@@ -1,11 +1,19 @@
 /**
- * Side panel controller. Pure DOM rendering — every piece of scraped text is set
- * via textContent (never innerHTML) so captured values cannot inject markup.
+ * Side-panel core: shared helpers, the optional labels/note card, the shared
+ * Save action, and the Sales Navigator results workflow.
+ *
+ * Contact-first: there is no campaign selector, no campaign id, and no campaign
+ * state anywhere in this panel. The operator captures visible people, includes
+ * or excludes them, optionally labels and annotates them, and saves them as
+ * permanent contacts.
+ *
+ * Pure DOM rendering — every piece of captured text is set via textContent
+ * (never innerHTML) so captured values cannot inject markup.
  */
 (function () {
   "use strict";
 
-  const { constants, handoff } = self.SNCapture;
+  const { constants, contactSchema, handoff } = self.SNCapture;
   const WARN = constants.WARNINGS;
 
   function send(message) {
@@ -23,6 +31,8 @@
   const $ = (id) => document.getElementById(id);
   let currentBatch = null;
   let currentPrefs = null;
+  let currentMetadata = { labels: [], note: null };
+  let saveHandler = null;
 
   // ---- element helpers ----------------------------------------------------
 
@@ -44,7 +54,236 @@
     elm.textContent = text;
   }
 
-  // ---- detection ----------------------------------------------------------
+  /**
+   * Ensure the OPTIONAL loopback host permission is granted before a backend
+   * call. Requests it (with the current click gesture) if not already held.
+   */
+  async function ensureHostPermission(url) {
+    const pattern = self.SNCapture.permissions.originPatternForUrl(url);
+    if (!pattern) return { granted: false, pattern: null, reason: "not_loopback" };
+    try {
+      const has = await chrome.permissions.contains({ origins: [pattern] });
+      if (has) return { granted: true, pattern };
+      const granted = await chrome.permissions.request({ origins: [pattern] });
+      return { granted, pattern };
+    } catch (e) {
+      return { granted: false, pattern, reason: String(e && e.message) };
+    }
+  }
+
+  function backendBase() {
+    return String((currentPrefs || {}).backendBaseUrl || "").replace(/\/$/, "");
+  }
+
+  /** The loopback URL a save would target, for the permission prompt. */
+  function saveTargetUrl() {
+    const p = currentPrefs || {};
+    if ((p.sendTarget || "mock") === "mock") return p.mockReceiverUrl || "";
+    return backendBase() + constants.CONTACT_CAPTURE_PATH;
+  }
+
+  // ---- labels + note ------------------------------------------------------
+
+  function renderMetadata() {
+    const chips = $("label-chips");
+    chips.textContent = "";
+    for (const label of currentMetadata.labels) {
+      chips.appendChild(
+        el("span", { class: "badge" }, [
+          el("span", { text: label }),
+          el("button", {
+            class: "btn btn-ghost",
+            text: " ×",
+            attrs: { "aria-label": `Remove label ${label}`, type: "button" },
+            on: { click: () => removeLabel(label) },
+          }),
+        ])
+      );
+    }
+    if (!currentMetadata.labels.length) {
+      chips.appendChild(el("span", { class: "tiny muted", text: "No labels." }));
+    }
+    if ($("note-input").value !== (currentMetadata.note || "")) {
+      $("note-input").value = currentMetadata.note || "";
+    }
+  }
+
+  async function persistMetadata(patch) {
+    const r = await send({ type: "SET_OPERATOR_METADATA", metadata: patch });
+    if (r && r.ok) {
+      currentMetadata = r.metadata;
+      renderMetadata();
+    }
+    return currentMetadata;
+  }
+
+  async function addLabelFromInput() {
+    const input = $("label-input");
+    const raw = input.value;
+    if (!raw.trim()) return;
+    const next = contactSchema.sanitizeLabels([...currentMetadata.labels, raw]);
+    input.value = "";
+    await persistMetadata({ labels: next });
+  }
+
+  async function removeLabel(label) {
+    const next = currentMetadata.labels.filter((l) => l !== label);
+    await persistMetadata({ labels: next });
+  }
+
+  async function refreshLabelSuggestions() {
+    const list = $("label-suggestions");
+    const known = new Set((currentPrefs && currentPrefs.recentLabels) || []);
+    const r = await send({ type: "FETCH_LABELS" });
+    if (r && r.ok) for (const name of r.labels) known.add(name);
+    list.textContent = "";
+    for (const name of Array.from(known).sort()) {
+      list.appendChild(el("option", { attrs: { value: name } }));
+    }
+  }
+
+  // ---- shared save action -------------------------------------------------
+
+  /**
+   * Register which workflow the shared Save button drives. The label is the
+   * operator's promise about what will happen: "Save Contact" for a new person,
+   * "Refresh Contact" when the backend already knows this exact profile URL.
+   */
+  function setSaveHandler(options) {
+    const opts = options || {};
+    saveHandler = opts.handler || null;
+    const btn = $("save-btn");
+    btn.textContent = opts.label || "Save Contact";
+    btn.disabled = !opts.handler || opts.disabled === true;
+    $("export-row").hidden = opts.showExport !== true;
+    if (opts.reset) {
+      $("save-state").textContent = "";
+      $("save-actions").textContent = "";
+    }
+  }
+
+  const OUTCOME_LABELS = {
+    created: "created",
+    refreshed_exact_match: "refreshed",
+    exact_match_unchanged: "already current",
+    staged_unmatched: "staged (new person)",
+    staged_ambiguous: "needs review (ambiguous)",
+    duplicate_in_submission: "duplicate in this batch",
+    suppressed: "suppressed — untouched",
+  };
+
+  function renderSaveResult(result) {
+    if (!result) return;
+    const state = $("save-state");
+    const actions = $("save-actions");
+    state.textContent = "";
+    actions.textContent = "";
+    const already = result.alreadyReceived ? " (already saved — idempotent)" : "";
+    setStatus(state, "status-ok", `Saved${already}.`);
+
+    const counts = result.counts || {};
+    const grid = el("div", { class: "summary-grid" });
+    let shown = 0;
+    for (const [key, label] of Object.entries(OUTCOME_LABELS)) {
+      const n = counts[key] || 0;
+      if (!n) continue;
+      shown += 1;
+      grid.appendChild(
+        el("div", { class: "summary-tile" }, [
+          el("span", { class: "n", text: String(n) }),
+          el("span", { class: "k", text: label }),
+        ])
+      );
+    }
+    if (counts.labels_applied) {
+      grid.appendChild(
+        el("div", { class: "summary-tile" }, [
+          el("span", { class: "n", text: String(counts.labels_applied) }),
+          el("span", { class: "k", text: "labels applied" }),
+        ])
+      );
+    }
+    if (counts.notes_recorded) {
+      grid.appendChild(
+        el("div", { class: "summary-tile" }, [
+          el("span", { class: "n", text: String(counts.notes_recorded) }),
+          el("span", { class: "k", text: "notes recorded" }),
+        ])
+      );
+    }
+    if (shown) state.appendChild(grid);
+
+    const first = (result.results || [])[0] || {};
+    if (first.contactUrl) {
+      actions.appendChild(
+        el("a", {
+          class: "btn btn-primary",
+          text: "Open contact",
+          attrs: { href: first.contactUrl, target: "_blank", rel: "noreferrer" },
+        })
+      );
+    }
+    if (result.workbenchUrl) {
+      actions.appendChild(
+        el("a", {
+          class: "btn",
+          text: (result.results || []).length > 1 ? "Open saved contacts" : "Open capture record",
+          attrs: { href: result.workbenchUrl, target: "_blank", rel: "noreferrer" },
+        })
+      );
+    } else if (first.captureUrl) {
+      actions.appendChild(
+        el("a", {
+          class: "btn",
+          text: "Open capture record",
+          attrs: { href: first.captureUrl, target: "_blank", rel: "noreferrer" },
+        })
+      );
+    }
+    if (!first.contactUrl && !result.workbenchUrl && !first.captureUrl) {
+      state.appendChild(
+        el("div", {
+          class: "tiny muted",
+          text: "Open the record from the workbench (no safe link was returned).",
+        })
+      );
+    }
+  }
+
+  async function doSave() {
+    if (!saveHandler) return;
+    const state = $("save-state");
+    const actions = $("save-actions");
+    actions.textContent = "";
+    const perm = await ensureHostPermission(saveTargetUrl());
+    if (!perm.granted) {
+      setStatus(
+        state,
+        "status-err",
+        perm.pattern
+          ? `Loopback access to ${perm.pattern} was not granted. Approve it to save.`
+          : "Save target must be a loopback (127.0.0.1 / localhost) URL."
+      );
+      actions.appendChild(el("button", { class: "btn btn-ghost", text: "Retry", on: { click: doSave } }));
+      return;
+    }
+    setStatus(state, "status-neutral", "Saving…");
+    const r = await saveHandler();
+    if (r && r.ok) {
+      renderSaveResult(r.result);
+      return;
+    }
+    const detail = handoff.describeSendError(r);
+    setStatus(state, "status-err", detail.headline);
+    if (detail.detail) state.appendChild(el("div", { class: "small muted", text: detail.detail }));
+    // The reviewed draft is preserved on every recoverable failure, so Retry
+    // re-sends the SAME client_submission_id — the backend replays it.
+    if (detail.canRetry !== false) {
+      actions.appendChild(el("button", { class: "btn btn-ghost", text: "Retry", on: { click: doSave } }));
+    }
+  }
+
+  // ---- results-page detection ---------------------------------------------
 
   async function refreshDetect() {
     const statusEl = $("detect-status");
@@ -100,7 +339,7 @@
         unsupported_page: "Not a supported results page — nothing captured.",
         structure_unrecognized:
           "Results page detected but no rows could be parsed. Page structure may have changed. Nothing captured.",
-        empty: "No visible records found.",
+        empty: "No visible contacts found.",
       };
       fb.textContent = map[r.captureStatus] || w.message || "Nothing captured.";
     } else {
@@ -140,6 +379,19 @@
       );
     }
     renderRecords();
+    syncBatchSaveAction();
+  }
+
+  /** Keep the shared Save button honest about how many contacts it would save. */
+  function syncBatchSaveAction() {
+    if ($("salesnav-sections").hidden) return;
+    const included = currentBatch ? currentBatch.summary.included : 0;
+    setSaveHandler({
+      handler: () => send({ type: "SAVE_INCLUDED_CONTACTS" }),
+      label: included === 1 ? "Save 1 included contact" : `Save ${included} included contacts`,
+      disabled: included === 0,
+      showExport: true,
+    });
   }
 
   function warnLabel(code) {
@@ -158,7 +410,7 @@
     const box = $("records");
     box.textContent = "";
     if (!currentBatch || !currentBatch.records.length) {
-      box.appendChild(el("p", { class: "muted small", text: "No records captured yet." }));
+      box.appendChild(el("p", { class: "muted small", text: "No contacts captured yet." }));
       return;
     }
     const onlyIssues = $("only-issues").checked;
@@ -218,143 +470,27 @@
     });
   }
 
-  // ---- campaigns ----------------------------------------------------------
-
-  async function fetchCampaigns() {
-    const sel = $("campaign-select");
-    // Requesting campaigns is also a backend call — request loopback access first.
-    const base = String((currentPrefs || {}).backendBaseUrl || "").replace(/\/$/, "");
-    const perm = await ensureHostPermission(base + "/api/campaigns");
-    if (!perm.granted) {
-      sel.title = "Grant loopback access to fetch campaigns, or enter an ID manually.";
-      return;
-    }
-    const r = await send({ type: "FETCH_CAMPAIGNS" });
-    if (!r || !r.ok) {
-      sel.title = "Could not fetch campaigns (" + ((r && r.error) || "error") + "). Enter an ID manually.";
-      return;
-    }
-    sel.textContent = "";
-    sel.appendChild(el("option", { text: "— none selected —", attrs: { value: "" } }));
-    for (const c of r.campaigns) {
-      sel.appendChild(
-        el("option", { text: `${c.name} (${c.status})`, attrs: { value: c.id } })
-      );
-    }
-    if (currentPrefs && currentPrefs.lastCampaignId) sel.value = currentPrefs.lastCampaignId;
-  }
-
-  async function persistCampaign(id) {
-    currentPrefs = (await send({ type: "SET_PREFS", prefs: { lastCampaignId: id || "" } })).prefs;
-  }
-
-  // ---- export / send ------------------------------------------------------
-
-  /** Compute the loopback target URL for a given send target from saved prefs. */
-  function targetUrl(target) {
-    const p = currentPrefs || {};
-    if (target === "mock") return p.mockReceiverUrl || "";
-    return String(p.backendBaseUrl || "").replace(/\/$/, "") + constants.INTAKE_PATH;
-  }
-
-  /**
-   * Ensure the OPTIONAL loopback host permission is granted before a backend/mock
-   * call. Requests it (with the current click gesture) if not already held.
-   */
-  async function ensureHostPermission(url) {
-    const pattern = self.SNCapture.permissions.originPatternForUrl(url);
-    if (!pattern) return { granted: false, pattern: null, reason: "not_loopback" };
-    try {
-      const has = await chrome.permissions.contains({ origins: [pattern] });
-      if (has) return { granted: true, pattern };
-      const granted = await chrome.permissions.request({ origins: [pattern] });
-      return { granted, pattern };
-    } catch (e) {
-      return { granted: false, pattern, reason: String(e && e.message) };
-    }
-  }
+  // ---- export -------------------------------------------------------------
 
   async function doExport(format) {
-    const state = $("send-state");
+    const state = $("save-state");
     const r = await send({ type: "EXPORT_BATCH", format });
-    if (r && r.ok) setStatus(state, "status-ok", `Downloaded ${r.filename} (${r.records} records).`);
+    if (r && r.ok) setStatus(state, "status-ok", `Downloaded ${r.filename} (${r.records} contacts).`);
     else setStatus(state, "status-err", (r && (r.message || r.error)) || "Export failed.");
   }
 
-  async function doSend() {
-    const state = $("send-state");
-    const actions = $("send-actions");
-    actions.textContent = "";
-    const target = $("send-target").value;
-    // Request loopback access up front, within this click gesture.
-    const perm = await ensureHostPermission(targetUrl(target));
-    if (!perm.granted) {
-      setStatus(
-        state,
-        "status-err",
-        perm.pattern
-          ? `Loopback access to ${perm.pattern} was not granted. Approve it to send.`
-          : "Send target must be a loopback (127.0.0.1 / localhost) URL."
-      );
-      actions.appendChild(el("button", { class: "btn btn-ghost", text: "Retry", on: { click: doSend } }));
+  // ---- migration notice ---------------------------------------------------
+
+  function renderMigration(state) {
+    const card = $("migration-card");
+    const info = (state && state.migration) || {};
+    if (!info.notice) {
+      card.hidden = true;
       return;
     }
-    setStatus(state, "status-neutral", "Sending…");
-    const r = await send({ type: "SEND_BATCH", target });
-    if (r && r.ok) {
-      // The worker persisted a safe result summary; render it (also restores on
-      // reopen). The reviewed batch is intentionally NOT cleared here.
-      const result = r.result || handoff.sanitizeStageResult(r.body || {}, {});
-      renderStagedResult(result);
-    } else {
-      const detail = handoff.describeSendError(r);
-      setStatus(state, "status-err", detail.headline);
-      if (detail.detail) {
-        state.appendChild(el("div", { class: "small muted", text: detail.detail }));
-      }
-      // The reviewed draft and its exclusions are preserved (send never mutates
-      // the batch), so Retry re-sends the SAME client_batch_id — idempotent.
-      if (detail.canRetry !== false) {
-        actions.appendChild(el("button", { class: "btn btn-ghost", text: "Retry", on: { click: doSend } }));
-      }
-    }
-  }
-
-  /**
-   * Render the successful-staging state and, distinctly, an Open in workbench
-   * action. Staging and opening the workbench stay separate operator actions;
-   * the workbench is never opened automatically. Used both right after a send
-   * and to restore the state when the popup is reopened.
-   */
-  function renderStagedResult(result) {
-    if (!result) return;
-    const state = $("send-state");
-    const actions = $("send-actions");
-    actions.textContent = "";
-    const already = result.alreadyReceived ? " (already received — idempotent)" : "";
-    setStatus(
-      state,
-      "status-ok",
-      `Staged${already}: ${result.recordCount != null ? result.recordCount + " records" : "ok"}` +
-        (result.stagingId ? ` · id ${result.stagingId}` : "")
-    );
-    if (result.warningCount) {
-      state.appendChild(el("div", { class: "small muted", text: `Backend warnings: ${result.warningCount}` }));
-    }
-    if (result.expiresAt) {
-      state.appendChild(el("div", { class: "tiny muted", text: "Expires: " + result.expiresAt }));
-    }
-    // Only open a URL the backend returned if it is a known local workbench
-    // destination; a non-loopback/unexpected URL is refused (never opened).
-    if (result.workbenchUrl && handoff.isOpenableWorkbenchUrl(result.workbenchUrl)) {
-      actions.appendChild(
-        el("a", { class: "btn btn-primary", text: "Open staged batch in workbench", attrs: { href: result.workbenchUrl, target: "_blank", rel: "noreferrer" } })
-      );
-    } else {
-      state.appendChild(
-        el("div", { class: "tiny muted", text: "Open the batch from the workbench Imports list (no safe workbench link was returned)." })
-      );
-    }
+    card.hidden = false;
+    $("migration-message").textContent = info.notice.message || "";
+    $("migration-export").hidden = !info.hasArchive;
   }
 
   // ---- settings -----------------------------------------------------------
@@ -365,7 +501,6 @@
     $("mock-url").value = prefs.mockReceiverUrl || "";
     $("max-records").value = prefs.maxRecordsPerBatch || 500;
     $("send-target").value = prefs.sendTarget || "mock";
-    if (prefs.lastCampaignId) $("campaign-manual").value = prefs.lastCampaignId;
   }
 
   async function saveSettings() {
@@ -378,9 +513,35 @@
     const r = await send({ type: "SET_PREFS", prefs: patch });
     if (r && r.ok) {
       currentPrefs = r.prefs;
-      setStatus($("send-state"), "status-ok", "Settings saved.");
+      setStatus($("save-state"), "status-ok", "Settings saved.");
     }
   }
+
+  // ---- shared panel API ---------------------------------------------------
+  //
+  // sidepanel-profile.js owns mode switching and the profile/company workflows;
+  // it drives the shared metadata and Save cards through this small surface so
+  // there is exactly one implementation of each.
+  self.VMRPanel = {
+    send,
+    el,
+    setStatus,
+    ensureHostPermission,
+    backendBase,
+    setSaveHandler,
+    renderSaveResult,
+    refreshLabelSuggestions,
+    syncBatchSaveAction,
+    getPrefs: () => currentPrefs,
+    setPrefs: (p) => {
+      currentPrefs = p;
+    },
+    setMetadata: (m) => {
+      currentMetadata = m || { labels: [], note: null };
+      renderMetadata();
+    },
+    refreshDetect,
+  };
 
   // ---- wire up ------------------------------------------------------------
 
@@ -388,32 +549,55 @@
     $("refresh-detect").addEventListener("click", refreshDetect);
     $("capture-btn").addEventListener("click", capture);
     $("clear-btn").addEventListener("click", async () => {
-      if (!confirm("Clear the entire draft batch? This cannot be undone.")) return;
+      if (!confirm("Clear the entire capture batch? This cannot be undone.")) return;
       const r = await send({ type: "CLEAR_BATCH" });
       if (r && r.ok) renderBatch(r.batchView);
     });
     $("only-issues").addEventListener("change", renderRecords);
-    $("fetch-campaigns").addEventListener("click", fetchCampaigns);
-    $("campaign-select").addEventListener("change", (e) => {
-      $("campaign-manual").value = e.target.value;
-      persistCampaign(e.target.value);
-    });
-    $("campaign-manual").addEventListener("change", (e) => persistCampaign(e.target.value.trim()));
-    $("send-target").addEventListener("change", (e) => send({ type: "SET_PREFS", prefs: { sendTarget: e.target.value } }));
     $("export-json").addEventListener("click", () => doExport("json"));
     $("export-csv").addEventListener("click", () => doExport("csv"));
-    $("send-btn").addEventListener("click", doSend);
+    $("save-btn").addEventListener("click", doSave);
     $("save-settings").addEventListener("click", saveSettings);
+    $("send-target").addEventListener("change", (e) =>
+      send({ type: "SET_PREFS", prefs: { sendTarget: e.target.value } })
+    );
+
+    $("label-add").addEventListener("click", addLabelFromInput);
+    $("label-input").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        addLabelFromInput();
+      }
+    });
+    $("note-input").addEventListener("change", (e) => persistMetadata({ note: e.target.value }));
+    $("metadata-clear").addEventListener("click", async () => {
+      const r = await send({ type: "CLEAR_OPERATOR_METADATA" });
+      if (r && r.ok) {
+        currentMetadata = r.metadata;
+        $("note-input").value = "";
+        renderMetadata();
+      }
+    });
+    $("migration-dismiss").addEventListener("click", async () => {
+      await send({ type: "DISMISS_MIGRATION_NOTICE" });
+      $("migration-card").hidden = true;
+    });
+    $("migration-export").addEventListener("click", () =>
+      send({ type: "EXPORT_LEGACY_ARCHIVE" })
+    );
 
     const state = await send({ type: "GET_STATE" });
     if (state && state.ok) {
       loadPrefsIntoUi(state.prefs);
+      currentMetadata = state.metadata || { labels: [], note: null };
+      renderMetadata();
+      renderMigration(state);
       renderBatch(state.batchView);
-      // Recovery: if a batch was already staged (popup was closed/reloaded, or
-      // navigation failed), restore the staged state + Open in workbench action
-      // without requiring a recapture or resend.
-      if (state.lastResult) renderStagedResult(state.lastResult);
+      // Recovery: if contacts were already saved (panel closed/reloaded, or a
+      // navigation failed), restore the outcome without recapturing or resaving.
+      if (state.lastResult) renderSaveResult(state.lastResult);
     }
+    refreshLabelSuggestions();
     refreshDetect();
   }
 

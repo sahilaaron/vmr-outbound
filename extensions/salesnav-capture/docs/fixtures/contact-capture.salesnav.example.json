@@ -1,0 +1,133 @@
+{
+  "schema_version": "linkedin-contact-capture/2.0.0",
+  "client_submission_id": "7c6b5a49-0000-4000-8000-ddddeeeeffff",
+  "capture_mode": "salesnav_people_search",
+  "submitted_at": "2026-07-26T09:20:00.000Z",
+  "source": "chrome-extension:linkedin-contact-capture",
+  "extension_version": "2.0.0",
+  "operator_metadata": {
+    "labels": ["Conference Lead"],
+    "note": "Second page of the operations search — follow up after September."
+  },
+  "contacts": [
+    {
+      "client_capture_id": "a1a1a1a1-0000-4000-8000-000000000001",
+      "captured_at": "2026-07-26T09:15:04.000Z",
+      "source": {
+        "surface": "salesnav_people_results",
+        "url": "https://www.linkedin.com/sales/search/people?keywords=head%20of%20operations&page=2",
+        "page_title": null,
+        "operator_triggered": true
+      },
+      "person": {
+        "linkedin_profile_url": null,
+        "linkedin_public_identifier": null,
+        "salesnav_lead_url": "https://www.linkedin.com/sales/lead/ACwAAAB1x9k",
+        "full_name": "Dana Whitfield",
+        "first_name": "Dana",
+        "last_name": "Whitfield",
+        "headline": "Head of Operations",
+        "location": "Greater Chicago Area",
+        "connection_count": null,
+        "connection_count_raw": null,
+        "open_to_work_visible": null,
+        "about_text": null,
+        "raw_lines": [],
+        "warnings": [{ "code": "missing_field", "field": "linkedinProfileUrl" }]
+      },
+      "current_employment_hint": {
+        "company_name": "Northwind Logistics",
+        "company_linkedin_url": null,
+        "company_linkedin_id": null,
+        "title": "Head of Operations",
+        "role_location": null,
+        "workplace_type": null,
+        "employment_type": null,
+        "tenure_text": null
+      },
+      "experience_observations": [],
+      "extraction": {
+        "adapter_version": "salesnav-people-results-adapter/1",
+        "status": "partial",
+        "missing_sections": [],
+        "excluded_sections": [],
+        "page_warnings": []
+      },
+      "operator_metadata": { "labels": [], "note": null },
+      "raw_snapshot": {
+        "rawFullName": "Dana Whitfield",
+        "title": "Head of Operations",
+        "companyName": "Northwind Logistics",
+        "location": "Greater Chicago Area",
+        "linkedinProfileUrl": null,
+        "salesNavLeadUrl": "https://www.linkedin.com/sales/lead/ACwAAAB1x9k",
+        "salesNavCompanyUrl": "https://www.linkedin.com/sales/company/1234567",
+        "visibleCompanyMetadata": ["Logistics & Supply Chain"],
+        "sourceSearchUrl": "https://www.linkedin.com/sales/search/people?keywords=head%20of%20operations&page=2",
+        "sourcePageNumber": 2,
+        "sourcePosition": 1,
+        "capturedAt": "2026-07-26T09:15:04.000Z",
+        "warnings": [{ "code": "missing_field", "field": "linkedinProfileUrl" }]
+      }
+    },
+    {
+      "client_capture_id": "a1a1a1a1-0000-4000-8000-000000000002",
+      "captured_at": "2026-07-26T09:15:04.000Z",
+      "source": {
+        "surface": "salesnav_people_results",
+        "url": "https://www.linkedin.com/sales/search/people?keywords=head%20of%20operations&page=2",
+        "page_title": null,
+        "operator_triggered": true
+      },
+      "person": {
+        "linkedin_profile_url": "https://www.linkedin.com/in/tomoya-okaku",
+        "linkedin_public_identifier": "tomoya-okaku",
+        "salesnav_lead_url": "https://www.linkedin.com/sales/lead/ACwAAAC9zzz",
+        "full_name": "大角 知也",
+        "first_name": "大角",
+        "last_name": "知也",
+        "headline": "事業開発マネージャー",
+        "location": "Tokyo, Japan",
+        "connection_count": null,
+        "connection_count_raw": null,
+        "open_to_work_visible": null,
+        "about_text": null,
+        "raw_lines": [],
+        "warnings": []
+      },
+      "current_employment_hint": {
+        "company_name": "Sakura Robotics",
+        "company_linkedin_url": "https://www.linkedin.com/company/sakura-robotics",
+        "company_linkedin_id": "sakura-robotics",
+        "title": "事業開発マネージャー",
+        "role_location": null,
+        "workplace_type": null,
+        "employment_type": null,
+        "tenure_text": null
+      },
+      "experience_observations": [],
+      "extraction": {
+        "adapter_version": "salesnav-people-results-adapter/1",
+        "status": "ok",
+        "missing_sections": [],
+        "excluded_sections": [],
+        "page_warnings": []
+      },
+      "operator_metadata": { "labels": ["High Priority"], "note": null },
+      "raw_snapshot": {
+        "rawFullName": "大角 知也",
+        "title": "事業開発マネージャー",
+        "companyName": "Sakura Robotics",
+        "location": "Tokyo, Japan",
+        "linkedinProfileUrl": "https://www.linkedin.com/in/tomoya-okaku",
+        "salesNavLeadUrl": "https://www.linkedin.com/sales/lead/ACwAAAC9zzz",
+        "companyLinkedInUrl": "https://www.linkedin.com/company/sakura-robotics",
+        "sourceSearchUrl": "https://www.linkedin.com/sales/search/people?keywords=head%20of%20operations&page=2",
+        "sourcePageNumber": 2,
+        "sourcePosition": 2,
+        "capturedAt": "2026-07-26T09:15:04.000Z",
+        "warnings": []
+      }
+    }
+  ]
+}

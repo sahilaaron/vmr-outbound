@@ -1,5 +1,15 @@
 # Backend handoff contract (v1) — Sales Navigator capture → VMR intake
 
+> **LEGACY (superseded by DAT-013).** This is the campaign-era staged-import
+> contract. The extension no longer produces it: the contact-first workflow
+> submits `linkedin-contact-capture/2.0.0` to `POST /api/intake/contact-captures`
+> instead — see [`CONTACT_CAPTURE_CONTRACT.md`](./CONTACT_CAPTURE_CONTRACT.md).
+>
+> The route and this document remain so previously staged batches stay readable
+> and the transition is explicit. Posting a `salesnav-capture/1.0.0` body to the
+> contact-capture route returns `422 unsupported_contract` naming this route; it
+> is never reinterpreted as a contact-first submission.
+
 This is the **versioned integration contract** between the extension and the VMR
 backend. It is intentionally implemented here only against a **mock receiver**
 (`tools/mock-receiver.js`); the real endpoint belongs to the backend and lands

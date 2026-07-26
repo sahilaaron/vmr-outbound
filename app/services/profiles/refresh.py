@@ -223,10 +223,38 @@ def find_review_candidates(
     return candidates
 
 
-def _current_experiences(snapshot: LinkedInProfileSnapshot) -> list[dict[str, Any]]:
+def snapshot_experiences(snapshot: LinkedInProfileSnapshot) -> list[dict[str, Any]]:
+    """The snapshot's experience entries, whichever contract produced them.
+
+    ``linkedin-profile-capture/1.0.0`` nests them under ``experiences``; the
+    contact-first ``linkedin-contact-capture/2.0.0`` calls the same list
+    ``experience_observations``. The stored payload stays verbatim in both
+    cases, so the accessor — not the evidence — absorbs the difference.
+    """
+
     payload = snapshot.payload or {}
-    experiences = payload.get("experiences") or []
-    return [e for e in experiences if e.get("is_current") is True]
+    entries = payload.get("experiences")
+    if entries is None:
+        entries = payload.get("experience_observations")
+    return list(entries or [])
+
+
+def _current_experiences(snapshot: LinkedInProfileSnapshot) -> list[dict[str, Any]]:
+    return [e for e in snapshot_experiences(snapshot) if e.get("is_current") is True]
+
+
+def _employment_hint(snapshot: LinkedInProfileSnapshot) -> dict[str, Any]:
+    """The contact-first ``current_employment_hint`` block, when present.
+
+    A Sales Navigator result row shows a person's current title and company but
+    no experience history. The hint carries exactly those visible values; it is
+    used only when the capture has no current-role experience entry, so a richer
+    profile capture always wins.
+    """
+
+    payload = snapshot.payload or {}
+    hint = payload.get("current_employment_hint")
+    return hint if isinstance(hint, dict) else {}
 
 
 # --- Field refresh (DAT-005 delegation) --------------------------------------
@@ -236,16 +264,19 @@ def _proposed_values(snapshot: LinkedInProfileSnapshot) -> dict[str, str | None]
     """Snapshot-derived values proposed to the freshness policy.
 
     ``title``/``company_name`` come from the top current experience entry (the
-    page's most recent role). Missing values are simply not proposed — a null
-    never overwrites anything.
+    page's most recent role), falling back to the capture's visible
+    ``current_employment_hint`` when the surface showed no experience history at
+    all. Missing values are simply not proposed — a null never overwrites
+    anything.
     """
 
     current = _current_experiences(snapshot)
-    top = current[0] if current else None
+    top = current[0] if current else _employment_hint(snapshot)
     proposed: dict[str, str | None] = {}
-    if top is not None:
-        if top.get("job_title"):
-            proposed["title"] = top["job_title"]
+    if top:
+        title = top.get("job_title") or top.get("title")
+        if title:
+            proposed["title"] = title
         if top.get("company_name"):
             proposed["company_name"] = top["company_name"]
     if snapshot.normalized_profile_url:
