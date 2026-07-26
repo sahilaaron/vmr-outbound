@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 /**
- * Local mock intake receiver for the Sales Navigator capture extension.
+ * Local mock intake receiver for the VMR contact-capture extension.
  *
- * Implements the shape of `POST /api/intake/sales-navigator/stage` (see
- * docs/BACKEND_CONTRACT.md) so the extension's send flow can be tested end to
- * end BEFORE the real backend adapter lands. It STAGES only — it never creates
- * contacts and holds nothing but the client_batch_id -> response it minted, in
- * memory, for idempotency.
+ * Implements the shape of `POST /api/intake/contact-captures` (see
+ * docs/CONTACT_CAPTURE_CONTRACT.md) plus its two companion reads, so the
+ * extension's save flow can be exercised without a running backend. The legacy
+ * `POST /api/intake/sales-navigator/stage` shape is retained so a previously
+ * captured batch can still be replayed against the mock.
+ *
+ * It stages only — it never creates contacts, and it holds nothing but the
+ * client id -> response it minted, in memory, for idempotency.
  *
  * Dependency-free (node:http). Runnable as a CLI and importable by tests.
  *
@@ -24,10 +27,20 @@ const path = require("path");
 
 const constants = require(path.join(__dirname, "..", "src", "common", "constants.js"));
 const INTAKE_PATH = constants.INTAKE_PATH;
+const CONTACT_CAPTURE_PATH = constants.CONTACT_CAPTURE_PATH;
+const CONTACT_LABELS_PATH = constants.CONTACT_LABELS_PATH;
+const CONTACT_LOOKUP_PATH = constants.CONTACT_LOOKUP_PATH;
 
+// Legacy campaign list, retained only so the pre-DAT-013 route keeps working
+// against the mock. The contact-first workflow never calls it.
 const MOCK_CAMPAIGNS = [
   { id: "camp_demo_001", name: "Pilot — Q3 SaaS Ops", status: "draft" },
   { id: "camp_demo_002", name: "Manufacturing DACH", status: "draft" },
+];
+
+const MOCK_LABELS = [
+  { slug: "healthcare", name: "Healthcare" },
+  { slug: "venture-capital", name: "Venture Capital" },
 ];
 
 function readBody(req, maxBytes) {
@@ -73,9 +86,24 @@ function validate(payload) {
   return errors;
 }
 
+function validateSubmission(payload) {
+  const errors = [];
+  if (!payload || typeof payload !== "object") return ["body is not an object"];
+  if (payload.schema_version !== constants.CONTACT_CAPTURE_SCHEMA_VERSION) {
+    errors.push("schema_version must be " + constants.CONTACT_CAPTURE_SCHEMA_VERSION);
+  }
+  if (typeof payload.client_submission_id !== "string" || !payload.client_submission_id) {
+    errors.push("client_submission_id missing");
+  }
+  if ("campaign_id" in payload) errors.push("campaign_id is not part of this contract");
+  if (!Array.isArray(payload.contacts)) errors.push("contacts must be an array");
+  else if (payload.contacts.length === 0) errors.push("contacts must not be empty");
+  return errors;
+}
+
 function createReceiver(opts) {
   const options = opts || {};
-  const seen = new Map(); // client_batch_id -> response body
+  const seen = new Map(); // client id -> response body
   const maxBytes = options.maxBytes || 6 * 1024 * 1024;
 
   const server = http.createServer(async (req, res) => {
@@ -100,6 +128,83 @@ function createReceiver(opts) {
 
     if (req.method === "GET" && url.pathname === "/api/campaigns") {
       json(res, 200, MOCK_CAMPAIGNS, cors);
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === CONTACT_LABELS_PATH) {
+      json(res, 200, { labels: MOCK_LABELS }, cors);
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === CONTACT_LOOKUP_PATH) {
+      // Existence only — the mock never invents a match.
+      json(res, 200, { match: "none", contact_count: 0 }, cors);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === CONTACT_CAPTURE_PATH) {
+      let raw;
+      try {
+        raw = await readBody(req, maxBytes);
+      } catch (_e) {
+        json(res, 413, { error: "payload_too_large" }, cors);
+        return;
+      }
+      let payload;
+      try {
+        payload = JSON.parse(raw);
+      } catch (_e) {
+        json(res, 400, { error: "invalid_json" }, cors);
+        return;
+      }
+      const errors = validateSubmission(payload);
+      if (errors.length) {
+        json(res, 422, { error: "validation_failed", details: errors }, cors);
+        return;
+      }
+      if (seen.has(payload.client_submission_id)) {
+        const prior = Object.assign({}, seen.get(payload.client_submission_id), {
+          already_received: true,
+        });
+        json(res, 200, prior, cors);
+        return;
+      }
+      const port = server.address() ? server.address().port : 8787;
+      const submissionId = "sub_" + payload.client_submission_id.slice(0, 8);
+      const results = payload.contacts.map((c) => ({
+        client_capture_id: c.client_capture_id,
+        capture_id: "cap_" + String(c.client_capture_id).slice(0, 8),
+        // The mock never claims a match: identity resolution is the backend's.
+        outcome: "unmatched_staged",
+        matched_contact_id: null,
+        contact_url: null,
+        capture_url: `http://127.0.0.1:${port}/contact-captures/cap_${String(c.client_capture_id).slice(0, 8)}`,
+        review_candidate_count: 0,
+        labels_applied: [],
+        warnings: [],
+      }));
+      const body = {
+        submission_id: submissionId,
+        client_submission_id: payload.client_submission_id,
+        received_at: new Date().toISOString(),
+        already_received: false,
+        counts: {
+          submitted: payload.contacts.length,
+          created: 0,
+          refreshed_exact_match: 0,
+          exact_match_unchanged: 0,
+          staged_unmatched: payload.contacts.length,
+          staged_ambiguous: 0,
+          duplicate_in_submission: 0,
+          suppressed: 0,
+          labels_applied: 0,
+          notes_recorded: payload.operator_metadata && payload.operator_metadata.note ? payload.contacts.length : 0,
+        },
+        results,
+        operator_workbench_url: `http://127.0.0.1:${port}/contact-captures/submissions/${submissionId}`,
+      };
+      seen.set(payload.client_submission_id, body);
+      json(res, 201, body, cors);
       return;
     }
 
@@ -153,7 +258,7 @@ function createReceiver(opts) {
   return server;
 }
 
-module.exports = { createReceiver, MOCK_CAMPAIGNS };
+module.exports = { createReceiver, MOCK_CAMPAIGNS, MOCK_LABELS };
 
 // CLI
 if (require.main === module) {
@@ -162,6 +267,6 @@ if (require.main === module) {
   const server = createReceiver();
   server.listen(port, host, () => {
     // eslint-disable-next-line no-console
-    console.log(`[mock-receiver] listening on http://${host}:${port}${INTAKE_PATH}`);
+    console.log(`[mock-receiver] listening on http://${host}:${port}${CONTACT_CAPTURE_PATH}`);
   });
 }

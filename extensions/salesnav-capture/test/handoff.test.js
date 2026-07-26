@@ -15,11 +15,24 @@ test("openable workbench URL: non-loopback, bad scheme, or unexpected path refus
   assert.equal(handoff.isOpenableWorkbenchUrl("http://evil.example/imports/abc"), false);
   assert.equal(handoff.isOpenableWorkbenchUrl("https://linkedin.com/imports/abc"), false);
   assert.equal(handoff.isOpenableWorkbenchUrl("javascript:alert(1)//127.0.0.1/imports/"), false);
-  assert.equal(handoff.isOpenableWorkbenchUrl("http://127.0.0.1:8000/contacts/abc"), false);
+  // Unexpected paths stay refused even on loopback.
+  assert.equal(handoff.isOpenableWorkbenchUrl("http://127.0.0.1:8000/admin/abc"), false);
+  assert.equal(handoff.isOpenableWorkbenchUrl("http://127.0.0.1:8000/"), false);
   assert.equal(handoff.isOpenableWorkbenchUrl("file:///imports/abc"), false);
   assert.equal(handoff.isOpenableWorkbenchUrl(""), false);
   assert.equal(handoff.isOpenableWorkbenchUrl(null), false);
   assert.equal(handoff.isOpenableWorkbenchUrl("not a url"), false);
+});
+
+test("contact-first record destinations are openable on loopback", () => {
+  // DAT-013 added the two destinations the contact-first flow returns.
+  assert.equal(handoff.isOpenableWorkbenchUrl("http://127.0.0.1:8000/contact-captures/abc"), true);
+  assert.equal(
+    handoff.isOpenableWorkbenchUrl("http://127.0.0.1:8000/contact-captures/submissions/abc"),
+    true
+  );
+  assert.equal(handoff.isOpenableWorkbenchUrl("http://127.0.0.1:8000/contacts/abc"), true);
+  assert.equal(handoff.isOpenableWorkbenchUrl("http://evil.example/contact-captures/abc"), false);
 });
 
 // --- sanitizeStageResult: safe, recoverable summary only --------------------

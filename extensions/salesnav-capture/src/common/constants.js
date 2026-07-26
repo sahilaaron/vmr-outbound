@@ -1,9 +1,14 @@
 /**
- * Shared constants for the Sales Navigator capture extension.
+ * Shared constants for the VMR contact-capture extension.
  *
  * UMD-style module: works as a CommonJS module in Node (tests) and as a global
  * `self.SNCapture.constants` when loaded as a classic script in the content
  * script, service worker, or side panel. No bundler, no remote code.
+ *
+ * The directory name (`salesnav-capture`) is historical: the extension began as
+ * a Sales Navigator listing capture and is now the contact-acquisition edge of
+ * the platform. The path is kept so the committed contract schemas, backend
+ * loaders, and issue history stay continuous.
  */
 (function (root, factory) {
   const mod = factory();
@@ -13,52 +18,69 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
-  // Versioned contract identifier for the backend intake payload. Bump on any
-  // breaking change to the record/payload shape (see docs/BACKEND_CONTRACT.md).
-  const SCHEMA_VERSION = "salesnav-capture/1.0.0";
+  // ---- Contracts -----------------------------------------------------------
+  //
+  // The CONTACT-FIRST contract (DAT-013) is what the normal workflow uses. A
+  // submission carries one or more reviewed people and has no campaign field at
+  // all. See docs/CONTACT_CAPTURE_CONTRACT.md.
+  const CONTACT_CAPTURE_SCHEMA_VERSION = "linkedin-contact-capture/2.0.0";
+  const CONTACT_CAPTURE_SOURCE_IDENTIFIER = "chrome-extension:linkedin-contact-capture";
 
-  // Versioned contracts for operator-opened ordinary LinkedIn pages (DAT-012).
-  // Independent namespaces so the Sales Navigator contract stays untouched.
-  // See docs/PROFILE_CONTRACT.md.
+  // LEGACY, campaign-era contracts. Retained so previously staged batches and
+  // snapshots stay readable and so the backend transition is explicit; the
+  // extension no longer produces the first two. Company evidence still uses its
+  // own contract because a company page is not a person.
+  const SCHEMA_VERSION = "salesnav-capture/1.0.0";
   const PROFILE_SCHEMA_VERSION = "linkedin-profile-capture/1.0.0";
   const COMPANY_SCHEMA_VERSION = "linkedin-company-capture/1.0.0";
 
-  // Identifies the client that produced the batch.
   const SOURCE_IDENTIFIER = "chrome-extension:salesnav-capture";
   const PROFILE_SOURCE_IDENTIFIER = "chrome-extension:linkedin-profile-capture";
   const COMPANY_SOURCE_IDENTIFIER = "chrome-extension:linkedin-company-capture";
 
+  // Which reviewed workflow produced a submission.
+  const CAPTURE_MODES = {
+    LINKEDIN_PROFILE: "linkedin_profile",
+    SALESNAV_PEOPLE_SEARCH: "salesnav_people_search",
+  };
+
   // Safety limits (client-side; the backend enforces its own).
   const LIMITS = {
-    // Maximum records retained in one draft batch. Prevents runaway captures.
+    // Maximum people retained in one reviewed submission. Prevents runaway
+    // captures; the operator still includes or excludes each row by hand.
     MAX_RECORDS_PER_BATCH: 500,
     // Reject a serialized payload larger than this before sending.
     MAX_PAYLOAD_BYTES: 5 * 1024 * 1024, // 5 MB
     // Longest a single result-page capture pass may scroll for (ms).
     CAPTURE_SCROLL_BUDGET_MS: 8000,
+    // Operator metadata bounds, mirroring contact-capture.schema.json.
+    MAX_LABELS: 25,
+    MAX_LABEL_LENGTH: 64,
+    MAX_NOTE_LENGTH: 2000,
   };
 
   // Chrome storage keys (non-secret preferences + recoverable draft batch +
-  // the last successful staging result, kept so the operator can reopen the
-  // staged batch after the popup closes without recapturing).
+  // the last successful submission result, kept so the operator can reopen the
+  // saved contacts after the panel closes without recapturing).
   const STORAGE = {
     DRAFT_BATCH: "sn_draft_batch",
     PREFERENCES: "sn_preferences",
     LAST_RESULT: "sn_last_stage_result",
   };
 
-  // Default, overridable operator preferences. No secrets, no remote URLs.
+  // Default, overridable operator preferences. No secrets, no remote URLs, and
+  // deliberately no campaign: acquisition never needs one.
   const DEFAULT_PREFERENCES = {
     // Local VMR backend base URL. Loopback only by default.
     backendBaseUrl: "http://127.0.0.1:8000",
-    // Output destination for the *production* default must require an explicit
-    // operator action; nothing is ever sent automatically.
-    lastCampaignId: "",
-    // Where a "Send" goes during development: "mock" | "backend".
+    // Where a "Save" goes during development: "mock" | "backend".
     sendTarget: "mock",
     // Mock/local receiver used only for testing the send flow.
-    mockReceiverUrl: "http://127.0.0.1:8787/api/intake/sales-navigator/stage",
+    mockReceiverUrl: "http://127.0.0.1:8787/api/intake/contact-captures",
     maxRecordsPerBatch: 500,
+    // Labels the operator most recently applied, offered again next time. Plain
+    // names only — the backend owns the canonical label registry.
+    recentLabels: [],
   };
 
   // Origins the extension is allowed to talk to for handoff. Loopback + the
@@ -70,8 +92,11 @@
     /^http:\/\/\[::1\](:\d+)?$/,
   ];
 
-  // The backend route the contract targets. Final name reconciled to repo
-  // conventions after PR #120 merges (see docs/BACKEND_CONTRACT.md).
+  // Backend routes. The contact-capture route is the one the normal workflow
+  // uses; the rest are the legacy campaign-era intakes.
+  const CONTACT_CAPTURE_PATH = "/api/intake/contact-captures";
+  const CONTACT_LABELS_PATH = "/api/contact-labels";
+  const CONTACT_LOOKUP_PATH = "/api/contacts/lookup";
   const INTAKE_PATH = "/api/intake/sales-navigator/stage";
   const PROFILE_INTAKE_PATH = "/api/intake/linkedin-profile/stage";
   const COMPANY_INTAKE_PATH = "/api/intake/linkedin-company/stage";
@@ -118,7 +143,7 @@
   };
 
   // Chrome storage keys for the person/company capture drafts (kept separate
-  // from the SalesNav batch so the two workflows never clobber each other).
+  // from the results batch so the two workflows never clobber each other).
   const PROFILE_STORAGE = {
     DRAFT_PROFILE: "li_draft_profile",
     LAST_PROFILE_RESULT: "li_last_profile_result",
@@ -126,18 +151,33 @@
     LAST_COMPANY_RESULT: "li_last_company_result",
   };
 
+  // Contact-first storage: the operator metadata attached to the next
+  // submission, and the archive a superseded campaign-era draft is moved to.
+  const CONTACT_STORAGE = {
+    OPERATOR_METADATA: "cc_operator_metadata",
+    LEGACY_ARCHIVE: "cc_legacy_v1_archive",
+    MIGRATION_NOTICE: "cc_migration_notice",
+  };
+
   return {
     SCHEMA_VERSION,
     PROFILE_SCHEMA_VERSION,
     COMPANY_SCHEMA_VERSION,
+    CONTACT_CAPTURE_SCHEMA_VERSION,
     SOURCE_IDENTIFIER,
     PROFILE_SOURCE_IDENTIFIER,
     COMPANY_SOURCE_IDENTIFIER,
+    CONTACT_CAPTURE_SOURCE_IDENTIFIER,
+    CAPTURE_MODES,
     LIMITS,
     STORAGE,
     PROFILE_STORAGE,
+    CONTACT_STORAGE,
     DEFAULT_PREFERENCES,
     ALLOWED_BACKEND_ORIGIN_PATTERNS,
+    CONTACT_CAPTURE_PATH,
+    CONTACT_LABELS_PATH,
+    CONTACT_LOOKUP_PATH,
     INTAKE_PATH,
     PROFILE_INTAKE_PATH,
     COMPANY_INTAKE_PATH,
