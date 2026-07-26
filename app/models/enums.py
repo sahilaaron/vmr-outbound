@@ -237,15 +237,67 @@ class EnrichmentConfirmationStatus(enum.StrEnum):
 class EnrichmentConfirmationSource(enum.StrEnum):
     """How a confirmed domain was chosen (DAT-010 provenance).
 
-    Recorded separately from the immutable Sales Navigator raw values so the
-    origin of an applied domain is always auditable: a logo.dev ``CANDIDATE`` the
-    operator selected, a ``MANUAL`` domain the operator typed, or ``UNRESOLVED``
-    when the operator deliberately left the company without a domain.
+    Recorded separately from the immutable raw capture values so the origin of an
+    applied domain is always auditable: a logo.dev ``CANDIDATE`` the operator
+    selected, a ``MANUAL`` domain the operator typed, ``UNRESOLVED`` when the
+    operator deliberately left the company without a domain, or
+    ``PRIOR_MAPPING`` (DAT-014) when a domain was reused from an EARLIER
+    operator confirmation of the same normalized company.
+
+    ``PRIOR_MAPPING`` is the only non-interactive source, and it is not an
+    exception to the rule that the operator decides: it replays a decision the
+    operator already made. A provider's top-ranked name match never qualifies.
     """
 
     CANDIDATE = "candidate"
     MANUAL = "manual"
     UNRESOLVED = "unresolved"
+    PRIOR_MAPPING = "prior_mapping"
+
+
+class CompanyResolutionOutcome(enum.StrEnum):
+    """How the COMPANY behind a contact capture was resolved (DAT-014).
+
+    Deliberately separate from :class:`ContactPromotionOutcome`: knowing which
+    company a person works for and knowing which person they are, are two
+    different questions with different failure modes, and collapsing them into
+    one result would hide which of the two actually blocked a promotion.
+
+    ``EXISTING_COMPANY_RESOLVED`` is the only outcome reachable without asking
+    the provider: a previously CONFIRMED decision for the same normalized
+    company already names the domain. Everything a provider returns is a
+    *candidate* awaiting the operator, because a top-ranked name match is not
+    evidence of identity.
+    """
+
+    PENDING_LOOKUP = "pending_lookup"
+    EXISTING_COMPANY_RESOLVED = "existing_company_resolved"
+    DOMAIN_CANDIDATE_CONFIRMED = "domain_candidate_confirmed"
+    CANDIDATE_REVIEW_REQUIRED = "candidate_review_required"
+    MULTIPLE_CANDIDATES_REVIEW_REQUIRED = "multiple_candidates_review_required"
+    NO_CANDIDATE = "no_candidate"
+    COMPANY_IDENTITY_AMBIGUOUS = "company_identity_ambiguous"
+    LOOKUP_UNAVAILABLE = "lookup_unavailable"
+    LEFT_UNRESOLVED = "left_unresolved"
+
+
+class ContactPromotionOutcome(enum.StrEnum):
+    """What happened to the PERSON when a capture was promoted (DAT-014).
+
+    A promotion may create a canonical contact or link an existing one, but it
+    never merges on weak evidence: an ambiguous identity blocks the promotion so
+    an operator decides. ``SUPPRESSED`` is authoritative — a suppressed identity
+    is never promoted, and the suppression itself is never touched.
+    """
+
+    PENDING = "pending"
+    CONTACT_CREATED = "contact_created"
+    CONTACT_EXACT_MATCH_LINKED = "contact_exact_match_linked"
+    CONTACT_IDENTITY_AMBIGUOUS = "contact_identity_ambiguous"
+    SUPPRESSED = "suppressed"
+    ALREADY_PROMOTED = "already_promoted"
+    PROMOTION_BLOCKED = "promotion_blocked"
+    PROMOTION_FAILED = "promotion_failed"
 
 
 class EmailVerificationResult(enum.StrEnum):

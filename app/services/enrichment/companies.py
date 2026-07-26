@@ -1,8 +1,8 @@
-"""Company-domain enrichment service for staged Sales Navigator batches (DAT-010).
+"""Company-domain enrichment service (DAT-010, shared with DAT-014).
 
-A Sales Navigator capture never carries ``company_domain``, so its rows are
-truthfully rejected until a domain is supplied. This service lets the operator
-supply that domain safely and by hand:
+Neither a Sales Navigator batch row nor a LinkedIn contact capture carries
+``company_domain``, so neither can become canonical until a domain is supplied.
+This service lets the operator supply that domain safely and by hand:
 
 1. group a staged batch's raw rows into unique companies (by a normalized key);
 2. look each unique company up ONCE through the official logo.dev Search Brands
@@ -11,6 +11,11 @@ supply that domain safely and by hand:
 4. apply the operator's EXPLICIT confirmation (a selected candidate, a manual
    override, or an explicit "unresolved") to every matching staged row via a
    domain overlay at preview/confirm time.
+
+The grouping and overlay steps are batch-specific. The lookup, candidate
+storage, confirmation, and rejection steps are shared: DAT-014 drives the same
+record-level functions for a contact capture, so there is exactly one place
+where a domain can be chosen and exactly one candidate store.
 
 The Sales Navigator raw rows are never mutated: the confirmed domain lives on the
 enrichment record (provenance/audit metadata) and is overlaid onto the transient
@@ -169,8 +174,26 @@ def ensure_records(
     return ordered
 
 
+# Identifies which provider answered and which lookup contract produced the
+# candidate list, so a stored candidate stays interpretable if either changes.
+PROVIDER = "logo.dev"
+LOOKUP_VERSION = "logo.dev/search-brands/v1"
+
+
 def _candidates_to_json(result: logodev.LookupResult) -> list[dict[str, Any]]:
-    return [{"domain": c.domain, "name": c.name} for c in result.candidates]
+    """Candidate rows for storage: domain, name, provider rank, and confidence.
+
+    ``rank`` is the provider's 1-based ordering, kept because the operator should
+    see what the provider considered most likely — it is NOT a confirmation.
+    ``confidence`` is always ``None``: logo.dev's Search Brands API returns no
+    score, and recording the absence explicitly stops a later reader from
+    mistaking rank for a score.
+    """
+
+    return [
+        {"domain": c.domain, "name": c.name, "rank": index, "confidence": None}
+        for index, c in enumerate(result.candidates, start=1)
+    ]
 
 
 def run_lookup(
@@ -212,6 +235,9 @@ def run_lookup(
     record.lookup_status = result.status
     record.candidates = _candidates_to_json(result)
     record.lookup_query = record.company_name
+    record.normalized_query = record.company_key
+    record.provider = PROVIDER
+    record.lookup_version = LOOKUP_VERSION
     record.looked_up_at = datetime.now(UTC)
     record.lookup_attempts = (record.lookup_attempts or 0) + 1
     session.flush()
@@ -225,8 +251,12 @@ def run_lookup(
         new_state=result.status.value,
         reason="logo.dev company-domain lookup",
         context={
-            "batch_id": str(record.batch_id),
+            "owner": record.owner_label,
+            "batch_id": str(record.batch_id) if record.batch_id else None,
+            "capture_id": str(record.capture_id) if record.capture_id else None,
             "company_key": record.company_key,
+            "provider": PROVIDER,
+            "lookup_version": LOOKUP_VERSION,
             "status": result.status.value,
             "candidate_count": len(result.candidates),
             "attempt": record.lookup_attempts,
@@ -312,20 +342,7 @@ def confirm_company(
     actor: str,
     note: str | None = None,
 ) -> SalesNavCompanyEnrichment:
-    """Record the operator's EXPLICIT domain decision for one company.
-
-    ``source`` selects the decision kind:
-
-    * ``CANDIDATE`` — ``domain`` must be one of the logo.dev candidates.
-    * ``MANUAL`` — ``domain`` is an operator-typed hostname; validated as a
-      hostname (URLs and ``www.`` are accepted and normalized).
-    * ``UNRESOLVED`` — the operator explicitly leaves the company without a
-      domain; its rows stay rejected, but the decision is now recorded.
-
-    Never auto-accepts: a candidate is applied only because the operator named
-    that exact domain. Raises :class:`EnrichmentError` for a missing/unknown
-    company or an invalid domain, changing nothing.
-    """
+    """Record the operator's domain decision for one company in a staged batch."""
 
     record = session.scalars(
         select(SalesNavCompanyEnrichment).where(
@@ -335,6 +352,37 @@ def confirm_company(
     ).first()
     if record is None:
         raise EnrichmentError("that company is not part of this staged batch")
+    return confirm_record(
+        session, record=record, source=source, domain=domain, actor=actor, note=note
+    )
+
+
+def confirm_record(
+    session: Session,
+    *,
+    record: SalesNavCompanyEnrichment,
+    source: EnrichmentConfirmationSource,
+    domain: str | None,
+    actor: str,
+    note: str | None = None,
+) -> SalesNavCompanyEnrichment:
+    """Record the operator's EXPLICIT domain decision for one enrichment record.
+
+    Shared by both acquisition paths (a staged batch's company and a contact
+    capture's company) so the decision rules cannot drift apart.
+
+    ``source`` selects the decision kind:
+
+    * ``CANDIDATE`` — ``domain`` must be one of the provider candidates.
+    * ``MANUAL`` — ``domain`` is an operator-typed hostname; validated as a
+      hostname (URLs and ``www.`` are accepted and normalized).
+    * ``UNRESOLVED`` — the operator explicitly leaves the company without a
+      domain; nothing downstream may proceed, but the decision is now recorded.
+
+    Never auto-accepts: a candidate is applied only because the operator (or a
+    deterministic, previously-confirmed mapping) named that exact domain.
+    Raises :class:`EnrichmentError` for an invalid domain, changing nothing.
+    """
 
     previous = record.confirmation_status.value
 
@@ -372,14 +420,84 @@ def confirm_company(
         entity_id=str(record.id),
         previous_state=previous,
         new_state=record.confirmation_status.value,
-        reason="operator confirmed Sales Navigator company domain",
+        reason="operator confirmed company domain",
         context={
-            "batch_id": str(record.batch_id),
+            "owner": record.owner_label,
+            "batch_id": str(record.batch_id) if record.batch_id else None,
+            "capture_id": str(record.capture_id) if record.capture_id else None,
             "company_key": record.company_key,
             "confirmation_source": record.confirmation_source.value
             if record.confirmation_source
             else None,
             "confirmed_domain": record.confirmed_domain,
+        },
+    )
+    return record
+
+
+def reject_candidate(
+    session: Session,
+    *,
+    record: SalesNavCompanyEnrichment,
+    domain: str,
+    actor: str,
+    reason: str | None = None,
+) -> SalesNavCompanyEnrichment:
+    """Record that the operator rejected one provider candidate.
+
+    The candidate is moved out of the reviewable list and preserved in
+    ``rejected_candidates`` with the reason, actor and time — a rejection is a
+    decision worth keeping, not a gap. Rejecting every candidate leaves the
+    record unconfirmed, which is the truthful state: no domain was chosen.
+    """
+
+    normalized = norm.normalize_domain(domain)
+    if normalized is None:
+        raise EnrichmentError(f"{domain!r} is not a candidate domain")
+
+    remaining = [
+        c
+        for c in (record.candidates or [])
+        if not (isinstance(c, dict) and c.get("domain") == normalized)
+    ]
+    if len(remaining) == len(record.candidates or []):
+        raise EnrichmentError("that domain is not one of the current candidates")
+
+    rejected = list(record.rejected_candidates or [])
+    original = next(
+        (
+            c
+            for c in (record.candidates or [])
+            if isinstance(c, dict) and c.get("domain") == normalized
+        ),
+        {"domain": normalized},
+    )
+    rejected.append(
+        {
+            **original,
+            "rejected_by": actor,
+            "rejected_at": datetime.now(UTC).isoformat(),
+            "rejection_reason": norm.collapse_whitespace(reason),
+        }
+    )
+    record.candidates = remaining
+    record.rejected_candidates = rejected
+    session.flush()
+
+    record_audit_event(
+        session,
+        actor=actor,
+        action="import.salesnav_domain_candidate_rejected",
+        entity_type=_ENTITY_TYPE,
+        entity_id=str(record.id),
+        new_state=record.confirmation_status.value,
+        reason="operator rejected a company-domain candidate",
+        context={
+            "owner": record.owner_label,
+            "capture_id": str(record.capture_id) if record.capture_id else None,
+            "company_key": record.company_key,
+            "rejected_domain": normalized,
+            "remaining_candidates": len(remaining),
         },
     )
     return record

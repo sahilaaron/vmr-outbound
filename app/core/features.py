@@ -50,6 +50,14 @@ class FeatureFlags(BaseModel):
     # never creates a campaign membership, verifies an email, or makes any
     # contact outreach-eligible; suppression stays authoritative.
     contact_capture_intake: bool = False
+    # Promotion of a staged contact capture into a canonical contact (DAT-014).
+    # Off by default. When on, the workbench can resolve a captured company's
+    # domain through the existing DAT-010 logo.dev candidate flow and promote the
+    # capture. It never fabricates a domain, never auto-accepts a provider
+    # result, never merges an ambiguous identity, and never makes a contact
+    # outreach-eligible; suppression stays authoritative. The lookup itself also
+    # requires ``salesnav_domain_enrichment`` and a configured logo.dev key.
+    contact_capture_promotion: bool = False
     # Operator workbench UI (server-rendered pages). Off by default so the UI
     # stays disabled until it is deliberately enabled for local operation.
     workbench: bool = False

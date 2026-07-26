@@ -48,6 +48,7 @@ from app.services.campaigns import (
     get_campaign_overview,
     list_campaigns,
 )
+from app.services.captures import promotion as capture_promotion
 from app.services.enrichment import companies as enrichment
 from app.services.imports import mapping as mapping_service
 from app.services.imports import parsing, staging, validation
@@ -1830,18 +1831,193 @@ def contact_capture_submission_page(
     )
 
 
+# --- Capture promotion (DAT-014) ----------------------------------------------
+
+
+def _promotion_enabled() -> bool:
+    return get_settings().features.contact_capture_promotion
+
+
+def _load_capture(db: Session, capture_id: str) -> LinkedInProfileSnapshot | None:
+    parsed_id = _parse_uuid(capture_id)
+    return db.get(LinkedInProfileSnapshot, parsed_id) if parsed_id else None
+
+
+@router.get("/contact-captures/pending", response_class=HTMLResponse)
+def contact_captures_pending_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    """Captures waiting for a company domain before they can become contacts."""
+
+    if not _promotion_enabled():
+        return _not_found(request, db, "Capture promotion is not enabled for this workbench.")
+    captures = capture_promotion.pending_captures(db)
+    rows = []
+    for snapshot in captures:
+        view = capture_promotion.build_view(db, snapshot)
+        rows.append(view)
+    db.commit()  # persist the promotion/enrichment records build_view ensured
+    return _render(
+        request,
+        db,
+        "contact_captures_pending.html",
+        {
+            "rows": rows,
+            "lookup_available": _enrichment_enabled() and get_settings().has_logo_dev_key(),
+            "page_title": "Captures awaiting promotion",
+        },
+    )
+
+
+@router.post("/contact-captures/{capture_id}/company/lookup")
+def capture_company_lookup(
+    request: Request, capture_id: str, db: Session = Depends(get_db)
+) -> Response:
+    """Ask logo.dev for domain candidates for this capture's company."""
+
+    if not _promotion_enabled():
+        return _redirect("/", err="Capture promotion is not enabled.")
+    snapshot = _load_capture(db, capture_id)
+    if snapshot is None:
+        return _redirect("/contact-captures/pending", err="That capture does not exist.")
+    settings = get_settings()
+    target = f"/contact-captures/{snapshot.id}"
+    if not settings.features.salesnav_domain_enrichment:
+        return _redirect(target, err="Company-domain enrichment is not enabled. No lookup ran.")
+    if not settings.has_logo_dev_key():
+        return _redirect(
+            target,
+            err="logo.dev API key is not configured (set LOGO_DEV_API_KEY). No lookup ran.",
+        )
+    try:
+        _promotion, record = capture_promotion.run_lookup(
+            db,
+            snapshot=snapshot,
+            api_key=settings.logo_dev_api_key or "",
+            search_url=settings.logo_dev_search_url,
+            timeout=settings.logo_dev_timeout_seconds,
+            max_candidates=settings.logo_dev_max_candidates,
+            actor="workbench",
+            force=True,
+        )
+    except enrichment.ApiKeyMissing:
+        db.rollback()
+        return _redirect(target, err="logo.dev API key is not configured. No lookup ran.")
+    db.commit()
+    if record is None:
+        return _redirect(
+            target, err="This capture showed no company name, so nothing was looked up."
+        )
+    return _redirect(
+        target,
+        ok=(
+            f"Lookup finished: {record.lookup_status.value} · "
+            f"{len(record.candidates or [])} candidate(s) awaiting your decision."
+        ),
+    )
+
+
+@router.post("/contact-captures/{capture_id}/company/confirm")
+async def capture_company_confirm(
+    request: Request, capture_id: str, db: Session = Depends(get_db)
+) -> Response:
+    """Record the operator's explicit domain decision for this capture."""
+
+    if not _promotion_enabled():
+        return _redirect("/", err="Capture promotion is not enabled.")
+    snapshot = _load_capture(db, capture_id)
+    if snapshot is None:
+        return _redirect("/contact-captures/pending", err="That capture does not exist.")
+    target = f"/contact-captures/{snapshot.id}"
+    form = await request.form()
+    decision = str(form.get("decision", "")).strip()
+    domain = str(form.get("domain", "")).strip() or None
+    note = str(form.get("note", "")).strip() or None
+
+    sources = {
+        "candidate": EnrichmentConfirmationSource.CANDIDATE,
+        "manual": EnrichmentConfirmationSource.MANUAL,
+        "unresolved": EnrichmentConfirmationSource.UNRESOLVED,
+    }
+    source = sources.get(decision)
+    if source is None:
+        return _redirect(target, err="Choose a candidate, enter a domain, or leave it unresolved.")
+    try:
+        capture_promotion.confirm_domain(
+            db, snapshot=snapshot, source=source, domain=domain, actor="workbench", note=note
+        )
+    except capture_promotion.PromotionError as exc:
+        db.rollback()
+        return _redirect(target, err=str(exc))
+    db.commit()
+    if source is EnrichmentConfirmationSource.UNRESOLVED:
+        return _redirect(target, ok="Recorded as deliberately unresolved. Nothing was promoted.")
+    return _redirect(target, ok=f"Confirmed {domain}. You can promote this capture now.")
+
+
+@router.post("/contact-captures/{capture_id}/company/reject")
+async def capture_company_reject(
+    request: Request, capture_id: str, db: Session = Depends(get_db)
+) -> Response:
+    """Reject one candidate, preserving it as a recorded decision."""
+
+    if not _promotion_enabled():
+        return _redirect("/", err="Capture promotion is not enabled.")
+    snapshot = _load_capture(db, capture_id)
+    if snapshot is None:
+        return _redirect("/contact-captures/pending", err="That capture does not exist.")
+    target = f"/contact-captures/{snapshot.id}"
+    form = await request.form()
+    domain = str(form.get("domain", "")).strip()
+    reason = str(form.get("reason", "")).strip() or None
+    try:
+        capture_promotion.reject_candidate(
+            db, snapshot=snapshot, domain=domain, actor="workbench", reason=reason
+        )
+    except capture_promotion.PromotionError as exc:
+        db.rollback()
+        return _redirect(target, err=str(exc))
+    db.commit()
+    return _redirect(target, ok=f"Rejected {domain}. The decision is kept with the candidates.")
+
+
+@router.post("/contact-captures/{capture_id}/promote")
+def capture_promote(request: Request, capture_id: str, db: Session = Depends(get_db)) -> Response:
+    """Promote a resolved capture into a canonical contact."""
+
+    if not _promotion_enabled():
+        return _redirect("/", err="Capture promotion is not enabled.")
+    snapshot = _load_capture(db, capture_id)
+    if snapshot is None:
+        return _redirect("/contact-captures/pending", err="That capture does not exist.")
+    target = f"/contact-captures/{snapshot.id}"
+    try:
+        result = capture_promotion.promote(db, snapshot=snapshot, actor="workbench")
+    except capture_promotion.PromotionError as exc:
+        db.rollback()
+        return _redirect(target, err=str(exc))
+    db.commit()
+    if result.promoted:
+        return _redirect(
+            target,
+            ok=(
+                f"{result.contact_outcome.value.replace('_', ' ')} · "
+                f"company {result.company_outcome.value.replace('_', ' ')}."
+            ),
+        )
+    return _redirect(target, err=result.blocked_reason or "This capture could not be promoted.")
+
+
 @router.get("/contact-captures/{capture_id}", response_class=HTMLResponse)
 def contact_capture_page(
     request: Request, capture_id: str, db: Session = Depends(get_db)
 ) -> HTMLResponse:
-    """Read-only view of one permanent contact capture.
+    """One permanent contact capture, plus its company-resolution state.
 
-    Evidence only: nothing on this page changes a contact, a suppression, a
-    verification, an approval, or a campaign.
+    The capture evidence itself is read-only and always will be. The promotion
+    controls shown alongside it act on the separate promotion record, never on
+    the captured payload.
     """
 
-    parsed_id = _parse_uuid(capture_id)
-    snapshot = db.get(LinkedInProfileSnapshot, parsed_id) if parsed_id else None
+    snapshot = _load_capture(db, capture_id)
     if snapshot is None:
         return _not_found(request, db, "That contact capture does not exist.")
     notes = list(
@@ -1851,6 +2027,11 @@ def contact_capture_page(
             .order_by(ContactCaptureNote.created_at)
         )
     )
+    view = None
+    if _promotion_enabled():
+        view = capture_promotion.build_view(db, snapshot)
+        db.commit()
+    settings = get_settings()
     return _render(
         request,
         db,
@@ -1859,6 +2040,10 @@ def contact_capture_page(
             "snapshot": snapshot,
             "notes": notes,
             "profile_rows": _capture_profile_rows(snapshot.profile_fields or {}),
+            "resolution": view,
+            "lookup_available": (
+                settings.features.salesnav_domain_enrichment and settings.has_logo_dev_key()
+            ),
             "page_title": "Contact capture",
         },
     )
