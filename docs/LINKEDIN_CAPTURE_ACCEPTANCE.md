@@ -301,9 +301,40 @@ not only by fixtures.
 
 Sanitized evidence lives outside the repository in `layer4b/`
 (`dat014_live_evidence.txt`), because it is operator run-evidence rather than
-source. Two shell verifications remain outstanding and are noted there:
-`run_assertions.py` (database checks A–N) and `capture_state.py --compare`
-(byte-level capture immutability).
+source. The shell verifications are `capture_state.py --compare` (byte-level
+capture immutability, **passed** — only the canonical contact link changed) and
+`run_assertions.py`, which is a thin shim over the committed, tested harness at
+[`scripts/layer4b_assertions.py`](../scripts/layer4b_assertions.py).
+
+### The first aggregate assertion run failed on a harness defect, not a product defect
+
+The harness originally graded **every** capture-owned row in the database. That
+local database also holds captures created while exercising the extension
+against real LinkedIn pages, so the first run reported:
+
+* check A failed — an unrelated capture's lookup was `API_UNAVAILABLE`;
+* check C failed — that same capture was never confirmed;
+* check C2 reported 3 aggregate attempts (Morgan's 2 plus an unrelated 1).
+
+Morgan's and Riley's own sanctioned fixture flows passed throughout. The three
+failures were scoping defects in the harness: acceptance-scope questions were
+being answered with database-wide data.
+
+**No product data was changed to resolve this.** The unrelated captures were not
+deleted, altered, reset or "repaired" — they are legitimate records and remain
+exactly as they were. The harness was corrected instead: every graded check is
+now scoped to the two sanctioned synthetic acceptance captures, and unrelated
+rows appear only in a sanitized informational section reporting a count of
+excluded captures and their aggregate attempts — no name, URL, company, payload
+or other personal data. `tests/test_layer4b_assertions.py` holds the scoping in
+place and, equally, proves it did not merely disable the checks: a sanctioned row
+with a wrong status, a missing confirmation, invented candidate confidence, a
+missing rank, an unreasoned rejection, an invented email or a wrong attempt count
+still fails, and asking for the aggregate figure instead of the scoped one fails
+too.
+
+With the corrected scope, check C2 counts Morgan's 2 attempts plus Riley's 0 for
+a total of 2, matching what was authorised.
 
 This layer accepts **DAT-014 provider resolution and contact promotion only**.
 It says nothing about extension extraction correctness — see DAT-016 (#167),
