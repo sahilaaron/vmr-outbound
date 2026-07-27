@@ -401,9 +401,9 @@ stable key. Nothing was submitted by the cancellation.
 | E1 | Open `/contact-captures/pending` | The captured person is listed as pending | **PASS** [machine, supervised] — trial captures present; before promotion the record reads *not promoted*, reason *"run the company-domain lookup first"*, with the promote control disabled and the candidates panel stating *"a domain is never invented for you"* |
 | E2 | Run the company lookup | Candidates stored with provider order; confidence recorded as *not provided* rather than invented | **PASS** [operator] — live lookup returned **10 candidates**, reported as *awaiting your decision*; nothing auto-confirmed. See scope note. **Repeated in scope** [machine, supervised] on a trial capture: *Lookup finished: ok · 4 candidate(s) awaiting your decision* |
 | E3 | Confirm one candidate | `domain_candidate_confirmed`, source `candidate`, actor and time recorded | **PASS** [operator] — two candidates rejected with the decisions preserved (*"the decision is kept with the candidates"*), one confirmed; outcome reached `domain_candidate_confirmed` and *Promote to contact* became available. See scope note. **Re-established in scope on the restored baseline** — see *E3 after the restart* below |
-| E4 | Where practical: type a domain for a second capture | `decision=manual` recorded as an override | **not yet run** — needs a second capture; unaffected by the contamination |
-| E5 | Where practical: leave a third unresolved | `left_unresolved`; nothing promoted | **not yet run** — needs a third capture; unaffected by the contamination |
-| E6 | Promote the confirmed capture | `contact_created`; labels and notes carried; capture linked | **PASS** [machine, supervised] on `main@d99e274` — *"contact created · company domain candidate confirmed."* Exactly one contact created, company resolved, capture linked. See below |
+| E4 | Where practical: type a domain for a second capture | `decision=manual` recorded as an override | **PASS** [machine, supervised] **in scope** — on a trial capture: `confirmed domain utila.io (manual)`, distinct from `(candidate)`. See below |
+| E5 | Where practical: leave a third unresolved | `left_unresolved`; nothing promoted | **PASS** [machine, supervised] **in scope** — `left_unresolved`, *"Recorded as deliberately unresolved. Nothing was promoted."*, promote control disabled, and a direct promote POST refused. See below |
+| E6 | Promote the confirmed capture | `contact_created`; labels and notes carried; capture linked | **PASS** [machine, supervised] on `main@d99e274`, **twice**: once on a pre-existing capture and once **in scope** on a trial capture via the manual decision. See below |
 | E7 | Promote again | `already_promoted`; no second contact | **PASS** [machine, supervised] — *"already promoted"*, same contact id, contact count unchanged. See below |
 
 #### E2 in scope — the candidate record, in detail (2026-07-27)
@@ -487,7 +487,32 @@ workbench behaved exactly as the earlier operator run did:
 This is the same preserve-the-decision behaviour the pre-contamination profile
 capture showed, now reproduced in scope on the restored baseline.
 
-#### E6 — promotion, on the trial's own capture
+#### Scope correction — which submission that capture belonged to
+
+Recorded before the E6 result, because it changes what that result proves.
+
+Reconciling every pending capture against its submission gives this census:
+
+| Submission | Captures | Ingested |
+| --- | --- | --- |
+| `471bcf00…` | 47 | 2026-07-28 01:30 |
+| `01366e2e…` | 30 | 2026-07-28 02:08 |
+| three single earlier captures | 3 | 2026-07-25 / 07-27 |
+
+**This trial's thirty are `01366e2e…`** — `submitted 30`, `staged_unmatched 30`,
+`created 0`. The `50 → 80` figure recorded earlier is confirmed correct by this
+census (3 + 47 = 50 before, + 30 = 80 after), so the Phase 4 delta stands.
+
+But the capture used for E1–E3 and the first promotion belongs to **`471bcf00…`**,
+which is part of that pre-existing 50. The E2/E3 scope note already said the
+domain path was exercised on a pre-existing capture; **the first E6/E7 run
+inherits that same limitation**, and an earlier draft of this section wrongly
+called it "the trial's own capture". Corrected here rather than quietly fixed.
+
+The gap is closed below: E4 and E6 were then run **in scope**, on captures from
+`01366e2e…`.
+
+#### E6 — promotion (first run, pre-existing capture)
 
 Pressing *Promote to contact* returned **"contact created · company domain
 candidate confirmed."**
@@ -536,19 +561,88 @@ confirmed."**, the same contact id, and the scoped contact count stayed at
 **1**. The guarantee holds at the layer that matters, not only at the layer the
 operator sees.
 
+#### E4 — the manual override, in scope
+
+Run on a capture from **`01366e2e…`**, this trial's own submission
+**[machine, supervised]**.
+
+The lookup returned **10 candidates**, and they make the case for confirmation
+better than any argument could: alongside three plausible `utila.*` domains sat
+a domain registrar, an unrelated software vendor, and a Romanian heavy-machinery
+site. Rank 1 happened to be right. Auto-accepting rank order as truth would have
+been wrong often enough to matter.
+
+Typing the domain and pressing *Use this domain* produced:
+
+| Field | Value |
+| --- | --- |
+| Banner | *"Confirmed utila.io. You can promote this capture now."* |
+| `confirmed domain` | `utila.io` **(manual)** |
+| Company resolution | `domain_candidate_confirmed` |
+| Candidates | all 10 left undecided, and superseded by the explicit decision |
+
+**The override is recorded as an override.** `(manual)` is stored and displayed
+distinctly from `(candidate)`, which is the whole point of E4: the record
+distinguishes a domain the operator typed from one the provider proposed and the
+operator picked. Provenance survives the decision.
+
+#### E6 in scope — promotion after a manual decision
+
+The same trial capture then promoted normally: **"contact created"**, one
+contact, one canonical company, `0 note(s) linked · labels none`.
+
+| Measure | Before | After |
+| --- | --- | --- |
+| Pending queue | 79 | **78** |
+| Scoped contacts for that company | 0 | **1** |
+
+So E6 now holds on a capture from this trial's own submission, reached through
+the manual path rather than the candidate path. The scope gap the E2/E3 note
+opened is closed.
+
+*(One wording nit, logged as D-OBS-4: the success flash reads "company domain
+candidate confirmed" even when the decision was manual. The record itself is
+correct — `(manual)` — so this is the message, not the data.)*
+
+#### E5 — the deliberate non-decision, in scope
+
+Run on a third capture from `01366e2e…` **[machine, supervised]**, with a typed
+reason in the *"why leave it unresolved?"* field.
+
+| Check | Result |
+| --- | --- |
+| Banner | *"Recorded as deliberately unresolved. Nothing was promoted."* |
+| Company resolution | `left_unresolved` |
+| `confirmed domain` | `— (unresolved)` |
+| `why not promoted` | *"the operator left this company deliberately unresolved"* |
+| *Promote to contact* | present but **disabled** |
+| Pending queue | **unchanged** at 78 |
+| Direct promote POST | **refused**, `err=the operator left this company deliberately unresolved` |
+
+Two things worth separating. First, *unresolved is a decision, not an absence* —
+it is stored with a source, an actor and a timestamp, and it changes the refusal
+reason from "you haven't looked yet" to "you looked and declined". Second, the
+refusal is **enforced in the service, not just greyed out in the page**: bypassing
+the disabled control still fails, with the same truthful reason. A UI-only gate
+would have passed the visual check and failed this one.
+
+This also sharpens D-6. The `UNRESOLVED` branch sets `blocked_reason` explicitly
+and its message is correct and current; the `CONFIRMED` branch is the one that
+forgets. The bug is a missing line in one branch, not a systemic pattern.
+
 ### F. Backend truth (Phase 4)
 
 Counts and sanitized identifiers only.
 
 | Check | Expected | Result |
 | --- | --- | --- |
-| Raw capture payload after promotion | unchanged except the canonical contact link | |
+| Raw capture payload after promotion | unchanged except the canonical contact link | **PASS** [machine, supervised] — re-read after promotion: `extraction_status` still `partial`, the status pill still `unmatched_staged`, every person observation identical. The only change is `matched_contact`, which now carries the contact id |
 | Contacts created by capture alone | **0** | **PASS** [machine, supervised] — pending queue moved **50 → 80**, exactly +30. All thirty submitted captures are present and all thirty are *awaiting promotion*, i.e. none became a contact |
 | Contacts created by promotion | 1 per promoted capture | **PASS** [machine, supervised] — one promotion, one contact; scoped count 0 → 1 and pending 80 → 79. A second promote created none |
 | Campaign memberships | **0** | **PASS** [machine, supervised] — the promoted contact carries no campaign membership; the workbench states promotion "never adds a campaign membership" and the record agrees |
 | Email candidates / verifications / scores / drafts | **0** | **PASS** [machine, supervised] — email `—` / *unverified* / *"No address to verify yet."*, research *not requested*, scoring *not assessed* |
-| Repeated identical submission | one submission, one snapshot, one note | |
-| Fields with missing evidence | still null, with warnings | |
+| Repeated identical submission | one submission, one snapshot, one note | **not yet run** — S11 needs the operator to resubmit an identical batch from the panel |
+| Fields with missing evidence | still null, with warnings | **PASS** [machine, supervised] — on a partial capture: `connection_count`, `open_to_work`, `about_text` all `—`, zero experience rows, `warnings 1`, and the table states *"No experience history was visible on the captured surface."* Absent evidence is reported as absent and explained, not filled in |
 
 ---
 
@@ -583,7 +677,9 @@ unless a small unambiguous acceptance blocker is documented first.
 | D-3 | Reported: captured company not visible in the app for a Sales Navigator capture | unresolved | no | **not reproduced** — cause unknown, left open |
 | D-OBS-3 | *Person observations* omits captured company and title; profile captures show the employer only via the experience table | presentation | no | not filed |
 | D-2 | `derived_value` provenance is rendered as *Needs review*, flagging ~100% of Sales Navigator rows and destroying the signal | **blocker for S3a** | yes, for that step | **filed as #191** — tracked separately; not implemented inside DAT-011 |
-| D-6 | After a candidate is confirmed, the capture page keeps showing a stale *"why not promoted"* reason that contradicts the confirmed state | operator truth | no — promotion is gated on the outcome, not the message | to be filed |
+| D-6 | After a candidate is confirmed, the capture page keeps showing a stale *"why not promoted"* reason that contradicts the confirmed state | operator truth | no — promotion is gated on the outcome, not the message | **filed as #192** (UI-014) — tracked separately; not implemented inside DAT-011 |
+| D-7 | The operator's typed *"why leave it unresolved?"* reason is stored and audited but never displayed back on the capture page | evidence visibility | no — the reason is persisted, not lost | to be filed |
+| D-OBS-4 | A manual domain decision flashes *"company domain candidate confirmed"*; the stored record correctly says `(manual)` | presentation | no | not filed — fits #192's area |
 | D-OBS-1 | `created` is a declared capture counter no outcome can increment; the panel carries a label for it | observation | no | not yet filed |
 | D-OBS-2 | Acceptance and CLAUDE docs still describe the pre-UI-012 panel and the old product name | documentation | no | not yet filed |
 
@@ -813,6 +909,26 @@ class of fault as an invented confidence score — the operator is being told
 something the system no longer believes. An operator who trusted it would go
 looking for candidates that are not there.
 
+### D-7 — the unresolved reason is asked for, kept, and never shown
+
+**Observed** [machine, supervised]. The *Leave unresolved* action offers a
+*"why leave it unresolved?"* field. A reason typed there does not appear anywhere
+on the capture page afterwards.
+
+**It is not lost.** `enrichment.confirm_record` assigns `record.note` and writes
+an audit event carrying the decision, so the reason is persisted and traceable.
+
+**It is not rendered.** The `note` row in `_capture_resolution.html` renders
+`resolution.notes[-1].note_text` — the *capture's* operator notes, a different
+collection. `record.note` is read by no template.
+
+**Why it matters.** The unresolved decision is the one place in this workflow
+where the system deliberately stops and the operator's justification is the only
+evidence of why. Asking for that justification and then never showing it back
+means a second operator sees a dead end with no explanation, and the first
+operator cannot check what they wrote. The fix is a display line, not a schema
+change — the data is already there.
+
 ### Environment-contamination incident — the code under test changed mid-trial
 
 **This is the most consequential finding of the session, and it is about the
@@ -1020,16 +1136,25 @@ than only in documentation:
 * The capture stays immutable; promotion is a later, separate event, and the
   capture's own status is not rewritten to hide that.
 
+**Phase E is now complete, and in scope.** E4 (manual override), E5 (deliberate
+unresolved) and a second E6 promotion were all run on captures from this trial's
+own submission `01366e2e…`. The three decision kinds are recorded distinctly —
+`(candidate)`, `(manual)`, `(unresolved)` — and each carries its own truthful
+consequence. The unresolved gate was verified at the service layer, not only in
+the page.
+
 **Still outstanding before a verdict:**
 
-| Area | Steps |
-| --- | --- |
-| Domain overrides | E4 (manual domain), E5 (leave unresolved) — each needs its own capture |
-| Other surfaces | B (person profile), C (company page) |
-| Recovery | D (backend unavailable, retry, S12) |
-| Restore / open | A9, A10 |
-| Idempotency of submission | S11 (distinct from E7's promotion idempotency, which passed) |
-| **Deferred by instruction** | **A4–A7 and S3a — held for a targeted rerun after #191 is merged** |
+| Area | Steps | Needs |
+| --- | --- | --- |
+| Other surfaces | B (person profile), C (company page) | operator — side panel |
+| Recovery | D (backend unavailable, retry, S12) | operator — side panel |
+| Restore / open | A9, A10 | operator — side panel |
+| Idempotency of submission | S11 (distinct from E7's promotion idempotency, which passed) | operator — resubmit an identical batch |
+| **Deferred by instruction** | **A4–A7 and S3a — held for a targeted rerun after #191 is merged** | — |
+
+Everything remaining requires the side panel, which is invisible to page
+automation. Nothing left is workbench-side.
 
 A4–A7 / S3a are deferred rather than failed: D-2 makes the *Needs review* signal
 unreadable on Sales Navigator rows, so running the selection-quality steps now
@@ -1040,6 +1165,11 @@ would measure the defect instead of the product.
 | Ref | State |
 | --- | --- |
 | D-2 | **filed as #191**, fixed outside DAT-011 |
+| D-6 | **filed as #192** (UI-014), fixed outside DAT-011 |
 | D-4 | identity fragmentation — to be filed |
-| D-6 | stale *"why not promoted"* after confirmation — to be filed |
+| D-7 | unresolved reason stored but never displayed — to be filed |
 | D-3 | not reproduced; left open |
+
+None of these is a promotion-path blocker. D-2 blocks one review step (S3a);
+D-4 is an identity question for a later task; D-6, D-7 and D-OBS-4 are all the
+same family — the system knows the truth and renders something else.
