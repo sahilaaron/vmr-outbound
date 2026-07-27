@@ -209,7 +209,7 @@ returned, with counts and states only.
 | A5 | Deselect at least one row | *Review selected (N)* and the Save label follow the selection | **PASS** [operator] — one row deselected: tiles moved to 30 selected / 1 deselected, the badge to *30 need review*, and the primary action to *Capture 30 prospects*. **S2 satisfied** |
 | A6 | Confirm a flagged row is retained (S3a) | A row with a warning is still selectable and still submitted with its gap visible | |
 | A7 | Confirm nothing was invented for a skipped row (S3b) | No company borrowed from headline, school, location or an adjacent row | |
-| A8 | Save the reviewed set | Submitted count == selected count; outcome counts render; `created` is 0 | |
+| A8 | Save the reviewed set | Submitted count == selected count; outcome counts render; `created` is 0 | **PASS** [operator] — *30 of 30 prospects saved*; sole outcome `staged_unmatched` = 30; **`created` absent, i.e. 0**. **S9 and S10 satisfied** |
 | A9 | Close and reopen the panel | Last result and/or draft restored without recapturing or resaving | |
 | A10 | Open the returned record via the panel's own link | The exact submission/capture record opens in the workbench | |
 
@@ -304,6 +304,39 @@ by itself, which is what the *2 pages* tile records.
 without a company, so the skipped-row path produced nothing to observe. Recorded
 as not exercised rather than as a pass — DAT-018's Layer 3C S8 makes the same
 point about needing to find or construct such a search.
+
+#### A8 result — the save, and the zero-contacts guarantee (2026-07-27)
+
+Observed on the outcome screen **[operator]**:
+
+| Element | Value |
+| --- | --- |
+| Step rail | **DONE** |
+| Headline | *30 of 30 prospects saved* |
+| Body | *Saved to the VM Prospector workflow.* |
+| *What happened* | a single line: **30** *staged as a new person*, badged *Needs review* |
+| `created` / *captured as a new contact* | **absent — zero** |
+| Actions offered | *Open captured contacts*, *Download JSON*, *Download CSV* |
+| Per-record *Open contact* | **absent** |
+
+**This is the reconciled S9, proven live.** Section 2.2 argued from the code
+that capture reports `created: 0` and that only promotion constructs a Contact.
+The panel now demonstrates it: thirty people submitted, thirty staged, nothing
+created. Had a *captured as a new contact* line appeared, the merged contract
+would have been contradicted on the spot.
+
+The absence of a per-record *Open contact* button is the same fact from the
+other side — the panel offers that link only when the response carries a
+`contact_url`, and no contact exists to link to. Only the submission-level
+*Open captured contacts* is offered.
+
+**The *Needs review* badge here is correct**, and worth distinguishing from D-2.
+`staged_unmatched` genuinely awaits a decision: identity is unresolved and the
+capture cannot become a contact until a domain is confirmed. That is a real
+review state, unlike the provenance and dedupe codes D-2 is about.
+
+Submitted count (30) equals the selected count (30); the one deselected row was
+not submitted.
 
 #### A5 result — deselection (2026-07-27)
 
