@@ -1,7 +1,7 @@
 """INS-001 shared evidence and insight model.
 
 Revision ID: e61f4c2b7a90
-Revises: c48b1f70a3d2
+Revises: d7a3f18c62b4
 Create Date: 2026-07-27 20:30:00.000000
 
 Turns the DAT-001 insight stubs into a provider-neutral evidence boundary:
@@ -18,7 +18,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "e61f4c2b7a90"
-down_revision: str | Sequence[str] | None = "c48b1f70a3d2"
+down_revision: str | Sequence[str] | None = "d7a3f18c62b4"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
