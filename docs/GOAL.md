@@ -38,8 +38,13 @@ sending configuration reference.
 operator-driven **contact-first** capture from the extension, which saves people
 permanently without a campaign — and see row-level validation errors or truthful
 per-person capture outcomes.
-2a. Resolve each captured person's company domain through the operator-confirmed
-logo.dev candidate flow, and promote the capture into a canonical Contact.
+2a. Resolve each captured person's company domain and promote the capture into a
+canonical Contact. A versioned policy (DAT-017) resolves this automatically where
+two independent evidence sources agree or an operator-captured company page names
+the domain under an exact identity match; everything weaker, conflicting, or
+unreachable goes to review, where the operator confirms a logo.dev candidate or
+types a domain. A provider result is never accepted on rank or on being the only
+result, and a domain is never invented.
 3. Normalize and deduplicate contacts; match them to companies and existing
 historical records.
 4. Apply suppressions and hard eligibility gates.

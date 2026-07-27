@@ -49,6 +49,7 @@ provenance ledger, or company matcher.
 | `pending_lookup` | No lookup has run yet |
 | `existing_company_resolved` | A domain the operator **already confirmed** for the same normalized company is reused |
 | `domain_candidate_confirmed` | The operator confirmed a candidate or typed a domain for this capture |
+| `domain_auto_confirmed` | The DAT-017 policy selected a domain on corroborated evidence (`docs/DOMAIN_RESOLUTION.md`) |
 | `candidate_review_required` | One candidate is waiting for a decision |
 | `multiple_candidates_review_required` | Several candidates are waiting |
 | `no_candidate` | The provider found nothing, every candidate was rejected, or the page showed no company name |
@@ -58,16 +59,23 @@ provenance ledger, or company matcher.
 
 ### Automatic confirmation
 
-Allowed in **exactly one** case: a domain that an operator already confirmed for
-the same normalized company name — and, when both records know it, the same
-LinkedIn company identifier. That is a replay of the operator's own decision,
-recorded with `confirmation_source = prior_mapping` so it is never mistaken for
-a provider result.
+Two sources are non-interactive. Both are recorded on
+`confirmation_source` so an applied domain always says who chose it.
+
+`prior_mapping` — a domain an operator already confirmed for the same normalized
+company name, and, when both records know it, the same LinkedIn company
+identifier. A replay of the operator's own decision, not a new one.
+
+`automatic_policy` (DAT-017) — the versioned resolution policy selected a domain
+because two **independent** evidence axes agreed on it, or because an
+operator-captured LinkedIn company page named it under an exact identity match.
+Full rules in `docs/DOMAIN_RESOLUTION.md`.
 
 Everything else stays a candidate:
 
 * a provider's top-ranked result is a name match, not evidence of identity, and
-  is never auto-confirmed no matter how few candidates come back;
+  is never auto-confirmed no matter how few candidates come back — DAT-017 did
+  not weaken this; it added a second source to corroborate against;
 * two disagreeing prior confirmations produce `company_identity_ambiguous`
   rather than a choice between them;
 * a same-named company with a *different* LinkedIn company identifier is a

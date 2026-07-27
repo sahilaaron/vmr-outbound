@@ -92,13 +92,27 @@ _RETRYABLE_LOOKUP_STATUSES = frozenset(
     }
 )
 
-# The two company outcomes that authorize a promotion attempt.
+# The company outcomes that authorize a promotion attempt. Each one means a
+# domain is settled: replayed from an earlier operator decision, chosen by the
+# operator now, or selected by the DAT-017 policy on corroborated evidence.
+# Authorizing a promotion is all they do — the person-level gates still run.
 _RESOLVED_COMPANY_OUTCOMES = frozenset(
     {
         CompanyResolutionOutcome.EXISTING_COMPANY_RESOLVED,
         CompanyResolutionOutcome.DOMAIN_CANDIDATE_CONFIRMED,
+        CompanyResolutionOutcome.DOMAIN_AUTO_CONFIRMED,
     }
 )
+
+# How a confirmed record's provenance maps onto the promotion-blocking view.
+# Anything absent — an operator picking a candidate or typing one — is a
+# straightforward operator confirmation.
+_CONFIRMED_OUTCOMES = {
+    EnrichmentConfirmationSource.PRIOR_MAPPING: (
+        CompanyResolutionOutcome.EXISTING_COMPANY_RESOLVED
+    ),
+    EnrichmentConfirmationSource.AUTOMATIC_POLICY: (CompanyResolutionOutcome.DOMAIN_AUTO_CONFIRMED),
+}
 
 
 class PromotionError(Exception):
@@ -337,9 +351,15 @@ def evaluate_company(
         return outcome
 
     if record.confirmation_status is EnrichmentConfirmationStatus.CONFIRMED:
+        # Who settled the domain is preserved in the outcome, because "an
+        # operator chose this", "an earlier operator decision was replayed" and
+        # "the policy selected it on corroborated evidence" carry different
+        # weight when someone is deciding whether to trust the record later.
         outcome = (
-            CompanyResolutionOutcome.EXISTING_COMPANY_RESOLVED
-            if record.confirmation_source is EnrichmentConfirmationSource.PRIOR_MAPPING
+            _CONFIRMED_OUTCOMES.get(
+                record.confirmation_source, CompanyResolutionOutcome.DOMAIN_CANDIDATE_CONFIRMED
+            )
+            if record.confirmation_source is not None
             else CompanyResolutionOutcome.DOMAIN_CANDIDATE_CONFIRMED
         )
         promotion.company_outcome = outcome

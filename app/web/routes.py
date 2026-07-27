@@ -48,6 +48,7 @@ from app.services.campaigns import (
     get_campaign_overview,
     list_campaigns,
 )
+from app.services.captures import domain_resolution
 from app.services.captures import promotion as capture_promotion
 from app.services.crm import annotations as crm_annotations
 from app.services.crm import detail as crm_detail
@@ -2175,6 +2176,70 @@ def capture_promote(request: Request, capture_id: str, db: Session = Depends(get
     return _redirect(target, err=result.blocked_reason or "This capture could not be promoted.")
 
 
+@router.post("/contact-captures/{capture_id}/resolve")
+def capture_resolve(request: Request, capture_id: str, db: Session = Depends(get_db)) -> Response:
+    """Resolve this capture's company domain automatically, then promote it.
+
+    The operator asks for automation; automation still has to earn the decision.
+    When the evidence does not settle the domain, this leaves the capture exactly
+    where the manual controls expect to find it, and says why.
+    """
+
+    if not _promotion_enabled():
+        return _redirect("/", err="Capture promotion is not enabled.")
+    settings = get_settings()
+    if not settings.features.automatic_domain_resolution:
+        return _redirect("/", err="Automatic domain resolution is not enabled.")
+    snapshot = _load_capture(db, capture_id)
+    if snapshot is None:
+        return _redirect("/contact-captures/pending", err="That capture does not exist.")
+    target = f"/contact-captures/{snapshot.id}"
+
+    # A provider call is only possible when enrichment is enabled and keyed. The
+    # policy still runs without one — a prior mapping or a captured company page
+    # resolves plenty of captures with no provider involved at all.
+    provider_ready = settings.features.salesnav_domain_enrichment and settings.has_logo_dev_key()
+    try:
+        outcome = domain_resolution.resolve_and_promote(
+            db,
+            snapshot=snapshot,
+            api_key=settings.logo_dev_api_key if provider_ready else None,
+            search_url=settings.logo_dev_search_url,
+            timeout=settings.logo_dev_timeout_seconds,
+            max_candidates=settings.logo_dev_max_candidates,
+            actor="workbench",
+            allow_provider_call=provider_ready,
+        )
+    except (capture_promotion.PromotionError, enrichment.EnrichmentError) as exc:
+        db.rollback()
+        return _redirect(target, err=str(exc))
+    db.commit()
+
+    if outcome.decision is None:
+        return _redirect(target, err=outcome.skipped_reason or "There was nothing to resolve.")
+    decision = outcome.decision.decision.value.replace("_", " ")
+    if outcome.promoted:
+        return _redirect(target, ok=f"{decision} · {outcome.resolved_domain} · contact promoted.")
+    if outcome.applied:
+        blocked = outcome.promotion_result.blocked_reason if outcome.promotion_result else None
+        return _redirect(
+            target,
+            err=(
+                f"{decision} · {outcome.resolved_domain} · not promoted: "
+                f"{blocked or 'see the promotion state below'}."
+            ),
+        )
+    recommendation = outcome.decision.recommendation
+    detail = f" Suggested: {recommendation}." if recommendation else ""
+    return _redirect(
+        target,
+        err=(
+            f"{decision} — the evidence did not settle this domain, so nothing was "
+            f"applied.{detail} Confirm it below."
+        ),
+    )
+
+
 @router.get("/contact-captures/{capture_id}", response_class=HTMLResponse)
 def contact_capture_page(
     request: Request, capture_id: str, db: Session = Depends(get_db)
@@ -2213,6 +2278,7 @@ def contact_capture_page(
             "lookup_available": (
                 settings.features.salesnav_domain_enrichment and settings.has_logo_dev_key()
             ),
+            "auto_resolution_available": settings.features.automatic_domain_resolution,
             "page_title": "Contact capture",
         },
     )

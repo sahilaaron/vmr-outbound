@@ -385,6 +385,8 @@ def confirm_record(
     """
 
     previous = record.confirmation_status.value
+    previous_source = record.confirmation_source
+    previous_domain = record.confirmed_domain
 
     if source is EnrichmentConfirmationSource.UNRESOLVED:
         record.confirmation_status = EnrichmentConfirmationStatus.UNRESOLVED
@@ -406,6 +408,21 @@ def confirm_record(
         record.confirmation_status = EnrichmentConfirmationStatus.CONFIRMED
         record.confirmed_domain = normalized
         record.confirmation_source = source
+
+    # DAT-017: an operator replacing an automatically chosen domain with a
+    # different one is the correction signal the policy is measured by. Record
+    # it on the row so the correction rate is a query rather than an
+    # archaeology exercise over the audit trail. Re-affirming the same domain
+    # is agreement, not a correction, and is deliberately not counted.
+    corrected = (
+        previous_source is EnrichmentConfirmationSource.AUTOMATIC_POLICY
+        and source is not EnrichmentConfirmationSource.AUTOMATIC_POLICY
+        and previous_domain is not None
+        and record.confirmed_domain != previous_domain
+    )
+    if corrected:
+        record.resolution_corrected_at = datetime.now(UTC)
+        record.resolution_corrected_from = previous_domain
 
     record.confirmed_by = actor
     record.confirmed_at = datetime.now(UTC)
@@ -430,6 +447,7 @@ def confirm_record(
             if record.confirmation_source
             else None,
             "confirmed_domain": record.confirmed_domain,
+            "corrected_automatic_domain": previous_domain if corrected else None,
         },
     )
     return record

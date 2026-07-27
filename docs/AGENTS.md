@@ -26,7 +26,11 @@ Before changing the repository, read:
    companies, captures, evidence, labels, notes, workflow state, or campaigns.
 6. `docs/CONTACT_CRM.md` — what the contact CRM (APP-002) actually does, its
    product rules, and its accepted limitations.
-7. Documents explicitly referenced by the current goal.
+7. `docs/DOMAIN_RESOLUTION.md` — the versioned policy that resolves a captured
+   company's domain automatically (DAT-017), what it refuses to do, and how the
+   unresolved cases reach review, when the work touches company domains,
+   enrichment, capture promotion, or the review queue.
+8. Documents explicitly referenced by the current goal.
 
 The root `CLAUDE.md` is a condensed pointer into these documents; it never
 overrides them.

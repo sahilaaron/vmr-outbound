@@ -67,6 +67,18 @@ class FeatureFlags(BaseModel):
     # operation. Turning it on does not import anything and never auto-accepts a
     # candidate: the operator still confirms every domain by hand.
     salesnav_domain_enrichment: bool = False
+    # Automatic company-domain resolution (DAT-017). Off by default. While off,
+    # every captured company waits for an operator exactly as it did in DAT-014.
+    # When on, a versioned policy may confirm a domain WITHOUT an operator — but
+    # only where two independent evidence axes agree, or an operator-captured
+    # company page names it under an exact identity match. It never accepts a
+    # provider result on rank or on being the only result, never invents a
+    # domain when the provider is unreachable, never overwrites a decision an
+    # operator made, and never relaxes suppression or identity ambiguity: those
+    # block a promotion whoever chose the domain. Requires
+    # ``contact_capture_promotion``; a provider lookup additionally requires
+    # ``salesnav_domain_enrichment`` and a configured logo.dev key.
+    automatic_domain_resolution: bool = False
     normalization: bool = False
     deduplication: bool = False
     suppressions: bool = False

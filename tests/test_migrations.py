@@ -66,3 +66,64 @@ def test_migration_upgrade_check_downgrade_reupgrade(temp_database_url: str) -> 
         assert result.returncode == 0, (
             f"alembic {' '.join(args)} failed:\n{result.stdout}\n{result.stderr}"
         )
+
+
+def test_downgrade_refuses_to_erase_an_automatic_domain_decision(
+    temp_database_url: str,
+) -> None:
+    """DAT-017's downgrade must refuse rather than misattribute a decision.
+
+    An ``AUTOMATIC_POLICY`` confirmation has no representation in the earlier
+    schema. Rewriting it to ``MANUAL`` would claim an operator typed a domain
+    they never saw, and dropping the row would delete an applied domain — so the
+    migration stops and says what to do instead. The empty-database round trip
+    above cannot exercise that, because there is nothing to protect.
+    """
+
+    assert _alembic(["upgrade", "head"], temp_database_url).returncode == 0
+
+    engine = create_engine(temp_database_url)
+    campaign_id, batch_id = uuid.uuid4(), uuid.uuid4()
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("INSERT INTO campaigns (id, name, status) VALUES (:id, :n, 'DRAFT')"),
+                {"id": campaign_id, "n": "migration guard"},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO import_batches "
+                    "(id, campaign_id, content_hash, status, total_rows, accepted_rows, "
+                    " rejected_rows, duplicate_rows, suppressed_rows, contacts_created) "
+                    "VALUES (:id, :c, :h, 'PENDING', 0, 0, 0, 0, 0, 0)"
+                ),
+                {"id": batch_id, "c": campaign_id, "h": uuid.uuid4().hex},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO salesnav_company_enrichments "
+                    "(id, batch_id, company_key, company_name, row_count, lookup_status, "
+                    " lookup_attempts, confirmation_status, confirmed_domain, confirmation_source) "
+                    "VALUES (:id, :b, 'acme', 'Acme', 1, 'OK', 1, 'CONFIRMED', "
+                    " 'acme.example', 'AUTOMATIC_POLICY')"
+                ),
+                {"id": uuid.uuid4(), "b": batch_id},
+            )
+
+        result = _alembic(["downgrade", "-1"], temp_database_url)
+        assert result.returncode != 0, "the downgrade must refuse while the row exists"
+        assert "confirmed automatically" in (result.stdout + result.stderr)
+
+        # Once the decision is an operator's, the downgrade proceeds.
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE salesnav_company_enrichments "
+                    "SET confirmation_source = 'MANUAL' "
+                    "WHERE confirmation_source::text = 'AUTOMATIC_POLICY'"
+                )
+            )
+        cleared = _alembic(["downgrade", "-1"], temp_database_url)
+        assert cleared.returncode == 0, f"{cleared.stdout}\n{cleared.stderr}"
+    finally:
+        engine.dispose()

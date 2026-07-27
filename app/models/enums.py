@@ -244,15 +244,58 @@ class EnrichmentConfirmationSource(enum.StrEnum):
     ``PRIOR_MAPPING`` (DAT-014) when a domain was reused from an EARLIER
     operator confirmation of the same normalized company.
 
-    ``PRIOR_MAPPING`` is the only non-interactive source, and it is not an
-    exception to the rule that the operator decides: it replays a decision the
-    operator already made. A provider's top-ranked name match never qualifies.
+    ``PRIOR_MAPPING`` replays a decision the operator already made for the same
+    normalized company. ``AUTOMATIC_POLICY`` (DAT-017) is a domain the versioned
+    resolution policy selected because two independent evidence axes agreed, or
+    because an operator-captured company page named it under an exact identity
+    match. Neither is a provider's opinion: a provider's top-ranked name match
+    never qualifies on its own.
+
+    The two automatic sources stay distinct because they answer to different
+    evidence and are corrected at different rates — reuse replays a human
+    decision, whereas the policy makes one.
     """
 
     CANDIDATE = "candidate"
     MANUAL = "manual"
     UNRESOLVED = "unresolved"
     PRIOR_MAPPING = "prior_mapping"
+    AUTOMATIC_POLICY = "automatic_policy"
+
+
+class DomainResolutionDecision(enum.StrEnum):
+    """What the DAT-017 resolution policy concluded for one company.
+
+    Recorded alongside the policy version and the evidence that produced it, so
+    an automatic decision can be explained, audited and — when it turns out to
+    be wrong — corrected and counted.
+
+    Deliberately separate from :class:`CompanyResolutionOutcome`, which is the
+    promotion-blocking view of the same record. This enum says *why the policy
+    decided what it did*; that one says *whether a capture may proceed*.
+    Collapsing them would lose the difference between "several plausible
+    candidates" and "two sources actively disagree", which are the two review
+    cases an operator handles most differently.
+    """
+
+    #: Two independent evidence axes named the same domain, or an
+    #: identity-matched company page named it. Applied without an operator.
+    AUTO_CONFIRMED = "auto_confirmed"
+    #: A domain an operator already confirmed for this company was replayed.
+    #: Costs no provider call.
+    PRIOR_MAPPING_REUSED = "prior_mapping_reused"
+    #: Evidence exists but does not settle the question. Carries a
+    #: recommendation that is shown and never applied.
+    REVIEW_REQUIRED = "review_required"
+    #: The provider answered and nothing usable came back, and no other
+    #: evidence names a domain. Distinct from an unreachable provider.
+    NO_CREDIBLE_CANDIDATE = "no_credible_candidate"
+    #: Two authoritative sources named different domains. Never resolved by
+    #: preferring one; a wrong domain is worse than an unanswered one.
+    CONFLICT = "conflict"
+    #: The provider could not be reached or answered unusably. No domain is
+    #: invented to fill the gap; a retry may succeed.
+    PROVIDER_UNAVAILABLE = "provider_unavailable"
 
 
 class CompanyResolutionOutcome(enum.StrEnum):
@@ -263,16 +306,22 @@ class CompanyResolutionOutcome(enum.StrEnum):
     different questions with different failure modes, and collapsing them into
     one result would hide which of the two actually blocked a promotion.
 
-    ``EXISTING_COMPANY_RESOLVED`` is the only outcome reachable without asking
-    the provider: a previously CONFIRMED decision for the same normalized
-    company already names the domain. Everything a provider returns is a
-    *candidate* awaiting the operator, because a top-ranked name match is not
-    evidence of identity.
+    Two outcomes are reachable without an operator. ``EXISTING_COMPANY_RESOLVED``
+    replays a previous CONFIRMED decision for the same normalized company.
+    ``DOMAIN_AUTO_CONFIRMED`` (DAT-017) is the versioned resolution policy
+    selecting a domain that two independent evidence axes agreed on, or that an
+    operator-captured company page named under an exact identity match.
+
+    A provider result on its own is still only a *candidate* awaiting the
+    operator, because a top-ranked name match is not evidence of identity. What
+    changed in DAT-017 is not the trust placed in the provider but the arrival
+    of a second, independent source to corroborate it against.
     """
 
     PENDING_LOOKUP = "pending_lookup"
     EXISTING_COMPANY_RESOLVED = "existing_company_resolved"
     DOMAIN_CANDIDATE_CONFIRMED = "domain_candidate_confirmed"
+    DOMAIN_AUTO_CONFIRMED = "domain_auto_confirmed"
     CANDIDATE_REVIEW_REQUIRED = "candidate_review_required"
     MULTIPLE_CANDIDATES_REVIEW_REQUIRED = "multiple_candidates_review_required"
     NO_CANDIDATE = "no_candidate"

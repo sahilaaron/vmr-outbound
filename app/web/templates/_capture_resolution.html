@@ -5,7 +5,7 @@
    operator's behalf, merge an ambiguous identity, or make a contact
    outreach-eligible. #}
 
-{% macro resolution_card(resolution, lookup_available) %}
+{% macro resolution_card(resolution, lookup_available, auto_resolution_available=False) %}
 {% set promotion = resolution.promotion %}
 {% set record = resolution.record %}
 <div class="table-wrap">
@@ -149,7 +149,19 @@
         Promote to contact
       </button>
     </form>
+    {% if auto_resolution_available %}
+    <form method="post" action="/contact-captures/{{ resolution.snapshot.id }}/resolve">
+      <button class="btn" type="submit">Resolve automatically</button>
+    </form>
+    {% endif %}
   </div>
+  {% if auto_resolution_available %}
+  <p class="small muted-text" style="padding: 0 12px 12px;">
+    Automatic resolution applies a domain only when two independent sources agree, or a company
+    page you captured names it for this exact LinkedIn company. Anything weaker, conflicting, or
+    unreachable comes back here for you to decide — it never guesses.
+  </p>
+  {% endif %}
   {% if not lookup_available %}
   <p class="small muted-text" style="padding: 0 12px 12px;">
     The domain lookup is unavailable (enrichment disabled or no provider key configured). You can

@@ -52,6 +52,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
 from app.models.enums import (
+    DomainResolutionDecision,
     EnrichmentConfirmationSource,
     EnrichmentConfirmationStatus,
     EnrichmentLookupStatus,
@@ -84,6 +85,18 @@ class SalesNavCompanyEnrichment(Base):
         CheckConstraint(
             "(batch_id IS NULL) <> (capture_id IS NULL)",
             name="ck_salesnav_company_enrichments_single_owner",
+        ),
+        # DAT-017: the review queue and the resolution metrics both filter on
+        # the policy's decision, so it is indexed rather than scanned.
+        Index("ix_salesnav_company_enrichments_resolution", "resolution_decision"),
+        # DAT-017: prior-mapping reuse looks up confirmed domains by normalized
+        # company key on every capture. Without this it is a sequential scan of
+        # every company ever resolved, which is the one query that grows without
+        # bound as the CRM fills.
+        Index(
+            "ix_salesnav_company_enrichments_confirmed_key",
+            "company_key",
+            "confirmation_status",
         ),
     )
 
@@ -161,6 +174,43 @@ class SalesNavCompanyEnrichment(Base):
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Optional operator note explaining a manual override or an unresolved mark.
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # --- Automatic resolution (DAT-017) --------------------------------------
+    #
+    # What the versioned policy concluded, and everything needed to explain it
+    # later without re-deriving anything. These columns are written on every
+    # policy run, including the runs that decide *not* to resolve: a review case
+    # that records why it needs review is the input the Review Queue (#172)
+    # consumes, so it must be as durable as an automatic decision.
+    #
+    # They describe the POLICY's conclusion. The applied domain still lives in
+    # ``confirmed_domain``/``confirmation_source`` above, so an automatic
+    # decision and an operator decision remain the same kind of fact and every
+    # existing reader keeps working unchanged.
+    resolution_policy_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    resolution_decision: Mapped[DomainResolutionDecision | None] = mapped_column(
+        Enum(DomainResolutionDecision, name="domain_resolution_decision"),
+        nullable=True,
+    )
+    # Stable reason codes from the policy, in the order it produced them.
+    resolution_reasons: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    # Every candidate domain the policy considered, with its axis, whether the
+    # join was identity-grade, and the record it came from. This is what makes a
+    # decision replayable and a wrong one diagnosable.
+    resolution_evidence: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
+    # For review cases: the domain the policy would suggest. Surfaced, never
+    # applied — a recommendation is not a decision.
+    resolution_recommendation: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # When an operator later replaces an AUTOMATIC_POLICY domain with a
+    # different one, that is the correction signal the policy is measured by.
+    # Stored as columns rather than left to be parsed out of the audit trail so
+    # the correction rate is a query, not an archaeology exercise.
+    resolution_corrected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    resolution_corrected_from: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
