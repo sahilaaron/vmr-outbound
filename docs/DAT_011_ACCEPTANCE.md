@@ -275,7 +275,7 @@ unless a small unambiguous acceptance blocker is documented first.
 
 | Ref | Summary | Severity | Blocker | Issue |
 | --- | --- | --- | --- | --- |
-| D-1 | `LOGO_DEV_API_KEY` is not configured in the trial environment, so the DAT-010 candidate lookup cannot run — see below | environment | blocks S7 / E2 only | not yet filed |
+| D-1 | `LOGO_DEV_API_KEY` was not configured, so the DAT-010 candidate lookup could not run | environment | **resolved before the trial** — no longer blocking | not filed (config, not a product defect) |
 | D-OBS-1 | `created` is a declared capture counter no outcome can increment; the panel carries a label for it | observation | no | not yet filed |
 | D-OBS-2 | Acceptance and CLAUDE docs still describe the pre-UI-012 panel and the old product name | documentation | no | not yet filed |
 
@@ -305,8 +305,16 @@ precisely, because it does not block Phase E as a whole:
 Layer 4B already proved the live provider path end to end against the real
 endpoint with a real key, including the ambiguity that motivates operator
 confirmation. So E2 is a re-confirmation on the shipped path, not first proof —
-which is why this is recorded as an environment blocker on one step rather than
+which is why this was recorded as an environment blocker on one step rather than
 on DAT-011.
+
+**Resolved before the trial ran.** The operator set `LOGO_DEV_API_KEY` in `.env`
+and restarted the application. Re-checked on `/contact-captures/pending`
+**[machine, supervised]**: the *Domain lookup unavailable* banner is absent, so
+`lookup_available` — `_enrichment_enabled() and has_logo_dev_key()` — is now
+true. The key itself was never transmitted to or handled by the build session.
+E2 is therefore in scope for the trial. Pending count at this moment: **50**,
+all pre-existing, none created by this trial.
 
 ## 5. Verdict
 
