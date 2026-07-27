@@ -201,7 +201,7 @@ returned, with counts and states only.
 
 | Step | What to do | What must be true | Result |
 | --- | --- | --- | --- |
-| A0 | Open the panel on a people-search results page | Header reads **VM Prospector**; detected-page strip reads *Sales Navigator · Search results*; no campaign selector anywhere | |
+| A0 | Open the panel on a people-search results page | Header reads **VM Prospector**; detected-page strip reads *Sales Navigator · Search results*; no campaign selector anywhere | **PASS** [operator] — see A0 notes |
 | A1 | Press *Capture visible contacts*; watch | Progress card appears with a live row count; scrolling is incremental, not jumpy | |
 | A2 | Press *Stop reading this page* once, mid-pass | Pass stops promptly; view returns to top; rows already loaded remain reviewable; nothing submitted; feedback reads *Stopped* | |
 | A3 | Press *Read this page again*; let it finish | Pass ends by itself; **no** page-2 advance, no new tab, no URL change | |
@@ -212,6 +212,47 @@ returned, with counts and states only.
 | A8 | Save the reviewed set | Submitted count == selected count; outcome counts render; `created` is 0 | |
 | A9 | Close and reopen the panel | Last result and/or draft restored without recapturing or resaving | |
 | A10 | Open the returned record via the panel's own link | The exact submission/capture record opens in the workbench | |
+
+#### A0 observations (2026-07-27)
+
+Shell, as displayed:
+
+| Element | Observed | Verdict |
+| --- | --- | --- |
+| Header | **VM Prospector**, with the VMR mark | PASS |
+| Detected-page strip | *Sales Navigator · Search results* | PASS |
+| Strip badge | *47 found* | PASS (count is the batch, not the page) |
+| Connection status | *Connected* | see A0-3 |
+| Step rail | *STEP 1 OF 3*, first segment filled | PASS |
+| Source URL line | present, beneath the strip | PASS |
+| Primary action | *Review selected (47)* | PASS |
+| Secondary action | *Read this page again* | indicates a batch was already present |
+| Paging disclaimer | *"You control paging — VM Prospector never turns a page."* | PASS |
+| **Campaign control anywhere in the panel** | **none** | **PASS — this is the evidence replacing #131 S4** |
+
+Three things in that state need resolving before A1–A4 can be trusted:
+
+* **A0-1 — every row is badged *Needs review*: 47 of 47.** The select-all line
+  reads *47 need review*, and each visible row carries the amber badge. The
+  badge means "this record has at least one warning". A flag that fires on
+  100% of rows conveys nothing, so either the rows genuinely all carry a
+  warning — plausible if, for example, DAT-018's observed-versus-derived profile
+  URL leaves a code on most rows — or something is over-flagging. Not yet
+  classified; diagnosis below.
+* **A0-2 — *"4 rows currently visible on this page"* sits above a 47-row batch.**
+  Literally true: the detect status reports rows currently rendered in the DOM,
+  and Sales Navigator virtualizes the list, so after a completed pass returns to
+  the top only a few rows remain mounted. Read next to *47 found* it invites the
+  operator to think 43 rows were lost. Presentation, not data.
+* **A0-3 — the batch's provenance is unknown to this record.** The panel restores
+  a draft batch and a last result from `chrome.storage.local`, so a 47-row batch
+  on arrival may be from a pass just run or from an earlier session. *Connected*
+  rather than *Ready* points at a restored prior result, since that state is set
+  when a submission succeeds. A1–A3 measure a read pass, so they need a pass
+  this record watched from the start.
+
+A0 passes on what it set out to check. A1 restarts from a cleared batch so the
+pass under test is unambiguous.
 
 ### B. Person profile
 
