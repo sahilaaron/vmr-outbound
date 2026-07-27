@@ -211,7 +211,7 @@ returned, with counts and states only.
 | A7 | Confirm nothing was invented for a skipped row (S3b) | No company borrowed from headline, school, location or an adjacent row | |
 | A8 | Save the reviewed set | Submitted count == selected count; outcome counts render; `created` is 0 | **PASS** [operator] — *30 of 30 prospects saved*; sole outcome `staged_unmatched` = 30; **`created` absent, i.e. 0**. **S9 and S10 satisfied** |
 | A9 | Close and reopen the panel | Last result and/or draft restored without recapturing or resaving | **PARTIAL** [operator] — the **draft** restores intact (selection and all); the **last result does not**. Reproduced deterministically after a fresh save. Cause found and demonstrated: **D-8** |
-| A10 | Open the returned record via the panel's own link | The exact submission/capture record opens in the workbench | |
+| A10 | Open the returned record via the panel's own link | The exact submission/capture record opens in the workbench | **PASS** [operator, machine-verified] — *Open captured contacts* opened `/contact-captures/submissions/01366e2e…`, the exact submission, with `client_submission_id 77ae7ae0…`, `contacts 30`, `created 0`. Reachable only straight after a save — see D-8 |
 
 #### A0 observations (2026-07-27)
 
@@ -972,6 +972,27 @@ replay — the truthful "already received" wording sits in the body beneath it.
 For a multi-row submission the headline alone would read as a fresh save. Minor,
 and the same family as D-6 / D-OBS-4: the data is right, one line of copy is
 generic.)*
+
+### A10 / S6 — the panel's own link opens the exact record
+
+**Observed** [operator], verified against identifiers already recorded here.
+
+*Open captured contacts* opened `127.0.0.1:8000/contact-captures/submissions/01366e2e-8e5b-440b-81a8-e44353f2d49c`
+— the submission this trial has been measuring throughout, not a list or a
+search. The page carried `client_submission_id 77ae7ae0…`, `schema_version
+linkedin-contact-capture/2.0.0`, `extension_version 2.1.0`, `contacts 30`,
+`created 0`. Every one of those matches what was independently read from the
+backend before the click.
+
+So S6 holds under its renamed shape: the response's `operator_workbench_url` is a
+loopback URL under a known prefix, and following it lands on the exact record.
+
+**Two things worth keeping from this screen.** The panel, now sitting on a
+workbench tab, reported *"This page isn't supported — Nothing to capture here"*
+and then listed what it does support. It neither pretended to work nor went
+blank; the unsupported state is a real, informative state. And **S6 is only
+reachable immediately after a save** — see D-8 — so this passed on the second
+save of the session rather than by reopening the panel.
 
 ### D-8 — the restored outcome is painted, then immediately overwritten
 
