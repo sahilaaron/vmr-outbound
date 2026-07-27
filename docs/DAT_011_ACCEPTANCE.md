@@ -495,7 +495,7 @@ unless a small unambiguous acceptance blocker is documented first.
 | Ref | Summary | Severity | Blocker | Issue |
 | --- | --- | --- | --- | --- |
 | D-1 | `LOGO_DEV_API_KEY` was not configured, so the DAT-010 candidate lookup could not run | environment | **resolved before the trial** — no longer blocking | not filed (config, not a product defect) |
-| D-5 | ~~Confirming a domain candidate 500s~~ — **withdrawn**: not a product defect. DAT-017A code entered the tree mid-trial and ran against an un-migrated database | **trial integrity** | see baseline drift | not a defect; no issue to file |
+| D-5 | ~~Confirming a domain candidate 500s~~ — **withdrawn as a defect**; reclassified as an **environment-contamination incident**. The repository was switched to the DAT-017A branch while uvicorn ran with `--reload`; the hot-reloaded code queried a table the shared `vmr_dev` database has never had | **environment / trial integrity** | see the incident record | not a product defect; nothing to file against the product |
 | D-4 | A Sales Navigator capture's derived profile URL is an opaque member id, so the same person captured from their profile page will not match it | **identity fragmentation** | not for DAT-011 | to be filed — settles the open question Layer 3C left |
 | D-3 | Reported: captured company not visible in the app for a Sales Navigator capture | unresolved | no | **not reproduced** — cause unknown, left open |
 | D-OBS-3 | *Person observations* omits captured company and title; profile captures show the employer only via the experience table | presentation | no | not filed |
@@ -696,10 +696,19 @@ member id should be resolved to a vanity handle at capture time, or carried as a
 second matchable key — and that is a backend design decision, not an acceptance
 step.
 
-### Baseline drift — the code under test changed mid-trial
+### Environment-contamination incident — the code under test changed mid-trial
 
 **This is the most consequential finding of the session, and it is about the
-trial, not the product.**
+environment, not the product.** It is recorded as an incident, not as a defect:
+nothing here is evidence about `d99e274`, and no acceptance step may be judged
+from it in either direction.
+
+**Cause, as established.** The repository working tree was switched from `main`
+to the DAT-017A branch while uvicorn was running with `--reload`. WatchFiles
+picked the change up and hot-reloaded the server onto DAT-017A code. The shared
+`vmr_dev` database had never had migration `d7a3f18c62b4` applied, so the
+reloaded page queried a `company_domain_resolutions` table that does not exist.
+Code from one revision, schema from another — one process, two baselines.
 
 The application console shows, between the E2 lookup and the E3 confirm:
 
@@ -711,15 +720,14 @@ WatchFiles detected changes in 'app\models\company_domain_resolution.py',
 'app\core\features.py', 'app\models\enums.py' … Reloading...
 ```
 
-**DAT-017A entered the working tree and uvicorn hot-reloaded onto it.** Section
-2.5 of this document records that DAT-017 is *not merged* and that no automatic
-resolution workflow may be described as current. From the reload onward, the
-running application was no longer `d99e274`.
+Section 2.5 of this document records that DAT-017A is *not merged* and that no
+automatic resolution workflow may be described as current. From the reload
+onward, the running application was no longer `d99e274`.
 
 The 500 follows directly: `contact_capture_page` now calls
 `resolution_service.capture_view`, which queries `company_domain_resolutions` —
 a table created by the DAT-017A migration, which this database has never had
-applied. Code from one revision, schema from another.
+applied.
 
 #### What still stands, and what does not
 
@@ -757,16 +765,67 @@ working tree that can change under it is not reproducible. A future trial should
 run from a clean checkout of the exact commit, with the reloader off, so that
 "the code under test" is a fact rather than an assumption.
 
-### D-5 (withdrawn) — the 500 was not a product defect
+#### Containment — DAT-017A stays out of this environment
 
-**Withdrawn.** Recorded here rather than deleted, because the reasoning that
-led to it is part of the evidence trail and because a withdrawn defect is
-itself a result.
+DAT-017A review is a **separate task with a separate environment**. It is not
+touched, staged, evaluated, or repaired here.
+
+**The DAT-017A migration must not be applied to the DAT-011 database to repair
+this incident.** Applying `d7a3f18c62b4` would make the error go away by
+advancing the schema past the baseline under acceptance — the trial would then
+be running unmerged code against an unmerged schema, and every result after it
+would be worthless in exactly the way the results after the reload already are.
+The repair is to restore the code, not to advance the database.
+
+#### Preconditions for resuming
+
+The trial resumes only once all four hold:
+
+1. The working tree is restored to `main` at **`d99e274`** — the DAT-017A files
+   out of the tree entirely, not merely unstaged.
+2. uvicorn is **restarted** (a reload is not enough; the process must be the one
+   started from the restored tree) and, preferably, started **without
+   `--reload`** so the code under test cannot move again mid-run.
+3. The `vmr_dev` schema is **unchanged** — still at the baseline revision, with
+   no DAT-017A migration applied.
+4. The capture page for the E3 record renders again, which confirms 1–3 from the
+   operator's side.
+
+#### Open question carried into the resumed run — did the Confirm commit?
+
+The POST returned **303**, so the write plausibly committed and only the
+redirected GET failed. That is a plausible reading, not an established fact: the
+303 proves the handler returned without raising, not that the transaction was
+committed, and the handler that ran was DAT-017A's, not the baseline's.
+
+**First action on resume, before retrying E3:** open the E3 capture record and
+read its current state.
+
+* If the domain already shows as confirmed, the write committed. Record E3 as
+  **re-observed**, note that the confirmation predates the restart, and do not
+  re-confirm — a second confirm would test idempotency, which is S11's job, not
+  E3's.
+* If it does not, the write did not survive. Re-run E3 from a clean state.
+
+Either way the *first* run of E3 stays quarantined. This check establishes what
+state the record is in, not whether E3 passes.
+
+### D-5 (withdrawn) — reclassified as environment contamination
+
+**Withdrawn as an acceptance blocker and reclassified as an
+environment-contamination incident** (recorded above). It is not a product
+defect, no issue is filed against the product, and it blocks nothing about
+`d99e274`. Kept here rather than deleted, because the reasoning that led to it
+is part of the evidence trail and because a withdrawn defect is itself a result.
 
 **Observed** [operator]: pressing *Confirm* on the rank-1 candidate of a trial
 capture returned **Internal Server Error**.
 
-**Contrast that isolates it.** The same action succeeded earlier in this session
+*The three paragraphs that follow are the original, superseded reasoning, kept
+verbatim so the error is legible. The capture shape is **not** the cause and
+must not be cited as one.*
+
+**Contrast that was believed to isolate it — it did not.** The same action succeeded earlier in this session
 on a **profile** capture — confirmed, rejected two candidates, reached
 `domain_candidate_confirmed`, and enabled promotion. The failing capture differs
 in shape: `capture_mode = salesnav_people_search`, `extraction_status = partial`,
@@ -783,10 +842,9 @@ in shape: `capture_mode = salesnav_people_search`, `extraction_status = partial`
   means an exception of a *different* type escaped — the failure is inside
   `enrichment.confirm_record` or `evaluate_company`, not in the guard clauses.
 
-**Impact.** This blocks the in-scope E3, and therefore E6 and E7, because a
-capture cannot be promoted without a confirmed domain. Sales Navigator is the
-acquisition surface DAT-011 exists to accept, so a capture from it that cannot
-be promoted is an acceptance blocker, not a cosmetic fault.
+**Impact, as believed at the time.** That E3 was blocked, and therefore E6 and
+E7. *Superseded:* the blocker is the contaminated environment, and it is removed
+by restoring the baseline, not by fixing anything in the product.
 
 **Diagnosed from the traceback.** `relation "company_domain_resolutions" does
 not exist`, raised in `resolution/store.py` via `resolution_service.capture_view`
