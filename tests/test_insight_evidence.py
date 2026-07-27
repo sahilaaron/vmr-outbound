@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from app.models.company import Company
@@ -246,3 +246,235 @@ def test_idempotency_key_rejects_changed_content(db_session: Session) -> None:
             evidence=[_evidence()],
             idempotency_key="research-job-17:claim-1",
         )
+
+
+def test_retry_after_refetching_the_source_returns_the_original_insight(
+    db_session: Session,
+) -> None:
+    """A real retry re-reads its sources, so retrieval timestamps move.
+
+    Same subject, claim, kind, state, version and sources — only the clock
+    differs. That is the case an idempotency key exists to absorb, so it must
+    return the original insight rather than report a collision.
+    """
+
+    company = _company(db_session)
+    key = "research-job-17:claim-1"
+    first = insight_service.create_insight(
+        db_session,
+        company_id=company.id,
+        claim="Acme announced a Pune office.",
+        kind=InsightKind.FACT,
+        state=InsightState.SUPPORTED,
+        evidence=[_evidence(retrieved_at=datetime.now(UTC) - timedelta(minutes=5))],
+        idempotency_key=key,
+    )
+
+    retried = insight_service.create_insight(
+        db_session,
+        company_id=company.id,
+        claim="Acme announced a Pune office.",
+        kind=InsightKind.FACT,
+        state=InsightState.SUPPORTED,
+        evidence=[
+            _evidence(
+                retrieved_at=datetime.now(UTC),
+                excerpt="A different excerpt from the same page.",
+                freshness_at=datetime.now(UTC),
+            )
+        ],
+        idempotency_key=key,
+    )
+
+    assert retried.id == first.id
+    assert len(insight_service.list_for_company(db_session, company_id=company.id)) == 1
+    stored = db_session.scalars(
+        select(InsightEvidence).where(InsightEvidence.insight_id == first.id)
+    ).all()
+    assert len(stored) == 1, "the retry must not append a second copy of the same source"
+
+
+def test_retry_identity_ignores_the_order_evidence_arrives_in(db_session: Session) -> None:
+    """Two sources supplied in either order describe the same claim."""
+
+    company = _company(db_session)
+    key = "research-job-17:claim-2"
+    first_source = _evidence(source_url="https://acme.example/a")
+    second_source = _evidence(source_url="https://acme.example/b")
+
+    first = insight_service.create_insight(
+        db_session,
+        company_id=company.id,
+        claim="Acme opened two offices.",
+        kind=InsightKind.FACT,
+        state=InsightState.SUPPORTED,
+        evidence=[first_source, second_source],
+        idempotency_key=key,
+    )
+    reordered = insight_service.create_insight(
+        db_session,
+        company_id=company.id,
+        claim="Acme opened two offices.",
+        kind=InsightKind.FACT,
+        state=InsightState.SUPPORTED,
+        evidence=[second_source, first_source],
+        idempotency_key=key,
+    )
+
+    assert reordered.id == first.id
+
+
+def test_retry_identity_still_rejects_a_changed_source_set(db_session: Session) -> None:
+    """Dropping retrieval metadata from the digest must not weaken the guard."""
+
+    company = _company(db_session)
+    key = "research-job-17:claim-3"
+    insight_service.create_insight(
+        db_session,
+        company_id=company.id,
+        claim="Acme announced a Pune office.",
+        kind=InsightKind.FACT,
+        state=InsightState.SUPPORTED,
+        evidence=[_evidence(source_url="https://acme.example/original")],
+        idempotency_key=key,
+    )
+
+    with pytest.raises(insight_service.InsightError, match="different content"):
+        insight_service.create_insight(
+            db_session,
+            company_id=company.id,
+            claim="Acme announced a Pune office.",
+            kind=InsightKind.FACT,
+            state=InsightState.SUPPORTED,
+            evidence=[_evidence(source_url="https://acme.example/substituted")],
+            idempotency_key=key,
+        )
+
+
+def test_retry_identity_still_rejects_a_changed_evidence_version(db_session: Session) -> None:
+    """The same URL re-observed as a new evidence version is a new source."""
+
+    company = _company(db_session)
+    key = "research-job-17:claim-4"
+    insight_service.create_insight(
+        db_session,
+        company_id=company.id,
+        claim="Acme announced a Pune office.",
+        kind=InsightKind.FACT,
+        state=InsightState.SUPPORTED,
+        evidence=[_evidence(version=1)],
+        idempotency_key=key,
+    )
+
+    with pytest.raises(insight_service.InsightError, match="different content"):
+        insight_service.create_insight(
+            db_session,
+            company_id=company.id,
+            claim="Acme announced a Pune office.",
+            kind=InsightKind.FACT,
+            state=InsightState.SUPPORTED,
+            evidence=[_evidence(version=2)],
+            idempotency_key=key,
+        )
+
+
+def test_duplicate_source_within_one_packet_is_rejected(db_session: Session) -> None:
+    """The same URL at the same version twice would violate the unique index."""
+
+    company = _company(db_session)
+    with pytest.raises(insight_service.InsightError, match="repeats source"):
+        insight_service.create_insight(
+            db_session,
+            company_id=company.id,
+            claim="Acme announced a Pune office.",
+            kind=InsightKind.FACT,
+            state=InsightState.SUPPORTED,
+            evidence=[_evidence(), _evidence(evidence_summary="A second reading.")],
+        )
+
+
+def test_the_same_source_at_different_versions_is_accepted(db_session: Session) -> None:
+    """Re-observing one page as a new version is legitimate, not a duplicate."""
+
+    company = _company(db_session)
+    insight = insight_service.create_insight(
+        db_session,
+        company_id=company.id,
+        claim="Acme announced a Pune office.",
+        kind=InsightKind.FACT,
+        state=InsightState.SUPPORTED,
+        evidence=[_evidence(version=1), _evidence(version=2)],
+    )
+
+    stored = db_session.scalars(
+        select(InsightEvidence).where(InsightEvidence.insight_id == insight.id)
+    ).all()
+    assert {item.version for item in stored} == {1, 2}
+
+
+def test_oversized_source_url_is_rejected(db_session: Session) -> None:
+    """Longer than the column, so the database would truncate-error instead."""
+
+    company = _company(db_session)
+    long_url = "https://acme.example/" + ("a" * insight_service.SOURCE_URL_MAX_LENGTH)
+    with pytest.raises(insight_service.InsightError, match="at most"):
+        insight_service.create_insight(
+            db_session,
+            company_id=company.id,
+            claim="Acme announced a Pune office.",
+            kind=InsightKind.FACT,
+            state=InsightState.SUPPORTED,
+            evidence=[_evidence(source_url=long_url)],
+        )
+
+
+@pytest.mark.parametrize(
+    ("bad_evidence", "message"),
+    [
+        pytest.param(
+            [_evidence(), _evidence(evidence_summary="A second reading.")],
+            "repeats source",
+            id="duplicate-source",
+        ),
+        pytest.param(
+            [_evidence(source_url="https://acme.example/" + ("a" * 1024))],
+            "at most",
+            id="oversized-url",
+        ),
+    ],
+)
+def test_a_rejected_packet_leaves_the_transaction_usable(
+    db_session: Session,
+    bad_evidence: list[insight_service.EvidenceInput],
+    message: str,
+) -> None:
+    """Validation happens before any write, so nothing aborts the transaction.
+
+    A driver-level IntegrityError or DataError would poison the session and
+    force the caller to roll back work unrelated to the bad packet.
+    """
+
+    company = _company(db_session)
+
+    with pytest.raises(insight_service.InsightError, match=message):
+        insight_service.create_insight(
+            db_session,
+            company_id=company.id,
+            claim="Acme announced a Pune office.",
+            kind=InsightKind.FACT,
+            state=InsightState.SUPPORTED,
+            evidence=bad_evidence,
+        )
+
+    # The same session must still be able to read and write.
+    assert db_session.scalar(select(Company).where(Company.id == company.id)) is not None
+    recovered = insight_service.create_insight(
+        db_session,
+        company_id=company.id,
+        claim="Acme announced a Pune office.",
+        kind=InsightKind.FACT,
+        state=InsightState.SUPPORTED,
+        evidence=[_evidence()],
+    )
+    assert recovered.id is not None
+    assert insight_service.is_personalization_eligible(db_session, insight=recovered)

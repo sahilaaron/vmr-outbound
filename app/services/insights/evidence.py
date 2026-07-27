@@ -24,6 +24,11 @@ from app.services.audit import record_audit_event
 
 INSIGHT_ACTOR = "system:insight-evidence"
 
+#: Mirrors ``insight_evidence.source_url``. Enforced here so an over-long URL is
+#: refused at the boundary instead of aborting the caller's transaction with a
+#: driver-level string-truncation error.
+SOURCE_URL_MAX_LENGTH = 1024
+
 
 class InsightError(ValueError):
     """A claim or evidence packet cannot be stored safely."""
@@ -65,6 +70,8 @@ def _source_url(value: str) -> str:
     parsed = urlsplit(cleaned)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise InsightError("source_url must be an absolute http or https URL")
+    if len(cleaned) > SOURCE_URL_MAX_LENGTH:
+        raise InsightError(f"source_url must be at most {SOURCE_URL_MAX_LENGTH} characters")
     return cleaned
 
 
@@ -87,6 +94,41 @@ def _validate_evidence(item: EvidenceInput) -> None:
         _required_text(item.source_record_type, field="source_record_type")
 
 
+def _evidence_identity(item: EvidenceInput) -> tuple[str, int]:
+    """What makes one observation *the same source* as another.
+
+    The normalized URL plus the evidence version — the same pair the
+    ``uq_insight_evidence_source_version`` constraint enforces in the database.
+    Retrieval metadata is deliberately excluded: re-reading the same page later
+    is the same source, not a new one.
+    """
+
+    return (_source_url(item.source_url), item.version)
+
+
+def _validate_packet(items: tuple[EvidenceInput, ...]) -> tuple[tuple[str, int], ...]:
+    """Validate every observation and return their identities.
+
+    Runs to completion before anything is written, so a rejected packet leaves
+    the caller's transaction untouched and still usable. Two observations
+    citing the same source at the same version would otherwise reach the unique
+    constraint and abort that transaction with a driver-level error.
+    """
+
+    identities: list[tuple[str, int]] = []
+    seen: set[tuple[str, int]] = set()
+    for item in items:
+        _validate_evidence(item)
+        identity = _evidence_identity(item)
+        if identity in seen:
+            raise InsightError(
+                f"evidence repeats source {identity[0]} at version {identity[1]} within one packet"
+            )
+        seen.add(identity)
+        identities.append(identity)
+    return tuple(identities)
+
+
 def _content_hash(
     *,
     subject_id: uuid.UUID,
@@ -94,9 +136,21 @@ def _content_hash(
     kind: InsightKind,
     state: InsightState,
     version: int,
-    evidence: tuple[EvidenceInput, ...],
+    identities: tuple[tuple[str, int], ...],
 ) -> str:
-    """Stable digest used to distinguish a safe retry from a key collision."""
+    """Stable digest of *claim identity*, used to tell a retry from a collision.
+
+    Deliberately excludes retrieval metadata — ``retrieved_at``, excerpts,
+    confidence, extraction method, freshness. A retry that re-fetches its
+    sources produces new timestamps while asserting the very same claim from the
+    very same sources; that is precisely what an idempotency key exists to
+    absorb. Only the claim itself and the identity of the sources behind it
+    participate, and the source set is order-independent because the order
+    evidence arrives in carries no meaning.
+
+    A changed claim, subject, kind, state, version, or source set still yields a
+    different digest and so still rejects reuse of the same key.
+    """
 
     payload = {
         "subject_id": str(subject_id),
@@ -104,25 +158,7 @@ def _content_hash(
         "kind": kind.value,
         "state": state.value,
         "version": version,
-        "evidence": [
-            {
-                "source_url": item.source_url.strip(),
-                "source_title": item.source_title,
-                "published_at": item.published_at.isoformat() if item.published_at else None,
-                "retrieved_at": item.retrieved_at.isoformat(),
-                "excerpt": item.excerpt,
-                "evidence_summary": item.evidence_summary.strip(),
-                "confidence": item.confidence,
-                "extraction_method": item.extraction_method.strip(),
-                "freshness_at": item.freshness_at.isoformat() if item.freshness_at else None,
-                "source_record_type": item.source_record_type,
-                "source_record_id": (
-                    str(item.source_record_id) if item.source_record_id is not None else None
-                ),
-                "version": item.version,
-            }
-            for item in evidence
-        ],
+        "sources": sorted([url, str(evidence_version)] for url, evidence_version in identities),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -146,6 +182,10 @@ def create_insight(
     Exactly one permanent subject is required. Supported and conflicting claims
     require traceable evidence; an explicit unknown may be stored without a
     source because recording a known gap is different from asserting a fact.
+
+    The whole packet is validated before anything is written, so a rejected
+    packet raises :class:`InsightError` and leaves the caller's transaction
+    usable.
     """
 
     if (company_id is None) == (contact_id is None):
@@ -156,19 +196,19 @@ def create_insight(
     items = tuple(evidence)
     if state is not InsightState.UNKNOWN and not items:
         raise InsightError("supported and conflicting insights require evidence")
-    for item in items:
-        _validate_evidence(item)
+    identities = _validate_packet(items)
 
     subject = InsightSubject.COMPANY if company_id is not None else InsightSubject.CONTACT
     subject_id = company_id if company_id is not None else contact_id
-    assert subject_id is not None
+    if subject_id is None:  # pragma: no cover - guarded by the check above
+        raise InsightError("exactly one of company_id or contact_id is required")
     digest = _content_hash(
         subject_id=subject_id,
         claim=cleaned_claim,
         kind=kind,
         state=state,
         version=version,
-        evidence=items,
+        identities=identities,
     )
     cleaned_key = (
         _required_text(idempotency_key, field="idempotency_key")
@@ -204,11 +244,11 @@ def create_insight(
     session.add(insight)
     session.flush()
 
-    for item in items:
+    for item, (normalized_url, _) in zip(items, identities, strict=True):
         session.add(
             InsightEvidence(
                 insight_id=insight.id,
-                source_url=_source_url(item.source_url),
+                source_url=normalized_url,
                 source_title=item.source_title.strip() if item.source_title else None,
                 published_at=item.published_at,
                 retrieved_at=item.retrieved_at,
