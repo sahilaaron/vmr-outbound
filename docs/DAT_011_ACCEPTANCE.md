@@ -351,6 +351,8 @@ unless a small unambiguous acceptance blocker is documented first.
 | Ref | Summary | Severity | Blocker | Issue |
 | --- | --- | --- | --- | --- |
 | D-1 | `LOGO_DEV_API_KEY` was not configured, so the DAT-010 candidate lookup could not run | environment | **resolved before the trial** — no longer blocking | not filed (config, not a product defect) |
+| D-3 | Reported: captured company not visible in the app for a Sales Navigator capture | unresolved | no | **not reproduced** — cause unknown, left open |
+| D-OBS-3 | *Person observations* omits captured company and title; profile captures show the employer only via the experience table | presentation | no | not filed |
 | D-2 | `derived_value` provenance is rendered as *Needs review*, flagging ~100% of Sales Navigator rows and destroying the signal | **blocker for S3a** | yes, for that step | to be filed |
 | D-OBS-1 | `created` is a declared capture counter no outcome can increment; the panel carries a label for it | observation | no | not yet filed |
 | D-OBS-2 | Acceptance and CLAUDE docs still describe the pre-UI-012 panel and the old product name | documentation | no | not yet filed |
@@ -458,10 +460,26 @@ it, via `company_hints`, for all 50 pre-existing captures — so this is a displ
 question, not data loss. What is not yet established is which page the operator
 was looking at and whether a salesnav capture carries an experience row at all.
 
-**Not yet classified.** It is recorded now because the code gap is real and
-independently verifiable, and because it bears directly on the promotion step:
-an operator is asked to confirm a domain for a company whose name may not be on
-the page they are looking at. Awaiting one observation to pin the surface.
+**Outcome: not reproduced, cause unknown.** On re-checking, the operator reports
+the company names are now visible in the app, with no change made to code,
+configuration or data in between. That is not a fix and is not recorded as one.
+
+Splitting what is known from what is not, because the two have different
+standing:
+
+* **Verified and still true:** the *Person observations* block omits the
+  captured company and title. Independently checkable in
+  `_capture_profile_rows`. Its practical severity is low — a profile capture's
+  employer appears in the *Experience observations* table — so it is downgraded
+  from a defect to a presentation gap, carried as **D-OBS-3**.
+* **Not verified:** the original symptom. No reproduction, no identified
+  surface, no cause. It is not closed and not counted as passing; it is recorded
+  as an unexplained observation so that a recurrence is recognised as the second
+  sighting rather than the first.
+
+A symptom that disappears without a change is worth less trust, not more. If it
+returns, the thing to capture is the exact URL and the capture's mode, which is
+what would have settled it the first time.
 
 ## 5. Verdict
 
