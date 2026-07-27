@@ -203,8 +203,8 @@ returned, with counts and states only.
 | --- | --- | --- | --- |
 | A0 | Open the panel on a people-search results page | Header reads **VM Prospector**; detected-page strip reads *Sales Navigator · Search results*; no campaign selector anywhere | **PASS** [operator] — see A0 notes |
 | A1 | Press *Capture visible contacts*; watch | Progress card appears with a live row count; scrolling is incremental, not jumpy | **PASS** [operator] — live count observed at 15 → 21 → 24; pass ended on its own; *Stop reading this page* offered throughout |
-| A2 | Press *Stop reading this page* once, mid-pass | Pass stops promptly; view returns to top; rows already loaded remain reviewable; nothing submitted; feedback reads *Stopped* | |
-| A3 | Press *Read this page again*; let it finish | Pass ends by itself; **no** page-2 advance, no new tab, no URL change | |
+| A2 | Press *Stop reading this page* once, mid-pass | Pass stops promptly; view returns to top; rows already loaded remain reviewable; nothing submitted; feedback reads *Stopped* | **PASS** [operator] — stopped on request, view returned to the top, and only the rows read up to that point were merged into the existing batch |
+| A3 | Press *Read this page again*; let it finish | Pass ends by itself; **no** page-2 advance, no new tab, no URL change | **PASS** [operator] — observed during A1: terminated on its own with no page advance, new tab or URL change |
 | A4 | Review the list | ≥2 distinct companies among eligible rows; any no-company rows appear under *N skipped — no company name* and are absent from the list | |
 | A5 | Deselect at least one row | *Review selected (N)* and the Save label follow the selection | |
 | A6 | Confirm a flagged row is retained (S3a) | A row with a warning is still selectable and still submitted with its gap visible | |
@@ -275,6 +275,18 @@ longer mounted in the virtualized list. Situational presentation, not a data
 fault — recorded, not filed.
 
 **A0-1 is explained, and it is a defect.** See D-2.
+
+#### A2 result — operator cancellation (2026-07-27)
+
+Operator-confirmed **[operator]**: *Read this page again* → *Stop reading this
+page* stops the pass, returns the scroller to the top, and adds only the rows
+read up to that point into the existing batch.
+
+That last part is the one worth stating precisely, because it is the behaviour
+the DAT-018 route was built to guarantee and the one most easily lost: a
+cancelled pass is **additive and deduplicated**, not destructive. The rows
+already held were not discarded and the partial read was merged into them by
+stable key. Nothing was submitted by the cancellation.
 
 ### B. Person profile
 
