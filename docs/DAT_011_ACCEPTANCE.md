@@ -383,7 +383,7 @@ stable key. Nothing was submitted by the cancellation.
 | --- | --- | --- | --- |
 | C0 | Open a `linkedin.com/company/…` page | Strip reads *LinkedIn · Company page* | **PASS** [operator] — strip reads *LinkedIn · Company page*, badge **Ready to capture** |
 | C1 | Capture on the About page | Firmographics match; a website shown on the page is reported as *Shown on this page*; if absent, *Domain not confirmed* with nothing invented | **PASS** [operator] — firmographics match the visible page, `Founded — Not shown`, and the website is labelled **Shown on this page**. See *C1* below |
-| C2 | Save | Saves company **evidence**, not a contact | pending the save |
+| C2 | Save | Saves company **evidence**, not a contact | **PASS** [operator, machine-verified] — *"Already saved (idempotent)"*, activity `Company page saved · Page evidence kept`, backend outcome `exact_match_unchanged`. No contact created; contact and pending counts unchanged. It also surfaced **D-9** |
 | C3 | Confirm nothing overclaims | No company matching/diff presented as working — it is not implemented | **PASS** [operator] — the panel enumerates the only two domain states it can report and explicitly hands matching to the app. See *C3* below |
 
 ### D. Failure recovery
@@ -678,6 +678,8 @@ unless a small unambiguous acceptance blocker is documented first.
 | D-OBS-3 | *Person observations* omits captured company and title; profile captures show the employer only via the experience table | presentation | no | not filed |
 | D-2 | `derived_value` provenance is rendered as *Needs review*, flagging ~100% of Sales Navigator rows and destroying the signal | **blocker for S3a** | yes, for that step | **filed as #191** — tracked separately; not implemented inside DAT-011 |
 | D-6 | After a candidate is confirmed, the capture page keeps showing a stale *"why not promoted"* reason that contradicts the confirmed state | operator truth | no — promotion is gated on the outcome, not the message | **filed as #192** (UI-014) — tracked separately; not implemented inside DAT-011 |
+| D-9 | Promotion never sets `contact.company_id`, and nothing else ever does, so every promoted contact lacks the permanent company edge — the Companies list reads *Contacts 0* for companies that have contacts | **backend truth** | no | to be filed |
+| D-10 | The Companies **list** reports `Identity: consistent` for a company whose **detail** page reports a conflict — `count_for_companies` omits the `CONTACT_LINK_UNRESOLVED` kind | operator truth | no | to be filed |
 | D-8 | On reopening the panel the restored outcome view is overwritten by the first surface detection, so the last result and its *Open captured contacts* link are unreachable | **blocker for S5 (result half) and S6** | yes, for those steps | to be filed — **UI-012 regression**, reproduced in the panel harness |
 | D-7 | The operator's typed *"why leave it unresolved?"* reason is stored and audited but never displayed back on the capture page | evidence visibility | no — the reason is persisted, not lost | **filed as #193** — tracked separately; not implemented inside DAT-011 |
 | D-OBS-6 | The same company is recorded as the vanity company slug from the company page and as the numeric company id from a person capture — the company-level twin of D-4 | latent | no | not filed — companies resolve by domain, so nothing matches on these URLs today |
@@ -1105,6 +1107,26 @@ domain. This one reports it as an observation with its provenance stated —
 be the domain confirmed manually in E4, which is a pleasing cross-check but not
 the point; the point is that the panel labelled it as *seen*, not as *true*.
 
+### C2 — company evidence saves, idempotently, and creates no contact
+
+**Observed** [operator, machine-verified]. The company had been captured once
+before, so this save exercised the repeat path:
+
+> **Already saved (idempotent)** — *Utila · saved to the VM Prospector workflow.*
+> **Activity:** Company page saved · **Done** — Page evidence kept · **Done** —
+> Domain `https://utila.io/` — Backend outcome **`exact_match_unchanged`**
+
+Checked independently: contacts for that company **1 → 1**, pending queue
+**78 → 78**. Company evidence, not a contact — as the control's own name promised.
+
+Reporting the raw backend outcome (`exact_match_unchanged`) in the activity list
+is a small thing worth noticing: the panel shows the vocabulary the backend
+actually used rather than a paraphrase, so an operator reading the workbench and
+an operator reading the panel are reading the same word.
+
+**This step is also how D-9 surfaced** — the company list it sent me to check
+said something that could not be true.
+
 ### C3 — the panel states the limits of what it can know
 
 **Observed** [operator] at the confirm step, which is headed *"Is this the right
@@ -1220,6 +1242,70 @@ identity"* but *"the derived member-id URL is not a usable identity key, leaving
 the natural key as the only defence — which fails on name variants and on
 unresolved domains."* Narrower, and actionable: resolve the member id to the
 public handle at capture time, or carry it as a second matchable key.
+
+### D-9 — promotion never writes the permanent company edge
+
+**Observed** [machine, supervised] on the Companies list, which showed both
+companies created by this trial as:
+
+| Company | Canonical domain | Contacts | Identity |
+| --- | --- | --- | --- |
+| Utila | utila.io | **0** | consistent |
+| WiseStamp | wisestamp.com | **0** | consistent |
+
+Each of those companies has exactly one promoted contact. The count is wrong and
+the identity verdict is wrong with it.
+
+**Cause, traced to a single missing assignment.** `capture_promotion` resolves
+the company row, stores `company.id` on the promotion row and returns it in the
+result detail — and then constructs the Contact with `company_name` and
+`company_domain` only. `contact.company_id` is never set, on either the created
+or the matched path.
+
+**There is no later step that sets it.** `contacts.company_id` is written in
+exactly one place in the entire system: the one-time backfill inside the APP-003
+migration. No service, route or job assigns it. So every contact created after
+that migration ran carries a NULL edge permanently.
+
+**Why this is more than a wrong number.** APP-003 introduced `company_id`
+precisely because `company_domain` is a mutable string, and its own model comment
+says correcting a company's domain would otherwise "silently re-parent everyone
+under it, with nothing recording that it had happened". Contacts produced by the
+acquisition path are exactly the rows still exposed to that, because they are
+linked by the transitional domain match alone.
+
+**The design anticipated this state.** `companies/records.py` deliberately counts
+"by the permanent edge only", and documents that domain-only contacts are "real
+and they are reported — as a conflict". That is true on the company **detail**
+page, which correctly showed *"1 conflict — 1 identity disagreement(s)"* and
+*"Contacts 0 linked to this company record … 1 contact(s)"*. The mechanism works.
+What is missing is anything that ever resolves the conflict, because promotion —
+the only producer of these contacts — has the company id in hand and does not
+write it.
+
+**Severity.** Not a blocker for DAT-011's central claim: the contacts are
+correct, identity resolution is correct, and nothing became outreach-eligible.
+But it is Phase F territory — backend truth, wrong in the operator's main company
+view — and it will affect every contact the acquisition path ever creates.
+
+### D-10 — the company list contradicts the company page
+
+**Observed** [machine, supervised] alongside D-9, and separable from it.
+
+The company **detail** page reports the unresolved link as a conflict. The
+company **list** shows `Identity: consistent` for the same company in the same
+moment.
+
+**Cause.** `conflicts.count_for_companies`, which feeds the list, computes three
+conflict kinds — missing domain, linked contacts whose captured domain disagrees,
+and snapshot-domain disagreement. It omits `CONTACT_LINK_UNRESOLVED`, the kind
+that `conflicts.py` itself defines and the detail page reports.
+
+**Why it matters independently of D-9.** The list is the surface an operator
+scans to decide where to look. A conflict that appears only once you already
+suspected something is a conflict the list has taught you to skip. Fixing D-9
+would hide this by removing the affected rows; the omission would remain for any
+other contact that arrives domain-linked — a spreadsheet import, for instance.
 
 ### D-8 — the restored outcome is painted, then immediately overwritten
 
