@@ -18,7 +18,7 @@
 (function () {
   "use strict";
 
-  const { constants, contactSchema, handoff } = self.SNCapture;
+  const { constants, contactSchema, handoff, warnings: warningClass } = self.SNCapture;
   const WARN = constants.WARNINGS;
   const shell = self.VMRShell;
   const { el, badge, callout, kv, statusLine, box, paragraph } = shell;
@@ -742,26 +742,73 @@
     }
   }
 
+  // Operator-facing wording for every code this surface can receive. A raw code
+  // must never reach the operator, so the fallback below is a sentence, not the
+  // identifier — and any code added to the vocabulary without a label here will
+  // read as unexplained rather than as machine noise.
+  const WARN_LABELS = {
+    [WARN.MISSING_FIELD]: "missing",
+    [WARN.SELECTOR_FAILURE]: "could not be located",
+    [WARN.DUPLICATE_UNCERTAIN]: "uncertain identity",
+    [WARN.DUPLICATE_COLLAPSED]: "seen more than once on the page",
+    [WARN.MALFORMED_URL]: "profile URL not normalized",
+    [WARN.NO_STABLE_IDENTITY]: "no stable link",
+    [WARN.PLACEHOLDER_VALUE]: "the page showed a placeholder, not a value",
+    // UI-013: the value is present and usable. This says where it came from.
+    [WARN.DERIVED_VALUE]: "profile link worked out from the lead link",
+  };
+
   function warnLabel(code) {
-    const map = {
-      [WARN.MISSING_FIELD]: "missing",
-      [WARN.SELECTOR_FAILURE]: "could not be located",
-      [WARN.DUPLICATE_UNCERTAIN]: "uncertain identity",
-      [WARN.DUPLICATE_COLLAPSED]: "duplicate collapsed",
-      [WARN.MALFORMED_URL]: "profile URL not normalized",
-      [WARN.NO_STABLE_IDENTITY]: "no stable link",
-    };
-    return map[code] || code;
+    return WARN_LABELS[code] || "an unlabelled capture note";
   }
 
   function recordWarningCodes(rec) {
-    return Array.from(new Set((rec.warnings || []).map((w) => w.code)));
+    return warningClass.codes(rec.warnings || []);
+  }
+
+  /** Codes that mean the operator must look at this record. */
+  function recordFaultCodes(rec) {
+    return warningClass.codes(warningClass.split(rec.warnings || []).faults);
+  }
+
+  /** Codes that only explain where a value came from. */
+  function recordProvenanceCodes(rec) {
+    return warningClass.codes(warningClass.split(rec.warnings || []).provenance);
+  }
+
+  /** True when this record needs an operator's attention, not merely a note. */
+  function recordNeedsReview(rec) {
+    return warningClass.hasReviewFault(rec.warnings || []);
   }
 
   function recordTone(rec) {
-    const codes = recordWarningCodes(rec);
-    if (codes.includes(WARN.NO_STABLE_IDENTITY)) return "danger";
-    if (codes.length) return "warning";
+    if (recordWarningCodes(rec).includes(WARN.NO_STABLE_IDENTITY)) return "danger";
+    // Provenance-only records are not toned: nothing about them is wrong.
+    if (recordNeedsReview(rec)) return "warning";
+    return null;
+  }
+
+  /** The badge a record carries, or null when it is clean and unannotated. */
+  function recordBadge(rec) {
+    const faults = recordFaultCodes(rec);
+    if (faults.includes(WARN.NO_STABLE_IDENTITY)) {
+      return badge("No stable link", {
+        tone: "danger",
+        title:
+          "No profile or lead URL was on the row — it can be saved, but it will be staged for review.",
+      });
+    }
+    if (faults.length) {
+      return badge("Needs review", { tone: "warning", title: faults.map(warnLabel).join(", ") });
+    }
+    const provenance = recordProvenanceCodes(rec);
+    if (provenance.length) {
+      // Visible and inspectable, but not a fault: the record is complete.
+      return badge("Derived", {
+        tone: "info",
+        title: provenance.map(warnLabel).join(", "),
+      });
+    }
     return null;
   }
 
@@ -784,13 +831,16 @@
     $("select-all").checked = included === total;
     $("select-all").indeterminate = included > 0 && included < total;
     $("select-all-label").textContent = `Select all (${total})`;
-    const flagged = currentBatch.records.filter((r) => (r.warnings || []).length).length;
+    // UI-013: counted on review faults, not on "carries any warning at all".
+    const flagged = currentBatch.records.filter(recordNeedsReview).length;
     $("select-all-aside").textContent = flagged ? `${flagged} need review` : "";
 
     const onlyIssues = $("only-issues").checked;
     currentBatch.records.forEach((rec, index) => {
-      const warns = rec.warnings || [];
-      if (onlyIssues && warns.length === 0) return;
+      // UI-013: the triage filter follows the review state. Filtering on "has
+      // any warning" would put the whole batch back on screen and undo the
+      // point of the classification.
+      if (onlyIssues && !recordNeedsReview(rec)) return;
 
       const tone = recordTone(rec);
       const checkbox = el("input", {
@@ -826,19 +876,7 @@
         rec.location ? el("span", { class: "prospect-meta", text: rec.location }) : null,
       ]);
 
-      const codes = recordWarningCodes(rec);
-      let rowBadge = null;
-      if (codes.includes(WARN.NO_STABLE_IDENTITY)) {
-        rowBadge = badge("No stable link", {
-          tone: "danger",
-          title: "No profile or lead URL was on the row — it can be saved, but it will be staged for review.",
-        });
-      } else if (codes.length) {
-        rowBadge = badge("Needs review", {
-          tone: "warning",
-          title: codes.map(warnLabel).join(", "),
-        });
-      }
+      const rowBadge = recordBadge(rec);
 
       const row = el(
         "div",
@@ -864,7 +902,9 @@
     const s = currentBatch.summary;
     const records = currentBatch.records.filter((r) => !r._excluded);
 
-    const ready = records.filter((r) => !(r.warnings || []).length).length;
+    // UI-013: "ready" means nothing needs correcting. A record can be ready and
+    // still carry provenance notes — those are rendered below, not counted here.
+    const ready = records.filter((r) => !recordNeedsReview(r)).length;
     const review = records.length - ready;
     if (ready) badges.appendChild(badge(`${ready} ready`, { tone: "success", dot: true }));
     if (review)
@@ -889,12 +929,13 @@
 
     for (const rec of records) {
       const codes = recordWarningCodes(rec);
+      const faults = recordFaultCodes(rec);
       const tone = recordTone(rec);
       const card = box(tone ? { tone } : {}, [
         el("div", { class: "line" }, [
           el("span", { class: "t prospect-name", text: rec.rawFullName || "(name not shown)" }),
-          codes.length
-            ? badge(codes.includes(WARN.NO_STABLE_IDENTITY) ? "No stable link" : "Needs review", {
+          faults.length
+            ? badge(faults.includes(WARN.NO_STABLE_IDENTITY) ? "No stable link" : "Needs review", {
                 tone: tone === "danger" ? "danger" : "warning",
               })
             : badge("Ready", { tone: "success" }),
@@ -902,6 +943,8 @@
         kv("Company", rec.companyName, { missing: !rec.companyName, emptyText: "Missing company" }),
         rec.title ? kv("Role", rec.title) : null,
       ]);
+      // Every warning is rendered, whatever its class — UI-013 changes how they
+      // are toned and summarised, never whether the operator can see them.
       if (codes.length) {
         const warnRow = el("div", { class: "badge-row" });
         for (const code of codes) {
@@ -910,14 +953,19 @@
             .map((w) => w.field);
           warnRow.appendChild(
             badge(warnLabel(code) + (fields.length ? ": " + fields.join(", ") : ""), {
-              tone: "warning",
+              tone: warningClass.isProvenance(code) ? "info" : "warning",
               title: code,
             })
           );
         }
         card.appendChild(warnRow);
         card.appendChild(
-          paragraph("Will be saved and flagged for review. Nothing is guessed.", { tiny: true })
+          paragraph(
+            faults.length
+              ? "Will be saved and flagged for review. Nothing is guessed."
+              : "Complete. The note above records where a value came from — nothing needs correcting.",
+            { tiny: true }
+          )
         );
       }
       const links = el("div", { class: "prospect-links" });
