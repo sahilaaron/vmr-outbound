@@ -140,7 +140,7 @@ unmerged dependency).
 | S2 | Exclude at least one record before submission | **RENAMED** | UI-012 inverted the control: a ticked box means *included*. Same `TOGGLE_EXCLUDE` message. Step becomes "deselect at least one and confirm the Save count follows". |
 | S3 | Retain one incomplete/uncertain record, verify truthful handling | **RENAMED + SPLIT** | DAT-018 created two distinct truthful behaviours that must not be conflated. **S3a retained-and-flagged**: missing location, uncertain identity, no stable link — kept, badged, submitted with the gap visible. **S3b skipped**: no company name — never enters the batch, reported as *N skipped — no company name*, nothing invented. |
 | S4 | Submit to an active or draft campaign through the extension selector | **OBSOLETE** | Contact-first. No selector exists; `campaign-decoupling.test.js` forbids one; the contract declares no campaign property and a submission carrying one is rejected 422. **Replacement:** prove capture completes with no campaign and creates 0 campaign memberships. |
-| S5 | Close/reopen the surface, restore the last staged result | **VALID** | Draft + `lastResult` restoration, preserved through UI-012. |
+| S5 | Close/reopen the surface, restore the last staged result | **VALID** | Draft + `lastResult` restoration, preserved through UI-012. **Contradicted by the trial** — the draft half restores, the result half does not. See D-8; this reconciliation claim was wrong. |
 | S6 | Open the exact returned batch in the workbench | **RENAMED** | "Batch" is now a **submission**. The response returns `operator_workbench_url` and per-record `capture_url` / `contact_url`; the panel will only open loopback URLs under known prefixes (`handoff.isOpenableWorkbenchUrl`). |
 | S7 | DAT-010 domain candidate lookup for unique companies | **MOVED** | No longer in the extension. `POST /contact-captures/{id}/company/lookup` in the workbench, over the DAT-010 provider client, gated by `SALESNAV_DOMAIN_ENRICHMENT` + `CONTACT_CAPTURE_PROMOTION`. |
 | S8 | Confirm one candidate, override one, leave one unresolved | **MOVED, fully exercisable** | `POST …/company/confirm` accepts `decision=candidate` (confirm), `decision=manual` (typed domain override) and `decision=unresolved` (`LEFT_UNRESOLVED`); `POST …/company/reject` preserves a rejection with its reason. All three of #131's actions exist. |
@@ -210,7 +210,7 @@ returned, with counts and states only.
 | A6 | Confirm a flagged row is retained (S3a) | A row with a warning is still selectable and still submitted with its gap visible | |
 | A7 | Confirm nothing was invented for a skipped row (S3b) | No company borrowed from headline, school, location or an adjacent row | |
 | A8 | Save the reviewed set | Submitted count == selected count; outcome counts render; `created` is 0 | **PASS** [operator] — *30 of 30 prospects saved*; sole outcome `staged_unmatched` = 30; **`created` absent, i.e. 0**. **S9 and S10 satisfied** |
-| A9 | Close and reopen the panel | Last result and/or draft restored without recapturing or resaving | **PASS (draft)** [operator] — see *A9 — the draft survives* below. Result restoration retested separately |
+| A9 | Close and reopen the panel | Last result and/or draft restored without recapturing or resaving | **PARTIAL** [operator] — the **draft** restores intact (selection and all); the **last result does not**. Reproduced deterministically after a fresh save. Cause found and demonstrated: **D-8** |
 | A10 | Open the returned record via the panel's own link | The exact submission/capture record opens in the workbench | |
 
 #### A0 observations (2026-07-27)
@@ -678,7 +678,8 @@ unless a small unambiguous acceptance blocker is documented first.
 | D-OBS-3 | *Person observations* omits captured company and title; profile captures show the employer only via the experience table | presentation | no | not filed |
 | D-2 | `derived_value` provenance is rendered as *Needs review*, flagging ~100% of Sales Navigator rows and destroying the signal | **blocker for S3a** | yes, for that step | **filed as #191** — tracked separately; not implemented inside DAT-011 |
 | D-6 | After a candidate is confirmed, the capture page keeps showing a stale *"why not promoted"* reason that contradicts the confirmed state | operator truth | no — promotion is gated on the outcome, not the message | **filed as #192** (UI-014) — tracked separately; not implemented inside DAT-011 |
-| D-7 | The operator's typed *"why leave it unresolved?"* reason is stored and audited but never displayed back on the capture page | evidence visibility | no — the reason is persisted, not lost | to be filed |
+| D-8 | On reopening the panel the restored outcome view is overwritten by the first surface detection, so the last result and its *Open captured contacts* link are unreachable | **blocker for S5 (result half) and S6** | yes, for those steps | to be filed — **UI-012 regression**, reproduced in the panel harness |
+| D-7 | The operator's typed *"why leave it unresolved?"* reason is stored and audited but never displayed back on the capture page | evidence visibility | no — the reason is persisted, not lost | **filed as #193** — tracked separately; not implemented inside DAT-011 |
 | D-OBS-4 | A manual domain decision flashes *"company domain candidate confirmed"*; the stored record correctly says `(manual)` | presentation | no | not filed — fits #192's area |
 | D-OBS-1 | `created` is a declared capture counter no outcome can increment; the panel carries a label for it | observation | no | not yet filed |
 | D-OBS-2 | Acceptance and CLAUDE docs still describe the pre-UI-012 panel and the old product name | documentation | no | not yet filed |
@@ -934,6 +935,11 @@ draft, not a coincidental fresh capture of a similar page.
 Rather than guess at the cause, the result path was retested under controlled
 conditions (S11 below, which rewrites `lastResult`), and A9 re-run after it.
 
+**Controlled re-run: the same thing happened.** Immediately after a successful
+save — so `lastResult` was certainly written seconds earlier — closing and
+reopening the panel again returned it to step 1 with the draft. Not a stale-state
+artefact, not an eviction: **deterministic**. Diagnosed as D-8 below.
+
 ### S11 — resubmitting the unchanged batch
 
 **Observed** [operator save, machine-verified]. The retained batch still carried
@@ -966,6 +972,61 @@ replay — the truthful "already received" wording sits in the body beneath it.
 For a multi-row submission the headline alone would read as a fresh save. Minor,
 and the same family as D-6 / D-OBS-4: the data is right, one line of copy is
 generic.)*
+
+### D-8 — the restored outcome is painted, then immediately overwritten
+
+**The most substantive defect this trial has found, and it is mine.** It was
+introduced by UI-012, and the reconciliation in §1 asserted the opposite.
+
+**Observed** [operator], twice, the second time seconds after a successful save:
+reopening the panel shows the retained draft at step 1 of 3 rather than the
+saved outcome and its *Open captured contacts* link.
+
+**The result is not lost.** `sidepanel.js` reads it and renders it — a harness
+reproduction confirms the outcome content is present in the DOM after init. The
+panel then switches the body away from it.
+
+**Cause, demonstrated rather than argued.** Two controllers initialise
+independently:
+
+1. `sidepanel.js` restores `lastResult`, calls `renderSaveResult`, which ends in
+   `showView("outcome")`.
+2. `sidepanel-profile.js` runs its first `paintMode()` and switches the body to
+   the detected surface's default view.
+
+Step 2 is supposed to be prevented by the sticky-view guard —
+`if (changed || !panel.isSticky())` — whose stated purpose is that
+"page re-detection repaints the strip underneath them but must not yank the body
+away". But `changed` is computed as `mode !== currentMode` with `currentMode`
+initialised to `null`, so on a **cold panel open it is always true**. The guard
+protects a running panel and cannot protect a starting one: "no previous mode" is
+indistinguishable from "the page changed".
+
+Reproduced in the existing panel harness — stored `lastResult` plus a Sales
+Navigator detection — with the result:
+
+```
+view after init:        listings-select
+outcome text present:   true
+```
+
+The outcome was rendered and then replaced. Exactly what the operator saw.
+
+**Impact.** S5's result half fails, and **S6 becomes unreachable after a
+reopen**: the panel's own returned link is the sanctioned route to the exact
+submission record, and it exists only on the outcome view. An operator who closes
+the panel must save again to get the link back — safe, because S11 proves the
+resave is idempotent, but it is a resave performed to recover a link, which is
+not a workflow anyone would design.
+
+**Not a data defect.** The submission, the captures and the workbench record are
+all intact; `lastResult` is intact in storage. This is a view-arbitration bug at
+startup.
+
+**Scope.** Not fixed here — DAT-011 is acceptance, not development. It belongs
+with the UI-012 panel work, and the fix is small: distinguish "first detection
+after open" from "the page changed", or have the detection repaint refuse to
+leave a sticky view regardless of `changed`.
 
 ### D-7 — the unresolved reason is asked for, kept, and never shown
 
