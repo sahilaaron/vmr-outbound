@@ -400,11 +400,11 @@ stable key. Nothing was submitted by the cancellation.
 | --- | --- | --- | --- |
 | E1 | Open `/contact-captures/pending` | The captured person is listed as pending | **PASS** [machine, supervised] — trial captures present; before promotion the record reads *not promoted*, reason *"run the company-domain lookup first"*, with the promote control disabled and the candidates panel stating *"a domain is never invented for you"* |
 | E2 | Run the company lookup | Candidates stored with provider order; confidence recorded as *not provided* rather than invented | **PASS** [operator] — live lookup returned **10 candidates**, reported as *awaiting your decision*; nothing auto-confirmed. See scope note. **Repeated in scope** [machine, supervised] on a trial capture: *Lookup finished: ok · 4 candidate(s) awaiting your decision* |
-| E3 | Confirm one candidate | `domain_candidate_confirmed`, source `candidate`, actor and time recorded | **PASS** [operator] — two candidates rejected with the decisions preserved (*"the decision is kept with the candidates"*), one confirmed; outcome reached `domain_candidate_confirmed` and *Promote to contact* became available. See scope note |
-| E4 | Where practical: type a domain for a second capture | `decision=manual` recorded as an override | |
-| E5 | Where practical: leave a third unresolved | `left_unresolved`; nothing promoted | |
-| E6 | Promote the confirmed capture | `contact_created`; labels and notes carried; capture linked | |
-| E7 | Promote again | `already_promoted`; no second contact | |
+| E3 | Confirm one candidate | `domain_candidate_confirmed`, source `candidate`, actor and time recorded | **PASS** [operator] — two candidates rejected with the decisions preserved (*"the decision is kept with the candidates"*), one confirmed; outcome reached `domain_candidate_confirmed` and *Promote to contact* became available. See scope note. **Re-established in scope on the restored baseline** — see *E3 after the restart* below |
+| E4 | Where practical: type a domain for a second capture | `decision=manual` recorded as an override | **not yet run** — needs a second capture; unaffected by the contamination |
+| E5 | Where practical: leave a third unresolved | `left_unresolved`; nothing promoted | **not yet run** — needs a third capture; unaffected by the contamination |
+| E6 | Promote the confirmed capture | `contact_created`; labels and notes carried; capture linked | **PASS** [machine, supervised] on `main@d99e274` — *"contact created · company domain candidate confirmed."* Exactly one contact created, company resolved, capture linked. See below |
+| E7 | Promote again | `already_promoted`; no second contact | **PASS** [machine, supervised] — *"already promoted"*, same contact id, contact count unchanged. See below |
 
 #### E2 in scope — the candidate record, in detail (2026-07-27)
 
@@ -453,6 +453,89 @@ level, and this run proves it through the shipped workbench with a key
 configured today. What is still owed to the trial's own scope is a promotion of
 one of the trial's captures — E6/E7 below.
 
+#### E3 after the restart — the earlier confirmation had committed
+
+Resumed on the restored baseline, **before pressing anything**, per the standing
+instruction not to re-confirm blind.
+
+The capture page renders, which settles the restart itself: the missing-table
+500 is gone and the environment is `main@d99e274` again. The record reads
+`domain_candidate_confirmed` with `confirmed domain wisestamp.com (candidate)`,
+and the pending list shows the same for that row.
+
+**So the confirmation committed.** The 303 was doing what it appeared to do; only
+the redirected render died with it. *Confirm* was therefore **not** pressed
+again — the write already exists, and a second confirm would have been an
+idempotency probe (S11's job) wearing E3's label.
+
+E3 is recorded as **re-observed on the restored baseline**, not re-run. The
+original run stays quarantined; this observation is what the acceptance rests on.
+
+#### E3 completion — the remaining candidates decided
+
+The confirmation alone does not open the gate: the record still read *"several
+domain candidates are waiting for your confirmation"* with three undecided
+candidates. Each was rejected in turn **[machine, supervised]**, and the
+workbench behaved exactly as the earlier operator run did:
+
+* Every rejection returned *"Rejected `<domain>`. The decision is kept with the
+  candidates."*
+* Each moved into a **Rejected candidates (kept as decisions)** table carrying
+  domain, reason, actor (`workbench`) and timestamp. Nothing was deleted.
+* The confirmed candidate was never touched.
+
+This is the same preserve-the-decision behaviour the pre-contamination profile
+capture showed, now reproduced in scope on the restored baseline.
+
+#### E6 — promotion, on the trial's own capture
+
+Pressing *Promote to contact* returned **"contact created · company domain
+candidate confirmed."**
+
+| Check | Result |
+| --- | --- |
+| Contact created | exactly one, id recorded |
+| Company resolved | canonical company created and linked, domain `wisestamp.com` |
+| Capture linked | `matched_contact` now carries the contact id |
+| Scoped contact count for that company | **0 → 1** |
+| Pending queue | **80 → 79**, exactly −1 |
+| Labels / notes | `0 note(s) linked · labels none` — nothing invented |
+
+The capture's own status pill still reads `unmatched_staged`. That is correct,
+not stale: the capture is immutable acquisition evidence describing what was true
+at submission, and promotion is a **separate later event** rather than a
+retroactive edit of the capture. The contact-first architecture is visible in the
+data model here, not just in the prose.
+
+**Promotion created identity and nothing else**, which is the claim the panel
+makes and the one most worth checking:
+
+| Contact field | Value |
+| --- | --- |
+| Research | *not requested* |
+| Email | `—`, *unverified*, *"No address to verify yet."* |
+| Suppression | *not suppressed* |
+| Campaign membership | none |
+| Scoring | *not assessed* |
+
+Field provenance is recorded per field — source `linkedin-contact-capture`, the
+observation timestamp, *"only observation of this field"*, policy `freshness-v1`
+— so the contact carries its evidence rather than asserting values.
+
+#### E7 — promoting again
+
+Two findings, and the first is the stronger one.
+
+**The UI removes the affordance.** Once promoted, the entire *Actions* panel is
+gone from the capture page — no promote control, no confirm, no reject. The
+operator cannot double-promote by clicking, because there is nothing to click.
+
+**The service is idempotent underneath it** [machine, supervised]. Re-issuing the
+promote POST directly returned **"already promoted · company domain candidate
+confirmed."**, the same contact id, and the scoped contact count stayed at
+**1**. The guarantee holds at the layer that matters, not only at the layer the
+operator sees.
+
 ### F. Backend truth (Phase 4)
 
 Counts and sanitized identifiers only.
@@ -461,9 +544,9 @@ Counts and sanitized identifiers only.
 | --- | --- | --- |
 | Raw capture payload after promotion | unchanged except the canonical contact link | |
 | Contacts created by capture alone | **0** | **PASS** [machine, supervised] — pending queue moved **50 → 80**, exactly +30. All thirty submitted captures are present and all thirty are *awaiting promotion*, i.e. none became a contact |
-| Contacts created by promotion | 1 per promoted capture | |
-| Campaign memberships | **0** | |
-| Email candidates / verifications / scores / drafts | **0** | |
+| Contacts created by promotion | 1 per promoted capture | **PASS** [machine, supervised] — one promotion, one contact; scoped count 0 → 1 and pending 80 → 79. A second promote created none |
+| Campaign memberships | **0** | **PASS** [machine, supervised] — the promoted contact carries no campaign membership; the workbench states promotion "never adds a campaign membership" and the record agrees |
+| Email candidates / verifications / scores / drafts | **0** | **PASS** [machine, supervised] — email `—` / *unverified* / *"No address to verify yet."*, research *not requested*, scoring *not assessed* |
 | Repeated identical submission | one submission, one snapshot, one note | |
 | Fields with missing evidence | still null, with warnings | |
 
@@ -499,7 +582,8 @@ unless a small unambiguous acceptance blocker is documented first.
 | D-4 | A Sales Navigator capture's derived profile URL is an opaque member id, so the same person captured from their profile page will not match it | **identity fragmentation** | not for DAT-011 | to be filed as a standalone follow-up — **stands on its own**: observed before the WatchFiles reload, on `main@d99e274`, and unrelated to the missing-table error. It settles the open question Layer 3C left, and the contamination neither caused it nor weakens it. |
 | D-3 | Reported: captured company not visible in the app for a Sales Navigator capture | unresolved | no | **not reproduced** — cause unknown, left open |
 | D-OBS-3 | *Person observations* omits captured company and title; profile captures show the employer only via the experience table | presentation | no | not filed |
-| D-2 | `derived_value` provenance is rendered as *Needs review*, flagging ~100% of Sales Navigator rows and destroying the signal | **blocker for S3a** | yes, for that step | to be filed |
+| D-2 | `derived_value` provenance is rendered as *Needs review*, flagging ~100% of Sales Navigator rows and destroying the signal | **blocker for S3a** | yes, for that step | **filed as #191** — tracked separately; not implemented inside DAT-011 |
+| D-6 | After a candidate is confirmed, the capture page keeps showing a stale *"why not promoted"* reason that contradicts the confirmed state | operator truth | no — promotion is gated on the outcome, not the message | to be filed |
 | D-OBS-1 | `created` is a declared capture counter no outcome can increment; the panel carries a label for it | observation | no | not yet filed |
 | D-OBS-2 | Acceptance and CLAUDE docs still describe the pre-UI-012 panel and the old product name | documentation | no | not yet filed |
 
@@ -696,6 +780,39 @@ member id should be resolved to a vanity handle at capture time, or carried as a
 second matchable key — and that is a backend design decision, not an acceptance
 step.
 
+### D-6 — a confirmed capture still says candidates are waiting
+
+**Observed** [machine, supervised] on `main@d99e274`. After confirming a
+candidate, the capture record read:
+
+| Field | Value |
+| --- | --- |
+| Company resolution | `domain_candidate_confirmed` |
+| `confirmed domain` | `wisestamp.com (candidate)` |
+| `why not promoted` | *"several domain candidates are waiting for your confirmation"* |
+
+The last line contradicts the two above it. It tells the operator to do
+something already done, and it survived every subsequent rejection — still
+reading *"several"* when one candidate remained.
+
+**Cause, by inspection.** In `promotion.resolve_company`, the branch that handles
+an already-confirmed record sets `company_outcome` and `resolved_domain` and
+returns — without clearing `promotion.blocked_reason`. The stale value from the
+last unconfirmed evaluation is what the page then renders. The neighbouring
+`PRIOR_MAPPING` branch **does** clear it explicitly, which is the strongest
+argument that this is an oversight rather than a decision.
+
+**Not a blocker.** Promotion is gated on `company_outcome in
+_RESOLVED_COMPANY_OUTCOMES`, not on `blocked_reason`, and E6 promoted normally
+with the stale message on screen. The message cleared itself once the promotion
+row was rewritten.
+
+**Why it still matters.** This document's own standard is that the system states
+its reasons truthfully. A refusal reason that outlives its refusal is the same
+class of fault as an invented confidence score — the operator is being told
+something the system no longer believes. An operator who trusted it would go
+looking for candidates that are not there.
+
 ### Environment-contamination incident — the code under test changed mid-trial
 
 **This is the most consequential finding of the session, and it is about the
@@ -882,30 +999,47 @@ contrast looked like a controlled comparison and was not.
 
 ## 5. Verdict
 
-**Not yet determined — the trial is in progress and suspended at an
-uncontaminated checkpoint.** It is not failed, and it is not restarted.
+**Not yet determined — the trial is in progress and resumed on the restored
+baseline.** It is not failed, and it was not restarted.
 
-**Status.** Phase 1 reconciliation complete. Phase 3 executed through **E2**,
-including the profile capture's full domain pass — lookup, confirmation, two
-candidate rejections, `domain_candidate_confirmed`, and promotion gating opening
-as a result. All of that was served by `main@d99e274` and is retained as valid
-evidence.
+**The contamination is closed.** The backend was restored to `main@d99e274` with
+no DAT-017A code or migration present, and the capture page renders again. The
+first action on resume was an inspection rather than a click: the confirmation
+from the contaminated run **had committed**, so *Confirm* was not pressed a
+second time. Everything after that point was observed on the restored baseline.
 
-**Suspended because** the backend stopped being the baseline mid-run: the
-repository was switched to `feat/dat-017a-company-domain-resolution` under a
-running `--reload` server, WatchFiles reloaded DAT-017A code, and it queried a
-`company_domain_resolutions` table the `vmr_dev` database has never had. See the
-environment-contamination incident in §4. No product defect is implied, and the
-salesnav capture shape is not the cause.
+**The acquisition path is now demonstrated end to end.** Capture → pending →
+lookup → confirm → reject the rest → promote → a canonical contact, with the
+promotion idempotent and the counts moving by exactly one in each direction. The
+central claim of the contact-first architecture held under observation rather
+than only in documentation:
 
-**Resumption point.** E3 onward on the Sales Navigator capture, on
-`main@d99e274` with no DAT-017A code or migration present, beginning with an
-inspection of whether the WiseStamp confirmation committed — its POST returned
-303 before the redirected GET failed — rather than a blind re-press of *Confirm*.
+* A capture creates **no** contact (`created` = 0 across thirty submissions).
+* Promotion creates **identity only** — no campaign membership, no email, no
+  verification, no score, no research.
+* The capture stays immutable; promotion is a later, separate event, and the
+  capture's own status is not rewritten to hide that.
 
-**Remaining before a verdict is possible:** E3–E7, Phase F backend truth, A9/A10,
-B, C, D (S12), and S11.
+**Still outstanding before a verdict:**
 
-**Standing separately from all of the above:** D-2 (a real blocker for S3a) and
-D-4 (identity fragmentation), both observed on the baseline and both to be filed
-as their own issues.
+| Area | Steps |
+| --- | --- |
+| Domain overrides | E4 (manual domain), E5 (leave unresolved) — each needs its own capture |
+| Other surfaces | B (person profile), C (company page) |
+| Recovery | D (backend unavailable, retry, S12) |
+| Restore / open | A9, A10 |
+| Idempotency of submission | S11 (distinct from E7's promotion idempotency, which passed) |
+| **Deferred by instruction** | **A4–A7 and S3a — held for a targeted rerun after #191 is merged** |
+
+A4–A7 / S3a are deferred rather than failed: D-2 makes the *Needs review* signal
+unreadable on Sales Navigator rows, so running the selection-quality steps now
+would measure the defect instead of the product.
+
+**Defects standing on their own, none of them caused by the contamination:**
+
+| Ref | State |
+| --- | --- |
+| D-2 | **filed as #191**, fixed outside DAT-011 |
+| D-4 | identity fragmentation — to be filed |
+| D-6 | stale *"why not promoted"* after confirmation — to be filed |
+| D-3 | not reproduced; left open |
