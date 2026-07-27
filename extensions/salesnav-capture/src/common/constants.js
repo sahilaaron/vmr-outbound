@@ -52,7 +52,7 @@
     // Reject a serialized payload larger than this before sending.
     MAX_PAYLOAD_BYTES: 5 * 1024 * 1024, // 5 MB
     // Longest a single result-page capture pass may scroll for (ms).
-    CAPTURE_SCROLL_BUDGET_MS: 8000,
+    CAPTURE_SCROLL_BUDGET_MS: 20000,
     // Operator metadata bounds, mirroring contact-capture.schema.json.
     MAX_LABELS: 25,
     MAX_LABEL_LENGTH: 64,
@@ -114,6 +114,37 @@
     UNSUPPORTED: "unsupported_page",
   };
 
+  // Why a visible Sales Navigator row was not offered as capturable (DAT-018).
+  // A skipped row is reported truthfully and never repaired by inference.
+  const SKIP_REASONS = {
+    MISSING_COMPANY_NAME: "missing_company_name",
+  };
+
+  // Operator-controlled scrolling over the ALREADY OPEN results page (DAT-018).
+  // Smooth and incremental so rows have time to render and the operator can
+  // watch what is happening. Bounded and cancellable by construction: there is
+  // no pagination, no navigation, and no unattended traversal.
+  const SCROLL = {
+    // Fraction of the viewport advanced per increment. Well under one screen so
+    // content is never skipped past.
+    STEP_RATIO: 0.35,
+    MIN_STEP_PX: 120,
+    // Pause after each increment to let lazy rows render and layout settle.
+    SETTLE_MS: 450,
+    // Extra pause when the row count grew, since a batch just mounted.
+    GROWTH_SETTLE_MS: 700,
+    // Consecutive increments with no new rows before the pass stops.
+    STABLE_CHECKS: 3,
+    // Hard ceiling on increments, independent of the time budget.
+    MAX_STEPS: 120,
+    // Bounded jitter added to each pause. This exists to stop the polling
+    // interval locking in phase with the page's own render cadence, which makes
+    // row counts read mid-mount. It is NOT detection avoidance and NOT
+    // human-mimicking: the range is tiny, fixed, documented, and driven by an
+    // injected random source so tests are deterministic.
+    JITTER_MS: 60,
+  };
+
   // Record-level warning codes (stable strings for UI + backend).
   const WARNINGS = {
     MISSING_FIELD: "missing_field",
@@ -122,6 +153,10 @@
     DUPLICATE_COLLAPSED: "duplicate_collapsed",
     MALFORMED_URL: "malformed_url",
     NO_STABLE_IDENTITY: "no_stable_identity",
+    // A value the adapter computed from another observed value rather than read
+    // off the page. Always paired with the field and the source field, so a
+    // derivation can never be mistaken for an observation (DAT-018).
+    DERIVED_VALUE: "derived_value",
     // Profile/company capture warning codes (DAT-012).
     MISSING_SECTION: "missing_section",
     UNPARSED_TIMELINE: "unparsed_timeline",
@@ -174,6 +209,8 @@
     CONTACT_CAPTURE_SOURCE_IDENTIFIER,
     CAPTURE_MODES,
     LIMITS,
+    SCROLL,
+    SKIP_REASONS,
     STORAGE,
     PROFILE_STORAGE,
     CONTACT_STORAGE,

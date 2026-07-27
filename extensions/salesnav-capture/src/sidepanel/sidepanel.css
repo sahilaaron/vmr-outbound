@@ -143,3 +143,56 @@ select { width: auto; }
   word-break: break-all;
 }
 footer { text-align: center; margin-top: 14px; }
+
+/* Compact surface indicator (DAT-018 C). Replaces the former Mode card: the
+   operator needs to know which surface is active at a glance, not a section. */
+.surface-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+.surface-chip {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border: 1px solid transparent;
+}
+.surface-chip-ok {
+  background: #eaf6ec;
+  color: #1d6b33;
+  border-color: #bfe3c8;
+}
+.surface-chip-neutral {
+  background: #eef1f5;
+  color: #46505c;
+  border-color: #d7dde5;
+}
+.surface-chip-err {
+  background: #fdecec;
+  color: #91291f;
+  border-color: #f3c2bd;
+}
+.btn-tiny {
+  padding: 1px 8px;
+  font-size: 11px;
+}
+
+/* Skipped-row report (DAT-018 B). Visible but understated: it is information,
+   not an error -- the capture succeeded, these rows simply are not usable. */
+.skipped-block {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-left: 3px solid #e0b341;
+  background: #fdf8ec;
+  border-radius: 4px;
+}
+.skipped-block .meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+}

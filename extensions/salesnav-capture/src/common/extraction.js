@@ -33,7 +33,7 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function (normalize, constants) {
   "use strict";
 
-  const { WARNINGS, CAPTURE_STATUS } = constants;
+  const { WARNINGS, CAPTURE_STATUS, SKIP_REASONS } = constants;
 
   // ---- Page classification ------------------------------------------------
 
@@ -322,14 +322,44 @@
     if (!lead.url) warnings.push({ code: WARNINGS.MISSING_FIELD, field: "salesNavLeadUrl" });
     else selectorsUsed.leadUrl = leadHit.selector;
 
-    // Public /in/ profile URL — only if visibly present. Never derived from the
-    // opaque lead id (see notebook map §8.7).
+    // Public /in/ profile URL. An actually visible link is the strongest
+    // evidence and always wins. When none is present, DAT-018 derives the
+    // canonical URL from the member identifier the lead URL already encodes —
+    // a documented reversal of the earlier "never derive" rule, made on the
+    // strength of Sahil's authenticated Sales Navigator trial. The derivation is
+    // recorded as such and never overwrites the lead URL.
     const profileHit = firstHref(container, PUBLIC_PROFILE_SELECTORS);
     const profile = resolveUrl(profileHit.value);
     if (profileHit.value && !profile.valid) {
       warnings.push({ code: WARNINGS.MALFORMED_URL, field: "linkedinProfileUrl", raw: profileHit.value });
     }
-    if (!profile.url) {
+
+    let linkedinProfileUrl = profile.url;
+    let linkedinProfileUrlSource = profile.url ? "observed" : null;
+    let linkedinMemberId = null;
+
+    if (!linkedinProfileUrl && lead.url) {
+      const derived = normalize.profileUrlFromSalesNavLead(lead.url);
+      if (derived.url) {
+        linkedinProfileUrl = derived.url;
+        linkedinProfileUrlSource = "derived_from_sales_lead";
+        linkedinMemberId = derived.memberId;
+        warnings.push({
+          code: WARNINGS.DERIVED_VALUE,
+          field: "linkedinProfileUrl",
+          from: "salesNavLeadUrl",
+        });
+      } else {
+        // A lead URL we cannot read an identifier out of. Refuse rather than
+        // fabricate; the row keeps its lead URL as evidence.
+        warnings.push({
+          code: WARNINGS.MALFORMED_URL,
+          field: "salesNavMemberId",
+          reason: derived.reason,
+        });
+      }
+    }
+    if (!linkedinProfileUrl) {
       warnings.push({ code: WARNINGS.MISSING_FIELD, field: "linkedinProfileUrl" });
     }
 
@@ -368,7 +398,10 @@
       });
     }
 
-    const stableKey = profile.url || lead.url || null;
+    // Identity keys off the observed lead URL, not the derived profile URL: the
+    // lead URL is what was actually on the page, and deriving does not make the
+    // row any more identifiable than it already was.
+    const stableKey = lead.url || profile.url || null;
     if (!stableKey) warnings.push({ code: WARNINGS.NO_STABLE_IDENTITY, field: "stableKey" });
 
     return {
@@ -379,7 +412,9 @@
       title: titleHit.value,
       companyName: companyHit.value,
       location: locationHit.value,
-      linkedinProfileUrl: profile.url,
+      linkedinProfileUrl,
+      linkedinProfileUrlSource,
+      linkedinMemberId,
       salesNavLeadUrl: lead.url,
       companyLinkedInUrl,
       salesNavCompanyUrl,
@@ -485,16 +520,47 @@
     }
 
     const ctx = { sourceSearchUrl, sourcePageNumber, capturedAt };
-    const records = containers.map((c, i) => extractRecord(c, ctx, i));
+    const extracted = containers.map((c, i) => extractRecord(c, ctx, i));
+
+    // DAT-018 B: a row with no visible Company Name is not usable by the
+    // company-first downstream flow, so it never enters the capturable set. The
+    // company is NEVER inferred from headline, school, location or neighbouring
+    // text — an absent company stays absent and the row is skipped truthfully.
+    // Skipping one row must not abort the rest of the page.
+    const records = [];
+    const skipped = [];
+    for (const record of extracted) {
+      if (!normalize.cleanText(record.companyName)) {
+        skipped.push({
+          sourcePosition: record.sourcePosition,
+          reason: SKIP_REASONS.MISSING_COMPANY_NAME,
+          rawFullName: record.rawFullName || null,
+        });
+        continue;
+      }
+      records.push(record);
+    }
+
+    const pageWarnings = [];
+    if (skipped.length) {
+      pageWarnings.push({
+        code: "rows_skipped",
+        reason: SKIP_REASONS.MISSING_COMPANY_NAME,
+        count: skipped.length,
+      });
+    }
 
     return {
       status: CAPTURE_STATUS.OK,
       records,
-      pageWarnings: [],
+      skipped,
+      skippedCount: skipped.length,
+      pageWarnings,
       sourcePageNumber,
       sourceSearchUrl,
       capturedAt,
       count: records.length,
+      visibleCount: extracted.length,
     };
   }
 

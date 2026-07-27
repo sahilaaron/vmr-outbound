@@ -206,6 +206,65 @@ and snapshots stay readable.
 
 ---
 
+## Layer 3C — Sales Navigator hardening acceptance (DAT-018, #185)
+
+**Not yet performed.** Sahil's step, on the DAT-018 branch with the extension
+reloaded unpacked and a Sales Navigator people-search results page already open
+and authenticated. Every action below is one the operator takes deliberately;
+nothing here authorizes unattended traversal.
+
+Sensitive-data policy applies as above: record outcomes and counts, redact real
+names, profile URLs and company names. **A member id is personally
+identifying — redact it as `<member-id>` in anything you paste back.**
+
+- **S1 — panel layout.** Open the side panel. Confirm: no *Mode* card; a compact
+  chip directly under *VMR Contact Capture* reading **SalesNav Listing**; no
+  *Save the person first…* subtitle; no *Workflow updated* section. Confirm the
+  Refresh control and the Save/Capture buttons are all still present.
+- **S2 — surface switching.** Open a `linkedin.com/in/…` profile in the same
+  tab and Refresh: the chip must read **LinkedIn Profile**. On a company page it
+  must read **LinkedIn Company**; on an unsupported page, **Unsupported page**.
+- **S3 — archived drafts.** If you never used the campaign-era extension, the
+  archived-drafts card must NOT appear. If you did and have not yet downloaded
+  them, it must appear, *Download archived drafts* must produce the file, and
+  *Discard* must make it stay gone after a panel reload.
+- **S4 — scrolling.** On the results page press *Capture visible contacts* and
+  watch. Scrolling must be visibly smooth and incremental — roughly a third of a
+  screen at a time — not a series of jumps. Rows must have time to render.
+  Record roughly how long the pass took and whether any row appeared blank.
+- **S5 — cancellation.** Start another capture and cancel mid-pass. It must stop
+  promptly, the view must return to the top, and the rows captured up to that
+  point must still be reviewable.
+- **S6 — bounded stop.** Let a pass run to completion on a full page of results.
+  It must stop by itself. Confirm it did **not** advance to page 2, did not open
+  any tab, and did not change the URL.
+- **S7 — derived profile URL.** In the review list, open the *profile* link on a
+  row that shows no public profile link on the page. It must resolve to the
+  right person. Confirm the *lead* link is still present and unchanged beside
+  it. Record the outcome as pass/fail — **do not paste the URLs**.
+- **S8 — company-name skipping.** Find or construct a search where at least one
+  visible row has no company (a stealth/self-employed row often works). After
+  capture, confirm the panel reports *N skipped — no company name*, that those
+  people are absent from the review list, and that every other row on the page
+  was still captured.
+- **S9 — no invention.** For one skipped row, confirm the panel did not populate
+  a company from the person's headline, school or location, and that no company
+  was borrowed from the row above or below.
+- **S10 — send.** Save the reviewed batch to the local backend and confirm the
+  submitted count equals the reviewed count, with skipped rows absent.
+- **S11 — challenge.** If LinkedIn shows a checkpoint at any point, confirm the
+  panel switches to *Login required* and captures nothing until you clear it.
+
+Record PASS/FAIL per step. S7 and S8 are the two findings that motivated this
+issue; both must pass before DAT-011 / #131 can be accepted.
+
+**Known item for review, not a step:** if a Sales Navigator member id is an
+opaque URN rather than a vanity handle, the derived `/in/<member-id>` URL will
+not be string-equal to a vanity URL already stored for the same person, and the
+backend matches profile URLs exactly (DAT-012E). During S7, note whether the
+resolved page's address bar shows the member id or a vanity handle — that single
+observation settles whether a follow-up is needed.
+
 # Layer 4 — capture promotion acceptance (DAT-014)
 
 The bridge from a staged capture to a canonical Contact, through the existing

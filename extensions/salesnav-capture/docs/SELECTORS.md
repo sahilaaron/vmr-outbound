@@ -39,7 +39,7 @@ present) — never a successful empty capture.
 | location | `[data-anonymize="location"]` → `[class*="entity-lockup__caption"]` |
 | lead URL | `a[data-anonymize="person-name"]` → `a[href*="/sales/lead/"]` → `a[href*="/sales/people/"]` → `.artdeco-entity-lockup__title a` |
 | company URL | `a[data-anonymize="company-name"]` → `a[data-control-name="view_company_via_result_name"]` → `a[href*="/sales/company/"]` → `a[href*="/company/"]` |
-| public profile URL | `a[href*="/in/"]` (only if visibly present; never derived) |
+| public profile URL | `a[href*="/in/"]` if visibly present; otherwise **derived** from the lead URL's member id (DAT-018) |
 | visible company metadata | `[data-anonymize="industry"]`, `.artdeco-entity-lockup__metadata` (raw, de-duplicated, unparsed) |
 
 ## URL normalization
@@ -51,16 +51,54 @@ comma in `/sales/lead/` and `/sales/people/` paths so the same lead has a stable
 identity across pages/searches. Non-LinkedIn hosts and unparseable values are
 rejected (flagged `malformed_url`), never repaired.
 
+## Canonical profile URL from the lead URL (DAT-018)
+
+`/sales/lead/<member-id>` carries the member identifier, so the canonical public
+profile URL is `https://www.linkedin.com/in/<member-id>`. Derivation is a
+**fallback**: a visibly present `/in/` link is stronger evidence and always wins.
+
+This reverses the earlier rule below, on the strength of Sahil's authenticated
+Sales Navigator trial (issue #185). The reversal is deliberately narrow:
+
+- only `/sales/lead/` is supported — `/sales/people/` carries a different
+  segment, so deriving from it would be a guess;
+- query strings, fragments, the volatile `,NAME_SEARCH,…` suffix and any extra
+  route material are stripped before the identifier is read;
+- the identifier must match `^[A-Za-z0-9_-]{3,128}$`. Anything else is refused
+  with a reason rather than repaired;
+- the original Sales Navigator URL is preserved unchanged as `salesNavLeadUrl`;
+- the record carries `linkedinProfileUrlSource` (`observed` |
+  `derived_from_sales_lead`) and a `derived_value` warning, so a derivation can
+  never be mistaken for something read off the page.
+
+**Known consequence, flagged for review.** If a member id is an opaque URN
+rather than a vanity handle, the derived URL will not be string-equal to a
+vanity `/in/` URL already stored for the same person. Backend identity matching
+is exact-URL (DAT-012E), so the same human could fail to match and be staged as
+unmatched. Row identity inside the extension keys off the observed lead URL, so
+this does not affect in-batch dedupe — but it is a real backend consideration
+and is recorded in the DAT-018 delivery notes rather than silently absorbed.
+
 ## What is intentionally NOT derived
 
-- Public `/in/` profile URLs from the opaque lead id (the notebook's
-  `.replace('/sales/lead/','/in/')` produced an unverifiable URL).
+- Public `/in/` profile URLs for any route other than `/sales/lead/`, and for
+  any lead URL whose identifier fails validation.
 - Company domains from a company URL/name (`AGENTS.md` email-intelligence rule).
 - Anglicized/ASCII-folded names (raw Unicode is preserved; normalization is a
   backend concern).
 
+## Capture eligibility (DAT-018)
+
+A visible row with no Company Name — absent, empty, or whitespace-only — is
+**not** offered as capturable: the downstream flow is company-first, so such a
+row cannot be used. The company is never inferred from the headline, a school, a
+location, or a neighbouring row. Skipped rows are reported truthfully
+(`skipped`, `skippedCount`, and a `rows_skipped` page warning carrying the
+count), never silently dropped, and skipping one row never aborts the others.
+
 Update this table and the constants in `extraction.js` together with their tests
-in `test/extraction.test.js` whenever LinkedIn markup shifts.
+in `test/extraction.test.js`, `test/salesnav-identity.test.js` and
+`test/panel-layout.test.js` whenever LinkedIn markup shifts.
 
 ---
 

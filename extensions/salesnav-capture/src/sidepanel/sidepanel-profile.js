@@ -88,14 +88,39 @@
 
   // ---- mode switching ------------------------------------------------------
 
+  // Compact surface labels for the header chip (DAT-018 C). The chip replaces
+  // the former Mode card, so these are short enough to sit inline.
   const MODE_LABELS = {
-    [SURFACES.SALESNAV_PEOPLE_RESULTS]: "Sales Navigator Listings",
-    [SURFACES.PERSON_PROFILE]: "LinkedIn Person Profile",
-    [SURFACES.COMPANY_PROFILE]: "LinkedIn Company Profile",
-    [SURFACES.CHALLENGE]: "Challenge / Login Required",
-    [SURFACES.UNAVAILABLE]: "Profile Unavailable",
-    [SURFACES.UNSUPPORTED]: "Unsupported Page",
+    [SURFACES.SALESNAV_PEOPLE_RESULTS]: "SalesNav Listing",
+    [SURFACES.PERSON_PROFILE]: "LinkedIn Profile",
+    [SURFACES.COMPANY_PROFILE]: "LinkedIn Company",
+    [SURFACES.CHALLENGE]: "Login required",
+    [SURFACES.UNAVAILABLE]: "Profile unavailable",
+    [SURFACES.UNSUPPORTED]: "Unsupported page",
   };
+
+  const SURFACE_CHIP_CLASSES = "surface-chip surface-chip-neutral surface-chip-ok surface-chip-err";
+
+  /** Paint the compact surface chip under the panel heading. */
+  function setSurface(mode, detailUrl) {
+    const chip = $("surface-indicator");
+    if (!chip) return;
+    const tone =
+      mode === SURFACES.CHALLENGE || mode === SURFACES.UNAVAILABLE
+        ? "surface-chip-err"
+        : mode === SURFACES.UNSUPPORTED
+          ? "surface-chip-neutral"
+          : "surface-chip-ok";
+    chip.className = SURFACE_CHIP_CLASSES.replace(tone, "").trim();
+    chip.classList.remove("surface-chip-neutral", "surface-chip-ok", "surface-chip-err");
+    chip.classList.add("surface-chip", tone);
+    chip.textContent = MODE_LABELS[mode] || MODE_LABELS[SURFACES.UNSUPPORTED];
+    const detail = $("surface-detail");
+    if (detail) {
+      detail.textContent = detailUrl || "";
+      detail.hidden = !detailUrl;
+    }
+  }
 
   // The labels/note and Save cards belong to the two CONTACT workflows only.
   // Company evidence is not a person, so it keeps its own save button.
@@ -121,25 +146,14 @@
   // the mode and targets the parser. Previously it was painted on demand, which
   // is how it came to display one profile's URL beside another profile's data.
   function paintMode(detected) {
-    const statusEl = $("mode-status");
-    const detailEl = $("mode-detail");
     const r = detected || {};
     const mode = r.surface || SURFACES.UNSUPPORTED;
-    const label = MODE_LABELS[mode] || "Unsupported Page";
-    const cls =
-      mode === SURFACES.CHALLENGE || mode === SURFACES.UNAVAILABLE
-        ? "status-err"
-        : mode === SURFACES.UNSUPPORTED
-          ? "status-warn"
-          : "status-ok";
-    setStatus(statusEl, cls, label);
-    detailEl.textContent = r.url || "";
+    setSurface(mode, r.url || "");
     showSections(mode);
     return mode;
   }
 
   async function refreshMode() {
-    const statusEl = $("mode-status");
     const detected = await send({ type: "DETECT_SURFACE" });
     const mode = paintMode(detected);
 
@@ -150,12 +164,12 @@
       const d = await send({ type: "PROFILE_DETECT" });
       if (d && d.ok && d.page) {
         if (d.page.surface === SURFACES.CHALLENGE) {
-          setStatus(statusEl, "status-err", MODE_LABELS[SURFACES.CHALLENGE]);
+          setSurface(SURFACES.CHALLENGE, detected && detected.url);
           showSections(SURFACES.CHALLENGE);
           return;
         }
         if (d.page.surface === SURFACES.UNAVAILABLE) {
-          setStatus(statusEl, "status-err", MODE_LABELS[SURFACES.UNAVAILABLE]);
+          setSurface(SURFACES.UNAVAILABLE, detected && detected.url);
           showSections(SURFACES.UNAVAILABLE);
           return;
         }

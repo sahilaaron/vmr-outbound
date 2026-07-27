@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<!-- DAT-018 B: company-name capture eligibility. Four visible rows —
+     one usable, and three that must be withheld:
+       1. no company element at all
+       2. an empty company element
+       3. a whitespace-only company element
+     The company must never be inferred from the headline, the location, or the
+     neighbouring row that does have one. All names/companies fictitious. -->
+<html lang="en">
+  <head><meta charset="UTF-8" /><title>Sales Navigator — Results</title></head>
+  <body>
+    <main>
+      <ol class="artdeco-list">
+        <li class="artdeco-list__item pl3 pv3">
+          <a href="/sales/lead/ACwAAAV4ddd,NAME_SEARCH,aa" data-anonymize="person-name">Valid Person</a>
+          <span data-anonymize="title">Head of Operations</span>
+          <a data-anonymize="company-name" href="/sales/company/771">Northwind Freight</a>
+          <span data-anonymize="location">Leeds, United Kingdom</span>
+        </li>
+        <li class="artdeco-list__item pl3 pv3">
+          <a href="/sales/lead/ACwAAAW5eee,NAME_SEARCH,bb" data-anonymize="person-name">Absent Company</a>
+          <span data-anonymize="title">Operations Manager at Somewhere</span>
+          <span data-anonymize="location">Leeds, United Kingdom</span>
+        </li>
+        <li class="artdeco-list__item pl3 pv3">
+          <a href="/sales/lead/ACwAAAX6fff,NAME_SEARCH,cc" data-anonymize="person-name">Empty Company</a>
+          <span data-anonymize="title">Logistics Lead</span>
+          <span data-anonymize="company-name"></span>
+          <span data-anonymize="location">Leeds, United Kingdom</span>
+        </li>
+        <li class="artdeco-list__item pl3 pv3">
+          <a href="/sales/lead/ACwAAAY7ggg,NAME_SEARCH,dd" data-anonymize="person-name">Whitespace Company</a>
+          <span data-anonymize="title">Fleet Coordinator</span>
+          <span data-anonymize="company-name">   </span>
+          <span data-anonymize="location">Leeds, United Kingdom</span>
+        </li>
+      </ol>
+    </main>
+  </body>
+</html>

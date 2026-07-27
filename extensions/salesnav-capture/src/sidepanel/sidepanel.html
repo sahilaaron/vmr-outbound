@@ -9,29 +9,25 @@
   <body>
     <header class="app-header">
       <h1 id="app-title">VMR Contact Capture</h1>
-      <p class="subtitle">Save the person first · decide what to do with them later</p>
+      <div class="surface-row">
+        <span id="surface-indicator" class="surface-chip surface-chip-neutral">Detecting…</span>
+        <button id="refresh-mode" class="btn btn-ghost btn-tiny" type="button">Refresh</button>
+      </div>
+      <div id="surface-detail" class="muted small" hidden></div>
     </header>
 
-    <!-- One-time notice after campaign-era local state is retired -->
-    <section class="card" id="migration-card" hidden>
-      <span class="step-label">Workflow updated</span>
-      <p class="small" id="migration-message"></p>
+    <!-- Shown ONLY while campaign-era drafts are still recoverable from local
+         storage. Downloading them is the only way to get them back, so this is
+         a required operator action, not a status notice. -->
+    <section class="card" id="archive-card" hidden>
+      <span class="step-label">Archived drafts can still be downloaded</span>
+      <p class="small" id="archive-message"></p>
       <div class="row gap wrap">
-        <button id="migration-export" class="btn" type="button" hidden>
+        <button id="migration-export" class="btn" type="button">
           Download archived drafts
         </button>
-        <button id="migration-dismiss" class="btn btn-ghost" type="button">Dismiss</button>
+        <button id="migration-dismiss" class="btn btn-ghost" type="button">Discard</button>
       </div>
-    </section>
-
-    <!-- Mode banner: which supported surface is in the active tab -->
-    <section class="card" id="mode-card">
-      <div class="row space-between">
-        <span class="step-label">Mode</span>
-        <button id="refresh-mode" class="btn btn-ghost" type="button">Refresh</button>
-      </div>
-      <div id="mode-status" class="status status-neutral">Detecting the active page…</div>
-      <div id="mode-detail" class="muted small"></div>
     </section>
 
     <!-- Person-profile capture mode -->
@@ -85,6 +81,13 @@
           Capture visible contacts
         </button>
         <div id="capture-feedback" class="small muted"></div>
+
+        <!-- Rows the page showed but that carry no Company Name (DAT-018 B).
+             Reported truthfully; never guessed, never submitted. -->
+        <div id="skipped-card" class="skipped-block" hidden>
+          <p class="small" id="skipped-summary"></p>
+          <div id="skipped-list"></div>
+        </div>
         <p class="tiny muted">
           Reads only the rows currently visible on the page you opened. You
           control navigation and paging; the extension never turns a page.
