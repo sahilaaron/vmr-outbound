@@ -161,6 +161,11 @@ async function askContentScript(message) {
           "src/common/constants.js",
           "src/common/normalize.js",
           "src/common/extraction.js",
+          // content-script.js requires self.SNCapture.scroller (DAT-018 D). It
+          // must be injected here as well as in the manifest, or a Sales
+          // Navigator page opened BEFORE install/reload bails out at the
+          // shared-module guard and capture silently stops working.
+          "src/common/scroller.js",
           "src/content/content-script.js",
         ],
       });

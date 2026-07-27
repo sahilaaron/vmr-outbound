@@ -13,6 +13,7 @@ const assert = require("node:assert/strict");
 const fs = require("fs");
 const path = require("path");
 const { JSDOM } = require("jsdom");
+const { stripComments } = require("./strip-comments.js");
 
 const SRC = path.join(__dirname, "..", "src");
 
@@ -150,9 +151,10 @@ test("the skipped-row report exists and starts hidden", () => {
 // --- the non-goals, asserted --------------------------------------------------
 
 /** Strip comments so this scans CODE, not the prose that disclaims these very
- *  behaviours. Without this the assertion fires on its own documentation. */
+ *  behaviours. Uses a real scanner: a regex stripper mis-handles the `/*` inside
+ *  match-pattern strings and can silently swallow the code under test. */
 function codeOnly(src) {
-  return src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:])\/\/.*$/gm, "$1");
+  return stripComments(src);
 }
 
 test("no pagination, navigation, or anti-bot behaviour is introduced", () => {
