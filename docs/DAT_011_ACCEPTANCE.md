@@ -202,7 +202,7 @@ returned, with counts and states only.
 | Step | What to do | What must be true | Result |
 | --- | --- | --- | --- |
 | A0 | Open the panel on a people-search results page | Header reads **VM Prospector**; detected-page strip reads *Sales Navigator · Search results*; no campaign selector anywhere | **PASS** [operator] — see A0 notes |
-| A1 | Press *Capture visible contacts*; watch | Progress card appears with a live row count; scrolling is incremental, not jumpy | |
+| A1 | Press *Capture visible contacts*; watch | Progress card appears with a live row count; scrolling is incremental, not jumpy | **PASS** [operator] — live count observed at 15 → 21 → 24; pass ended on its own; *Stop reading this page* offered throughout |
 | A2 | Press *Stop reading this page* once, mid-pass | Pass stops promptly; view returns to top; rows already loaded remain reviewable; nothing submitted; feedback reads *Stopped* | |
 | A3 | Press *Read this page again*; let it finish | Pass ends by itself; **no** page-2 advance, no new tab, no URL change | |
 | A4 | Review the list | ≥2 distinct companies among eligible rows; any no-company rows appear under *N skipped — no company name* and are absent from the list | |
@@ -253,6 +253,28 @@ Three things in that state need resolving before A1–A4 can be trusted:
 
 A0 passes on what it set out to check. A1 restarts from a cleared batch so the
 pass under test is unambiguous.
+
+#### A1 result — the read pass (2026-07-27)
+
+Batch cleared first, so this pass is the one measured. Observed **[operator]**:
+
+| Observation | Value |
+| --- | --- |
+| Progress card | *Reading this page*, with a bar and a live row count |
+| Live count | **15 → 21 → 24** across the pass |
+| Copy under the count | *"Stopping keeps every one of them."* |
+| Stop control | *Stop reading this page*, present for the whole pass |
+| Termination | stopped on its own |
+| Final batch | **24 found**, *24 rows currently visible on this page* |
+| Page advance / new tab / URL change | none |
+
+**A0-2 does not reproduce here.** With the batch built by a pass just run, the
+detect line (*24 rows currently visible*) agrees with the badge (*24 found*).
+The earlier 4-versus-47 reading came from a restored batch whose rows were no
+longer mounted in the virtualized list. Situational presentation, not a data
+fault — recorded, not filed.
+
+**A0-1 is explained, and it is a defect.** See D-2.
 
 ### B. Person profile
 
@@ -317,6 +339,7 @@ unless a small unambiguous acceptance blocker is documented first.
 | Ref | Summary | Severity | Blocker | Issue |
 | --- | --- | --- | --- | --- |
 | D-1 | `LOGO_DEV_API_KEY` was not configured, so the DAT-010 candidate lookup could not run | environment | **resolved before the trial** — no longer blocking | not filed (config, not a product defect) |
+| D-2 | `derived_value` provenance is rendered as *Needs review*, flagging ~100% of Sales Navigator rows and destroying the signal | **blocker for S3a** | yes, for that step | to be filed |
 | D-OBS-1 | `created` is a declared capture counter no outcome can increment; the panel carries a label for it | observation | no | not yet filed |
 | D-OBS-2 | Acceptance and CLAUDE docs still describe the pre-UI-012 panel and the old product name | documentation | no | not yet filed |
 
@@ -356,6 +379,50 @@ and restarted the application. Re-checked on `/contact-captures/pending`
 true. The key itself was never transmitted to or handled by the build session.
 E2 is therefore in scope for the trial. Pending count at this moment: **50**,
 all pre-existing, none created by this trial.
+
+### D-2 — a provenance annotation is being shown as a warning
+
+**Observed.** Every captured row carries the amber *Needs review* badge — 47 of
+47 on the restored batch, 24 of 24 on the fresh pass — and the select-all line
+reads *N need review*. Hovering the badge shows the raw string `derived_value`.
+
+**Cause, confirmed in code.** `WARNINGS.DERIVED_VALUE` is DAT-018's provenance
+annotation, documented in `constants.js` as *"a value the adapter computed from
+another observed value rather than read off the page … so a derivation can never
+be mistaken for an observation"*. On a Sales Navigator listing the public `/in/`
+URL is usually not on the row, so `extraction.js` derives it from the lead URL
+and annotates it. That is correct, intended DAT-018 behaviour and fires on
+almost every row.
+
+The panel then treats it as a problem. `recordTone` returns the warning tone for
+*any* warning code, and `warnLabel` has no entry for `derived_value`, so the row
+is badged *Needs review* and the tooltip falls through to the raw code.
+
+**Why it matters, rather than being cosmetic.** Three separate harms:
+
+1. A flag that fires on ~100% of rows carries no information. The operator
+   cannot see which rows *actually* need attention — which is the exact
+   guarantee #131 S3 asks to verify.
+2. The review step's *N need review* count is inflated by the same amount, so
+   the summary an operator saves against is wrong about its own set.
+3. The tooltip shows a machine code, not a sentence — the one thing the warning
+   presentation was built to avoid.
+
+**Whose defect.** UI-012's. DAT-018 added the code; the UI-012 panel rebuilt the
+warning presentation without an entry for it and without distinguishing
+provenance from fault. It is not a DAT-018 regression and not a backend fault —
+the payload is correct, and a derived URL is still recorded as derived.
+
+**Acceptance impact.** Blocks **S3a** specifically: "retain at least one
+incomplete or uncertain record and verify truthful handling" cannot be verified
+while every row claims to need review. It does not block S1, S2, S5, S6, S11,
+S12 or any backend check.
+
+**Proposed minimal fix** — not applied, pending Sahil's decision: give
+`derived_value` a label and treat it as provenance rather than fault, so it
+shows as a neutral *Derived* marker with its source field, and `recordTone`
+stops returning the warning tone for it alone. Roughly a label-map entry and one
+predicate. No extraction, contract or payload change.
 
 ## 5. Verdict
 
