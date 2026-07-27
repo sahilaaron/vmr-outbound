@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% from "_macros.html" import pager, research_badge, conflict_badge, domain_badge %}
+
+{% block content %}
+<div class="page-head">
+  <h1>Companies</h1>
+  <p class="sub">
+    Permanent organisations. A company exists on its own account — no campaign is
+    required, read or recorded here, and one company is shared by every contact
+    who works there.
+  </p>
+</div>
+
+<div class="table-wrap">
+  <nav class="toolbar" aria-label="Company views">
+    {% for v in views %}
+    <a class="chip {{ 'active' if filters.view == v else '' }}"
+       href="/companies?view={{ v }}"
+       {% if filters.view == v %}aria-current="page"{% endif %}>{{ v.replace("_", " ") }}</a>
+    {% endfor %}
+  </nav>
+
+  <div class="toolbar">
+    <form method="get" action="/companies">
+      <input type="hidden" name="view" value="{{ filters.view }}">
+
+      <label class="sr-only" for="q">Search name or domain</label>
+      <input id="q" name="q" type="search" placeholder="Name or domain"
+             value="{{ filters.search or '' }}">
+
+      <label class="sr-only" for="research">Research state</label>
+      <select id="research" name="research">
+        <option value="">Any research state</option>
+        {% for state in research_states %}
+        <option value="{{ state.value }}"
+          {{ 'selected' if filters.research_state and filters.research_state.value == state.value else '' }}>
+          {{ state.value.replace("_", " ") }}
+        </option>
+        {% endfor %}
+      </select>
+
+      <label class="sr-only" for="has_linkedin">LinkedIn company page</label>
+      <select id="has_linkedin" name="has_linkedin">
+        <option value="">LinkedIn: any</option>
+        <option value="yes" {{ 'selected' if filters.has_linkedin is true else '' }}>Has LinkedIn</option>
+        <option value="no" {{ 'selected' if filters.has_linkedin is false else '' }}>No LinkedIn</option>
+      </select>
+
+      <label class="sr-only" for="sort">Sort</label>
+      <select id="sort" name="sort">
+        {% for s in sorts %}
+        <option value="{{ s }}" {{ 'selected' if filters.sort == s else '' }}>{{ s }}</option>
+        {% endfor %}
+      </select>
+
+      <button class="btn small" type="submit">Apply</button>
+    </form>
+    {% if filters.search or filters.research_state or filters.has_linkedin is not none
+          or filters.sort != 'recent' %}
+    <a class="chip" href="/companies?view={{ filters.view }}">Clear</a>
+    {% endif %}
+  </div>
+
+  {% if rows %}
+  <table>
+    <thead>
+      <tr>
+        <th scope="col">Company</th>
+        <th scope="col">Canonical domain</th>
+        <th scope="col" class="num">Contacts</th>
+        <th scope="col">Research</th>
+        <th scope="col" class="num">Dossiers</th>
+        <th scope="col">Identity</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>
+          <a href="/companies/{{ row.company.id }}">{{ row.company.name }}</a>
+          {% if row.company.linkedin_company_id %}
+          <div class="small muted-text">LinkedIn company identity recorded</div>
+          {% endif %}
+        </td>
+        <td>{{ domain_badge(row.company) }}</td>
+        <td class="num">{{ row.contact_count }}</td>
+        <td>
+          {{ research_badge(row.company.research_state) }}
+          {% if row.company.last_researched_at %}
+          <div class="small muted-text">{{ row.company.last_researched_at | dt }}</div>
+          {% endif %}
+        </td>
+        <td class="num">{{ row.dossier_count }}</td>
+        <td>{{ conflict_badge(row.conflict_count) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {{ pager(page, pages, total, filter_url, "companies") }}
+  {% else %}
+  <div class="empty">
+    {% if filters.view == 'with_contacts' %}
+    <p class="empty-title">No company has a linked contact yet.</p>
+    <p>
+      A contact links to a company when its domain resolves to exactly one
+      company record. Captures waiting on a domain are on the
+      <a href="/contact-captures/pending">pending captures</a> screen.
+    </p>
+    {% elif filters.view == 'unresolved_domain' %}
+    <p class="empty-title">Every company has a canonical domain.</p>
+    <p>Nothing here needs a domain confirmed.</p>
+    {% elif filters.view == 'researched' %}
+    <p class="empty-title">No company has a dossier yet.</p>
+    <p>
+      No research engine exists yet — APP-004 builds it. The storage and display
+      boundary is ready to receive one.
+    </p>
+    {% elif filters.view == 'conflicted' %}
+    <p class="empty-title">No identity conflicts.</p>
+    <p>
+      Nothing currently disagrees about a company's domain or LinkedIn identity.
+      This view is derived, so a conflict disappears from it as soon as the
+      underlying records agree.
+    </p>
+    {% elif filters.search %}
+    <p class="empty-title">No company matches that search.</p>
+    <p>Searching covers the company name and the canonical domain.</p>
+    {% else %}
+    <p class="empty-title">No companies yet.</p>
+    <p>
+      A company record is created when a capture's domain is confirmed and the
+      person is promoted. Start from <a href="/contacts">Contacts</a>.
+    </p>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

@@ -597,3 +597,80 @@ class QualificationState(enum.StrEnum):
     BORDERLINE = "borderline"
     DISQUALIFIED = "disqualified"
     NEEDS_REVIEW = "needs_review"
+
+
+class CompanyFieldSource(enum.StrEnum):
+    """Where an observation of a canonical company field came from (APP-003).
+
+    Deliberately describes the *kind* of origin, never the vendor. A dossier
+    claim is ``RESEARCH_DOSSIER`` whether it was produced by a crawler, a model,
+    a paid API or an operator pasting a payload — swapping the research
+    implementation must not require a schema migration or a new member here.
+
+    ``MANUAL`` is separate from every automatic source because an operator
+    decision outranks all of them, and the ledger has to be able to say so.
+    """
+
+    MANUAL = "manual"
+    # A LinkedIn company page the operator captured (DAT-012G evidence).
+    LINKEDIN_COMPANY_SNAPSHOT = "linkedin_company_snapshot"
+    # Carried across when a capture was promoted into a contact (DAT-014).
+    CAPTURE_PROMOTION = "capture_promotion"
+    # Claimed by a structured reading of a research submission (APP-004 fills
+    # these; APP-003 only provides the landing zone).
+    RESEARCH_DOSSIER = "research_dossier"
+    # Imported alongside a contact spreadsheet.
+    IMPORT = "import"
+
+
+class DossierSection(enum.StrEnum):
+    """The nine sections a company dossier may address (APP-003).
+
+    This is the display and storage boundary. It is a closed set on purpose: a
+    research implementation that wants a tenth section needs a schema change and
+    a review, not a new key in a blob. Each member maps to one nullable column on
+    :class:`~app.models.company_dossier.CompanyDossierVersion`, where NULL means
+    "this version did not address it" and an empty value means "it looked and
+    found nothing".
+    """
+
+    OVERVIEW = "overview"
+    PRODUCTS_SERVICES = "products_services"
+    INDUSTRIES = "industries"
+    GEOGRAPHY = "geography"
+    LEADERSHIP = "leadership"
+    ACTIVITY_SIGNALS = "activity_signals"
+    PUBLIC_CONTACTS = "public_contacts"
+    SOURCES = "sources"
+    UNKNOWNS = "unknowns"
+
+
+class CompanyConflictKind(enum.StrEnum):
+    """A visible, reviewable disagreement about company identity (APP-003).
+
+    Every member is *derived* from records that already exist rather than stored
+    in a queue of its own. That is deliberate: a second review architecture
+    alongside the import-row queue would be two places to look and two places to
+    forget, and a conflict that no longer holds should stop being reported the
+    moment the underlying rows agree — which a derived view gets for free and a
+    stored queue does not.
+
+    None of these block anything. They are surfaced so an operator can decide,
+    because a company whose sources disagree about its domain is a fact worth
+    knowing rather than an error worth swallowing.
+    """
+
+    # A linked contact's captured company_domain disagrees with the domain of
+    # the company it is linked to. The most common cause is a company whose
+    # canonical domain was corrected after the contact was created.
+    CONTACT_DOMAIN_MISMATCH = "contact_domain_mismatch"
+    # A contact still linked only by domain string, with no company_id. Legacy
+    # rows and rows the backfill declined to guess at.
+    CONTACT_LINK_UNRESOLVED = "contact_link_unresolved"
+    # Another company row claims the same LinkedIn company identifier.
+    LINKEDIN_ID_SHARED = "linkedin_id_shared"
+    # A captured LinkedIn company page matched to this company states a website
+    # domain that is not this company's domain.
+    SNAPSHOT_DOMAIN_MISMATCH = "snapshot_domain_mismatch"
+    # This company has no domain at all, so domain-based identity cannot apply.
+    NO_CANONICAL_DOMAIN = "no_canonical_domain"

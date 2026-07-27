@@ -1,0 +1,317 @@
+{% extends "base.html" %}
+{% from "_macros.html" import research_badge, conflict_badge, domain_badge, section_badge %}
+
+{% block content %}
+<div class="page-head">
+  <div class="crumbs"><a href="/companies">Companies</a><span>/</span>{{ detail.company.name }}</div>
+  <h1>{{ detail.company.name }} {{ conflict_badge(detail.conflicts | length) }}</h1>
+  <p class="sub">
+    The permanent company workspace. Every contact who works here shares this
+    record, and nothing on this page belongs to a campaign.
+  </p>
+</div>
+
+{% if detail.conflicts %}
+<div class="notice warn" role="status">
+  <strong>{{ detail.conflicts | length }} identity disagreement(s).</strong>
+  Nothing is blocked and nothing is merged automatically — these are shown so an
+  operator can decide. Details in the Identity conflicts card below.
+</div>
+{% endif %}
+
+<div class="card" style="margin-top:20px">
+  <div class="card-head">
+    <h2>Identity</h2>
+    <span class="hint">A domain and a LinkedIn company page are two independent identity axes.</span>
+  </div>
+  <div class="card-body">
+    <table>
+      <tbody>
+        <tr><th scope="row">Name</th><td>{{ detail.company.name }}</td></tr>
+        <tr><th scope="row">Canonical domain</th><td>{{ domain_badge(detail.company) }}</td></tr>
+        <tr>
+          <th scope="row">LinkedIn company</th>
+          <td>
+            {% if detail.company.linkedin_company_url %}
+            <a href="{{ detail.company.linkedin_company_url }}" target="_blank"
+               rel="noopener noreferrer nofollow" class="wrap">{{ detail.company.linkedin_company_url }}</a>
+            {% else %}<span class="muted-text">—</span>{% endif %}
+          </td>
+        </tr>
+        <tr>
+          <th scope="row">LinkedIn identifier</th>
+          <td>
+            {% if detail.company.linkedin_company_id %}
+            <span class="mono">{{ detail.company.linkedin_company_id }}</span>
+            {% else %}<span class="muted-text">—</span>{% endif %}
+          </td>
+        </tr>
+        <tr><th scope="row">First seen</th><td>{{ detail.company.created_at | dt }}</td></tr>
+        <tr><th scope="row">Last updated</th><td>{{ detail.company.updated_at | dt }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card" style="margin-top:20px">
+  <div class="card-head">
+    <h2>Research</h2>
+    <span class="hint">Its own dimension — never folded into an overall status.</span>
+  </div>
+  <div class="card-body">
+    <table>
+      <tbody>
+        <tr><th scope="row">State</th><td>{{ research_badge(detail.company.research_state) }}</td></tr>
+        <tr>
+          <th scope="row">Last researched</th>
+          <td>
+            {% if detail.company.last_researched_at %}{{ detail.company.last_researched_at | dt }}
+            {% else %}<span class="muted-text">never</span>{% endif %}
+          </td>
+        </tr>
+        <tr>
+          <th scope="row">Warnings</th>
+          <td>
+            {% if detail.current_dossier and detail.current_dossier.warning_count %}
+            <span class="badge warn">{{ detail.current_dossier.warning_count }}</span>
+            {% else %}<span class="muted-text">none on the current dossier</span>{% endif %}
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="small muted-text">{{ detail.research_note }}</p>
+  </div>
+</div>
+
+<div class="card" style="margin-top:20px">
+  <div class="card-head">
+    <h2>Canonical fields</h2>
+    <span class="hint">What each value is, where it came from, and why it won.</span>
+  </div>
+  <div class="card-body">
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">Field</th>
+          <th scope="col">Current value</th>
+          <th scope="col">Source</th>
+          <th scope="col">Observed</th>
+          <th scope="col">Why this value</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for view in detail.field_provenance %}
+        <tr>
+          <th scope="row">{{ view.field_name.replace("_", " ") }}</th>
+          <td>
+            {% if view.current_value %}{{ view.current_value }}
+            {% else %}<span class="badge muted" title="Nobody has told us. This is not the same as 'none'.">unknown</span>{% endif %}
+          </td>
+          <td>
+            {% if view.winner %}{{ view.winner.source_kind.value.replace("_", " ") }}
+            {% else %}<span class="muted-text">—</span>{% endif %}
+          </td>
+          <td>
+            {% if view.winner and view.winner.observed_at %}{{ view.winner.observed_at | dt }}
+            {% elif view.winner %}<span class="small muted-text">ingested {{ view.winner.ingested_at | dt }}</span>
+            {% else %}<span class="muted-text">—</span>{% endif %}
+          </td>
+          <td>
+            {% if view.win_reason %}{{ view.win_reason }}
+            <div class="small muted-text"><code>{{ view.policy_version }}</code></div>
+            {% else %}<span class="muted-text">no observation recorded</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="small muted-text">
+      A research dossier claiming a value does not set it. The claim is recorded
+      as evidence and the versioned policy decides what wins.
+    </p>
+  </div>
+</div>
+
+<div class="card" style="margin-top:20px">
+  <div class="card-head">
+    <h2>Contacts</h2>
+    <span class="hint">{{ detail.linked_count }} linked to this company record.</span>
+  </div>
+  <div class="card-body">
+    {% if detail.linked_contacts %}
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">Name</th>
+          <th scope="col">Title</th>
+          <th scope="col">Captured domain</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for link in detail.linked_contacts %}
+        <tr>
+          <td><a href="/contacts/{{ link.contact.id }}">{{ link.display_name }}</a></td>
+          <td>{% if link.contact.title %}{{ link.contact.title }}{% else %}<span class="muted-text">—</span>{% endif %}</td>
+          <td>
+            <span class="mono">{{ link.contact.company_domain }}</span>
+            {% if link.contact.company_domain != (detail.company.domain or '') %}
+            <span class="badge warn" title="The domain captured with this contact is not the company's canonical domain. Captured evidence is never rewritten.">differs</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty">
+      <p class="empty-title">No contacts linked to this company.</p>
+      <p>
+        A contact links here when its domain resolves to exactly one company.
+        Nothing is linked on a guess.
+      </p>
+    </div>
+    {% endif %}
+
+    {% if detail.transitional_contacts %}
+    <div class="notice warn" role="status" style="margin-top:16px">
+      <strong>{{ detail.transitional_contacts | length }} contact(s) matched by domain string only.</strong>
+      These have no permanent link. They are listed so unresolved people stay
+      visible; this is not evidence that they work here.
+    </div>
+    <table>
+      <thead>
+        <tr><th scope="col">Name</th><th scope="col">Title</th><th scope="col">Captured domain</th></tr>
+      </thead>
+      <tbody>
+        {% for link in detail.transitional_contacts %}
+        <tr>
+          <td><a href="/contacts/{{ link.contact.id }}">{{ link.display_name }}</a></td>
+          <td>{% if link.contact.title %}{{ link.contact.title }}{% else %}<span class="muted-text">—</span>{% endif %}</td>
+          <td><span class="mono">{{ link.contact.company_domain }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card" style="margin-top:20px">
+  <div class="card-head">
+    <h2>Identity conflicts</h2>
+    <span class="hint">Derived from current records — a conflict disappears when they agree.</span>
+  </div>
+  <div class="card-body">
+    {% if detail.conflicts %}
+    <table>
+      <thead>
+        <tr><th scope="col">Conflict</th><th scope="col" class="num">Count</th><th scope="col">What it means</th></tr>
+      </thead>
+      <tbody>
+        {% for conflict in detail.conflicts %}
+        <tr>
+          <th scope="row">{{ conflict.title }}</th>
+          <td class="num">{{ conflict.count }}</td>
+          <td>
+            {{ conflict.detail }}
+            {% if conflict.references %}
+            <div class="small muted-text mono wrap">{{ conflict.references | join(", ") }}</div>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="small muted-text">
+      Nothing here blocks anything and nothing is merged automatically. Domains
+      are confirmed on the capture resolution screen, so there is one place that
+      decision gets made.
+    </p>
+    {% else %}
+    <div class="empty">
+      <p class="empty-title">No identity disagreement found.</p>
+      <p>The domain, the LinkedIn identity and the linked contacts all agree.</p>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card" style="margin-top:20px">
+  <div class="card-head">
+    <h2>Dossiers</h2>
+    <span class="hint">Immutable readings of raw submissions. Older versions are never deleted.</span>
+  </div>
+  <div class="card-body">
+    {% if detail.dossier_versions %}
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">Version</th>
+          <th scope="col">Interpreter</th>
+          <th scope="col">From submission</th>
+          <th scope="col">Sections</th>
+          <th scope="col" class="num">Warnings</th>
+          <th scope="col">Created</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for summary in detail.dossier_versions %}
+        <tr>
+          <th scope="row">
+            v{{ summary.version.version_number }}
+            {% if summary.version.is_current %}<span class="badge ok">current</span>
+            {% else %}<span class="badge muted" title="Superseded, and kept.">superseded</span>{% endif %}
+          </th>
+          <td>
+            {{ summary.version.interpreter }}
+            {% if summary.version.interpreter_version %}
+            <div class="small muted-text"><code>{{ summary.version.interpreter_version }}</code></div>
+            {% endif %}
+          </td>
+          <td>
+            {{ summary.submission.producer }}
+            <div class="small muted-text">{{ summary.submission.submitted_at | dt }}</div>
+          </td>
+          <td class="small">{{ summary.sections_present | length }} of {{ sections | length }}</td>
+          <td class="num">
+            {% if summary.warning_count %}<span class="badge warn">{{ summary.warning_count }}</span>
+            {% else %}0{% endif %}
+          </td>
+          <td class="small">{{ summary.version.created_at | dt }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    {% if detail.current_dossier %}
+    <h3 class="small" style="margin-top:20px">
+      Current interpretation — v{{ detail.current_dossier.version.version_number }}
+    </h3>
+    <table>
+      <thead>
+        <tr><th scope="col">Section</th><th scope="col">Addressed</th></tr>
+      </thead>
+      <tbody>
+        {% for section in sections %}
+        <tr>
+          <th scope="row">{{ section.value.replace("_", " ") }}</th>
+          <td>{{ section_badge(section.value in detail.current_dossier.sections_present) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="small muted-text">
+      A section that was not addressed is unknown, not empty. Dossier content is
+      evidence gathered from outside this system: it is displayed and cited,
+      never treated as an instruction.
+    </p>
+    {% endif %}
+    {% else %}
+    <div class="empty">
+      <p class="empty-title">No dossier for this company.</p>
+      <p>{{ detail.research_note }}</p>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

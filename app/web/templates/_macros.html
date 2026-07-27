@@ -115,3 +115,31 @@
   {%- else -%}<span class="badge warn" title="Saved {{ days }} day(s) ago and still waiting.">stale · {{ days }}d</span>{%- endif -%}
   {%- endif -%}
 {%- endmacro %}
+
+{# --- Company workspace (APP-003) -------------------------------------------
+   Same rule as the contact badges above: separate dimensions, never one
+   combined status. A company can be well linked and unresearched, or fully
+   researched and in conflict about its own domain, and one badge could not
+   say either. #}
+
+{# Identity conflicts are surfaced, never suppressed. A company whose sources
+   disagree is a fact to show an operator, not an error to swallow. #}
+{% macro conflict_badge(count) -%}
+  {%- if count -%}
+  <span class="badge warn" title="{{ count }} identity disagreement(s) to review. Nothing is blocked and nothing is merged automatically.">{{ count }} conflict{{ "" if count == 1 else "s" }}</span>
+  {%- else -%}<span class="badge ok" title="No identity disagreement found.">consistent</span>{%- endif -%}
+{%- endmacro %}
+
+{# A company with no domain is not an error. It is unresolved, and every
+   domain-based check is silent rather than satisfied. #}
+{% macro domain_badge(company) -%}
+  {%- if company.domain -%}<span class="mono">{{ company.domain }}</span>
+  {%- else -%}<span class="badge muted" title="No canonical domain resolved yet. Domain-based identity checks cannot apply.">no domain</span>{%- endif -%}
+{%- endmacro %}
+
+{# NULL means the version did not address the section. An empty value means it
+   looked and found nothing. Those are different and are shown differently. #}
+{% macro section_badge(present) -%}
+  {%- if present -%}<span class="badge ok">present</span>
+  {%- else -%}<span class="badge muted" title="This version did not address the section. That is not the same as finding nothing.">not addressed</span>{%- endif -%}
+{%- endmacro %}
