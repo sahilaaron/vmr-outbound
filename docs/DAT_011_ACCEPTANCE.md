@@ -1014,7 +1014,7 @@ defect this document had already filed.
 | | Sales Navigator capture | Profile capture |
 | --- | --- | --- |
 | `capture_mode` | `salesnav_people_search` | `linkedin_profile` |
-| `normalized_profile_url` | `…/in/acwaabst1xmb…` — the **opaque member id**, derived | `…/in/bentzi-rabi` — the **real handle**, observed |
+| `normalized_profile_url` | `/in/<opaque member id>` — **derived** | `/in/<public handle>` — **observed** |
 | Ingest outcome | `staged_unmatched` | `staged_unmatched` |
 
 At submission the panel reported **"1 staged as a new person"**, and the
