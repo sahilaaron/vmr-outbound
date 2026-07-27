@@ -22,7 +22,7 @@ Real people are referred to as P1…Pn and companies as C1…Cn.
 | Extension name | **VM Prospector** (`manifest.json`) |
 | Extension version | **2.1.0** (set by DAT-018 `676e986`; unchanged by UI-012) |
 | Contract | `linkedin-contact-capture/2.0.0` → `POST /api/intake/contact-captures` |
-| Backend target | local loopback only (`http://127.0.0.1:8000`), local Postgres |
+| Backend target | `http://127.0.0.1:8000`, local Postgres database `vmr_dev` |
 | Extension suite at baseline | `npm test` → **338 passed, 0 failed** |
 
 Feature flags this trial requires (all default `false`):
@@ -35,8 +35,23 @@ Feature flags this trial requires (all default `false`):
 | `FEATURES__SALESNAV_DOMAIN_ENRICHMENT` | the DAT-010 candidate lookup |
 | `FEATURES__SUPPRESSIONS` | suppression remaining authoritative |
 
-Explicitly **not** enabled: `email_generation`, `millionverifier`, `scoring`,
-`insights_research`, `drafting`, `saleshandy`. No RDS, no production, no sending.
+Confirmed enabled by the operator before the trial; `/contact-captures/pending`
+renders. Explicitly **not** enabled: `email_generation`, `millionverifier`,
+`scoring`, `insights_research`, `drafting`, `saleshandy`. No RDS, no production,
+no sending.
+
+### Scoping, because the trial runs against a shared development database
+
+`vmr_dev` already holds captures from earlier development and from the DAT-016
+and UI-011 passes. Layer 4B recorded what happens when acceptance questions are
+answered with database-wide data: three checks failed on unrelated rows, and the
+fix was to scope the harness, not to touch the data.
+
+The same rule applies here. **Every Phase 4 count is scoped to the identifiers
+this trial creates** — the submission ids returned during the trial and the
+capture ids reachable from them. Pre-existing rows are never counted, never
+altered, and never "cleaned up". Where a database-wide figure is informative it
+is reported separately and labelled as such, and it decides nothing.
 
 ---
 
