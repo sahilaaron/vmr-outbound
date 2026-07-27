@@ -391,8 +391,8 @@ stable key. Nothing was submitted by the cancellation.
 | Step | What to do | What must be true | Result |
 | --- | --- | --- | --- |
 | D1 | Stop the backend, press Save | Clear failure; reviewed draft intact; *Download as file instead* offered | **PASS** [operator, backend-down verified] — *"Connection lost … Nothing was saved, and what you reviewed is still here."*, `code: network_error`, *Try again* and *Back to review*. See *D1* below. **Note:** the offered fallback is *Back to review* plus retry, not a file download — see the note in D1 |
-| D2 | Restart the backend, press *Try again* | Succeeds with the **same** submission id | |
-| D3 | Inspect | No duplicate submission, capture, contact or evidence row | |
+| D2 | Restart the backend, press *Try again* | Succeeds with the **same** submission id | **PASS** [operator, machine-verified] — retry succeeded, indicator returned to *Connected*, step **DONE**, outcome **"1 already current — Unchanged"** |
+| D3 | Inspect | No duplicate submission, capture, contact or evidence row | **PASS** [machine, supervised] — the failed attempt left **nothing**; the retry wrote exactly one capture. Contacts 1, pending 78, both unchanged |
 
 ### E. Domain-resolution handoff (workbench, DAT-010 + DAT-014)
 
@@ -1155,6 +1155,39 @@ ended", not live connectivity, because the panel does not poll. So the earlier
 reading was stale-until-next-save by design, and the design corrected it at the
 first real interaction. Recorded as resolved, not as a defect.
 
+### D2 / D3 — recovering, and leaving no trace of the failure
+
+**Environment stated as fact, not inferred.** The backend was restarted from
+`d99e274` (`git rev-parse --short HEAD` → `d99e274`, `git status --porcelain`
+empty) with **`uvicorn app.main:app --port 8000`** — no `--reload` — and
+`GET /ready` returned `200 OK`. After the contamination incident, the commit
+under test is recorded from the machine rather than assumed.
+
+**D2.** Pressing *Try again* on the failed submission succeeded. The connection
+indicator returned to **Connected**, the step indicator to **DONE**, and the
+outcome read **"1 already current — Unchanged"** with *Open contact* offered.
+
+**D3.** The contact's evidence list tells the whole story in three rows:
+
+| Ingested | Outcome |
+| --- | --- |
+| 04:05 | `unmatched staged` |
+| 04:15 | `exact match unchanged` |
+| 04:51 | `exact match unchanged` (the retry) |
+
+**The failed attempt appears nowhere.** It never reached the backend, so it wrote
+nothing — no partial submission, no orphan capture, no half-linked contact. The
+retry wrote exactly one capture. Contacts for the company **1**, pending queue
+**78**: both unchanged.
+
+That is the pair of properties recovery needs and rarely gets together: the
+failure left no debris, and the retry was not punished for the failure having
+happened. The panel promised *"retrying is safe — the same submission is
+replayed, never duplicated"* at the moment of failure; the retry then behaved
+exactly as promised, and the record shows it.
+
+**Phase D is complete: D1–D3 all pass.**
+
 ### C2 — company evidence saves, idempotently, and creates no contact
 
 **Observed** [operator, machine-verified]. The company had been captured once
@@ -1616,61 +1649,107 @@ contrast looked like a controlled comparison and was not.
 
 ## 5. Verdict
 
-**Not yet determined — the trial is in progress and resumed on the restored
-baseline.** It is not failed, and it was not restarted.
+**Claude does not grade its own work.** What follows is a factual statement of
+what was executed and observed, plus the status Claude claims. The acceptance
+decision belongs to ChatGPT's independent review of the repository and to
+Sahil's approval.
 
-**The contamination is closed.** The backend was restored to `main@d99e274` with
-no DAT-017A code or migration present, and the capture page renders again. The
-first action on resume was an inspection rather than a click: the confirmation
-from the contaminated run **had committed**, so *Confirm* was not pressed a
-second time. Everything after that point was observed on the restored baseline.
+### Claimed status: the authenticated trial is complete, and the acquisition path performed as specified
 
-**The acquisition path is now demonstrated end to end.** Capture → pending →
-lookup → confirm → reject the rest → promote → a canonical contact, with the
-promotion idempotent and the counts moving by exactly one in each direction. The
-central claim of the contact-first architecture held under observation rather
-than only in documentation:
+Every phase ran to its end on `main@d99e274`, with the commit under test read
+from the machine (`git rev-parse --short HEAD` → `d99e274`, working tree clean)
+rather than assumed.
 
-* A capture creates **no** contact (`created` = 0 across thirty submissions).
-* Promotion creates **identity only** — no campaign membership, no email, no
-  verification, no score, no research.
-* The capture stays immutable; promotion is a later, separate event, and the
-  capture's own status is not rewritten to hide that.
-
-**Phase E is now complete, and in scope.** E4 (manual override), E5 (deliberate
-unresolved) and a second E6 promotion were all run on captures from this trial's
-own submission `01366e2e…`. The three decision kinds are recorded distinctly —
-`(candidate)`, `(manual)`, `(unresolved)` — and each carries its own truthful
-consequence. The unresolved gate was verified at the service layer, not only in
-the page.
-
-**Still outstanding before a verdict:**
-
-| Area | Steps | Needs |
+| Phase | Steps | Outcome |
 | --- | --- | --- |
-| Other surfaces | B (person profile), C (company page) | operator — side panel |
-| Recovery | D (backend unavailable, retry, S12) | operator — side panel |
-| Restore / open | A9, A10 | operator — side panel |
-| Idempotency of submission | S11 (distinct from E7's promotion idempotency, which passed) | operator — resubmit an identical batch |
-| **Deferred by instruction** | **A4–A7 and S3a — held for a targeted rerun after #191 is merged** | — |
+| A — Sales Navigator listings | A0–A5, A8 | pass |
+| A — restore and open | A9 **partial** (draft yes, result no — D-8), A10 pass | one defect |
+| B — person profile | B0–B4 | all pass |
+| C — company page | C0–C3 | all pass |
+| D — failure recovery | D1–D3 | all pass |
+| E — domain resolution | E1–E7 | all pass, and in scope |
+| F — backend truth | all seven checks | all pass |
+| S-criteria | S1, S2, S6, S9, S10, S11, S12 pass; S5 partial | one defect |
+| **Deferred by instruction** | A4–A7, S3a | held for a targeted rerun after #191 merges |
 
-Everything remaining requires the side panel, which is invisible to page
-automation. Nothing left is workbench-side.
-
-A4–A7 / S3a are deferred rather than failed: D-2 makes the *Needs review* signal
+A4–A7 and S3a are deferred, not failed. D-2 makes the *Needs review* signal
 unreadable on Sales Navigator rows, so running the selection-quality steps now
-would measure the defect instead of the product.
+would measure the defect rather than the product.
 
-**Defects standing on their own, none of them caused by the contamination:**
+### What the trial actually established
 
-| Ref | State |
-| --- | --- |
-| D-2 | **filed as #191**, fixed outside DAT-011 |
-| D-6 | **filed as #192** (UI-014), fixed outside DAT-011 |
-| D-4 | identity fragmentation — to be filed |
-| D-7 | unresolved reason stored but never displayed — to be filed |
-| D-3 | not reproduced; left open |
+**The contact-first architecture behaves as documented, under observation rather
+than only in prose.**
 
-None of these is a promotion-path blocker. D-2 blocks one review step (S3a);
-D-4 is an identity question for a later task; D-6, D-7 and D-OBS-4 are all the
-same family — the system knows the truth and renders something else.
+* A capture creates **no contact**: `created` = 0 across thirty submissions, and
+  again on every later save.
+* Promotion creates **identity only** — no campaign membership, no email, no
+  verification, no score, no research. Checked field by field on the promoted
+  contact.
+* The capture is **immutable**: re-read after promotion, every field was
+  unchanged except the reconciliation link. Promotion is a separate later event
+  and the capture's own outcome is not rewritten to hide that.
+* **Evidence accumulates; identity does not multiply.** The same person captured
+  three times from two surfaces produced three retained capture rows and exactly
+  one contact.
+
+**The system refuses to invent.** Confidence absent from the provider is recorded
+as *"not provided by this provider"*. `Founded` absent from a company page reads
+*Not shown*. A profile's missing sections are named individually. A company
+website is labelled *shown on this page* — an observation, never a domain
+assertion. The panel states it outright: *"Empty fields stay empty — VM Prospector
+will not fill them in."*
+
+**Operator decisions are recorded as decisions.** `(candidate)`, `(manual)` and
+`(unresolved)` are stored distinctly with actor and timestamp; rejected candidates
+are kept rather than deleted; and the unresolved gate was verified **at the
+service layer**, not merely greyed out in the page — a direct POST bypassing the
+disabled control was refused with the same truthful reason.
+
+**Failure and repetition are safe.** A save against a stopped backend failed
+specifically (`code: network_error`), said *nothing was saved*, kept the reviewed
+draft, and promised that retrying replays rather than duplicates. The retry then
+did exactly that, and the failed attempt left no trace anywhere. Idempotency holds
+at submission (S11), at promotion (E7), and at retry (D2/D3).
+
+### What the trial cost, and what that is worth recording for
+
+One incident and one correction, both about method:
+
+* **Environment contamination.** Switching branches under a `--reload` server
+  replaced the code under test mid-run. Half the trial had to be re-run. The
+  lesson is now written into the resumption preconditions: a fixed commit, the
+  reloader off, and the commit read from the machine.
+* **A defect filed too broadly.** D-4 was filed as identity fragmentation.
+  Tested live, promotion's natural key caught the case, so the finding was
+  rewritten to the narrower and actionable claim. The original framing would have
+  sent someone to fix a problem that does not exist in the form stated.
+
+### Defects, and where they now live
+
+| Ref | Summary | State |
+| --- | --- | --- |
+| D-2 | `derived_value` renders as *Needs review*, destroying the signal | **#191** |
+| D-6 | Stale promotion refusal after confirmation | **#192** (with D-OBS-4) |
+| D-7 | Unresolved reason stored, audited, never displayed | **#193** |
+| D-8 | Restored outcome overwritten by the first detection — blocks S5's result half and S6 | to file — **UI-012 regression**, reproduced in the panel harness |
+| D-9 | Promotion never writes `contact.company_id`; nothing else does either | to file |
+| D-10 | Companies list reports *consistent* where the detail page reports a conflict | to file |
+| D-4 | Derived member-id URL is not a usable identity key | to file, **rewritten and narrowed** |
+| D-3 | Company briefly not visible in the app | not reproduced; left open |
+| D-OBS-1…6 | Observations — copy and presentation | not filed individually |
+
+**None of these blocks the promotion path.** D-8 blocks two acceptance steps
+(S5's result half and S6 after a reopen). D-2 blocks one review step. D-9 and
+D-10 are backend and operator truth in the company view. The rest are wording.
+
+### What Claude is not saying
+
+This document is not an acceptance. It does not close Issue #131, and nothing in
+it was merged. The DAT-017A review remains a separate task against a separate
+environment, and its migration was deliberately **not** applied to this database.
+No fix for any defect above was implemented inside DAT-011.
+
+**Owed next, for whoever picks this up:** file D-4, D-8, D-9 and D-10; then re-run
+A4–A7 and S3a once #191 is merged, which is the only outstanding acceptance work
+this trial identified.
