@@ -424,6 +424,33 @@ shows as a neutral *Derived* marker with its source field, and `recordTone`
 stops returning the warning tone for it alone. Roughly a label-map entry and one
 predicate. No extraction, contract or payload change.
 
+### D-3 (provisional) — a captured company can be invisible on the record page
+
+**Reported by the operator:** a company shown in the extension for a Sales
+Navigator capture does not appear in the app.
+
+**Established so far, in code:** `_capture_profile_rows`
+(`app/web/routes.py`) builds the *Person observations* block from exactly seven
+fields — `full_name`, `headline`, `displayed_location`, `connection_count`,
+`open_to_work`, `about_text`, `warnings`. **Neither the captured company nor the
+captured title is among them.**
+
+For a profile capture that is survivable: the employer still appears in the
+*Experience observations* table. A record opened during this trial
+**[machine, supervised]** showed 5 experience observations, so it was a profile
+capture and its company was visible there.
+
+The concern is the Sales Navigator shape, where a row is a listing rather than a
+profile. The company is certainly *stored* — `/contact-captures/pending` renders
+it, via `company_hints`, for all 50 pre-existing captures — so this is a display
+question, not data loss. What is not yet established is which page the operator
+was looking at and whether a salesnav capture carries an experience row at all.
+
+**Not yet classified.** It is recorded now because the code gap is real and
+independently verifiable, and because it bears directly on the promotion step:
+an operator is asked to confirm a domain for a company whose name may not be on
+the page they are looking at. Awaiting one observation to pin the surface.
+
 ## 5. Verdict
 
 **Not yet determined — the authenticated trial has not been performed.**
