@@ -398,8 +398,8 @@ stable key. Nothing was submitted by the cancellation.
 
 | Step | What to do | What must be true | Result |
 | --- | --- | --- | --- |
-| E1 | Open `/contact-captures/pending` | The captured person is listed as pending | |
-| E2 | Run the company lookup | Candidates stored with provider order; confidence recorded as *not provided* rather than invented | **PASS** [operator] — live lookup returned **10 candidates**, reported as *awaiting your decision*; nothing auto-confirmed. See scope note |
+| E1 | Open `/contact-captures/pending` | The captured person is listed as pending | **PASS** [machine, supervised] — trial captures present; before promotion the record reads *not promoted*, reason *"run the company-domain lookup first"*, with the promote control disabled and the candidates panel stating *"a domain is never invented for you"* |
+| E2 | Run the company lookup | Candidates stored with provider order; confidence recorded as *not provided* rather than invented | **PASS** [operator] — live lookup returned **10 candidates**, reported as *awaiting your decision*; nothing auto-confirmed. See scope note. **Repeated in scope** [machine, supervised] on a trial capture: *Lookup finished: ok · 4 candidate(s) awaiting your decision* |
 | E3 | Confirm one candidate | `domain_candidate_confirmed`, source `candidate`, actor and time recorded | **PASS** [operator] — two candidates rejected with the decisions preserved (*"the decision is kept with the candidates"*), one confirmed; outcome reached `domain_candidate_confirmed` and *Promote to contact* became available. See scope note |
 | E4 | Where practical: type a domain for a second capture | `decision=manual` recorded as an override | |
 | E5 | Where practical: leave a third unresolved | `left_unresolved`; nothing promoted | |
@@ -468,6 +468,7 @@ unless a small unambiguous acceptance blocker is documented first.
 | Ref | Summary | Severity | Blocker | Issue |
 | --- | --- | --- | --- | --- |
 | D-1 | `LOGO_DEV_API_KEY` was not configured, so the DAT-010 candidate lookup could not run | environment | **resolved before the trial** — no longer blocking | not filed (config, not a product defect) |
+| D-4 | A Sales Navigator capture's derived profile URL is an opaque member id, so the same person captured from their profile page will not match it | **identity fragmentation** | not for DAT-011 | to be filed — settles the open question Layer 3C left |
 | D-3 | Reported: captured company not visible in the app for a Sales Navigator capture | unresolved | no | **not reproduced** — cause unknown, left open |
 | D-OBS-3 | *Person observations* omits captured company and title; profile captures show the employer only via the experience table | presentation | no | not filed |
 | D-2 | `derived_value` provenance is rendered as *Needs review*, flagging ~100% of Sales Navigator rows and destroying the signal | **blocker for S3a** | yes, for that step | to be filed |
@@ -627,6 +628,45 @@ standing:
 A symptom that disappears without a change is worth less trust, not more. If it
 returns, the thing to capture is the exact URL and the capture's mode, which is
 what would have settled it the first time.
+
+### D-4 — the member-id question Layer 3C left open is now answered
+
+`LINKEDIN_CAPTURE_ACCEPTANCE.md` Layer 3C closes with a "known item for review,
+not a step": if a Sales Navigator member id is an opaque URN rather than a
+vanity handle, the derived `/in/<member-id>` URL will not be string-equal to a
+vanity URL already stored for the same person, and the backend matches profile
+URLs exactly. It asked for one observation to settle whether a follow-up is
+needed.
+
+**The observation, taken from a trial capture** **[machine, supervised]**:
+
+| Field | Shape observed |
+| --- | --- |
+| `capture_mode` | `salesnav_people_search` |
+| `source_surface` | `salesnav_people_results` |
+| `normalized_profile_url` | `/in/` + a **40-character opaque alphanumeric member id** |
+| `salesnav_lead_url` | `/sales/lead/` + the same identifier in mixed case |
+| `extraction_status` | `partial` |
+| Reconciliation outcome | `unmatched_staged` |
+
+It is an opaque id, not a vanity handle. So the follow-up Layer 3C anticipated
+**is** needed, and the consequence is concrete: the same person captured from a
+Sales Navigator listing and from their own profile page produces two different
+`/in/` URLs, which the backend will not match to each other. Two captures, two
+staged identities, eventually two contacts.
+
+**This is a fragmentation risk, not a correctness failure**, and the distinction
+matters. Nothing is invented and nothing is wrongly merged — the system is
+behaving exactly as the "only an exact normalized LinkedIn profile URL may
+auto-match" rule requires, and staging as `unmatched_staged` is the safe branch.
+The cost is landing on the safe side of a decision the system cannot make.
+
+**Out of scope for DAT-011.** It changes no result in this trial: idempotency
+(S11) is about resubmitting the *same* capture, which still replays correctly.
+It needs its own issue, because the fix is an identity question — whether the
+member id should be resolved to a vanity handle at capture time, or carried as a
+second matchable key — and that is a backend design decision, not an acceptance
+step.
 
 ## 5. Verdict
 
