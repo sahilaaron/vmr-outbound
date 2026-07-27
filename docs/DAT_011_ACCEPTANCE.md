@@ -381,10 +381,10 @@ stable key. Nothing was submitted by the cancellation.
 
 | Step | What to do | What must be true | Result |
 | --- | --- | --- | --- |
-| C0 | Open a `linkedin.com/company/…` page | Strip reads *LinkedIn · Company page* | |
-| C1 | Capture on the About page | Firmographics match; a website shown on the page is reported as *Shown on this page*; if absent, *Domain not confirmed* with nothing invented | |
-| C2 | Save | Saves company **evidence**, not a contact | |
-| C3 | Confirm nothing overclaims | No company matching/diff presented as working — it is not implemented | |
+| C0 | Open a `linkedin.com/company/…` page | Strip reads *LinkedIn · Company page* | **PASS** [operator] — strip reads *LinkedIn · Company page*, badge **Ready to capture** |
+| C1 | Capture on the About page | Firmographics match; a website shown on the page is reported as *Shown on this page*; if absent, *Domain not confirmed* with nothing invented | **PASS** [operator] — firmographics match the visible page, `Founded — Not shown`, and the website is labelled **Shown on this page**. See *C1* below |
+| C2 | Save | Saves company **evidence**, not a contact | pending the save |
+| C3 | Confirm nothing overclaims | No company matching/diff presented as working — it is not implemented | **PASS** [operator] — the panel enumerates the only two domain states it can report and explicitly hands matching to the app. See *C3* below |
 
 ### D. Failure recovery
 
@@ -680,6 +680,8 @@ unless a small unambiguous acceptance blocker is documented first.
 | D-6 | After a candidate is confirmed, the capture page keeps showing a stale *"why not promoted"* reason that contradicts the confirmed state | operator truth | no — promotion is gated on the outcome, not the message | **filed as #192** (UI-014) — tracked separately; not implemented inside DAT-011 |
 | D-8 | On reopening the panel the restored outcome view is overwritten by the first surface detection, so the last result and its *Open captured contacts* link are unreachable | **blocker for S5 (result half) and S6** | yes, for those steps | to be filed — **UI-012 regression**, reproduced in the panel harness |
 | D-7 | The operator's typed *"why leave it unresolved?"* reason is stored and audited but never displayed back on the capture page | evidence visibility | no — the reason is persisted, not lost | **filed as #193** — tracked separately; not implemented inside DAT-011 |
+| D-OBS-6 | The same company is recorded as the vanity company slug from the company page and as the numeric company id from a person capture — the company-level twin of D-4 | latent | no | not filed — companies resolve by domain, so nothing matches on these URLs today |
+| D-OBS-5 | A replayed submission still headlines *"30 of 30 prospects saved"*; the truthful *"already received"* wording sits in the body | presentation | no | not filed — fits #192 |
 | D-OBS-4 | A manual domain decision flashes *"company domain candidate confirmed"*; the stored record correctly says `(manual)` | presentation | no | not filed — fits #192's area |
 | D-OBS-1 | `created` is a declared capture counter no outcome can increment; the panel carries a label for it | observation | no | not yet filed |
 | D-OBS-2 | Acceptance and CLAUDE docs still describe the pre-UI-012 panel and the old product name | documentation | no | not yet filed |
@@ -1070,6 +1072,70 @@ at 04:15 with the stated reason *"most recent evidence"* under policy
 `freshness-v1`. And both captures survive independently — **evidence accumulates
 while identity does not multiply**, which is the contact-first architecture doing
 exactly what it claims.
+
+### C1 — firmographics, and the one field that matters most
+
+**Observed** [operator] on a company page, first on the landing tab and then on
+*About*; the panel followed the URL change and re-read without being asked.
+
+| Field | Reported |
+| --- | --- |
+| Industry | Software Development |
+| Company size | 51-200 employees |
+| Displayed employees | *"95 associated members — LinkedIn members who've listed Utila as their current workplace on their profile."* |
+| Headquarters | New York City, New York |
+| Founded | **Not shown** |
+| Company page | the LinkedIn URL |
+| **Website** | `https://utila.io/` — **● Shown on this page** |
+
+Each matches the visible page. `Founded` is **Not shown** rather than blank or
+guessed.
+
+**The "displayed employees" wording deserves its own note.** LinkedIn's member
+count is not a headcount, and the panel refuses to let it read as one: it reports
+the number *and* what the number actually counts. The easy version of this field
+would have said "95 employees" and been quietly wrong on every company.
+
+**The website line is the load-bearing one.** This trial spent Phase E
+establishing that a domain is confirmed by an operator and never invented,
+because LinkedIn does not reliably give you one. A company page that *does* show
+a website is the exact place where a capture tool would be tempted to assert a
+domain. This one reports it as an observation with its provenance stated —
+*shown on this page* — and stops there. The value it read, `utila.io`, happens to
+be the domain confirmed manually in E4, which is a pleasing cross-check but not
+the point; the point is that the panel labelled it as *seen*, not as *true*.
+
+### C3 — the panel states the limits of what it can know
+
+**Observed** [operator] at the confirm step, which is headed *"Is this the right
+company?"* and ends with a titled block:
+
+> **DOMAIN STATES THIS PANEL CAN REPORT**
+> Shown on this page → **Confirmed**
+> Not shown → **Missing**
+>
+> *"Whether the domain matches a company VM Prospector already knows is decided
+> in the app, not here."*
+
+**This is the requirement met exactly.** UI-012's brief said anything the backend
+cannot support must be "omitted cleanly or presented only as a truthful
+non-interactive state". Company matching and diffing are not implemented — so
+rather than showing a disabled *Match* button or a hopeful "we'll link this up"
+message, the panel enumerates its own two possible outputs and names the system
+that owns the decision it cannot make.
+
+Two more restraints in the same view: *"Open the company page yourself — the
+panel never navigates there for you"*, which restates the no-automated-navigation
+guarantee at the point where an operator might expect convenience; and the save
+control named **"Save company evidence"** rather than "Save company", with the
+footnote *"This saves company evidence, not a contact."*
+
+*(Observation, D-OBS-6: this capture recorded the company as
+`linkedin.com/company/utila-io` while the person capture recorded the same
+company as `linkedin.com/company/91037437` — the vanity slug versus the numeric
+id, the company-level twin of D-4. Latent rather than active: companies are
+resolved by **domain**, so nothing matches on these URLs today. It would become
+real the moment anything did.)*
 
 ### B4 — declining a page it could easily have parsed
 
