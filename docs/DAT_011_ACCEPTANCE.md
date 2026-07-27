@@ -371,9 +371,9 @@ stable key. Nothing was submitted by the cancellation.
 
 | Step | What to do | What must be true | Result |
 | --- | --- | --- | --- |
-| B0 | Open a `linkedin.com/in/…` main profile | Strip reads *LinkedIn · Person profile*; panel follows the tab without a Refresh press | |
-| B1 | Review the extracted fields | Fields match the visible page; anything absent is shown as missing, never guessed | |
-| B2 | Capture → confirm → Save | Outcome is `refreshed_exact_match` or `staged_unmatched`; `created` is 0 | |
+| B0 | Open a `linkedin.com/in/…` main profile | Strip reads *LinkedIn · Person profile*; panel follows the tab without a Refresh press | **PASS** [operator] — the strip switched to *LinkedIn · Person profile* with the profile URL, unprompted |
+| B1 | Review the extracted fields | Fields match the visible page; anything absent is shown as missing, never guessed | **PASS** [operator] — see *B1* below. Missing sections are named, and the panel states *"Empty fields stay empty — VM Prospector will not fill them in."* |
+| B2 | Capture → confirm → Save | Outcome is `refreshed_exact_match` or `staged_unmatched`; `created` is 0 | **PASS** [operator, machine-verified] — `submitted 1 / staged_unmatched 1 / created 0`. Promotion then linked it to the **existing** contact rather than making a second one. See *B2* below |
 | B3 | Save again without recapturing | *already saved — idempotent*, same submission | |
 | B4 | Open a Sales Navigator person page | Reports *unsupported* with the reason — the shipped detector supports only the main `/in/` profile | |
 
@@ -673,7 +673,7 @@ unless a small unambiguous acceptance blocker is documented first.
 | --- | --- | --- | --- | --- |
 | D-1 | `LOGO_DEV_API_KEY` was not configured, so the DAT-010 candidate lookup could not run | environment | **resolved before the trial** — no longer blocking | not filed (config, not a product defect) |
 | D-5 | ~~Confirming a domain candidate 500s~~ — **withdrawn as a defect**; reclassified as an **environment-contamination incident**. The repository was switched to the DAT-017A branch while uvicorn ran with `--reload`; the hot-reloaded code queried a table the shared `vmr_dev` database has never had | **environment / trial integrity** | see the incident record | not a product defect; nothing to file against the product |
-| D-4 | A Sales Navigator capture's derived profile URL is an opaque member id, so the same person captured from their profile page will not match it | **identity fragmentation** | not for DAT-011 | to be filed as a standalone follow-up — **stands on its own**: observed before the WatchFiles reload, on `main@d99e274`, and unrelated to the missing-table error. It settles the open question Layer 3C left, and the contamination neither caused it nor weakens it. |
+| D-4 | A Sales Navigator capture's derived profile URL is an opaque member id, so the same person captured from their profile page does not match it **by URL** | **downgraded** — see the correction below | no | still worth filing, but as a **narrow** identity risk, not fragmentation-by-default |
 | D-3 | Reported: captured company not visible in the app for a Sales Navigator capture | unresolved | no | **not reproduced** — cause unknown, left open |
 | D-OBS-3 | *Person observations* omits captured company and title; profile captures show the employer only via the experience table | presentation | no | not filed |
 | D-2 | `derived_value` provenance is rendered as *Needs review*, flagging ~100% of Sales Navigator rows and destroying the signal | **blocker for S3a** | yes, for that step | **filed as #191** — tracked separately; not implemented inside DAT-011 |
@@ -973,6 +973,71 @@ For a multi-row submission the headline alone would read as a fresh save. Minor,
 and the same family as D-6 / D-OBS-4: the data is right, one line of copy is
 generic.)*
 
+### B1 — the person profile reports what it could not read
+
+**Observed** [operator]. Captured on a profile deliberately chosen because the
+same person was already in this trial's Sales Navigator batch.
+
+Before saving, the panel showed a preview headed *"Preview ready — review what
+could not be read"*, and a panel titled **"Some details could not be read"**
+listing `Current company`, `Location`, `Experience — 4 entries`, and
+`About — Section missing`. Its guidance was to scroll so the missing sections
+load and read the page again, followed by the sentence that matters most here:
+
+> **"Empty fields stay empty — VM Prospector will not fill them in."**
+
+The review step then showed `About — Not captured`, `Website — Not confirmed`,
+and `Page evidence — Partial`.
+
+**The parsing quality point worth recording.** This profile's *headline* is a
+joke — "Protecting stuff". The extension did not use it as the title. It read
+`Co-Founder & CEO` from the experience section instead. A capture tool that
+treated the headline as the job title would have written nonsense into a
+permanent record; this one went to the structured source.
+
+**The "Needs review" badge is earned here**, unlike the Sales Navigator case in
+D-2: the About section really was missing and the page evidence really was
+partial. Same badge, opposite information value — which is precisely why D-2
+matters.
+
+### B2 — capturing someone the trial had already captured
+
+This is the most informative single step in the trial, because it corrects a
+defect this document had already filed.
+
+**The two captures of the same person, side by side:**
+
+| | Sales Navigator capture | Profile capture |
+| --- | --- | --- |
+| `capture_mode` | `salesnav_people_search` | `linkedin_profile` |
+| `normalized_profile_url` | `…/in/acwaabst1xmb…` — the **opaque member id**, derived | `…/in/bentzi-rabi` — the **real handle**, observed |
+| Ingest outcome | `staged_unmatched` | `staged_unmatched` |
+
+At submission the panel reported **"1 staged as a new person"**, and the
+submission recorded `submitted 1 / staged_unmatched 1 / created 0`. On the face
+of it, D-4's fragmentation.
+
+**Then promotion linked it to the existing contact** —
+`contact exact match linked`, `matched_contact` = the same contact id the Sales
+Navigator capture had produced. Scoped contact count for that company: still
+**1**, not 2.
+
+**Why, from the code.** Promotion resolves identity on **two keys in order**:
+
+1. the exact normalized LinkedIn URL — which failed, exactly as D-4 predicted;
+2. failing that, a deterministic **natural key** of first name + last name +
+   **confirmed company domain** — which matched, because both captures had been
+   resolved to `utila.io`.
+
+The contact's `linkedin_url` then updated from the opaque id to the real handle
+through the provenance and freshness policy — the observed value displacing the
+derived one. And the panel, on returning to the profile, now reads **"Already
+saved"** with *"Capturing again records what the page shows today. It never
+overwrites what's already there."*
+
+**This forces a correction to D-4** — recorded in the defect section rather than
+left as filed.
+
 ### A10 / S6 — the panel's own link opens the exact record
 
 **Observed** [operator], verified against identifiers already recorded here.
@@ -993,6 +1058,44 @@ and then listed what it does support. It neither pretended to work nor went
 blank; the unsupported state is a real, informative state. And **S6 is only
 reachable immediately after a save** — see D-8 — so this passed on the second
 save of the session rather than by reopening the panel.
+
+### D-4, corrected — fragmentation is caught by a second key
+
+**I filed D-4 as identity fragmentation. Tested live, it is narrower than that,
+and the correction belongs on the record more than the original claim did.**
+
+The URL half of D-4 is confirmed: a Sales Navigator capture stores the derived
+opaque member id, a profile capture stores the real handle, and the two do not
+match as URLs. What the original filing missed is that **URL matching is not the
+only key**. Promotion falls back to a deterministic natural key — first name,
+last name, confirmed company domain — and that key linked the two captures of the
+same person into one contact. The observed handle then displaced the derived id
+on the contact record.
+
+**So the acquisition path does not silently duplicate people.** That is the
+claim that matters for DAT-011, and it holds.
+
+**What survives of D-4, stated precisely.** The natural key carries the whole
+burden whenever the URL differs, so fragmentation returns wherever that key is
+weak or unavailable:
+
+* **The domain differs or is missing.** Two captures resolved to different
+  domains — or one left deliberately unresolved (E5) — cannot share a natural
+  key. The unresolved capture is never promoted, so it cannot merge.
+* **The name does not normalize identically.** This trial's own batch contains
+  people recorded as *"… MBA, CPA, ACA, ACMA, CGMA"* and *"…, PD (Finance), MBA,
+  CMA"*, and others with initials for surnames. Credential suffixes, honorifics
+  and abbreviated surnames all move the natural key.
+* **The ingest report still says "new person."** The capture outcome is computed
+  at submission on the URL alone, so the operator is told *"1 staged as a new
+  person"* about someone the system will shortly recognise. Truthful about ingest,
+  misleading about the person.
+
+**Recommended reframing for the issue:** not *"Sales Navigator captures fragment
+identity"* but *"the derived member-id URL is not a usable identity key, leaving
+the natural key as the only defence — which fails on name variants and on
+unresolved domains."* Narrower, and actionable: resolve the member id to the
+public handle at capture time, or carry it as a second matchable key.
 
 ### D-8 — the restored outcome is painted, then immediately overwritten
 
