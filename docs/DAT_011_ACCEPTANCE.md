@@ -399,12 +399,32 @@ stable key. Nothing was submitted by the cancellation.
 | Step | What to do | What must be true | Result |
 | --- | --- | --- | --- |
 | E1 | Open `/contact-captures/pending` | The captured person is listed as pending | |
-| E2 | Run the company lookup | Candidates stored with provider order; confidence recorded as *not provided* rather than invented | |
-| E3 | Confirm one candidate | `domain_candidate_confirmed`, source `candidate`, actor and time recorded | |
+| E2 | Run the company lookup | Candidates stored with provider order; confidence recorded as *not provided* rather than invented | **PASS** [operator] — live lookup returned **10 candidates**, reported as *awaiting your decision*; nothing auto-confirmed. See scope note |
+| E3 | Confirm one candidate | `domain_candidate_confirmed`, source `candidate`, actor and time recorded | **PASS** [operator] — two candidates rejected with the decisions preserved (*"the decision is kept with the candidates"*), one confirmed; outcome reached `domain_candidate_confirmed` and *Promote to contact* became available. See scope note |
 | E4 | Where practical: type a domain for a second capture | `decision=manual` recorded as an override | |
 | E5 | Where practical: leave a third unresolved | `left_unresolved`; nothing promoted | |
 | E6 | Promote the confirmed capture | `contact_created`; labels and notes carried; capture linked | |
 | E7 | Promote again | `already_promoted`; no second contact | |
+
+#### E2 / E3 scope note — exercised on a pre-existing capture
+
+The operator ran the domain path on a capture from the **pre-existing 50**, not
+on one of this trial's 30. Recorded honestly rather than quietly folded in:
+
+* It is **outside the trial's scoped rows**, so it contributes no count to the
+  Phase 4 figures, which stay measured against this trial's own identifiers.
+* It is **stronger evidence for the shipped path than a trial row would have
+  been**, because the company was genuinely ambiguous. The provider returned ten
+  candidates and the operator rejected two before confirming one — which is the
+  live-data version of the argument Layer 4B made for why auto-confirming a
+  top-ranked name match is unsafe.
+* Both rejections were preserved with their decision rather than discarded, and
+  the capture only became promotable after an explicit confirmation.
+
+**E2 is now doubly evidenced**: Layer 4B proved the provider path at the API
+level, and this run proves it through the shipped workbench with a key
+configured today. What is still owed to the trial's own scope is a promotion of
+one of the trial's captures — E6/E7 below.
 
 ### F. Backend truth (Phase 4)
 
