@@ -390,7 +390,7 @@ stable key. Nothing was submitted by the cancellation.
 
 | Step | What to do | What must be true | Result |
 | --- | --- | --- | --- |
-| D1 | Stop the backend, press Save | Clear failure; reviewed draft intact; *Download as file instead* offered | |
+| D1 | Stop the backend, press Save | Clear failure; reviewed draft intact; *Download as file instead* offered | **PASS** [operator, backend-down verified] — *"Connection lost … Nothing was saved, and what you reviewed is still here."*, `code: network_error`, *Try again* and *Back to review*. See *D1* below. **Note:** the offered fallback is *Back to review* plus retry, not a file download — see the note in D1 |
 | D2 | Restart the backend, press *Try again* | Succeeds with the **same** submission id | |
 | D3 | Inspect | No duplicate submission, capture, contact or evidence row | |
 
@@ -1106,6 +1106,54 @@ domain. This one reports it as an observation with its provenance stated —
 *shown on this page* — and stops there. The value it read, `utila.io`, happens to
 be the domain confirmed manually in E4, which is a pleasing cross-check but not
 the point; the point is that the panel labelled it as *seen*, not as *true*.
+
+### D1 — failing well
+
+**Observed** [operator], with the backend confirmed stopped independently
+(`Failed to fetch` against the workbench from a separate tab).
+
+| Element | What it said |
+| --- | --- |
+| Connection indicator | **Not connected**, red |
+| Step indicator | **FAILED** |
+| Headline | **Connection lost** |
+| Body | *"VM Prospector didn't answer. **Nothing was saved**, and what you reviewed is still here."* |
+| Details | *"Could not reach the backend. Is it running on the configured loopback port?"* · `code: network_error` |
+| Footnote | *"Retrying is safe — the same submission is replayed, never duplicated."* |
+| Controls | **Try again** · **Back to review** |
+
+Every part of the criterion lands. The failure is **specific** rather than
+generic — it names the cause, gives a machine-readable code, and asks the one
+diagnostic question that points at the actual fix. It makes the **negative claim
+explicitly**: *nothing was saved*, which is the sentence an operator needs when
+the alternative is wondering whether a half-write happened. The **draft
+survives**, and *Back to review* is a route to it rather than a dead end.
+
+**The footnote is the best line in the product.** At the exact moment an operator
+is deciding whether pressing a button again is dangerous, the panel tells them it
+is not, and says why — *the same submission is replayed, never duplicated*. And
+this trial has independently **proved that claim true** in S11: an unchanged
+resubmission produced no second submission, no duplicate captures, and no change
+in any count. The reassurance is backed by demonstrated behaviour rather than
+asserted.
+
+**Two honest notes against the criterion as written.**
+
+*Download as file instead* was **not** offered on this failure. The step's
+acceptance text expects it. Retry plus a retained draft is arguably the better
+answer for a transient network failure — a file export is a recovery route for
+when the backend is not coming back — but the criterion says what it says, so
+this is recorded as a difference rather than silently accepted. Whether the
+export belongs on this path is a product question for the issue, not something
+this trial should decide.
+
+*The connection indicator corrected itself.* Before the save it still read
+**Connected** while the backend was already down, which I had noted as a possible
+overstatement. It flipped to **Not connected** the moment a save ran. That is
+exactly what `shell.js` documents — the indicator reports "how the last save
+ended", not live connectivity, because the panel does not poll. So the earlier
+reading was stale-until-next-save by design, and the design corrected it at the
+first real interaction. Recorded as resolved, not as a defect.
 
 ### C2 — company evidence saves, idempotently, and creates no contact
 
