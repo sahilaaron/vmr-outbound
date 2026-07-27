@@ -1,7 +1,7 @@
-# VMR Contact Capture — Chrome extension
+# VM Prospector — Chrome extension
 
-Operator-driven acquisition of **visible** LinkedIn and Sales Navigator people
-for the VMR Outbound Agent. It is the contact-acquisition **edge** of the
+**VM Prospector** is the operator-driven acquisition of **visible** LinkedIn
+and Sales Navigator people for the VMR Outbound Agent. It is the contact-acquisition **edge** of the
 system: it reads what the operator is already looking at, lets them review and
 annotate it, and submits those people to a narrow VMR intake endpoint (or a
 JSON/CSV export). Its responsibility ends there.
@@ -86,9 +86,53 @@ denied evidence in `docs/screenshots/` (`02_side_panel.png`,
 analytics, no third-party hosts. LinkedIn is a read surface; the extension never
 POSTs to it.
 
+## The side panel (VM Prospector)
+
+One shell, three automatically detected interfaces, and one dominant action per
+step. The shell is: header (product, connection state, settings) · detected-page
+strip · three-step rail · one scrolling body · one sticky action footer.
+Designed at 360px, fluid from 320 to ~520.
+
+| Step | Listings | Person profile | Company page |
+| --- | --- | --- | --- |
+| 1 | Select prospects | Review person | Review company |
+| 2 | Review the selected set | Confirm capture (+ Review details) | Confirm identity |
+| 3 | Saving → outcome | Saving → outcome | Saving → outcome |
+
+Shared states: classifying the page, unsupported page, sign-in / security check,
+page unavailable, loopback permission needed, archived drafts, settings.
+
+The listing read pass is **operator-cancellable** (DAT-018 D). While it runs the
+panel shows the rows loaded so far and a *Stop reading this page* control, which
+routes `CANCEL_CAPTURE` → `CS_CANCEL_SCROLL` and halts the pass. Stopping is an
+operator action, not a failure: the scroller still returns the view to the top,
+every row already loaded is kept and shown, the batch and the reviewed draft
+survive, nothing is submitted, and the next capture starts clean. A cancel that
+arrives with no pass running cancels nothing and is reported as such.
+
+Rendered snapshots of every state are in
+[`docs/screenshots/panel/`](./docs/screenshots/panel/), produced by
+`node tools/render-panel-states.js <outdir>` — the shipped HTML, CSS and
+controllers driven through a stubbed `chrome.*`, so a snapshot is the panel that
+ships, not a mock-up.
+
+Typography is the design system's own: **Manrope** for headings, names, buttons
+and badges; **Source Sans 3** for body and helper text; **IBM Plex Mono** for
+counts, identifiers, status text and URLs. The faces are bundled as woff2 under
+`src/sidepanel/fonts/` and registered in `fonts.css` — the design system loads
+them from Google Fonts, which an extension page must not do. Only the subsets
+and weights the panel uses ship; the platform stacks stay behind each family so
+text outside those subsets still renders. Licences: `src/sidepanel/fonts/OFL.txt`.
+
+Status is never carried by colour alone: every tone is paired with a word, and
+badges carry a shape. A field the page did not show stays visibly empty and is
+labelled as missing — it is never filled in, and never quietly dropped.
+
 ## Capture modes and supported surfaces (DAT-012)
 
-The side panel detects the active page and shows exactly one mode:
+The side panel is one product with three automatically detected interfaces —
+there is no manual mode selector. It classifies the page the operator already
+opened and shows exactly one of:
 
 | Mode | Surface | What it captures |
 | --- | --- | --- |
@@ -151,7 +195,8 @@ not silently processed.
    not want. Move to the next page in Sales Navigator yourself and capture
    again — rows accumulate into one draft batch, de-duplicated by stable URL.
 4. Optionally add labels and a note for the submission.
-5. Click *Save N included contacts*, or *Download JSON* / *Download CSV*.
+5. Click *Review selected (N)*, check the set, then *Capture N prospects* — or
+   *Download JSON* / *Download CSV*.
    Nothing is sent without this explicit action.
 6. Open the saved contacts from the returned submission record.
 
@@ -240,6 +285,8 @@ npm test             # node --test: extraction, normalize, dedupe, contracts,
 npm run mock-receiver
 ```
 
-`test/browser-check.html` and `test/sidepanel-preview.html` are manual in-browser
-harnesses (serve the folder over http and open them). Screenshots of both are in
+`test/browser-check.html` is a manual in-browser harness (serve the folder over
+http and open it). `node tools/render-panel-states.js <outdir>` renders the real
+side panel — the shipped HTML, CSS and controllers driven through a stubbed
+`chrome.*` — into one standalone page per state; the captured images are in
 [`docs/screenshots/`](./docs/screenshots/).

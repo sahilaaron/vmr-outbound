@@ -1,0 +1,128 @@
+/* ============================================================
+   VM Prospector — design tokens.
+
+   A trimmed, self-hosted subset of the VMR design system: only the
+   tokens the side panel actually uses. Nothing is fetched at runtime.
+
+   The three type roles are the design system's own faces — Manrope,
+   Source Sans 3, IBM Plex Mono — bundled as woff2 and registered in
+   fonts.css rather than pulled from Google Fonts, because an extension
+   page must not fetch a remote resource. The platform stacks are kept
+   behind each family as a fallback for text outside the bundled
+   subsets, not as a substitute for the face.
+   ============================================================ */
+
+:root {
+  /* ---- Indigo — primary brand (the VMR monogram) ---- */
+  --indigo-50: #eef0f9;
+  --indigo-100: #dce0f2;
+  --indigo-200: #b8bfe5;
+  --indigo-300: #8f99d4;
+  --indigo-500: #464da9;
+  --indigo-600: #3a408f;
+  --indigo-700: #2f3372;
+  --indigo-900: #181b3b;
+
+  /* ---- Teal — accent (the VMR wordmark) ---- */
+  --teal-500: #44b4bf;
+  --teal-600: #36929d;
+  --teal-700: #2e747e;
+
+  /* ---- Neutrals — cool slate ---- */
+  --neutral-0: #ffffff;
+  --neutral-50: #f7f8fb;
+  --neutral-100: #eef0f5;
+  --neutral-200: #dfe3ec;
+  --neutral-300: #c7cddc;
+  --neutral-400: #99a2bb;
+  --neutral-500: #6c7693;
+  --neutral-600: #4d5670;
+  --neutral-700: #394157;
+  --ink: #0f1320;
+
+  /* ---- Semantic status ---- */
+  --success-50: #e8f6ef;
+  --success-500: #1f9d6b;
+  --success-700: #16704c;
+  --warning-50: #fdf4e3;
+  --warning-500: #e3961a;
+  --warning-700: #a86a0d;
+  --danger-50: #fceceb;
+  --danger-500: #d8473f;
+  --danger-700: #a4302a;
+  --info-50: #e9f2fb;
+  --info-500: #3b82c4;
+  --info-700: #2a5e90;
+
+  /* ---- Semantic aliases ---- */
+  --brand: var(--indigo-500);
+  --brand-strong: var(--indigo-700);
+  --brand-soft: var(--indigo-50);
+  --accent: var(--teal-500);
+
+  --surface-page: var(--neutral-50);
+  --surface-card: var(--neutral-0);
+  --surface-sunken: var(--neutral-100);
+
+  --text-strong: var(--ink);
+  --text-body: var(--neutral-700);
+  --text-muted: var(--neutral-500);
+  --text-faint: var(--neutral-400);
+
+  --border-subtle: var(--neutral-200);
+  --border-default: var(--neutral-300);
+
+  --focus-ring: rgba(70, 77, 169, 0.45);
+
+  /* ---- Type ---- */
+  --font-display: "Manrope", "Segoe UI Variable Display", "Segoe UI", system-ui,
+    -apple-system, BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif;
+  --font-body: "Source Sans 3", "Segoe UI", system-ui, -apple-system,
+    BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, "Cascadia Mono",
+    Menlo, Consolas, monospace;
+
+  --text-2xs: 0.6875rem;
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+  --weight-extra: 800;
+
+  --tracking-tight: -0.02em;
+  --tracking-caps: 0.08em;
+
+  /* ---- Space & radii (4px grid) ---- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+
+  --radius-sm: 5px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+
+  --control-h-sm: 32px;
+  --control-h-md: 40px;
+
+  /* ---- Elevation & motion ---- */
+  --shadow-xs: 0 1px 2px rgba(24, 27, 59, 0.06);
+  --shadow-sm: 0 1px 3px rgba(24, 27, 59, 0.08), 0 1px 2px rgba(24, 27, 59, 0.04);
+  --shadow-md: 0 4px 12px rgba(24, 27, 59, 0.08), 0 2px 4px rgba(24, 27, 59, 0.05);
+
+  --gradient-brand: linear-gradient(
+    135deg,
+    var(--indigo-700) 0%,
+    var(--indigo-500) 55%,
+    var(--teal-600) 130%
+  );
+
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+}

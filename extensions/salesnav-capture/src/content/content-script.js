@@ -7,8 +7,9 @@
  * page on request; the operator advances pages themselves.
  *
  * Messages handled:
- *   CS_DETECT  -> report page support / challenge / page number / visible count
- *   CS_CAPTURE -> materialize lazy rows (bounded), extract, return a page result
+ *   CS_DETECT        -> report page support / challenge / page number / visible count
+ *   CS_CAPTURE       -> materialize lazy rows (bounded), extract, return a page result
+ *   CS_CANCEL_SCROLL -> stop the running pass; reports whether one was running
  */
 (function () {
   "use strict";
@@ -48,14 +49,24 @@
    * own. See src/common/scroller.js for the stop conditions and the note on why
    * a small bounded jitter exists (DOM/layout timing, not detection avoidance).
    */
+  // A cancel only ever applies to the pass that is running when it arrives.
+  // `activePassId` is null between passes, so a cancel that lands late — after
+  // the pass already stopped, or with no capture at all — is reported as having
+  // cancelled nothing instead of arming the next pass the operator starts.
   let cancelRequested = false;
+  let activePassId = null;
+  let passCounter = 0;
 
   function requestScrollCancel() {
+    if (activePassId == null) return { cancelled: false, reason: "no_active_pass", passId: null };
     cancelRequested = true;
+    return { cancelled: true, reason: null, passId: activePassId };
   }
 
   async function materializeRows(onProgress) {
     cancelRequested = false;
+    passCounter += 1;
+    activePassId = passCounter;
     const container = findScrollContainer();
     const target = container || document.scrollingElement || document.documentElement;
     return scroller.runScrollPass({
@@ -80,6 +91,9 @@
       random: () => Math.random(),
       isCancelled: () => cancelRequested,
       onProgress: onProgress || (() => {}),
+    }).finally(() => {
+      activePassId = null;
+      cancelRequested = false;
     });
   }
 
@@ -112,11 +126,14 @@
         capturedAt: nowIso(),
       });
     }
+    const passId = passCounter + 1;
     const scrollResult = await materializeRows((progress) => {
       // Progress is advisory: the panel may not be listening, and a delivery
-      // failure must never abort the pass the operator started.
+      // failure must never abort the pass the operator started. The pass id
+      // travels with it so a late event from a cancelled pass is discarded by
+      // the panel rather than repainting a state the operator has left.
       try {
-        chrome.runtime.sendMessage({ type: "CS_SCROLL_PROGRESS", progress });
+        chrome.runtime.sendMessage({ type: "CS_SCROLL_PROGRESS", passId, progress });
       } catch (_e) {
         /* panel closed */
       }
@@ -131,6 +148,9 @@
       rows: scrollResult.rows,
       startRows: scrollResult.startRows,
       elapsedMs: scrollResult.elapsedMs,
+      // The operator's view is put back where they left it, cancelled or not.
+      returnedToTop: scrollResult.returnedToTop === true,
+      passId,
     };
     return page;
   }
@@ -142,8 +162,7 @@
       return; // sync
     }
     if (msg.type === "CS_CANCEL_SCROLL") {
-      requestScrollCancel();
-      sendResponse({ ok: true });
+      sendResponse(Object.assign({ ok: true }, requestScrollCancel()));
       return; // sync
     }
     if (msg.type === "CS_CAPTURE") {

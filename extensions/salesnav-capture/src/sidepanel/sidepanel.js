@@ -1,11 +1,16 @@
 /**
  * Side-panel core: shared helpers, the optional labels/note card, the shared
- * Save action, and the Sales Navigator results workflow.
+ * Save action and outcome, and the Sales Navigator listings workflow.
  *
  * Contact-first: there is no campaign selector, no campaign id, and no campaign
- * state anywhere in this panel. The operator captures visible people, includes
- * or excludes them, optionally labels and annotates them, and saves them as
- * permanent contacts.
+ * state anywhere in this panel. The operator selects visible people, reviews the
+ * selected set, optionally labels and annotates it, and saves them as permanent
+ * contacts.
+ *
+ * Presentation is the VM Prospector shell (src/sidepanel/shell.js): header,
+ * detected-page strip, three-step rail, one scrolling body, one sticky action.
+ * Behaviour is unchanged — the same messages, the same warnings, the same draft
+ * retention, the same retry semantics.
  *
  * Pure DOM rendering — every piece of captured text is set via textContent
  * (never innerHTML) so captured values cannot inject markup.
@@ -15,6 +20,8 @@
 
   const { constants, contactSchema, handoff } = self.SNCapture;
   const WARN = constants.WARNINGS;
+  const shell = self.VMRShell;
+  const { el, badge, callout, kv, statusLine, box, paragraph } = shell;
 
   function send(message) {
     return new Promise((resolve) => {
@@ -33,25 +40,47 @@
   let currentPrefs = null;
   let currentMetadata = { labels: [], note: null };
   let saveHandler = null;
+  // The view the operator returns to when they leave an outcome or settings.
+  let returnView = null;
 
-  // ---- element helpers ----------------------------------------------------
+  // ---- shared view plumbing ------------------------------------------------
 
-  function el(tag, opts, children) {
-    const node = document.createElement(tag);
-    if (opts) {
-      if (opts.class) node.className = opts.class;
-      if (opts.text != null) node.textContent = opts.text;
-      if (opts.title) node.title = opts.title;
-      if (opts.attrs) for (const [k, v] of Object.entries(opts.attrs)) node.setAttribute(k, v);
-      if (opts.on) for (const [k, v] of Object.entries(opts.on)) node.addEventListener(k, v);
+  // Views that also show the optional labels/note card, and views that show
+  // the outcome cards. Kept here so the two controllers agree.
+  const METADATA_VIEWS = new Set(["listings-review", "person-confirm"]);
+  // The two review/confirm views share one action group so the Save button has
+  // exactly one implementation.
+  const ACTIONS_FOR = {
+    "listings-review": "save",
+    "person-confirm": "save",
+    // Every blocked page offers the same single way forward: look again.
+    unsupported: "blocked",
+    challenge: "blocked",
+    unavailable: "blocked",
+  };
+  // Views the operator is *in the middle of* — page re-detection repaints the
+  // detected-page strip underneath them but must not yank the body away.
+  const STICKY_VIEWS = new Set(["outcome", "settings"]);
+
+  /** Switch the body and the sticky action group together. */
+  function showView(name) {
+    shell.setView(name);
+    const actionsKey = ACTIONS_FOR[name] || name;
+    for (const node of document.querySelectorAll("[data-actions]")) {
+      node.hidden = node.getAttribute("data-actions") !== actionsKey;
     }
-    for (const c of children || []) if (c) node.appendChild(c);
-    return node;
+    $("metadata-card").hidden = !METADATA_VIEWS.has(name);
+    if (!STICKY_VIEWS.has(name)) returnView = name;
   }
 
-  function setStatus(elm, cls, text) {
-    elm.className = "status " + cls;
-    elm.textContent = text;
+  function isSticky() {
+    return STICKY_VIEWS.has(shell.getView());
+  }
+
+  function setFeedback(elm, text, tone) {
+    elm.textContent = text || "";
+    if (tone) elm.setAttribute("data-tone", tone);
+    else elm.removeAttribute("data-tone");
   }
 
   /**
@@ -82,6 +111,28 @@
     return backendBase() + constants.CONTACT_CAPTURE_PATH;
   }
 
+  /**
+   * Reflect the connection state in the header dot. The panel never polls the
+   * backend, so this only ever states what it actually knows.
+   */
+  function setConnection(state) {
+    shell.setConnection(state);
+    const line = $("settings-connection");
+    if (line) line.textContent = $("conn-text").textContent;
+  }
+
+  async function refreshPermissionState() {
+    const pattern = self.SNCapture.permissions.originPatternForUrl(saveTargetUrl());
+    if (!pattern) return;
+    if (shell.getConnection() === "connected" || shell.getConnection() === "unreachable") return;
+    try {
+      const has = await chrome.permissions.contains({ origins: [pattern] });
+      setConnection(has ? "allowed" : "not_allowed");
+    } catch (_e) {
+      /* leave the state as it is rather than claiming something untrue */
+    }
+  }
+
   // ---- labels + note ------------------------------------------------------
 
   function renderMetadata() {
@@ -89,11 +140,10 @@
     chips.textContent = "";
     for (const label of currentMetadata.labels) {
       chips.appendChild(
-        el("span", { class: "badge" }, [
-          el("span", { text: label }),
+        el("span", { class: "chip" }, [
+          el("span", { class: "txt", text: label }),
           el("button", {
-            class: "btn btn-ghost",
-            text: " ×",
+            text: "×",
             attrs: { "aria-label": `Remove label ${label}`, type: "button" },
             on: { click: () => removeLabel(label) },
           }),
@@ -101,7 +151,7 @@
       );
     }
     if (!currentMetadata.labels.length) {
-      chips.appendChild(el("span", { class: "tiny muted", text: "No labels." }));
+      chips.appendChild(el("span", { class: "p tiny muted", text: "No labels." }));
     }
     if ($("note-input").value !== (currentMetadata.note || "")) {
       $("note-input").value = currentMetadata.note || "";
@@ -162,62 +212,119 @@
     }
   }
 
-  const OUTCOME_LABELS = {
-    created: "created",
-    refreshed_exact_match: "refreshed",
-    exact_match_unchanged: "already current",
-    staged_unmatched: "staged (new person)",
-    staged_ambiguous: "needs review (ambiguous)",
-    duplicate_in_submission: "duplicate in this batch",
-    suppressed: "suppressed — untouched",
+  // How each backend outcome reads to the operator, and the tone it carries.
+  // Every outcome the contract can return has an entry: an unrecognised one
+  // still renders, under its raw code, rather than being swallowed.
+  const OUTCOMES = {
+    created: { label: "captured as a new contact", tone: "success", short: "New" },
+    refreshed_exact_match: { label: "refreshed an existing contact", tone: "brand", short: "Updated" },
+    exact_match_unchanged: { label: "already current", tone: "brand", short: "Unchanged" },
+    staged_unmatched: { label: "staged as a new person", tone: "warning", short: "Needs review" },
+    staged_ambiguous: { label: "staged — identity ambiguous", tone: "warning", short: "Needs review" },
+    duplicate_in_submission: { label: "duplicate within this batch", tone: "neutral", short: "Duplicate" },
+    suppressed: { label: "suppressed — left untouched", tone: "danger", short: "Suppressed" },
   };
 
+  function outcomeInfo(code) {
+    return (
+      OUTCOMES[code] || {
+        label: String(code || "unknown outcome").replace(/_/g, " "),
+        tone: "neutral",
+        short: String(code || "outcome"),
+      }
+    );
+  }
+
+  /**
+   * Paint a successful submission. Counts and per-record outcomes come from the
+   * backend response only — nothing is inferred, and a record that needs review
+   * stays visible as needing review.
+   */
   function renderSaveResult(result) {
     if (!result) return;
+    setConnection("connected");
     const state = $("save-state");
     const actions = $("save-actions");
     state.textContent = "";
     actions.textContent = "";
-    const already = result.alreadyReceived ? " (already saved — idempotent)" : "";
-    setStatus(state, "status-ok", `Saved${already}.`);
+    $("saving-card").hidden = true;
+    $("save-card").hidden = false;
+    $("company-result-card").hidden = true;
 
     const counts = result.counts || {};
-    const grid = el("div", { class: "summary-grid" });
+    const results = result.results || [];
+    const total = results.length;
+    const saved = Object.entries(counts)
+      .filter(([key]) => key in OUTCOMES)
+      .reduce((sum, [, n]) => sum + (Number(n) || 0), 0);
+    const headline =
+      total > 1
+        ? `${saved || total} of ${total} prospects saved`
+        : result.alreadyReceived
+          ? "Already saved (idempotent)"
+          : "Prospect saved";
+
+    state.appendChild(
+      callout(
+        "success",
+        headline,
+        result.alreadyReceived
+          ? "This submission had already been received — it was replayed, not duplicated."
+          : "Saved to the VM Prospector workflow."
+      )
+    );
+
+    const lines = box({ sunk: true }, [el("span", { class: "eyebrow", text: "What happened" })]);
     let shown = 0;
-    for (const [key, label] of Object.entries(OUTCOME_LABELS)) {
-      const n = counts[key] || 0;
-      if (!n) continue;
+    for (const [code, n] of Object.entries(counts)) {
+      if (!n || !(code in OUTCOMES)) continue;
       shown += 1;
-      grid.appendChild(
-        el("div", { class: "summary-tile" }, [
-          el("span", { class: "n", text: String(n) }),
-          el("span", { class: "k", text: label }),
-        ])
-      );
+      const info = outcomeInfo(code);
+      const line = el("div", { class: "line" }, [
+        el("span", { class: "t" }, [
+          el("b", { text: String(n) }),
+          el("span", { text: " " + info.label }),
+        ]),
+        badge(info.short, { tone: info.tone }),
+      ]);
+      lines.appendChild(line);
     }
     if (counts.labels_applied) {
-      grid.appendChild(
-        el("div", { class: "summary-tile" }, [
-          el("span", { class: "n", text: String(counts.labels_applied) }),
-          el("span", { class: "k", text: "labels applied" }),
-        ])
+      lines.appendChild(
+        statusLine("Labels applied", badge(String(counts.labels_applied), { tone: "brand" }))
       );
+      shown += 1;
     }
     if (counts.notes_recorded) {
-      grid.appendChild(
-        el("div", { class: "summary-tile" }, [
-          el("span", { class: "n", text: String(counts.notes_recorded) }),
-          el("span", { class: "k", text: "notes recorded" }),
+      lines.appendChild(
+        statusLine("Notes recorded", badge(String(counts.notes_recorded), { tone: "brand" }))
+      );
+      shown += 1;
+    }
+    if (shown) state.appendChild(lines);
+
+    // Records the backend could not resolve on its own stay called out by name
+    // count, so a partial success never reads as a clean one.
+    const needsReview = results.filter(
+      (r) => r.outcome === "staged_unmatched" || r.outcome === "staged_ambiguous"
+    ).length;
+    if (needsReview) {
+      state.appendChild(
+        box({ tone: "warning" }, [
+          el("span", { class: "box-title", text: `${needsReview} need review in VM Prospector` }),
+          paragraph(
+            "These were saved with their gaps visible. Identity was not guessed — resolve them in the app.",
+            { tiny: true }
+          ),
         ])
       );
     }
-    if (shown) state.appendChild(grid);
 
-    const first = (result.results || [])[0] || {};
+    const first = results[0] || {};
     if (first.contactUrl) {
       actions.appendChild(
         el("a", {
-          class: "btn btn-primary",
+          class: "btn btn-primary full",
           text: "Open contact",
           attrs: { href: first.contactUrl, target: "_blank", rel: "noreferrer" },
         })
@@ -226,15 +333,15 @@
     if (result.workbenchUrl) {
       actions.appendChild(
         el("a", {
-          class: "btn",
-          text: (result.results || []).length > 1 ? "Open saved contacts" : "Open capture record",
+          class: "btn full",
+          text: total > 1 ? "Open captured contacts" : "Open capture record",
           attrs: { href: result.workbenchUrl, target: "_blank", rel: "noreferrer" },
         })
       );
     } else if (first.captureUrl) {
       actions.appendChild(
         el("a", {
-          class: "btn",
+          class: "btn full",
           text: "Open capture record",
           attrs: { href: first.captureUrl, target: "_blank", rel: "noreferrer" },
         })
@@ -242,45 +349,123 @@
     }
     if (!first.contactUrl && !result.workbenchUrl && !first.captureUrl) {
       state.appendChild(
-        el("div", {
-          class: "tiny muted",
-          text: "Open the record from the workbench (no safe link was returned).",
+        paragraph("Open the record from the workbench (no safe link was returned).", {
+          tiny: true,
+          muted: true,
         })
       );
     }
+
+    $("outcome-primary").hidden = true;
+    $("outcome-back").textContent = "Back to this page";
+    showView("outcome");
+    shell.setSteps(3, { done: true, label: "Done" });
+  }
+
+  /** Paint a failed submission: what failed, what survived, one way forward. */
+  function renderSaveFailure(detail, options) {
+    const o = options || {};
+    const state = $("save-state");
+    const actions = $("save-actions");
+    state.textContent = "";
+    actions.textContent = "";
+    $("saving-card").hidden = true;
+    $("save-card").hidden = false;
+    $("company-result-card").hidden = true;
+
+    state.appendChild(
+      callout(
+        o.tone || "danger",
+        o.title || "Capture failed",
+        o.body || "Nothing was saved. What you reviewed is still here."
+      )
+    );
+    const info = box({ sunk: true }, [
+      el("span", { class: "eyebrow", text: "Details" }),
+      paragraph(detail.headline),
+    ]);
+    if (detail.detail) info.appendChild(paragraph(detail.detail, { tiny: true, muted: true }));
+    info.appendChild(
+      el("p", { class: "detail-block", text: "code: " + (detail.code || "unknown") })
+    );
+    state.appendChild(info);
+
+    if (detail.canRetry !== false) {
+      const btn = $("outcome-primary");
+      btn.hidden = false;
+      btn.textContent = o.retryLabel || "Try again";
+      btn.onclick = o.onRetry || doSave;
+      state.appendChild(
+        paragraph("Retrying is safe — the same submission is replayed, never duplicated.", {
+          tiny: true,
+          muted: true,
+        })
+      );
+    } else {
+      $("outcome-primary").hidden = true;
+    }
+    $("export-row").hidden = o.showExport !== true;
+    $("outcome-back").textContent = "Back to review";
+    showView("outcome");
+    shell.setSteps(3, { state: "failed", label: "Failed" });
   }
 
   async function doSave() {
     if (!saveHandler) return;
-    const state = $("save-state");
-    const actions = $("save-actions");
-    actions.textContent = "";
+    const isBatch = currentBatch && shell.getView() !== "person-confirm";
+    $("save-card").hidden = true;
+    $("company-result-card").hidden = true;
+    $("saving-card").hidden = false;
+    const included = currentBatch ? currentBatch.summary.included : 1;
+    $("saving-title").textContent = isBatch
+      ? included === 1
+        ? "Saving 1 prospect"
+        : `Saving ${included} prospects`
+      : "Saving prospect";
+    showView("outcome");
+    shell.setSteps(3, {});
+    setConnection("saving");
+    const savingActions = document.querySelector('[data-actions="saving"]');
+    for (const node of document.querySelectorAll("[data-actions]")) node.hidden = true;
+    if (savingActions) savingActions.hidden = false;
+
     const perm = await ensureHostPermission(saveTargetUrl());
     if (!perm.granted) {
-      setStatus(
-        state,
-        "status-err",
-        perm.pattern
-          ? `Loopback access to ${perm.pattern} was not granted. Approve it to save.`
-          : "Save target must be a loopback (127.0.0.1 / localhost) URL."
+      setConnection("not_allowed");
+      renderSaveFailure(
+        {
+          code: "permission_denied",
+          headline: perm.pattern
+            ? `Loopback access to ${perm.pattern} was not granted.`
+            : "Save target must be a loopback (127.0.0.1 / localhost) URL.",
+          detail: "Nothing has been sent.",
+          canRetry: !!perm.pattern,
+        },
+        {
+          tone: "warning",
+          title: "Allow VM Prospector to reach the app",
+          body: "Chrome asks once, the first time you save. Nothing has been sent.",
+          retryLabel: "Allow and save",
+        }
       );
-      actions.appendChild(el("button", { class: "btn btn-ghost", text: "Retry", on: { click: doSave } }));
       return;
     }
-    setStatus(state, "status-neutral", "Saving…");
+
     const r = await saveHandler();
     if (r && r.ok) {
       renderSaveResult(r.result);
       return;
     }
     const detail = handoff.describeSendError(r);
-    setStatus(state, "status-err", detail.headline);
-    if (detail.detail) state.appendChild(el("div", { class: "small muted", text: detail.detail }));
-    // The reviewed draft is preserved on every recoverable failure, so Retry
-    // re-sends the SAME client_submission_id — the backend replays it.
-    if (detail.canRetry !== false) {
-      actions.appendChild(el("button", { class: "btn btn-ghost", text: "Retry", on: { click: doSave } }));
-    }
+    const unreachable = detail.code === "network_error" || detail.code === "timeout";
+    setConnection(unreachable ? "unreachable" : "connected");
+    renderSaveFailure(detail, {
+      title: unreachable ? "Connection lost" : "Capture failed",
+      body: unreachable
+        ? "VM Prospector didn't answer. Nothing was saved, and what you reviewed is still here."
+        : "Nothing was saved. What you reviewed is still here.",
+      showExport: !!isBatch,
+    });
   }
 
   // ---- results-page detection ---------------------------------------------
@@ -288,48 +473,160 @@
   async function refreshDetect() {
     const statusEl = $("detect-status");
     const detailEl = $("detect-detail");
-    setStatus(statusEl, "status-neutral", "Checking active tab…");
+    setFeedback(statusEl, "Checking active tab…");
     detailEl.textContent = "";
+    detailEl.hidden = true;
     const r = await send({ type: "DETECT_ACTIVE_PAGE" });
     if (!r || !r.ok) {
-      setStatus(statusEl, "status-warn", "No Sales Navigator page in the active tab.");
-      detailEl.textContent =
-        (r && r.message) || "Open and authenticate a Sales Navigator search, then Refresh.";
+      setFeedback(
+        statusEl,
+        (r && r.message) || "Open and authenticate a Sales Navigator search, then check again.",
+        "warn"
+      );
       $("capture-btn").disabled = true;
-      $("page-badge").textContent = "page ?";
       return;
     }
     const page = r.page;
     if (page.challengeDetected) {
-      setStatus(statusEl, "status-err", "Security challenge detected — capture halted.");
-      detailEl.textContent =
-        "Resolve the LinkedIn check in the page yourself, then Refresh. The extension will not act during a challenge.";
+      setFeedback(
+        statusEl,
+        "Security challenge detected — capture halted. Resolve the LinkedIn check in the page yourself, then check again.",
+        "bad"
+      );
       $("capture-btn").disabled = true;
     } else if (!page.supported) {
-      setStatus(statusEl, "status-warn", "This page is not a supported Sales Navigator results view.");
-      detailEl.textContent = page.url || "";
+      setFeedback(statusEl, "This page is not a supported Sales Navigator results view.", "warn");
       $("capture-btn").disabled = true;
     } else {
-      setStatus(statusEl, "status-ok", `Supported results page · ${page.visibleCount} rows currently visible`);
-      detailEl.textContent = page.url || "";
+      const rows = page.visibleCount;
+      setFeedback(
+        statusEl,
+        currentBatch && currentBatch.records.length
+          ? `${rows} row${rows === 1 ? "" : "s"} currently visible on this page.`
+          : `${rows} row${rows === 1 ? "" : "s"} currently visible. Read the page to list them.`
+      );
       $("capture-btn").disabled = false;
     }
-    const p = (function () {
-      try { return new URL(page.url).searchParams.get("page"); } catch (_e) { return null; }
-    })();
-    $("page-badge").textContent = "page " + (p || "1");
+    detailEl.textContent = page.url || "";
+    detailEl.hidden = !page.url;
+    paintListingsContext(page);
+  }
+
+  /** The detected-page strip for listings mode. */
+  function paintListingsContext(page) {
+    const count = currentBatch ? currentBatch.records.length : 0;
+    const included = currentBatch ? currentBatch.summary.included : 0;
+    let pageBadge = null;
+    if (count) {
+      pageBadge =
+        shell.getView() === "listings-review"
+          ? { text: `${included} selected`, tone: "neutral" }
+          : { text: `${count} found`, tone: count ? "neutral" : "warning" };
+    } else if (page && page.supported) {
+      const p = (function () {
+        try {
+          return new URL(page.url).searchParams.get("page");
+        } catch (_e) {
+          return null;
+        }
+      })();
+      pageBadge = { text: "page " + (p || "1"), tone: "neutral", dot: false };
+    }
+    shell.setContext({
+      icon: "users",
+      label: "Sales Navigator · Search results",
+      badge: pageBadge,
+      url: page && page.url ? page.url : "",
+    });
   }
 
   // ---- capture ------------------------------------------------------------
 
+  // The read pass currently in flight, if any: {seq, passId, cancelled}. One at
+  // a time — the capture button is disabled while a pass runs — but the seq
+  // still guards the result, because a pass that was superseded must not repaint
+  // over whatever the operator is looking at now.
+  let activeCapture = null;
+  let captureSeq = 0;
+
+  /** Show or hide the read-pass progress card and its Stop control together. */
+  function setCaptureProgress(active, options) {
+    const o = options || {};
+    $("capture-progress").hidden = !active;
+    const cancelBtn = $("capture-cancel-btn");
+    cancelBtn.hidden = !active;
+    cancelBtn.disabled = !active || o.stopping === true;
+    if (active) {
+      $("capture-progress-title").textContent = o.title || "Reading this page";
+      if (o.detail) $("capture-progress-detail").textContent = o.detail;
+    }
+    $("loading-note").hidden = !!active;
+  }
+
+  /**
+   * Stop the running read pass (DAT-018 D).
+   *
+   * This is an operator action, not a failure: the capture still resolves, the
+   * rows already on the page are still returned and kept, the batch and the
+   * reviewed draft survive, and nothing is submitted. Pressing it again while
+   * the stop is being honoured does nothing — one cancel per pass.
+   */
+  async function cancelCapture() {
+    if (!activeCapture || activeCapture.cancelled) return;
+    activeCapture.cancelled = true;
+    setCaptureProgress(true, {
+      title: "Stopping…",
+      detail: "Keeping everything that has already loaded.",
+      stopping: true,
+    });
+    await send({ type: "CANCEL_CAPTURE" });
+  }
+
+  /**
+   * Progress from the content script's scroll pass. Advisory only: it is
+   * discarded once the operator has cancelled, and once the pass it belongs to
+   * is no longer the one in flight, so a late event cannot restart the progress
+   * card or overwrite the cancelled state.
+   */
+  function onScrollProgress(message) {
+    if (!activeCapture || activeCapture.cancelled) return;
+    if (activeCapture.passId == null) activeCapture.passId = message.passId || null;
+    else if (message.passId != null && message.passId !== activeCapture.passId) return;
+    const p = message.progress || {};
+    if (p.phase === "done") return;
+    const rows = Number(p.rows);
+    if (!Number.isFinite(rows)) return;
+    $("capture-progress-detail").textContent =
+      `${rows} row${rows === 1 ? "" : "s"} loaded so far. Stopping keeps every one of them.`;
+  }
+
   async function capture() {
     const fb = $("capture-feedback");
-    fb.textContent = "Capturing…";
+    const seq = ++captureSeq;
+    activeCapture = { seq, passId: null, cancelled: false };
+    setFeedback(fb, "Reading this page…");
     $("capture-btn").disabled = true;
+    $("listings-retry-btn").disabled = true;
+    showView("loading");
+    setCaptureProgress(true, {
+      detail:
+        "Loading the rows this page has already been scrolled to. You can stop at any point — whatever has loaded is kept.",
+    });
+
     const r = await send({ type: "CAPTURE_ACTIVE_PAGE" });
+
+    // A newer pass took over while this one was in flight; it owns the view.
+    if (!activeCapture || activeCapture.seq !== seq) return;
+    const wasCancelled =
+      activeCapture.cancelled || (r && r.scroll && r.scroll.stopReason === "cancelled");
+    activeCapture = null;
+    setCaptureProgress(false);
     $("capture-btn").disabled = false;
+    $("listings-retry-btn").disabled = false;
     if (!r || !r.ok) {
-      fb.textContent = (r && (r.message || r.error)) || "Capture failed.";
+      renderBatch(r && r.batchView ? r.batchView : currentBatch);
+      showView(currentBatch && currentBatch.records.length ? "listings-select" : "listings-empty");
+      setFeedback(fb, (r && (r.message || r.error)) || "Capture failed.", "bad");
       return;
     }
     if (r.captureStatus !== constants.CAPTURE_STATUS.OK) {
@@ -338,22 +635,41 @@
         challenge_detected: "Security challenge detected — nothing captured.",
         unsupported_page: "Not a supported results page — nothing captured.",
         structure_unrecognized:
-          "Results page detected but no rows could be parsed. Page structure may have changed. Nothing captured.",
-        empty: "No visible contacts found.",
+          "Results page detected but no rows could be parsed. The page structure may have changed. Nothing captured.",
+        empty: "No visible prospects found.",
       };
-      fb.textContent = map[r.captureStatus] || w.message || "Nothing captured.";
-    } else {
-      const parts = [`+${r.added} added`];
-      if (r.collapsed) parts.push(`${r.collapsed} duplicate(s) collapsed`);
-      if (r.uncertain) parts.push(`${r.uncertain} uncertain identity`);
-      if (r.skippedCount) {
-        parts.push(`${r.skippedCount} skipped — no company name`);
-      }
-      if (r.overLimit) parts.push("batch limit reached — extra rows skipped");
-      fb.textContent = parts.join(" · ");
+      // A pass the operator stopped before any row loaded is a cancellation,
+      // not a page with nothing on it. Saying "no prospects found" there would
+      // blame the page for the operator's own action.
+      const message = wasCancelled
+        ? "Stopped before any rows loaded. Nothing was captured, and nothing was sent."
+        : map[r.captureStatus] || w.message || "Nothing captured.";
       renderSkipped(r.skipped, r.skippedCount);
+      renderBatch(r.batchView);
+      if (!currentBatch || !currentBatch.records.length) {
+        $("listings-empty-detail").textContent = message;
+        showView("listings-empty");
+      } else {
+        setFeedback(fb, message, wasCancelled ? null : "warn");
+        showView("listings-select");
+      }
+      refreshDetect();
+      return;
     }
+    const parts = [];
+    if (wasCancelled) parts.push("Stopped");
+    parts.push(`+${r.added} added`);
+    if (r.collapsed) parts.push(`${r.collapsed} duplicate(s) collapsed`);
+    if (r.uncertain) parts.push(`${r.uncertain} uncertain identity`);
+    if (r.skippedCount) {
+      parts.push(`${r.skippedCount} skipped — no company name`);
+    }
+    if (r.overLimit) parts.push("batch limit reached — extra rows skipped");
+    if (wasCancelled) parts.push("read the page again to load more");
+    setFeedback(fb, parts.join(" · "));
+    renderSkipped(r.skipped, r.skippedCount);
     renderBatch(r.batchView);
+    showView("listings-select");
     refreshDetect();
   }
 
@@ -361,6 +677,10 @@
    * List the rows this page showed but did not offer, and why (DAT-018 B).
    * A skipped row is never added to the batch and can never be submitted; the
    * company is never inferred from headline, school, location or nearby text.
+   *
+   * Presented as a warning box rather than hidden behind the row list: a
+   * skipped row is information the operator needs to trust the count, so it is
+   * never collapsed away and never rolled into the "captured" total.
    */
   function renderSkipped(skipped, count) {
     const card = $("skipped-card");
@@ -379,10 +699,12 @@
       "Nothing was guessed and nothing was submitted for them.";
     for (const row of rows) {
       list.appendChild(
-        el("div", { class: "meta" }, [
-          el("span", { class: "small muted", text: `row ${row.sourcePosition}: ` }),
-          el("span", { class: "small", text: row.rawFullName || "(no name read)" }),
-          el("span", { class: "badge badge-warn", text: row.reason }),
+        el("div", { class: "line" }, [
+          el("span", { class: "t" }, [
+            el("span", { class: "mono", text: `row ${row.sourcePosition} · ` }),
+            el("span", { text: row.rawFullName || "(no name read)" }),
+          ]),
+          badge(row.reason, { tone: "warning" }),
         ])
       );
     }
@@ -393,116 +715,256 @@
   function renderBatch(batchView) {
     if (!batchView) return;
     currentBatch = batchView;
-    const s = batchView.summary;
-
-    const tiles = [
-      ["included", s.included],
-      ["excluded", s.excluded],
-      ["missing fields", s.withMissingFields],
-      ["uncertain id", s.uncertainIdentity],
-      ["selector fails", s.selectorFailures],
-      ["pages", (batchView.pagesCaptured || []).length],
-    ];
-    const grid = $("summary");
-    grid.textContent = "";
-    for (const [k, n] of tiles) {
-      grid.appendChild(
-        el("div", { class: "summary-tile" }, [
-          el("span", { class: "n", text: String(n) }),
-          el("span", { class: "k", text: k }),
-        ])
-      );
-    }
     renderRecords();
+    renderReview();
     syncBatchSaveAction();
   }
 
   /** Keep the shared Save button honest about how many contacts it would save. */
   function syncBatchSaveAction() {
-    if ($("salesnav-sections").hidden) return;
     const included = currentBatch ? currentBatch.summary.included : 0;
-    setSaveHandler({
-      handler: () => send({ type: "SAVE_INCLUDED_CONTACTS" }),
-      label: included === 1 ? "Save 1 included contact" : `Save ${included} included contacts`,
-      disabled: included === 0,
-      showExport: true,
-    });
+    const reviewBtn = $("listings-review-btn");
+    const hasRows = !!(currentBatch && currentBatch.records.length);
+    reviewBtn.hidden = !hasRows;
+    reviewBtn.disabled = included === 0;
+    reviewBtn.textContent = `Review selected (${included})`;
+    $("clear-btn").hidden = !hasRows;
+    const captureBtn = $("capture-btn");
+    captureBtn.textContent = hasRows ? "Read this page again" : "Capture visible contacts";
+    captureBtn.className = hasRows ? "btn full" : "btn btn-primary full";
+    if (shell.getView() === "listings-review" || !currentBatch) {
+      setSaveHandler({
+        handler: () => send({ type: "SAVE_INCLUDED_CONTACTS" }),
+        label: included === 1 ? "Capture 1 prospect" : `Capture ${included} prospects`,
+        disabled: included === 0,
+        showExport: true,
+      });
+    }
   }
 
   function warnLabel(code) {
     const map = {
       [WARN.MISSING_FIELD]: "missing",
-      [WARN.SELECTOR_FAILURE]: "selector fail",
-      [WARN.DUPLICATE_UNCERTAIN]: "uncertain id",
-      [WARN.DUPLICATE_COLLAPSED]: "dupe seen",
-      [WARN.MALFORMED_URL]: "bad url",
-      [WARN.NO_STABLE_IDENTITY]: "no stable id",
+      [WARN.SELECTOR_FAILURE]: "could not be located",
+      [WARN.DUPLICATE_UNCERTAIN]: "uncertain identity",
+      [WARN.DUPLICATE_COLLAPSED]: "duplicate collapsed",
+      [WARN.MALFORMED_URL]: "profile URL not normalized",
+      [WARN.NO_STABLE_IDENTITY]: "no stable link",
     };
     return map[code] || code;
   }
 
+  function recordWarningCodes(rec) {
+    return Array.from(new Set((rec.warnings || []).map((w) => w.code)));
+  }
+
+  function recordTone(rec) {
+    const codes = recordWarningCodes(rec);
+    if (codes.includes(WARN.NO_STABLE_IDENTITY)) return "danger";
+    if (codes.length) return "warning";
+    return null;
+  }
+
+  /** A1 · the selectable row list. A ticked box means "included in the save". */
   function renderRecords() {
-    const box = $("records");
-    box.textContent = "";
-    if (!currentBatch || !currentBatch.records.length) {
-      box.appendChild(el("p", { class: "muted small", text: "No contacts captured yet." }));
+    const boxEl = $("records");
+    boxEl.textContent = "";
+    const hasRows = !!(currentBatch && currentBatch.records.length);
+    $("selectall-row").hidden = !hasRows;
+    $("filter-row").hidden = !hasRows;
+    if (!hasRows) {
+      boxEl.appendChild(
+        paragraph("No prospects captured from this page yet.", { muted: true })
+      );
       return;
     }
+
+    const included = currentBatch.summary.included;
+    const total = currentBatch.records.length;
+    $("select-all").checked = included === total;
+    $("select-all").indeterminate = included > 0 && included < total;
+    $("select-all-label").textContent = `Select all (${total})`;
+    const flagged = currentBatch.records.filter((r) => (r.warnings || []).length).length;
+    $("select-all-aside").textContent = flagged ? `${flagged} need review` : "";
+
     const onlyIssues = $("only-issues").checked;
     currentBatch.records.forEach((rec, index) => {
       const warns = rec.warnings || [];
       if (onlyIssues && warns.length === 0) return;
 
-      const nameRow = el("div", { class: "toprow" }, [
-        el("span", { class: "name", text: rec.rawFullName || "(no name)" }),
-        (function () {
-          const cb = el("label", { class: "checkbox small" });
-          const input = el("input", {
-            attrs: { type: "checkbox" },
-            on: {
-              change: async () => {
-                const view = await send({
-                  type: "TOGGLE_EXCLUDE",
-                  stableKey: rec._stableKey || null,
-                  index,
-                });
-                if (view && view.ok) renderBatch(view.batchView);
-              },
-            },
-          });
-          input.checked = !!rec._excluded;
-          cb.appendChild(input);
-          cb.appendChild(document.createTextNode(" exclude"));
-          return cb;
-        })(),
+      const tone = recordTone(rec);
+      const checkbox = el("input", {
+        attrs: {
+          type: "checkbox",
+          "aria-label": `Include ${rec.rawFullName || "this prospect"} in the capture`,
+        },
+        on: {
+          change: async () => {
+            const view = await send({
+              type: "TOGGLE_EXCLUDE",
+              stableKey: rec._stableKey || null,
+              index,
+            });
+            if (view && view.ok) renderBatch(view.batchView);
+          },
+        },
+      });
+      checkbox.checked = !rec._excluded;
+
+      const meta = [rec.title, rec.companyName].filter(Boolean).join(" · ");
+      const metaNode = el("span", { class: "prospect-meta" });
+      if (meta) metaNode.appendChild(el("span", { text: meta }));
+      if (!rec.companyName) {
+        if (meta) metaNode.appendChild(el("span", { text: " · " }));
+        metaNode.appendChild(el("span", { class: "missing", text: "company not shown" }));
+      }
+      if (!meta && rec.companyName) metaNode.appendChild(el("span", { text: rec.companyName }));
+
+      const body = el("div", { class: "prospect-body" }, [
+        el("span", { class: "prospect-name", text: rec.rawFullName || "(name not shown)" }),
+        metaNode,
+        rec.location ? el("span", { class: "prospect-meta", text: rec.location }) : null,
       ]);
 
-      const meta = el("div", { class: "meta" }, [
-        el("div", { text: [rec.title, rec.companyName].filter(Boolean).join(" · ") || "—" }),
-        rec.location ? el("div", { text: rec.location }) : null,
-      ]);
-
-      const links = el("div", { class: "links meta" });
-      if (rec.linkedinProfileUrl) links.appendChild(el("a", { text: "profile", attrs: { href: rec.linkedinProfileUrl, target: "_blank", rel: "noreferrer" } }));
-      if (rec.salesNavLeadUrl) links.appendChild(el("a", { text: "lead", attrs: { href: rec.salesNavLeadUrl, target: "_blank", rel: "noreferrer" } }));
-      if (rec.companyLinkedInUrl) links.appendChild(el("a", { text: "company", attrs: { href: rec.companyLinkedInUrl, target: "_blank", rel: "noreferrer" } }));
-
-      const warnBox = el("div", { class: "warns" });
-      const uniqueCodes = Array.from(new Set(warns.map((w) => w.code)));
-      for (const code of uniqueCodes) {
-        const fields = warns.filter((w) => w.code === code && w.field).map((w) => w.field);
-        const label = warnLabel(code) + (fields.length ? ": " + fields.join(", ") : "");
-        warnBox.appendChild(el("span", { class: "badge badge-warn", text: label }));
+      const codes = recordWarningCodes(rec);
+      let rowBadge = null;
+      if (codes.includes(WARN.NO_STABLE_IDENTITY)) {
+        rowBadge = badge("No stable link", {
+          tone: "danger",
+          title: "No profile or lead URL was on the row — it can be saved, but it will be staged for review.",
+        });
+      } else if (codes.length) {
+        rowBadge = badge("Needs review", {
+          tone: "warning",
+          title: codes.map(warnLabel).join(", "),
+        });
       }
 
-      const card = el("div", { class: "record" + (rec._excluded ? " excluded" : "") }, [
-        nameRow,
-        meta,
-        links,
-        warns.length ? warnBox : null,
-      ]);
-      box.appendChild(card);
+      const row = el(
+        "div",
+        {
+          class: "prospect" + (rec._excluded ? " deselected" : ""),
+          attrs: tone ? { "data-tone": tone } : {},
+        },
+        [el("label", { class: "check stacked" }, [checkbox]), body, rowBadge]
+      );
+      boxEl.appendChild(row);
     });
+  }
+
+  /** A3 · the reviewed set: what will be submitted, and with what gaps. */
+  function renderReview() {
+    const badges = $("review-badges");
+    const grid = $("summary");
+    const list = $("review-records");
+    badges.textContent = "";
+    grid.textContent = "";
+    list.textContent = "";
+    if (!currentBatch) return;
+    const s = currentBatch.summary;
+    const records = currentBatch.records.filter((r) => !r._excluded);
+
+    const ready = records.filter((r) => !(r.warnings || []).length).length;
+    const review = records.length - ready;
+    if (ready) badges.appendChild(badge(`${ready} ready`, { tone: "success", dot: true }));
+    if (review)
+      badges.appendChild(badge(`${review} need review`, { tone: "warning", dot: true }));
+
+    const tiles = [
+      ["selected", s.included],
+      ["deselected", s.excluded],
+      ["missing fields", s.withMissingFields],
+      ["uncertain id", s.uncertainIdentity],
+      ["selector fails", s.selectorFailures],
+      ["pages", (currentBatch.pagesCaptured || []).length],
+    ];
+    for (const [k, n] of tiles) {
+      grid.appendChild(
+        el("div", { class: "tile" }, [
+          el("span", { class: "n", text: String(n) }),
+          el("span", { class: "k", text: k }),
+        ])
+      );
+    }
+
+    for (const rec of records) {
+      const codes = recordWarningCodes(rec);
+      const tone = recordTone(rec);
+      const card = box(tone ? { tone } : {}, [
+        el("div", { class: "line" }, [
+          el("span", { class: "t prospect-name", text: rec.rawFullName || "(name not shown)" }),
+          codes.length
+            ? badge(codes.includes(WARN.NO_STABLE_IDENTITY) ? "No stable link" : "Needs review", {
+                tone: tone === "danger" ? "danger" : "warning",
+              })
+            : badge("Ready", { tone: "success" }),
+        ]),
+        kv("Company", rec.companyName, { missing: !rec.companyName, emptyText: "Missing company" }),
+        rec.title ? kv("Role", rec.title) : null,
+      ]);
+      if (codes.length) {
+        const warnRow = el("div", { class: "badge-row" });
+        for (const code of codes) {
+          const fields = (rec.warnings || [])
+            .filter((w) => w.code === code && w.field)
+            .map((w) => w.field);
+          warnRow.appendChild(
+            badge(warnLabel(code) + (fields.length ? ": " + fields.join(", ") : ""), {
+              tone: "warning",
+              title: code,
+            })
+          );
+        }
+        card.appendChild(warnRow);
+        card.appendChild(
+          paragraph("Will be saved and flagged for review. Nothing is guessed.", { tiny: true })
+        );
+      }
+      const links = el("div", { class: "prospect-links" });
+      if (rec.linkedinProfileUrl)
+        links.appendChild(
+          el("a", {
+            text: "profile",
+            attrs: { href: rec.linkedinProfileUrl, target: "_blank", rel: "noreferrer" },
+          })
+        );
+      if (rec.salesNavLeadUrl)
+        links.appendChild(
+          el("a", {
+            text: "lead",
+            attrs: { href: rec.salesNavLeadUrl, target: "_blank", rel: "noreferrer" },
+          })
+        );
+      if (rec.companyLinkedInUrl)
+        links.appendChild(
+          el("a", {
+            text: "company",
+            attrs: { href: rec.companyLinkedInUrl, target: "_blank", rel: "noreferrer" },
+          })
+        );
+      if (links.childNodes.length) card.appendChild(links);
+      list.appendChild(card);
+    }
+
+    const n = s.included;
+    $("review-total").textContent = `${n} prospect${n === 1 ? "" : "s"}`;
+  }
+
+  /** Select or deselect every captured row, one toggle per row that changes. */
+  async function setAllSelected(selected) {
+    if (!currentBatch) return;
+    const records = currentBatch.records;
+    for (let i = 0; i < records.length; i += 1) {
+      const rec = records[i];
+      if (!!rec._excluded === !selected) continue;
+      const view = await send({
+        type: "TOGGLE_EXCLUDE",
+        stableKey: rec._stableKey || null,
+        index: i,
+      });
+      if (view && view.ok) currentBatch = view.batchView;
+    }
+    renderBatch(currentBatch);
   }
 
   // ---- export -------------------------------------------------------------
@@ -510,11 +972,16 @@
   async function doExport(format) {
     const state = $("save-state");
     const r = await send({ type: "EXPORT_BATCH", format });
-    if (r && r.ok) setStatus(state, "status-ok", `Downloaded ${r.filename} (${r.records} contacts).`);
-    else setStatus(state, "status-err", (r && (r.message || r.error)) || "Export failed.");
+    const note = paragraph(
+      r && r.ok
+        ? `Downloaded ${r.filename} (${r.records} contacts).`
+        : (r && (r.message || r.error)) || "Export failed.",
+      { tiny: true, muted: true }
+    );
+    state.appendChild(note);
   }
 
-  // ---- migration notice ---------------------------------------------------
+  // ---- archived campaign-era drafts ---------------------------------------
 
   /**
    * DAT-018 C. The old "Workflow updated" card mixed two things: a status
@@ -564,25 +1031,44 @@
     const r = await send({ type: "SET_PREFS", prefs: patch });
     if (r && r.ok) {
       currentPrefs = r.prefs;
-      setStatus($("save-state"), "status-ok", "Settings saved.");
+      await refreshPermissionState();
+      closeSettings();
     }
+  }
+
+  function openSettings() {
+    const version =
+      (chrome.runtime.getManifest && chrome.runtime.getManifest().version) || "unknown";
+    $("settings-version").textContent = version;
+    $("settings-connection").textContent = $("conn-text").textContent;
+    showView("settings");
+  }
+
+  function closeSettings() {
+    showView(returnView || "loading");
   }
 
   // ---- shared panel API ---------------------------------------------------
   //
   // sidepanel-profile.js owns mode switching and the profile/company workflows;
-  // it drives the shared metadata and Save cards through this small surface so
-  // there is exactly one implementation of each.
+  // it drives the shared metadata, Save and outcome cards through this small
+  // surface so there is exactly one implementation of each.
   self.VMRPanel = {
     send,
     el,
-    setStatus,
     ensureHostPermission,
     backendBase,
     setSaveHandler,
     renderSaveResult,
+    renderSaveFailure,
     refreshLabelSuggestions,
     syncBatchSaveAction,
+    setConnection,
+    refreshPermissionState,
+    showView,
+    isSticky,
+    setFeedback,
+    doSave,
     getPrefs: () => currentPrefs,
     setPrefs: (p) => {
       currentPrefs = p;
@@ -591,27 +1077,66 @@
       currentMetadata = m || { labels: [], note: null };
       renderMetadata();
     },
+    getBatch: () => currentBatch,
     refreshDetect,
+    setReturnView: (v) => {
+      returnView = v;
+    },
+    getReturnView: () => returnView,
   };
 
   // ---- wire up ------------------------------------------------------------
 
   async function init() {
-    $("refresh-detect").addEventListener("click", refreshDetect);
+    $("settings-toggle").appendChild(shell.icon("gear", 14));
+    $("empty-icon").appendChild(shell.icon("search", 18));
+
     $("capture-btn").addEventListener("click", capture);
+    $("listings-retry-btn").addEventListener("click", capture);
+    $("capture-cancel-btn").addEventListener("click", cancelCapture);
+    if (chrome.runtime.onMessage && chrome.runtime.onMessage.addListener) {
+      chrome.runtime.onMessage.addListener((message) => {
+        if (message && message.type === "CS_SCROLL_PROGRESS") onScrollProgress(message);
+      });
+    }
+    $("listings-review-btn").addEventListener("click", () => {
+      showView("listings-review");
+      syncBatchSaveAction();
+      renderReview();
+      $("person-details-btn").hidden = true;
+      $("save-back-btn").textContent = "Back to selection";
+      $("save-back-btn").onclick = () => {
+        showView("listings-select");
+        renderRecords();
+      };
+      refreshPermissionState();
+    });
     $("clear-btn").addEventListener("click", async () => {
       if (!confirm("Clear the entire capture batch? This cannot be undone.")) return;
       const r = await send({ type: "CLEAR_BATCH" });
-      if (r && r.ok) renderBatch(r.batchView);
+      if (r && r.ok) {
+        renderSkipped(null, 0);
+        renderBatch(r.batchView);
+        showView("listings-select");
+      }
     });
+    $("select-all").addEventListener("change", (e) => setAllSelected(e.target.checked));
     $("only-issues").addEventListener("change", renderRecords);
     $("export-json").addEventListener("click", () => doExport("json"));
     $("export-csv").addEventListener("click", () => doExport("csv"));
     $("save-btn").addEventListener("click", doSave);
     $("save-settings").addEventListener("click", saveSettings);
-    $("send-target").addEventListener("change", (e) =>
-      send({ type: "SET_PREFS", prefs: { sendTarget: e.target.value } })
-    );
+    $("settings-close").addEventListener("click", closeSettings);
+    $("settings-toggle").addEventListener("click", () => {
+      if (shell.getView() === "settings") closeSettings();
+      else openSettings();
+    });
+    $("outcome-back").addEventListener("click", () => showView(returnView || "listings-select"));
+    $("send-target").addEventListener("change", async (e) => {
+      const r = await send({ type: "SET_PREFS", prefs: { sendTarget: e.target.value } });
+      if (r && r.ok) currentPrefs = r.prefs;
+      refreshPermissionState();
+    });
 
     $("label-add").addEventListener("click", addLabelFromInput);
     $("label-input").addEventListener("keydown", (e) => {
@@ -633,9 +1158,9 @@
       await send({ type: "DISCARD_LEGACY_ARCHIVE" });
       $("archive-card").hidden = true;
     });
-    $("migration-export").addEventListener("click", () =>
-      send({ type: "EXPORT_LEGACY_ARCHIVE" })
-    );
+    $("migration-export").addEventListener("click", () => send({ type: "EXPORT_LEGACY_ARCHIVE" }));
+
+    showView("loading");
 
     const state = await send({ type: "GET_STATE" });
     if (state && state.ok) {
@@ -648,8 +1173,8 @@
       // navigation failed), restore the outcome without recapturing or resaving.
       if (state.lastResult) renderSaveResult(state.lastResult);
     }
+    refreshPermissionState();
     refreshLabelSuggestions();
-    refreshDetect();
   }
 
   document.addEventListener("DOMContentLoaded", init);

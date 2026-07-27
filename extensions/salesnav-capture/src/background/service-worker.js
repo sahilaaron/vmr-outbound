@@ -185,8 +185,51 @@ async function detectActivePage() {
   return { ok: true, page: r.resp };
 }
 
+// Whether a CS_CAPTURE is currently in flight. Cancellation is only meaningful
+// while one is: with no capture running there is nothing to stop, and the panel
+// is told so rather than being allowed to believe it cancelled something.
+let captureInFlight = false;
+
+/**
+ * Stop the scrolling pass the operator started (DAT-018 D).
+ *
+ * Deliberately does NOT go through askContentScript: that injects the content
+ * script when it is missing, and injecting a fresh script in order to cancel a
+ * pass that cannot exist in it is pointless work. If the script is not there,
+ * no pass is running.
+ *
+ * Cancelling is an operator action, not a failure: the in-flight CS_CAPTURE
+ * still resolves, still returns the rows that were already on the page, and
+ * still leaves the batch and the reviewed draft intact. Nothing is submitted.
+ */
+async function cancelActiveCapture() {
+  if (!captureInFlight) {
+    return { ok: true, cancelled: false, reason: "no_active_capture" };
+  }
+  const tab = await findActiveSalesTab();
+  if (!tab) return { ok: true, cancelled: false, reason: "no_sales_tab" };
+  try {
+    const resp = await chrome.tabs.sendMessage(tab.id, { type: "CS_CANCEL_SCROLL" });
+    return {
+      ok: true,
+      cancelled: !!(resp && resp.cancelled),
+      reason: (resp && resp.reason) || null,
+      passId: (resp && resp.passId) || null,
+    };
+  } catch (_e) {
+    // No content script in the tab, so no pass is running in it.
+    return { ok: true, cancelled: false, reason: "content_script_unavailable" };
+  }
+}
+
 async function captureActivePage() {
-  const r = await askContentScript({ type: "CS_CAPTURE" });
+  captureInFlight = true;
+  let r;
+  try {
+    r = await askContentScript({ type: "CS_CAPTURE" });
+  } finally {
+    captureInFlight = false;
+  }
   if (!r.ok) return { ok: false, error: r.error, message: r.message, url: r.url };
   const result = r.resp; // extractPage() output
 
@@ -206,6 +249,10 @@ async function captureActivePage() {
       collapsed: 0,
       uncertain: 0,
       overLimit: false,
+      // Carried on the non-OK path too: a pass the operator cancelled before
+      // any row loaded is a cancellation, not an empty results page, and the
+      // panel must be able to tell the two apart.
+      scroll: result.scroll || null,
       batchView: buildBatchView(batch),
     };
   }
@@ -1031,6 +1078,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         break;
       case "CAPTURE_ACTIVE_PAGE":
         sendResponse(await captureActivePage());
+        break;
+      case "CANCEL_CAPTURE":
+        sendResponse(await cancelActiveCapture());
         break;
       case "SET_PREFS":
         sendResponse({ ok: true, prefs: await setPrefs(msg.prefs) });
