@@ -64,8 +64,18 @@
           </div>
         </section>
 
-        <!-- ---- A0 · classifying the page ---- -->
+        <!-- ---- A0 · classifying the page, and the listing read pass ---- -->
         <section class="view" data-view="loading" hidden>
+          <!-- The read pass over the rows already on the page. Bounded, and
+               stoppable by the operator at any point (DAT-018 D). -->
+          <div class="box" id="capture-progress" hidden>
+            <span class="box-title" id="capture-progress-title">Reading this page</span>
+            <div class="progress" role="progressbar" aria-label="Reading this page"><i></i></div>
+            <p class="p tiny muted" id="capture-progress-detail">
+              Loading the rows this page has already been scrolled to. You can stop at any point —
+              whatever has loaded is kept.
+            </p>
+          </div>
           <div class="box">
             <div class="skeleton">
               <span class="skel-bar" style="width: 52%"></span>
@@ -356,7 +366,10 @@
       <footer class="app-actions" id="app-actions">
         <div class="actions-group" data-actions="loading" hidden>
           <button class="btn btn-primary full" type="button" disabled>Loading…</button>
-          <p class="app-note">Reading the page you already opened.</p>
+          <button id="capture-cancel-btn" class="linkbtn" type="button" hidden>
+            Stop reading this page
+          </button>
+          <p class="app-note" id="loading-note">Reading the page you already opened.</p>
         </div>
 
         <div class="actions-group" data-actions="listings-select" hidden>

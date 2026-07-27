@@ -120,6 +120,24 @@ const STATES = [
     },
   },
   {
+    name: "A1c-listings-reading-cancellable",
+    async build() {
+      // Held mid-pass: the read never resolves, which is the frame in which the
+      // operator can stop it.
+      const p = await createPanel({
+        responses: Object.assign({}, BASE, {
+          DETECT_SURFACE: { ok: true, surface: SURFACES.SALESNAV_PEOPLE_RESULTS, url: LISTING_PAGE.page.url },
+          DETECT_ACTIVE_PAGE: LISTING_PAGE,
+          CAPTURE_ACTIVE_PAGE: () => new Promise(() => {}),
+        }),
+      });
+      await p.flush();
+      await p.click("capture-btn");
+      await p.emit({ type: "CS_SCROLL_PROGRESS", passId: 1, progress: { phase: "step", rows: 18 } });
+      return p;
+    },
+  },
+  {
     name: "A2-listings-empty",
     async build() {
       const p = await createPanel({

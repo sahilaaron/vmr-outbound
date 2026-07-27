@@ -542,13 +542,85 @@
 
   // ---- capture ------------------------------------------------------------
 
+  // The read pass currently in flight, if any: {seq, passId, cancelled}. One at
+  // a time — the capture button is disabled while a pass runs — but the seq
+  // still guards the result, because a pass that was superseded must not repaint
+  // over whatever the operator is looking at now.
+  let activeCapture = null;
+  let captureSeq = 0;
+
+  /** Show or hide the read-pass progress card and its Stop control together. */
+  function setCaptureProgress(active, options) {
+    const o = options || {};
+    $("capture-progress").hidden = !active;
+    const cancelBtn = $("capture-cancel-btn");
+    cancelBtn.hidden = !active;
+    cancelBtn.disabled = !active || o.stopping === true;
+    if (active) {
+      $("capture-progress-title").textContent = o.title || "Reading this page";
+      if (o.detail) $("capture-progress-detail").textContent = o.detail;
+    }
+    $("loading-note").hidden = !!active;
+  }
+
+  /**
+   * Stop the running read pass (DAT-018 D).
+   *
+   * This is an operator action, not a failure: the capture still resolves, the
+   * rows already on the page are still returned and kept, the batch and the
+   * reviewed draft survive, and nothing is submitted. Pressing it again while
+   * the stop is being honoured does nothing — one cancel per pass.
+   */
+  async function cancelCapture() {
+    if (!activeCapture || activeCapture.cancelled) return;
+    activeCapture.cancelled = true;
+    setCaptureProgress(true, {
+      title: "Stopping…",
+      detail: "Keeping everything that has already loaded.",
+      stopping: true,
+    });
+    await send({ type: "CANCEL_CAPTURE" });
+  }
+
+  /**
+   * Progress from the content script's scroll pass. Advisory only: it is
+   * discarded once the operator has cancelled, and once the pass it belongs to
+   * is no longer the one in flight, so a late event cannot restart the progress
+   * card or overwrite the cancelled state.
+   */
+  function onScrollProgress(message) {
+    if (!activeCapture || activeCapture.cancelled) return;
+    if (activeCapture.passId == null) activeCapture.passId = message.passId || null;
+    else if (message.passId != null && message.passId !== activeCapture.passId) return;
+    const p = message.progress || {};
+    if (p.phase === "done") return;
+    const rows = Number(p.rows);
+    if (!Number.isFinite(rows)) return;
+    $("capture-progress-detail").textContent =
+      `${rows} row${rows === 1 ? "" : "s"} loaded so far. Stopping keeps every one of them.`;
+  }
+
   async function capture() {
     const fb = $("capture-feedback");
+    const seq = ++captureSeq;
+    activeCapture = { seq, passId: null, cancelled: false };
     setFeedback(fb, "Reading this page…");
     $("capture-btn").disabled = true;
     $("listings-retry-btn").disabled = true;
-    if (!currentBatch || !currentBatch.records.length) showView("loading");
+    showView("loading");
+    setCaptureProgress(true, {
+      detail:
+        "Loading the rows this page has already been scrolled to. You can stop at any point — whatever has loaded is kept.",
+    });
+
     const r = await send({ type: "CAPTURE_ACTIVE_PAGE" });
+
+    // A newer pass took over while this one was in flight; it owns the view.
+    if (!activeCapture || activeCapture.seq !== seq) return;
+    const wasCancelled =
+      activeCapture.cancelled || (r && r.scroll && r.scroll.stopReason === "cancelled");
+    activeCapture = null;
+    setCaptureProgress(false);
     $("capture-btn").disabled = false;
     $("listings-retry-btn").disabled = false;
     if (!r || !r.ok) {
@@ -566,26 +638,34 @@
           "Results page detected but no rows could be parsed. The page structure may have changed. Nothing captured.",
         empty: "No visible prospects found.",
       };
-      const message = map[r.captureStatus] || w.message || "Nothing captured.";
+      // A pass the operator stopped before any row loaded is a cancellation,
+      // not a page with nothing on it. Saying "no prospects found" there would
+      // blame the page for the operator's own action.
+      const message = wasCancelled
+        ? "Stopped before any rows loaded. Nothing was captured, and nothing was sent."
+        : map[r.captureStatus] || w.message || "Nothing captured.";
       renderSkipped(r.skipped, r.skippedCount);
       renderBatch(r.batchView);
       if (!currentBatch || !currentBatch.records.length) {
         $("listings-empty-detail").textContent = message;
         showView("listings-empty");
       } else {
-        setFeedback(fb, message, "warn");
+        setFeedback(fb, message, wasCancelled ? null : "warn");
         showView("listings-select");
       }
       refreshDetect();
       return;
     }
-    const parts = [`+${r.added} added`];
+    const parts = [];
+    if (wasCancelled) parts.push("Stopped");
+    parts.push(`+${r.added} added`);
     if (r.collapsed) parts.push(`${r.collapsed} duplicate(s) collapsed`);
     if (r.uncertain) parts.push(`${r.uncertain} uncertain identity`);
     if (r.skippedCount) {
       parts.push(`${r.skippedCount} skipped — no company name`);
     }
     if (r.overLimit) parts.push("batch limit reached — extra rows skipped");
+    if (wasCancelled) parts.push("read the page again to load more");
     setFeedback(fb, parts.join(" · "));
     renderSkipped(r.skipped, r.skippedCount);
     renderBatch(r.batchView);
@@ -1013,6 +1093,12 @@
 
     $("capture-btn").addEventListener("click", capture);
     $("listings-retry-btn").addEventListener("click", capture);
+    $("capture-cancel-btn").addEventListener("click", cancelCapture);
+    if (chrome.runtime.onMessage && chrome.runtime.onMessage.addListener) {
+      chrome.runtime.onMessage.addListener((message) => {
+        if (message && message.type === "CS_SCROLL_PROGRESS") onScrollProgress(message);
+      });
+    }
     $("listings-review-btn").addEventListener("click", () => {
       showView("listings-review");
       syncBatchSaveAction();

@@ -102,6 +102,14 @@ Designed at 360px, fluid from 320 to ~520.
 Shared states: classifying the page, unsupported page, sign-in / security check,
 page unavailable, loopback permission needed, archived drafts, settings.
 
+The listing read pass is **operator-cancellable** (DAT-018 D). While it runs the
+panel shows the rows loaded so far and a *Stop reading this page* control, which
+routes `CANCEL_CAPTURE` → `CS_CANCEL_SCROLL` and halts the pass. Stopping is an
+operator action, not a failure: the scroller still returns the view to the top,
+every row already loaded is kept and shown, the batch and the reviewed draft
+survive, nothing is submitted, and the next capture starts clean. A cancel that
+arrives with no pass running cancels nothing and is reported as such.
+
 Rendered snapshots of every state are in
 [`docs/screenshots/panel/`](./docs/screenshots/panel/), produced by
 `node tools/render-panel-states.js <outdir>` — the shipped HTML, CSS and

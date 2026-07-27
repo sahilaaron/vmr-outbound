@@ -77,6 +77,8 @@ async function createPanel(options) {
   }
 
   const noopEvent = { addListener() {}, removeListener() {} };
+  // Listeners the panel registers for broadcasts (scroll progress, tab events).
+  const runtimeListeners = [];
   window.chrome = {
     runtime: {
       lastError: null,
@@ -86,7 +88,13 @@ async function createPanel(options) {
           .then((result) => callback && callback(result));
       },
       getManifest: () => ({ version: "2.0.0", name: "VM Prospector" }),
-      onMessage: noopEvent,
+      onMessage: {
+        addListener: (fn) => runtimeListeners.push(fn),
+        removeListener: (fn) => {
+          const i = runtimeListeners.indexOf(fn);
+          if (i > -1) runtimeListeners.splice(i, 1);
+        },
+      },
     },
     permissions: {
       contains: () => Promise.resolve(permission.granted),
@@ -153,6 +161,11 @@ async function createPanel(options) {
         text: $("steps-text").textContent,
         on: Array.from(wrap.querySelectorAll(".steps-track i")).map((i) => i.className),
       };
+    },
+    /** Deliver a runtime broadcast, as the content script or worker would. */
+    async emit(message) {
+      for (const fn of runtimeListeners.slice()) fn(message, { id: "test" }, () => {});
+      await flush(2);
     },
     async click(id) {
       $(id).dispatchEvent(new window.Event("click", { bubbles: true }));
