@@ -176,17 +176,17 @@ def downgrade() -> None:
         type_="unique",
     )
     op.drop_constraint(
-        "ck_insight_evidence_insight_evidence_source_record_pair",
+        op.f("ck_insight_evidence_insight_evidence_source_record_pair"),
         "insight_evidence",
         type_="check",
     )
     op.drop_constraint(
-        "ck_insight_evidence_insight_evidence_version_positive",
+        op.f("ck_insight_evidence_insight_evidence_version_positive"),
         "insight_evidence",
         type_="check",
     )
     op.drop_constraint(
-        "ck_insight_evidence_insight_evidence_confidence_range",
+        op.f("ck_insight_evidence_insight_evidence_confidence_range"),
         "insight_evidence",
         type_="check",
     )
@@ -203,17 +203,17 @@ def downgrade() -> None:
         op.drop_column("insight_evidence", column)
 
     op.drop_constraint(
-        "ck_insights_insight_version_positive",
+        op.f("ck_insights_insight_version_positive"),
         "insights",
         type_="check",
     )
     op.drop_constraint(
-        "ck_insights_insight_claim_not_blank",
+        op.f("ck_insights_insight_claim_not_blank"),
         "insights",
         type_="check",
     )
     op.drop_constraint(
-        "ck_insights_insight_exactly_one_subject",
+        op.f("ck_insights_insight_exactly_one_subject"),
         "insights",
         type_="check",
     )
