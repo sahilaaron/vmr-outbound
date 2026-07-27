@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "VMR Contact Capture",
+  "name": "VM Prospector",
   "version": "2.1.0",
-  "description": "Operator-driven acquisition of LinkedIn and Sales Navigator contacts for the VMR Outbound Agent. Saves people as permanent contacts; no campaign selection, no scraping automation, no credentials stored.",
+  "description": "VM Prospector — operator-driven acquisition of LinkedIn and Sales Navigator contacts for the VMR Outbound Agent. Saves people as permanent contacts; no campaign selection, no scraping automation, no credentials stored.",
   "minimum_chrome_version": "116",
   "permissions": ["storage", "sidePanel", "downloads", "activeTab", "scripting"],
   "host_permissions": [
@@ -18,7 +18,7 @@
     "default_path": "src/sidepanel/sidepanel.html"
   },
   "action": {
-    "default_title": "VMR Contact Capture"
+    "default_title": "VM Prospector"
   },
   "content_scripts": [
     {

@@ -3,236 +3,453 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>VMR Contact Capture</title>
+    <title>VM Prospector</title>
+    <link rel="stylesheet" href="tokens.css" />
     <link rel="stylesheet" href="sidepanel.css" />
   </head>
   <body>
-    <header class="app-header">
-      <h1 id="app-title">VMR Contact Capture</h1>
-      <div class="surface-row">
-        <span id="surface-indicator" class="surface-chip surface-chip-neutral">Detecting…</span>
-        <button id="refresh-mode" class="btn btn-ghost btn-tiny" type="button">Refresh</button>
+    <div class="app">
+      <!-- ============ shared shell: header ============ -->
+      <header class="app-header app-bar">
+        <img class="app-mark" src="assets/vmr-mark.svg" alt="" />
+        <h1 id="app-title">VM Prospector</h1>
+        <span class="conn" id="conn-status" role="status" data-tone="idle">
+          <span class="conn-dot" aria-hidden="true"></span>
+          <span id="conn-text">Not checked</span>
+        </span>
+        <button
+          id="settings-toggle"
+          class="icon-btn"
+          type="button"
+          aria-expanded="false"
+          aria-controls="settings"
+          aria-label="Settings and help"
+          title="Settings and help"
+        ></button>
+      </header>
+
+      <!-- ============ shared shell: detected page ============
+           The surface indicator (DAT-018 C, restyled as the wireframes'
+           detected-page strip). It reports which of the three interfaces the
+           already-open page resolved to, and it is painted from the same detect
+           result that targets the parser, so provenance and payload cannot
+           disagree. -->
+      <div class="context-strip" id="surface-indicator" data-tone="muted">
+        <span class="context-icon" id="context-icon" aria-hidden="true"></span>
+        <span class="context-label" id="context-label">Detecting the active page…</span>
+        <span class="context-badge" id="context-badge"></span>
       </div>
-      <div id="surface-detail" class="muted small" hidden></div>
-    </header>
+      <div class="context-url" id="surface-detail" hidden></div>
 
-    <!-- Shown ONLY while campaign-era drafts are still recoverable from local
-         storage. Downloading them is the only way to get them back, so this is
-         a required operator action, not a status notice. -->
-    <section class="card" id="archive-card" hidden>
-      <span class="step-label">Archived drafts can still be downloaded</span>
-      <p class="small" id="archive-message"></p>
-      <div class="row gap wrap">
-        <button id="migration-export" class="btn" type="button">
-          Download archived drafts
-        </button>
-        <button id="migration-dismiss" class="btn btn-ghost" type="button">Discard</button>
+      <!-- ============ shared shell: three-step rail ============ -->
+      <div class="steps" id="steps" role="group" aria-label="Capture progress" hidden>
+        <div class="steps-track" aria-hidden="true"><i></i><i></i><i></i></div>
+        <span class="steps-text" id="steps-text">Step 1 of 3</span>
       </div>
-    </section>
 
-    <!-- Person-profile capture mode -->
-    <div id="profile-sections" hidden>
-      <section class="card">
-        <div class="row space-between">
-          <span class="step-label">1 · Capture profile</span>
-          <span id="profile-exp-badge" class="badge badge-muted"></span>
-        </div>
-        <button id="profile-capture-btn" class="btn btn-primary full" type="button">
-          Read this profile page
-        </button>
-        <div id="profile-capture-feedback" class="small muted"></div>
-        <p class="tiny muted">
-          Reads only what is visible on the page you opened. If Experience shows
-          as missing, scroll the page so it loads, then capture again.
-        </p>
-      </section>
+      <!-- ============ body ============ -->
+      <main class="app-body" id="app-body">
+        <!-- Shown ONLY while campaign-era drafts are still recoverable from
+             local storage. Downloading them is the only way to get them back,
+             so this is a required operator action, not a status notice. -->
+        <section class="callout" data-tone="brand" id="archive-card" hidden>
+          <span class="eyebrow step-label">Archived drafts can still be downloaded</span>
+          <div class="callout-body" id="archive-message"></div>
+          <div class="badge-row">
+            <button id="migration-export" class="btn btn-sm" type="button">
+              Download archived drafts
+            </button>
+            <button id="migration-dismiss" class="linkbtn muted" type="button">Discard</button>
+          </div>
+        </section>
 
-      <section class="card">
-        <div class="row space-between">
-          <span class="step-label">2 · Review</span>
-          <button id="profile-clear-btn" class="btn btn-ghost danger" type="button">Clear draft</button>
-        </div>
-        <div id="profile-review" class="records" aria-live="polite">
-          <p class="muted small">No profile captured yet.</p>
-        </div>
-        <label class="checkbox small" id="profile-exclude-exp-row" hidden>
-          <input type="checkbox" id="profile-exclude-exp" />
-          Exclude the experience section from the save
-        </label>
-      </section>
-    </div>
+        <!-- ---- A0 · classifying the page ---- -->
+        <section class="view" data-view="loading" hidden>
+          <div class="box">
+            <div class="skeleton">
+              <span class="skel-bar" style="width: 52%"></span>
+              <span class="skel-bar" style="width: 78%"></span>
+            </div>
+          </div>
+          <div class="box">
+            <div class="skeleton">
+              <span class="skel-bar" style="width: 44%"></span>
+              <span class="skel-bar" style="width: 66%"></span>
+            </div>
+          </div>
+          <div class="box">
+            <div class="skeleton">
+              <span class="skel-bar" style="width: 60%"></span>
+              <span class="skel-bar" style="width: 40%"></span>
+            </div>
+          </div>
+        </section>
 
-    <div id="salesnav-sections" hidden>
-      <section class="card" id="detect-card">
-        <div class="row space-between">
-          <span class="step-label">1 · Page</span>
-          <button id="refresh-detect" class="btn btn-ghost" type="button">Refresh</button>
-        </div>
-        <div id="detect-status" class="status status-neutral">Checking active tab…</div>
-        <div id="detect-detail" class="muted small"></div>
-      </section>
+        <!-- ---- A1 · Sales Navigator listings: select prospects ---- -->
+        <section class="view" data-view="listings-select" hidden>
+          <div id="detect-status" class="feedback" role="status">Checking active tab…</div>
 
-      <section class="card">
-        <div class="row space-between">
-          <span class="step-label">2 · Capture</span>
-          <span id="page-badge" class="badge badge-muted">page ?</span>
-        </div>
-        <button id="capture-btn" class="btn btn-primary full" type="button" disabled>
-          Capture visible contacts
-        </button>
-        <div id="capture-feedback" class="small muted"></div>
+          <!-- Rows the page showed but that carry no Company Name (DAT-018 B).
+               Reported truthfully; never guessed, never submitted. -->
+          <div id="skipped-card" class="box" data-tone="warning" hidden>
+            <p class="p" id="skipped-summary"></p>
+            <div id="skipped-list" class="lines"></div>
+          </div>
 
-        <!-- Rows the page showed but that carry no Company Name (DAT-018 B).
-             Reported truthfully; never guessed, never submitted. -->
-        <div id="skipped-card" class="skipped-block" hidden>
-          <p class="small" id="skipped-summary"></p>
-          <div id="skipped-list"></div>
-        </div>
-        <p class="tiny muted">
-          Reads only the rows currently visible on the page you opened. You
-          control navigation and paging; the extension never turns a page.
-        </p>
-      </section>
-
-      <section class="card">
-        <div class="row space-between">
-          <span class="step-label">3 · Review and exclude</span>
-          <button id="clear-btn" class="btn btn-ghost danger" type="button">Clear batch</button>
-        </div>
-        <div id="summary" class="summary-grid"></div>
-        <div class="row wrap gap" id="filter-row">
-          <label class="checkbox small">
-            <input type="checkbox" id="only-issues" /> Only contacts with warnings
+          <div class="selectall" id="selectall-row" hidden>
+            <label class="check">
+              <input type="checkbox" id="select-all" />
+              <span class="label" id="select-all-label">Select all</span>
+            </label>
+            <span class="aside" id="select-all-aside"></span>
+          </div>
+          <label class="check" id="filter-row" hidden>
+            <input type="checkbox" id="only-issues" />
+            Only prospects with warnings
           </label>
+          <div id="records" class="rowlist" aria-live="polite"></div>
+          <div id="capture-feedback" class="feedback" aria-live="polite"></div>
+          <div id="detect-detail" class="mono" hidden></div>
+        </section>
+
+        <!-- ---- A2 · nothing on this page ---- -->
+        <section class="view" data-view="listings-empty" hidden>
+          <div class="box dashed">
+            <span class="context-icon" id="empty-icon" aria-hidden="true"></span>
+            <span class="box-title">No prospects on this page</span>
+            <p class="p muted" id="listings-empty-detail">
+              Nothing was captured. Scroll the results so the rows load, then try again — or check
+              that the search returned people.
+            </p>
+          </div>
+          <div class="callout" data-tone="info">
+            <div class="callout-title">If this keeps happening</div>
+            <div class="callout-body">
+              LinkedIn may have changed the page. Report it — VM Prospector will not guess at
+              partial rows.
+            </div>
+          </div>
+        </section>
+
+        <!-- ---- A3 · review the selected set ---- -->
+        <section class="view" data-view="listings-review" hidden>
+          <span class="eyebrow">Save to VMR</span>
+          <div class="badge-row" id="review-badges"></div>
+          <div class="tiles" id="summary"></div>
+          <div class="scroll-pane" id="review-records" aria-live="polite"></div>
+          <div class="divider-row">
+            <span>Will be submitted</span>
+            <span class="total" id="review-total">0 prospects</span>
+          </div>
+        </section>
+
+        <!-- ---- B1/B2/B3 · person profile: review ---- -->
+        <section class="view" data-view="person-review" hidden>
+          <div id="profile-capture-feedback" class="feedback" aria-live="polite"></div>
+          <div id="profile-review" class="view" aria-live="polite">
+            <p class="p muted">No profile captured yet.</p>
+          </div>
+          <span id="profile-exp-badge" class="feedback"></span>
+        </section>
+
+        <!-- ---- B4 · confirm capture ---- -->
+        <section class="view" data-view="person-confirm" hidden>
+          <div id="person-confirm-body"></div>
+          <p class="p tiny muted">
+            A website is never guessed from a company name. VMR confirms the domain later.
+          </p>
+        </section>
+
+        <!-- ---- B5 · review details ---- -->
+        <section class="view" data-view="person-details" hidden>
+          <span class="eyebrow">Only fields you can check on this page</span>
+          <div class="box" id="profile-exclude-exp-row" hidden>
+            <label class="check">
+              <input type="checkbox" id="profile-exclude-exp" />
+              Exclude the experience section from the save
+            </label>
+            <p class="p tiny muted">
+              Captured values are not editable here: the panel saves what the page showed, and the
+              record it produces is the evidence for that. Blank stays blank.
+            </p>
+          </div>
+          <div class="box sunk">
+            <span class="eyebrow">Not editable here</span>
+            <p class="p">Email, domain, research and scoring belong to the VM Prospector app.</p>
+          </div>
+        </section>
+
+        <!-- ---- C1/C2 · company page: review ---- -->
+        <section class="view" data-view="company-review" hidden>
+          <div id="company-capture-feedback" class="feedback" aria-live="polite"></div>
+          <div id="company-review" class="view" aria-live="polite">
+            <p class="p muted">No company captured yet.</p>
+          </div>
+          <p class="p tiny muted">
+            Open the company page yourself — the panel never navigates there for you. The About
+            page carries website, industry, size and headquarters. This saves company evidence, not
+            a contact.
+          </p>
+        </section>
+
+        <!-- ---- C4 · confirm identity ---- -->
+        <section class="view" data-view="company-confirm" hidden>
+          <div id="company-confirm-body"></div>
+        </section>
+
+        <!-- ---- A4/A5/A6, B6/B7, C5 · saving and outcome ---- -->
+        <section class="view" data-view="outcome" hidden>
+          <div class="box" id="saving-card" hidden>
+            <span class="box-title" id="saving-title">Saving</span>
+            <div class="progress" role="progressbar" aria-label="Saving"><i></i></div>
+            <p class="p tiny muted" id="saving-note">
+              Sent as one submission — VM Prospector answers when the whole set is processed. Keep
+              this panel open.
+            </p>
+          </div>
+
+          <section id="save-card" hidden>
+            <div id="save-state" class="view" aria-live="polite"></div>
+            <div id="save-actions" class="badge-row"></div>
+            <div class="badge-row" id="export-row" hidden>
+              <button id="export-json" class="btn btn-sm" type="button">Download JSON</button>
+              <button id="export-csv" class="btn btn-sm" type="button">Download CSV</button>
+            </div>
+          </section>
+
+          <section id="company-result-card" hidden>
+            <div id="company-send-state" class="view" aria-live="polite"></div>
+            <div id="company-send-actions" class="badge-row"></div>
+          </section>
+        </section>
+
+        <!-- ---- S1 · unsupported page ---- -->
+        <section class="view" data-view="unsupported" id="unsupported-section" hidden>
+          <div class="box dashed">
+            <span class="box-title">Nothing to capture here</span>
+            <p class="p muted">Open one of these and the panel switches by itself.</p>
+          </div>
+          <div class="box">
+            <div class="kv">
+              <span class="k">A person's profile</span>
+              <span class="v mono">linkedin.com/in/…</span>
+            </div>
+            <div class="kv">
+              <span class="k">A company page</span>
+              <span class="v mono">linkedin.com/company/…</span>
+            </div>
+            <div class="kv">
+              <span class="k">A Sales Navigator search</span>
+              <span class="v mono">/sales/search/people</span>
+            </div>
+          </div>
+          <div class="box sunk">
+            <p class="p" id="unsupported-detail">
+              Open a LinkedIn profile (linkedin.com/in/…), a company page, or a Sales Navigator
+              people-search results page to capture.
+            </p>
+          </div>
+        </section>
+
+        <!-- ---- S2 · sign-in or security check ---- -->
+        <section class="view" data-view="challenge" id="challenge-section" hidden>
+          <div class="callout" data-tone="warning">
+            <div class="callout-title">Sign in to LinkedIn to continue</div>
+            <div class="callout-body">
+              LinkedIn is showing a login wall or a security check. Resolve it in the page
+              yourself, then check again.
+            </div>
+          </div>
+          <div class="box sunk">
+            <p class="p">
+              Nothing was read from this page. VM Prospector never acts during a security check.
+            </p>
+          </div>
+        </section>
+
+        <!-- ---- page no longer available ---- -->
+        <section class="view" data-view="unavailable" hidden>
+          <div class="box dashed">
+            <span class="box-title">Nothing to capture</span>
+            <p class="p muted">
+              The profile or company page has been removed or hidden. Nothing was read.
+            </p>
+          </div>
+        </section>
+
+        <!-- ---- S7 · settings and help ---- -->
+        <section class="view" data-view="settings" id="settings" hidden>
+          <div class="field">
+            <label class="field-label" for="send-target">Where captures go</label>
+            <select id="send-target">
+              <option value="mock">Mock receiver (test)</option>
+              <option value="backend">Local VMR backend</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label" for="backend-url">Local backend base URL</label>
+            <input id="backend-url" class="input" type="text" placeholder="http://127.0.0.1:8000" />
+          </div>
+          <div class="field">
+            <label class="field-label" for="mock-url">Mock receiver URL</label>
+            <input id="mock-url" class="input" type="text" placeholder="http://127.0.0.1:8787/…" />
+          </div>
+          <div class="field">
+            <label class="field-label" for="max-records">Most prospects per batch</label>
+            <input id="max-records" class="input" type="number" min="1" max="500" />
+          </div>
+          <div class="box sunk">
+            <div class="kv">
+              <span class="k">Connection</span>
+              <span class="v" id="settings-connection">Not checked</span>
+            </div>
+            <div class="kv">
+              <span class="k">Version</span>
+              <span class="v mono" id="settings-version">2.0.0</span>
+            </div>
+          </div>
+          <p class="p tiny muted">
+            Only loopback origins are permitted. No credentials, cookies, or tokens are ever stored
+            or sent. Nothing is transmitted without pressing Save.
+          </p>
+        </section>
+
+        <!-- ---- shared: optional labels + note (both contact workflows) ---- -->
+        <section id="metadata-card" hidden>
+          <div class="box">
+            <div class="line">
+              <span class="eyebrow t">Labels &amp; note (optional)</span>
+              <button id="metadata-clear" class="linkbtn" type="button">Clear</button>
+            </div>
+            <div id="label-chips" class="chips" aria-live="polite"></div>
+            <div class="badge-row">
+              <input
+                id="label-input"
+                class="input"
+                type="text"
+                maxlength="64"
+                placeholder="Add a label (e.g. Healthcare) and press Enter"
+                list="label-suggestions"
+                aria-label="Add a label"
+              />
+              <button id="label-add" class="btn btn-sm" type="button">Add</button>
+            </div>
+            <datalist id="label-suggestions"></datalist>
+            <label class="field-label" for="note-input">Note</label>
+            <textarea
+              id="note-input"
+              class="input"
+              rows="2"
+              maxlength="2000"
+              placeholder="Met at SaaStr. Follow up after September."
+            ></textarea>
+            <p class="p tiny muted">
+              Labels classify permanent contacts — they are not campaigns. Notes are kept
+              append-only: a later capture never overwrites an earlier one.
+            </p>
+          </div>
+        </section>
+      </main>
+
+      <!-- ============ sticky actions ============ -->
+      <footer class="app-actions" id="app-actions">
+        <div class="actions-group" data-actions="loading" hidden>
+          <button class="btn btn-primary full" type="button" disabled>Loading…</button>
+          <p class="app-note">Reading the page you already opened.</p>
         </div>
-        <div id="records" class="records" aria-live="polite"></div>
-      </section>
+
+        <div class="actions-group" data-actions="listings-select" hidden>
+          <button id="listings-review-btn" class="btn btn-primary full" type="button" hidden>
+            Review selected
+          </button>
+          <button id="capture-btn" class="btn btn-primary full" type="button" disabled>
+            Capture visible contacts
+          </button>
+          <div class="row">
+            <button id="clear-btn" class="linkbtn muted grow" type="button" hidden>
+              Clear batch
+            </button>
+          </div>
+          <p class="app-note">
+            Only the rows on this page. You control paging — VM Prospector never turns a page.
+          </p>
+        </div>
+
+        <div class="actions-group" data-actions="listings-empty" hidden>
+          <button id="listings-retry-btn" class="btn btn-primary full" type="button">
+            Try again
+          </button>
+        </div>
+
+        <!-- shared by A3 (listings-review) and B4 (person-confirm) -->
+        <div class="actions-group" data-actions="save" hidden>
+          <button id="save-btn" class="btn btn-primary full" type="button" disabled>
+            Save Contact
+          </button>
+          <button id="person-details-btn" class="btn full" type="button" hidden>
+            Review details
+          </button>
+          <button id="save-back-btn" class="linkbtn" type="button">Back</button>
+        </div>
+
+        <div class="actions-group" data-actions="person-review" hidden>
+          <button id="person-continue-btn" class="btn btn-primary full" type="button" disabled>
+            Capture prospect
+          </button>
+          <button id="profile-capture-btn" class="btn full" type="button">
+            Read this page again
+          </button>
+          <button id="profile-clear-btn" class="linkbtn muted" type="button">Clear draft</button>
+          <p class="app-note">Reads only what this page already shows.</p>
+        </div>
+
+        <div class="actions-group" data-actions="person-details" hidden>
+          <button id="person-details-done" class="btn btn-primary full" type="button">Done</button>
+        </div>
+
+        <div class="actions-group" data-actions="company-review" hidden>
+          <button id="company-continue-btn" class="btn btn-primary full" type="button" disabled>
+            Capture company
+          </button>
+          <button id="company-capture-btn" class="btn full" type="button">
+            Read this page again
+          </button>
+          <button id="company-clear-btn" class="linkbtn muted" type="button">Clear draft</button>
+          <p class="app-note">Saves what this page shows as company evidence.</p>
+        </div>
+
+        <div class="actions-group" data-actions="company-confirm" hidden>
+          <button id="company-send-btn" class="btn btn-primary full" type="button" disabled>
+            Save company evidence
+          </button>
+          <button id="company-back-btn" class="linkbtn" type="button">Back</button>
+        </div>
+
+        <div class="actions-group" data-actions="saving" hidden>
+          <button class="btn btn-primary full" type="button" disabled>Saving…</button>
+          <p class="app-note">Anything already saved is kept.</p>
+        </div>
+
+        <div class="actions-group" data-actions="outcome" hidden>
+          <button id="outcome-primary" class="btn btn-primary full" type="button" hidden>
+            Try again
+          </button>
+          <button id="outcome-back" class="linkbtn" type="button">Back to this page</button>
+        </div>
+
+        <div class="actions-group" data-actions="blocked" hidden>
+          <button id="refresh-mode" class="btn full" type="button">Check this page again</button>
+        </div>
+
+        <div class="actions-group" data-actions="settings" hidden>
+          <button id="save-settings" class="btn btn-primary full" type="button">
+            Save settings
+          </button>
+          <button id="settings-close" class="linkbtn" type="button">Back to this page</button>
+          <p class="app-note">Operator-driven capture only · no unattended scraping</p>
+        </div>
+      </footer>
     </div>
-
-    <!-- Optional labels + note, shared by both contact workflows -->
-    <section class="card" id="metadata-card" hidden>
-      <div class="row space-between">
-        <span class="step-label">Labels and note (optional)</span>
-        <button id="metadata-clear" class="btn btn-ghost" type="button">Clear</button>
-      </div>
-      <div id="label-chips" class="warns" aria-live="polite"></div>
-      <div class="row gap">
-        <input
-          id="label-input"
-          class="input grow"
-          type="text"
-          maxlength="64"
-          placeholder="Add a label (e.g. Healthcare) and press Enter"
-          list="label-suggestions"
-        />
-        <button id="label-add" class="btn btn-ghost" type="button">Add</button>
-      </div>
-      <datalist id="label-suggestions"></datalist>
-      <label class="small muted" for="note-input">Note</label>
-      <textarea
-        id="note-input"
-        class="input"
-        rows="2"
-        maxlength="2000"
-        placeholder="Met at SaaStr. Follow up after September."
-      ></textarea>
-      <p class="tiny muted">
-        Labels classify permanent contacts — they are not campaigns. Notes are
-        kept append-only: a later capture never overwrites an earlier one.
-      </p>
-    </section>
-
-    <!-- Save action, shared by both contact workflows -->
-    <section class="card" id="save-card" hidden>
-      <span class="step-label">Save to VMR</span>
-      <button id="save-btn" class="btn btn-primary full" type="button" disabled>
-        Save Contact
-      </button>
-      <div id="save-state" class="send-state" aria-live="polite"></div>
-      <div id="save-actions" class="row gap wrap"></div>
-      <div class="row gap wrap" id="export-row" hidden>
-        <button id="export-json" class="btn" type="button">Download JSON</button>
-        <button id="export-csv" class="btn" type="button">Download CSV</button>
-      </div>
-      <p class="tiny muted">
-        Nothing is saved automatically. The backend stores immutable evidence,
-        decides identity, and owns every canonical record. Saving a contact
-        never makes them outreach-eligible.
-      </p>
-    </section>
-
-    <!-- Company-page capture mode: company evidence, not a person -->
-    <div id="company-sections" hidden>
-      <section class="card">
-        <span class="step-label">1 · Capture company page</span>
-        <button id="company-capture-btn" class="btn btn-primary full" type="button">
-          Read this company page
-        </button>
-        <div id="company-capture-feedback" class="small muted"></div>
-        <p class="tiny muted">
-          Open the company page yourself (the extension never navigates there for
-          you). The About page carries website / industry / size / headquarters.
-          This saves company evidence, not a contact.
-        </p>
-      </section>
-      <section class="card">
-        <div class="row space-between">
-          <span class="step-label">2 · Review</span>
-          <button id="company-clear-btn" class="btn btn-ghost danger" type="button">Clear draft</button>
-        </div>
-        <div id="company-review" class="records" aria-live="polite">
-          <p class="muted small">No company captured yet.</p>
-        </div>
-      </section>
-      <section class="card">
-        <span class="step-label">3 · Save company evidence</span>
-        <button id="company-send-btn" class="btn btn-primary full" type="button" disabled>
-          Save company evidence
-        </button>
-        <div id="company-send-state" class="send-state" aria-live="polite"></div>
-        <div id="company-send-actions" class="row gap"></div>
-      </section>
-    </div>
-
-    <!-- Unsupported / challenge notices -->
-    <section class="card" id="unsupported-section" hidden>
-      <span class="step-label">Unsupported page</span>
-      <p class="small muted" id="unsupported-detail">
-        Open a LinkedIn profile (linkedin.com/in/…) or a Sales Navigator
-        people-search results page to capture a contact.
-      </p>
-    </section>
-    <section class="card" id="challenge-section" hidden>
-      <span class="step-label">Challenge / login required</span>
-      <p class="small muted">
-        LinkedIn is showing a login wall or security check. Resolve it in the page
-        yourself, then press Refresh. The extension never acts during a challenge.
-      </p>
-    </section>
-
-    <details class="card" id="settings">
-      <summary class="step-label">Settings</summary>
-      <label class="small muted" for="backend-url">Local backend base URL</label>
-      <input id="backend-url" class="input" type="text" placeholder="http://127.0.0.1:8000" />
-      <label class="small muted" for="mock-url">Mock receiver URL</label>
-      <input id="mock-url" class="input" type="text" placeholder="http://127.0.0.1:8787/…" />
-      <label class="small muted" for="send-target">Save target</label>
-      <select id="send-target">
-        <option value="mock">Mock receiver (test)</option>
-        <option value="backend">Local VMR backend</option>
-      </select>
-      <label class="small muted" for="max-records">Max contacts per capture batch</label>
-      <input id="max-records" class="input" type="number" min="1" max="500" />
-      <button id="save-settings" class="btn btn-ghost" type="button">Save settings</button>
-      <p class="tiny muted">
-        Only loopback origins are permitted. No credentials, cookies, or tokens
-        are ever stored or sent. Nothing is transmitted without pressing “Save”.
-      </p>
-    </details>
-
-    <footer class="tiny muted">
-      Operator-driven capture only · no unattended scraping · no login automation
-    </footer>
 
     <script src="../common/constants.js"></script>
     <script src="../common/normalize.js"></script>
@@ -242,6 +459,7 @@
     <script src="../common/permissions.js"></script>
     <script src="../common/handoff.js"></script>
     <script src="../common/live-sync.js"></script>
+    <script src="shell.js"></script>
     <script src="sidepanel.js"></script>
     <script src="sidepanel-profile.js"></script>
   </body>

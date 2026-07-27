@@ -53,21 +53,43 @@ test("a Mode heading is not rendered anywhere in the panel", () => {
 
 // --- the compact surface indicator --------------------------------------------
 
-test("a compact surface chip sits directly beneath the panel heading", () => {
-  const chip = PANEL_DOC.getElementById("surface-indicator");
-  assert.ok(chip, "surface-indicator is missing");
-  const header = PANEL_DOC.querySelector("header.app-header");
-  assert.ok(header.contains(chip), "the surface chip must live in the header");
+// The VM Prospector redesign keeps this affordance and its id, and promotes it
+// from a chip inside the header to the detected-page strip the wireframes
+// specify: still one compact always-on line, still directly beneath the
+// heading, but now spanning the panel with the surface icon, the surface name
+// and the page's one-word state. The requirement it encodes is unchanged — the
+// operator must be able to see which surface is active without opening
+// anything — so the assertions target position and compactness, not the chip.
+test("the surface indicator sits directly beneath the panel heading", () => {
+  const indicator = PANEL_DOC.getElementById("surface-indicator");
+  assert.ok(indicator, "surface-indicator is missing");
   const title = PANEL_DOC.getElementById("app-title");
   assert.ok(
-    title.compareDocumentPosition(chip) & 4, // DOCUMENT_POSITION_FOLLOWING
-    "the surface chip must come after the heading"
+    title.compareDocumentPosition(indicator) & 4, // DOCUMENT_POSITION_FOLLOWING
+    "the surface indicator must come after the heading"
   );
+  const header = PANEL_DOC.querySelector("header.app-header");
+  assert.ok(
+    header.compareDocumentPosition(indicator) & 4,
+    "the surface indicator must sit below the header, not inside the body"
+  );
+  const body = PANEL_DOC.getElementById("app-body");
+  assert.ok(
+    !body.contains(indicator),
+    "the surface indicator must not scroll away with the body content"
+  );
+  // Still a single line, not a section: no card, no heading, no controls.
+  assert.equal(indicator.tagName, "DIV");
+  assert.equal(indicator.querySelector("button"), null, "the indicator must carry no controls");
 });
 
-test("the surface labels are short chips, not sentences", () => {
-  for (const label of ["SalesNav Listing", "LinkedIn Profile", "LinkedIn Company"]) {
-    assert.ok(PROFILE_JS.includes(`"${label}"`), `missing compact label: ${label}`);
+test("the surface labels name the surface, and the old long-form labels are gone", () => {
+  for (const label of [
+    "Sales Navigator · Search results",
+    "LinkedIn · Person profile",
+    "LinkedIn · Company page",
+  ]) {
+    assert.ok(PROFILE_JS.includes(`"${label}"`), `missing surface label: ${label}`);
   }
   // The old long-form labels are gone.
   assert.ok(!PROFILE_JS.includes('"Sales Navigator Listings"'));

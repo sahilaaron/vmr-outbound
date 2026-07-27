@@ -6,9 +6,10 @@
  * Contact" when the backend already knows that exact profile URL. No campaign is
  * selected, required, or stored anywhere in this panel.
  *
- * Exactly one mode's sections are visible at a time:
- *   Sales Navigator Listings · LinkedIn Person Profile · LinkedIn Company
- *   Profile · Unsupported Page · Challenge / Login Required
+ * Exactly one detected interface is on screen at a time, chosen by the page the
+ * operator already opened — there is no manual mode selector:
+ *   Sales Navigator listings · person profile · company profile ·
+ *   unsupported page · sign-in or security check · page unavailable.
  *
  * All captured text is rendered with textContent (never innerHTML). Nothing is
  * transmitted without the operator pressing Save.
@@ -19,13 +20,18 @@
   const { constants, handoff, permissions, liveSync } = self.SNCapture;
   const { SURFACES, CAPTURE_STATUS } = constants;
   const panel = self.VMRPanel;
+  const shell = self.VMRShell;
+  const { el, badge, callout, kv, statusLine, box, paragraph } = shell;
   const $ = (id) => document.getElementById(id);
-  const el = panel.el;
   const send = panel.send;
-  const setStatus = panel.setStatus;
 
   let currentDraft = null;
+  let currentCompanyDraft = null;
   let currentMode = null;
+  let profileMatch = null;
+  // The match state arrives after the draft is first painted, so the review has
+  // to be repainted once when it lands — and exactly once, never in a loop.
+  let renderedMatch = null;
 
   // ---- warning presentation ------------------------------------------------
   //
@@ -66,6 +72,12 @@
     return FIELD_LABELS[field] || String(field).replace(/_/g, " ");
   }
 
+  /** A contract section name ("experience") as the operator reads it. */
+  function sectionLabel(section) {
+    const s = String(section || "").replace(/_/g, " ");
+    return s ? s.charAt(0).toUpperCase() + s.slice(1) : "A section";
+  }
+
   function warningBadges(warningLists) {
     const seen = new Map();
     for (const list of warningLists) {
@@ -81,183 +93,387 @@
     }
     return Array.from(seen.entries())
       .slice(0, 12)
-      .map(([key, label]) =>
-        el("span", { class: "badge badge-warn", text: label, attrs: { title: key } })
-      );
+      .map(([key, label]) => badge(label, { tone: "warning", title: key }));
+  }
+
+  function allWarnings(draftView) {
+    if (!draftView) return [];
+    const p = draftView.profile || {};
+    return [p.warnings, draftView.pageWarnings].concat(
+      (draftView.experiences || []).map((e) => e.warnings)
+    );
+  }
+
+  function hasGaps(draftView) {
+    if (!draftView) return false;
+    if (draftView.status === CAPTURE_STATUS.PARTIAL) return true;
+    if ((draftView.missingSections || []).length) return true;
+    return warningBadges(allWarnings(draftView)).length > 0;
   }
 
   // ---- mode switching ------------------------------------------------------
 
-  // Compact surface labels for the header chip (DAT-018 C). The chip replaces
-  // the former Mode card, so these are short enough to sit inline.
-  const MODE_LABELS = {
-    [SURFACES.SALESNAV_PEOPLE_RESULTS]: "SalesNav Listing",
-    [SURFACES.PERSON_PROFILE]: "LinkedIn Profile",
-    [SURFACES.COMPANY_PROFILE]: "LinkedIn Company",
-    [SURFACES.CHALLENGE]: "Login required",
-    [SURFACES.UNAVAILABLE]: "Profile unavailable",
-    [SURFACES.UNSUPPORTED]: "Unsupported page",
+  const MODE_CONTEXT = {
+    [SURFACES.SALESNAV_PEOPLE_RESULTS]: {
+      icon: "users",
+      label: "Sales Navigator · Search results",
+    },
+    [SURFACES.PERSON_PROFILE]: { icon: "user", label: "LinkedIn · Person profile" },
+    [SURFACES.COMPANY_PROFILE]: { icon: "building", label: "LinkedIn · Company page" },
+    [SURFACES.CHALLENGE]: {
+      icon: "alert",
+      label: "LinkedIn needs your attention",
+      tone: "warn",
+    },
+    [SURFACES.UNAVAILABLE]: {
+      icon: "alert",
+      label: "This page is no longer available",
+      tone: "muted",
+    },
+    [SURFACES.UNSUPPORTED]: { icon: "page", label: "This page isn't supported", tone: "muted" },
   };
 
-  const SURFACE_CHIP_CLASSES = "surface-chip surface-chip-neutral surface-chip-ok surface-chip-err";
+  const DEFAULT_VIEW = {
+    [SURFACES.SALESNAV_PEOPLE_RESULTS]: "listings-select",
+    [SURFACES.PERSON_PROFILE]: "person-review",
+    [SURFACES.COMPANY_PROFILE]: "company-review",
+    [SURFACES.CHALLENGE]: "challenge",
+    [SURFACES.UNAVAILABLE]: "unavailable",
+    [SURFACES.UNSUPPORTED]: "unsupported",
+  };
 
-  /** Paint the compact surface chip under the panel heading. */
-  function setSurface(mode, detailUrl) {
-    const chip = $("surface-indicator");
-    if (!chip) return;
-    const tone =
-      mode === SURFACES.CHALLENGE || mode === SURFACES.UNAVAILABLE
-        ? "surface-chip-err"
-        : mode === SURFACES.UNSUPPORTED
-          ? "surface-chip-neutral"
-          : "surface-chip-ok";
-    chip.className = SURFACE_CHIP_CLASSES.replace(tone, "").trim();
-    chip.classList.remove("surface-chip-neutral", "surface-chip-ok", "surface-chip-err");
-    chip.classList.add("surface-chip", tone);
-    chip.textContent = MODE_LABELS[mode] || MODE_LABELS[SURFACES.UNSUPPORTED];
-    const detail = $("surface-detail");
-    if (detail) {
-      detail.textContent = detailUrl || "";
-      detail.hidden = !detailUrl;
-    }
-  }
+  // Why a page is unsupported, in the operator's terms. An unrecognised reason
+  // falls back to the generic guidance rather than inventing an explanation.
+  const UNSUPPORTED_REASONS = {
+    profile_subroute:
+      "You're on a profile sub-page. Open the main profile (linkedin.com/in/…) to capture this person.",
+    unsupported_sales_surface:
+      "This Sales Navigator view isn't supported. Open a people-search results page (/sales/search/people).",
+    not_linkedin:
+      "Open a LinkedIn profile (linkedin.com/in/…), a company page, or a Sales Navigator people-search results page to capture.",
+    unrecognized_route:
+      "Open a LinkedIn profile (linkedin.com/in/…), a company page, or a Sales Navigator people-search results page to capture.",
+  };
 
-  // The labels/note and Save cards belong to the two CONTACT workflows only.
-  // Company evidence is not a person, so it keeps its own save button.
-  const CONTACT_MODES = new Set([SURFACES.SALESNAV_PEOPLE_RESULTS, SURFACES.PERSON_PROFILE]);
-
-  function showSections(mode) {
-    currentMode = mode;
-    $("salesnav-sections").hidden = mode !== SURFACES.SALESNAV_PEOPLE_RESULTS;
-    $("profile-sections").hidden = mode !== SURFACES.PERSON_PROFILE;
-    $("company-sections").hidden = mode !== SURFACES.COMPANY_PROFILE;
-    $("metadata-card").hidden = !CONTACT_MODES.has(mode);
-    $("save-card").hidden = !CONTACT_MODES.has(mode);
-    $("unsupported-section").hidden =
-      mode !== SURFACES.UNSUPPORTED && mode !== SURFACES.UNAVAILABLE;
-    $("challenge-section").hidden = mode !== SURFACES.CHALLENGE;
-
-    if (mode === SURFACES.SALESNAV_PEOPLE_RESULTS) panel.syncBatchSaveAction();
-    else if (mode === SURFACES.PERSON_PROFILE) syncProfileSaveAction();
-    else panel.setSaveHandler({ handler: null, reset: true });
-  }
-
-  // UI-011: the source card is painted from the SAME detect result that decides
-  // the mode and targets the parser. Previously it was painted on demand, which
-  // is how it came to display one profile's URL beside another profile's data.
+  /**
+   * Paint the shell for the detected surface and, unless the operator is in the
+   * middle of an outcome or the settings, switch the body to that mode's view.
+   *
+   * UI-011: the strip is painted from the SAME detect result that decides the
+   * mode and targets the parser. Painting it on demand is how it once came to
+   * display one profile's URL beside another profile's data.
+   */
   function paintMode(detected) {
     const r = detected || {};
     const mode = r.surface || SURFACES.UNSUPPORTED;
-    setSurface(mode, r.url || "");
-    showSections(mode);
+    const changed = mode !== currentMode;
+    currentMode = mode;
+
+    if (mode === SURFACES.SALESNAV_PEOPLE_RESULTS) {
+      // The listings controller owns its own strip (it also carries the row
+      // count and page number).
+      panel.refreshDetect();
+    } else {
+      const ctx = MODE_CONTEXT[mode] || MODE_CONTEXT[SURFACES.UNSUPPORTED];
+      shell.setContext({
+        icon: ctx.icon,
+        label: ctx.label,
+        tone: ctx.tone,
+        badge: contextBadgeFor(mode),
+        url: r.url || "",
+      });
+    }
+
+    // The live-tab follower reports the surface and the URL but not the
+    // classifier's reason, so an explicit detect is what makes the guidance
+    // specific. Without one, the generic copy stands rather than a wrong one.
+    if (mode === SURFACES.UNSUPPORTED && r.reason) {
+      $("unsupported-detail").textContent =
+        UNSUPPORTED_REASONS[r.reason] || UNSUPPORTED_REASONS.unrecognized_route;
+    }
+
+    // A different page means the previous outcome is no longer what the
+    // operator is looking at; anything else leaves their place alone.
+    if (changed || !panel.isSticky()) {
+      panel.showView(DEFAULT_VIEW[mode] || "unsupported");
+      if (mode === SURFACES.PERSON_PROFILE) syncPersonActions();
+      if (mode === SURFACES.COMPANY_PROFILE) syncCompanyActions();
+    }
     return mode;
+  }
+
+  /** The one-word state of the detected page, shown in the strip. */
+  function contextBadgeFor(mode) {
+    if (mode === SURFACES.PERSON_PROFILE) {
+      if (!currentDraft) return null;
+      if (profileMatch === "exact") return { text: "Already saved", tone: "brand" };
+      if (hasGaps(currentDraft)) return { text: "Needs review", tone: "warning" };
+      return { text: "Ready to capture", tone: "success" };
+    }
+    if (mode === SURFACES.COMPANY_PROFILE) {
+      if (!currentCompanyDraft) return null;
+      const c = currentCompanyDraft.company || {};
+      if (!c.website) return { text: "Needs review", tone: "warning" };
+      return { text: "Ready to capture", tone: "success" };
+    }
+    if (mode === SURFACES.CHALLENGE) return { text: "Blocked", tone: "warning" };
+    if (mode === SURFACES.UNAVAILABLE) return { text: "Unavailable", tone: "danger" };
+    return null;
   }
 
   async function refreshMode() {
     const detected = await send({ type: "DETECT_SURFACE" });
     const mode = paintMode(detected);
 
-    if (mode === SURFACES.SALESNAV_PEOPLE_RESULTS) panel.refreshDetect();
-
     if (mode === SURFACES.PERSON_PROFILE) {
       // DOM-level refinement (login wall / structure) + entry count badge.
       const d = await send({ type: "PROFILE_DETECT" });
       if (d && d.ok && d.page) {
-        if (d.page.surface === SURFACES.CHALLENGE) {
-          setSurface(SURFACES.CHALLENGE, detected && detected.url);
-          showSections(SURFACES.CHALLENGE);
-          return;
-        }
-        if (d.page.surface === SURFACES.UNAVAILABLE) {
-          setSurface(SURFACES.UNAVAILABLE, detected && detected.url);
-          showSections(SURFACES.UNAVAILABLE);
+        if (d.page.surface === SURFACES.CHALLENGE || d.page.surface === SURFACES.UNAVAILABLE) {
+          paintMode({ surface: d.page.surface, url: detected && detected.url });
           return;
         }
         $("profile-exp-badge").textContent =
           d.page.experienceEntryCount != null
-            ? `${d.page.experienceEntryCount} experience entr${d.page.experienceEntryCount === 1 ? "y" : "ies"} visible`
+            ? `${d.page.experienceEntryCount} experience entr${d.page.experienceEntryCount === 1 ? "y" : "ies"} visible on the page`
             : "";
       }
     }
   }
 
-  // ---- review rendering ----------------------------------------------------
+  // ---- person: review (B1 / B2 / B3) ---------------------------------------
 
-  function reviewRow(label, value) {
-    return el("div", { class: "meta" }, [
-      el("span", { class: "small muted", text: label + ": " }),
-      el("span", { class: "small", text: value != null && value !== "" ? String(value) : "—" }),
+  function identityBlock(name, lines) {
+    const text = el("div", { class: "identity-text" }, [
+      el("span", { class: "identity-name", text: name || "(name not shown)" }),
     ]);
+    for (const line of lines || []) {
+      if (!line) continue;
+      text.appendChild(
+        el("span", {
+          class: "identity-line" + (line.sub ? " sub" : "") + (line.missing ? " missing" : ""),
+          text: line.text,
+        })
+      );
+    }
+    return el("div", { class: "identity" }, [
+      el("span", {
+        class: "identity-avatar",
+        text: shell.initialOf(name),
+        attrs: { "aria-hidden": "true" },
+      }),
+      text,
+    ]);
+  }
+
+  function confirmedBadge(present, presentText, missingText) {
+    return present
+      ? badge(presentText || "Confirmed", { tone: "success" })
+      : badge(missingText || "Not on the page", { tone: "warning" });
   }
 
   function renderDraft(draftView) {
     currentDraft = draftView;
-    const box = $("profile-review");
-    box.textContent = "";
-    $("profile-exclude-exp-row").hidden = !draftView;
+    const boxEl = $("profile-review");
+    boxEl.textContent = "";
     if (!draftView) {
-      box.appendChild(el("p", { class: "muted small", text: "No profile captured yet." }));
-      syncProfileSaveAction();
+      boxEl.appendChild(paragraph("No profile captured yet.", { muted: true }));
+      syncPersonActions();
       return;
     }
     const p = draftView.profile || {};
-    const currentRole = draftView.currentRoles[0] || null;
+    const currentRole = (draftView.currentRoles || [])[0] || null;
 
-    const head = el("div", { class: "record" }, [
-      el("div", { class: "toprow" }, [el("span", { class: "name", text: p.full_name || "(no name)" })]),
-      reviewRow("Headline", p.headline),
-      reviewRow("Location", p.displayed_location),
-      reviewRow(
-        "Current role",
-        currentRole ? [currentRole.job_title, currentRole.company_name].filter(Boolean).join(" @ ") : null
-      ),
-      reviewRow("Current company", currentRole ? currentRole.company_name : null),
-      reviewRow("LinkedIn URL", p.linkedin_profile_url),
-      reviewRow("Experience entries", draftView.experienceCount),
-      reviewRow("Connections", p.connection_count),
-      reviewRow("Open to work", p.open_to_work === true ? "yes" : p.open_to_work === false ? "no" : null),
-      reviewRow("About", p.about_text ? truncate(p.about_text, 240) : null),
-      reviewRow("Captured at", draftView.capturedAt),
-      reviewRow("Capture status", draftView.status),
-    ]);
-    box.appendChild(head);
+    boxEl.appendChild(
+      identityBlock(p.full_name, [
+        p.headline ? { text: p.headline } : null,
+        p.displayed_location
+          ? { text: p.displayed_location, sub: true }
+          : { text: "Location not shown", missing: true },
+      ])
+    );
 
-    if (draftView.missingSections.length) {
-      box.appendChild(
-        el("div", { class: "warns" }, draftView.missingSections.map((s) =>
-          el("span", { class: "badge badge-warn", text: "missing: " + s })
-        ))
+    if (profileMatch === "exact") {
+      boxEl.appendChild(
+        callout(
+          "brand",
+          "This person is already in VM Prospector",
+          "Capturing again records what the page shows today. It never overwrites what's already there."
+        )
+      );
+    } else if (profileMatch === "ambiguous") {
+      boxEl.appendChild(
+        callout(
+          "warning",
+          "Identity is ambiguous",
+          "More than one contact could match this profile. Saving stages it for review — nothing is merged automatically."
+        )
       );
     }
-    const badges = warningBadges(
-      [p.warnings, draftView.pageWarnings].concat(draftView.experiences.map((e) => e.warnings))
-    );
-    if (badges.length) {
-      box.appendChild(el("div", { class: "warns" }, badges));
-    }
 
-    for (const e of draftView.experiences) {
-      box.appendChild(
-        el("div", { class: "record" + (draftView.excludedSections.includes("experience") ? " excluded" : "") }, [
-          el("div", { class: "toprow" }, [
-            el("span", { class: "name", text: `${e.position_index}. ${e.job_title || "(no title)"}` }),
+    const gapBadges = warningBadges(allWarnings(draftView));
+    const missing = draftView.missingSections || [];
+
+    if (gapBadges.length || missing.length) {
+      const warnBox = box({ tone: "warning" }, [
+        el("span", { class: "box-title", text: "Some details could not be read" }),
+      ]);
+      warnBox.appendChild(
+        kv("Current company", currentRole && currentRole.company_name, {
+          missing: !(currentRole && currentRole.company_name),
+          emptyText: "Missing company",
+        })
+      );
+      warnBox.appendChild(
+        kv("Location", p.displayed_location, {
+          missing: !p.displayed_location,
+          emptyText: "Not shown",
+        })
+      );
+      warnBox.appendChild(
+        statusLine(
+          "Experience",
+          draftView.experienceCount
+            ? badge(`${draftView.experienceCount} entries`, { tone: "success" })
+            : badge("Not loaded", { tone: "warning" })
+        )
+      );
+      for (const section of missing) {
+        warnBox.appendChild(statusLine(sectionLabel(section), badge("Section missing", { tone: "warning" })));
+      }
+      if (gapBadges.length) {
+        warnBox.appendChild(el("div", { class: "badge-row" }, gapBadges));
+      }
+      boxEl.appendChild(warnBox);
+      boxEl.appendChild(
+        box({ sunk: true }, [
+          paragraph(
+            "Scroll the profile so the missing sections load, then read the page again. Empty fields stay empty — VM Prospector will not fill them in."
+          ),
+        ])
+      );
+    } else {
+      boxEl.appendChild(
+        box({}, [
+          el("span", { class: "eyebrow", text: "Current company" }),
+          el("div", { class: "line" }, [
+            el("span", {
+              class: "t prospect-name",
+              text: (currentRole && currentRole.company_name) || "Not shown",
+            }),
+            confirmedBadge(!!(currentRole && currentRole.company_name)),
           ]),
-          reviewRow("Company", e.company_name),
-          reviewRow("Timeline", [e.timeline_text, e.duration_text].filter(Boolean).join(" · ")),
-          reviewRow("Type", e.employment_type),
-          reviewRow("Role location", [e.role_location, e.workplace_type].filter(Boolean).join(" · ")),
-          reviewRow("Current", e.is_current === true ? "yes" : e.is_current === false ? "no" : "—"),
+          currentRole && currentRole.job_title
+            ? paragraph(currentRole.job_title, { tiny: true, muted: true })
+            : null,
+        ])
+      );
+      boxEl.appendChild(
+        box({ sunk: true }, [
+          el("span", { class: "eyebrow", text: "Read from this page" }),
+          statusLine("Name, headline, location", confirmedBadge(!!p.full_name)),
+          statusLine("Profile URL", confirmedBadge(!!p.linkedin_profile_url)),
+          statusLine(
+            `Experience (${draftView.experienceCount} entr${draftView.experienceCount === 1 ? "y" : "ies"})`,
+            confirmedBadge(draftView.experienceCount > 0, "Confirmed", "Not loaded")
+          ),
         ])
       );
     }
 
-    $("profile-exclude-exp").checked = draftView.excludedSections.includes("experience");
-    syncProfileSaveAction();
+    if ((draftView.experiences || []).length) {
+      const excluded = (draftView.excludedSections || []).includes("experience");
+      const list = box({ sunk: true }, [
+        el("div", { class: "line" }, [
+          el("span", { class: "eyebrow t", text: "Experience" }),
+          excluded ? badge("Excluded from the save", { tone: "neutral" }) : null,
+        ]),
+      ]);
+      for (const e of draftView.experiences) {
+        list.appendChild(
+          box({}, [
+            el("span", {
+              class: "prospect-name",
+              text: `${e.position_index}. ${e.job_title || "(no title)"}`,
+            }),
+            kv("Company", e.company_name),
+            kv("Timeline", [e.timeline_text, e.duration_text].filter(Boolean).join(" · ")),
+            kv("Current", e.is_current === true ? "yes" : e.is_current === false ? "no" : null),
+          ])
+        );
+      }
+      boxEl.appendChild(list);
+    }
+
+    $("profile-exclude-exp").checked = (draftView.excludedSections || []).includes("experience");
+    $("profile-exclude-exp-row").hidden = false;
+    syncPersonActions();
   }
 
   function truncate(text, max) {
     const s = String(text);
     return s.length > max ? s.slice(0, max) + "…" : s;
+  }
+
+  // ---- person: confirm (B4) ------------------------------------------------
+
+  function renderPersonConfirm() {
+    const host = $("person-confirm-body");
+    host.textContent = "";
+    if (!currentDraft) {
+      host.appendChild(paragraph("Nothing has been read from this page yet.", { muted: true }));
+      return;
+    }
+    const p = currentDraft.profile || {};
+    const currentRole = (currentDraft.currentRoles || [])[0] || null;
+    const currentEntry = (currentDraft.experiences || []).find((e) => e.is_current === true) || {};
+
+    host.appendChild(
+      box({}, [
+        el("span", { class: "eyebrow brand", text: "Person" }),
+        kv("Name", p.full_name, { strong: true }),
+        kv("Role", currentRole && currentRole.job_title, { emptyText: "Not shown" }),
+        kv("Location", p.displayed_location, { emptyText: "Not shown" }),
+        kv("LinkedIn", p.linkedin_profile_url, { mono: true }),
+        p.about_text
+          ? kv("About", truncate(p.about_text, 120))
+          : kv("About", null, { emptyText: "Not captured" }),
+      ])
+    );
+
+    const association = box({}, [
+      el("span", { class: "eyebrow brand", text: "Company association" }),
+      kv("Company", currentRole && currentRole.company_name, {
+        strong: true,
+        missing: !(currentRole && currentRole.company_name),
+        emptyText: "Missing company",
+      }),
+      kv("Current role", currentRole && currentRole.job_title, { emptyText: "Not shown" }),
+      kv("Company page", currentEntry.company_linkedin_url, {
+        mono: true,
+        emptyText: "Not linked",
+      }),
+      statusLine("Website", badge("Not confirmed", { tone: "warning" })),
+    ]);
+    host.appendChild(association);
+
+    host.appendChild(
+      box({ sunk: true }, [
+        el("span", { class: "eyebrow", text: "Included in the save" }),
+        statusLine(
+          "Experience section",
+          (currentDraft.excludedSections || []).includes("experience")
+            ? badge("Excluded", { tone: "neutral" })
+            : badge(`${currentDraft.experienceCount} entries`, { tone: "success" })
+        ),
+        statusLine(
+          "Page evidence",
+          badge(currentDraft.status === CAPTURE_STATUS.PARTIAL ? "Partial" : "Complete", {
+            tone: currentDraft.status === CAPTURE_STATUS.PARTIAL ? "warning" : "success",
+          })
+        ),
+      ])
+    );
   }
 
   /**
@@ -279,56 +495,95 @@
     });
     const match = await send({ type: "PROFILE_MATCH_STATE" });
     if (currentMode !== SURFACES.PERSON_PROFILE || !currentDraft) return;
-    if (match && match.ok && match.match === "exact") {
-      panel.setSaveHandler({ handler: () => send({ type: "SAVE_CONTACT" }), label: "Refresh Contact" });
-    } else if (match && match.ok && match.match === "ambiguous") {
+    profileMatch = match && match.ok ? match.match : null;
+    if (profileMatch === "exact") {
+      panel.setSaveHandler({
+        handler: () => send({ type: "SAVE_CONTACT" }),
+        label: "Refresh Contact",
+      });
+    } else if (profileMatch === "ambiguous") {
       panel.setSaveHandler({
         handler: () => send({ type: "SAVE_CONTACT" }),
         label: "Save Contact (identity ambiguous)",
       });
     }
+    shell.setContext({
+      icon: MODE_CONTEXT[SURFACES.PERSON_PROFILE].icon,
+      label: MODE_CONTEXT[SURFACES.PERSON_PROFILE].label,
+      badge: contextBadgeFor(SURFACES.PERSON_PROFILE),
+      url: $("surface-detail").textContent,
+    });
+    if (profileMatch !== renderedMatch) {
+      renderedMatch = profileMatch;
+      renderDraft(currentDraft);
+    }
   }
 
-  // ---- actions -------------------------------------------------------------
+  /** Keep the person action group in step with whether a draft exists. */
+  function syncPersonActions() {
+    const has = !!currentDraft;
+    $("person-continue-btn").disabled = !has;
+    $("person-continue-btn").textContent =
+      profileMatch === "exact" ? "Update this prospect" : "Capture prospect";
+    $("profile-capture-btn").textContent = has ? "Read this page again" : "Read this profile page";
+    $("profile-capture-btn").className = has ? "btn full" : "btn btn-primary full";
+    $("profile-clear-btn").hidden = !has;
+    syncProfileSaveAction();
+  }
+
+  // ---- person actions ------------------------------------------------------
 
   async function doCapture() {
     const fb = $("profile-capture-feedback");
-    fb.textContent = "Reading the page…";
+    panel.setFeedback(fb, "Reading this page…");
     $("profile-capture-btn").disabled = true;
     const r = await send({ type: "PROFILE_CAPTURE" });
     $("profile-capture-btn").disabled = false;
     if (!r || !r.ok) {
-      fb.textContent = (r && (r.message || r.error)) || "Capture failed.";
+      panel.setFeedback(fb, (r && (r.message || r.error)) || "Capture failed.", "bad");
       return;
     }
-    const map = {
+    const blocked = {
       [CAPTURE_STATUS.CHALLENGE_DETECTED]: "Login/security check detected — nothing captured.",
       [CAPTURE_STATUS.UNAVAILABLE_PROFILE]: "This profile is unavailable — nothing captured.",
       [CAPTURE_STATUS.UNSUPPORTED_PAGE]: "Not a supported main profile page — nothing captured.",
       [CAPTURE_STATUS.STRUCTURE_UNRECOGNIZED]:
         "Profile detected but the page structure was not recognized. Nothing captured.",
     };
-    if (map[r.captureStatus]) {
-      fb.textContent = map[r.captureStatus];
+    if (blocked[r.captureStatus]) {
+      panel.setFeedback(fb, blocked[r.captureStatus], "warn");
     } else {
-      fb.textContent =
+      panel.setFeedback(
+        fb,
         r.captureStatus === CAPTURE_STATUS.PARTIAL
-          ? "Captured with gaps — review the missing sections below."
-          : "Captured. Review before saving.";
+          ? "Captured with gaps — review what could not be read."
+          : "Captured. Review before saving."
+      );
     }
     renderDraft(r.draftView);
-    panel.setSaveHandler({ handler: () => send({ type: "SAVE_CONTACT" }), label: "Save Contact", reset: true });
-    syncProfileSaveAction();
+    panel.showView("person-review");
   }
 
   async function doClear() {
     if (!confirm("Clear the reviewed profile draft?")) return;
     const r = await send({ type: "PROFILE_CLEAR" });
     if (r && r.ok) {
+      profileMatch = null;
       renderDraft(null);
       panel.setSaveHandler({ handler: null, label: "Save Contact", disabled: true, reset: true });
-      $("profile-capture-feedback").textContent = "Draft cleared.";
+      panel.setFeedback($("profile-capture-feedback"), "Draft cleared.");
+      panel.showView("person-review");
     }
+  }
+
+  function openPersonConfirm() {
+    renderPersonConfirm();
+    panel.showView("person-confirm");
+    $("person-details-btn").hidden = false;
+    $("save-back-btn").textContent = "Back to review";
+    $("save-back-btn").onclick = () => panel.showView("person-review");
+    syncProfileSaveAction();
+    panel.refreshPermissionState();
   }
 
   async function ensureHostPermission(url) {
@@ -347,67 +602,176 @@
   // ---- company mode: company evidence, never a contact ---------------------
 
   function renderCompanyDraft(draftView) {
-    const box = $("company-review");
-    box.textContent = "";
-    $("company-send-btn").disabled = !draftView;
+    currentCompanyDraft = draftView;
+    const boxEl = $("company-review");
+    boxEl.textContent = "";
     if (!draftView) {
-      box.appendChild(el("p", { class: "muted small", text: "No company captured yet." }));
+      boxEl.appendChild(paragraph("No company captured yet.", { muted: true }));
+      syncCompanyActions();
       return;
     }
     const c = draftView.company || {};
-    box.appendChild(
-      el("div", { class: "record" }, [
-        el("div", { class: "toprow" }, [el("span", { class: "name", text: c.name || "(no name)" })]),
-        reviewRow("LinkedIn", c.company_linkedin_url),
-        reviewRow("Website", c.website),
-        reviewRow("Industry", c.industry),
-        reviewRow("Size", c.size_range),
-        reviewRow("Displayed employees", c.employee_count_raw),
-        reviewRow("Headquarters (displayed)", c.headquarters_text),
-        reviewRow("Founded", c.founded_raw),
-        reviewRow("Specialties", c.specialties),
-        reviewRow("Captured at", draftView.capturedAt),
-        reviewRow("Capture status", draftView.status),
+
+    const identity = identityBlock(c.name, [
+      c.industry
+        ? {
+            text: [c.industry, c.size_range && `${c.size_range} employees`]
+              .filter(Boolean)
+              .join(" · "),
+          }
+        : { text: "Industry not shown", missing: true },
+      c.headquarters_text ? { text: c.headquarters_text, sub: true } : null,
+    ]);
+    identity.querySelector(".identity-avatar").classList.add("square");
+    boxEl.appendChild(identity);
+
+    boxEl.appendChild(
+      box({}, [
+        el("span", { class: "eyebrow", text: "Read from this page" }),
+        kv("Industry", c.industry, { emptyText: "Not shown" }),
+        kv("Company size", c.size_range, { emptyText: "Not shown" }),
+        kv("Displayed employees", c.employee_count_raw, { emptyText: "Not shown" }),
+        kv("Headquarters", c.headquarters_text, { emptyText: "Not shown" }),
+        kv("Founded", c.founded_raw, { emptyText: "Not shown" }),
+        kv("Company page", c.company_linkedin_url, { mono: true }),
       ])
     );
-    if (draftView.missingSections.length) {
-      box.appendChild(
-        el("div", { class: "warns" }, draftView.missingSections.map((s) =>
-          el("span", { class: "badge badge-warn", text: "missing: " + s })
-        ))
+
+    // The domain is the identity of a company: it is stated plainly, and a name
+    // on its own never stands in for it.
+    if (c.website) {
+      boxEl.appendChild(
+        box({ tone: "success" }, [
+          kv("Website", c.website, { strong: true }),
+          el("div", {}, [badge("Shown on this page", { tone: "success", dot: true })]),
+        ])
+      );
+    } else {
+      boxEl.appendChild(
+        box({ tone: "warning" }, [
+          el("span", { class: "box-title", text: "Domain not confirmed" }),
+          kv("Website", null, { missing: true, emptyText: "Not shown on this page" }),
+          paragraph(
+            "A company name on its own isn't enough to identify a company. VM Prospector confirms the domain before this becomes a company record.",
+            { tiny: true }
+          ),
+        ])
+      );
+      boxEl.appendChild(
+        box({ sunk: true }, [
+          paragraph(
+            "If this is the home page, open About and read it again for website, industry, size and headquarters."
+          ),
+        ])
+      );
+    }
+
+    if ((draftView.missingSections || []).length) {
+      boxEl.appendChild(
+        el(
+          "div",
+          { class: "badge-row" },
+          draftView.missingSections.map((s) => badge("missing: " + s, { tone: "warning" }))
+        )
       );
     }
     const companyBadges = warningBadges([c.warnings, draftView.pageWarnings]);
     if (companyBadges.length) {
-      box.appendChild(el("div", { class: "warns" }, companyBadges));
+      boxEl.appendChild(el("div", { class: "badge-row" }, companyBadges));
     }
+    syncCompanyActions();
+  }
+
+  function syncCompanyActions() {
+    const has = !!currentCompanyDraft;
+    $("company-continue-btn").disabled = !has;
+    $("company-capture-btn").textContent = has
+      ? "Read this page again"
+      : "Read this company page";
+    $("company-capture-btn").className = has ? "btn full" : "btn btn-primary full";
+    $("company-clear-btn").hidden = !has;
+    $("company-send-btn").disabled = !has;
+  }
+
+  function renderCompanyConfirm() {
+    const host = $("company-confirm-body");
+    host.textContent = "";
+    if (!currentCompanyDraft) {
+      host.appendChild(paragraph("Nothing has been read from this page yet.", { muted: true }));
+      return;
+    }
+    const c = currentCompanyDraft.company || {};
+    host.appendChild(
+      box({}, [
+        el("span", { class: "box-title", text: "Is this the right company?" }),
+        kv("Name", c.name, { strong: true }),
+        kv("Company page", c.company_linkedin_url, { mono: true }),
+        kv("Headquarters", c.headquarters_text, { emptyText: "Not shown" }),
+      ])
+    );
+    if (c.website) {
+      host.appendChild(
+        box({ tone: "success" }, [
+          el("span", { class: "eyebrow", text: "Website" }),
+          el("div", { class: "line" }, [
+            el("span", { class: "t prospect-name", text: c.website }),
+            badge("Shown on this page", { tone: "success" }),
+          ]),
+        ])
+      );
+    } else {
+      host.appendChild(
+        box({ tone: "warning" }, [
+          el("span", { class: "eyebrow", text: "Website" }),
+          el("div", { class: "line" }, [
+            el("span", { class: "t", text: "Not shown on this page" }),
+            badge("Missing", { tone: "warning" }),
+          ]),
+        ])
+      );
+    }
+    host.appendChild(
+      box({ sunk: true }, [
+        el("span", { class: "eyebrow", text: "Domain states this panel can report" }),
+        statusLine("Shown on this page", badge("Confirmed", { tone: "success" })),
+        statusLine("Not shown", badge("Missing", { tone: "warning" })),
+        paragraph(
+          "Whether the domain matches a company VM Prospector already knows is decided in the app, not here.",
+          { tiny: true, muted: true }
+        ),
+      ])
+    );
   }
 
   async function doCompanyCapture() {
     const fb = $("company-capture-feedback");
-    fb.textContent = "Reading the page…";
+    panel.setFeedback(fb, "Reading this page…");
     $("company-capture-btn").disabled = true;
     const r = await send({ type: "COMPANY_CAPTURE" });
     $("company-capture-btn").disabled = false;
     if (!r || !r.ok) {
-      fb.textContent = (r && (r.message || r.error)) || "Capture failed.";
+      panel.setFeedback(fb, (r && (r.message || r.error)) || "Capture failed.", "bad");
       return;
     }
-    const map = {
+    const blocked = {
       [CAPTURE_STATUS.CHALLENGE_DETECTED]: "Login/security check detected — nothing captured.",
       [CAPTURE_STATUS.UNAVAILABLE_PROFILE]: "This company page is unavailable — nothing captured.",
       [CAPTURE_STATUS.UNSUPPORTED_PAGE]: "Not a supported company page — nothing captured.",
       [CAPTURE_STATUS.STRUCTURE_UNRECOGNIZED]:
         "Company page detected but its structure was not recognized. Nothing captured.",
     };
-    fb.textContent =
-      map[r.captureStatus] ||
-      (r.captureStatus === CAPTURE_STATUS.PARTIAL
-        ? "Captured with gaps — open the About page for full firmographics if needed."
-        : "Captured. Review before saving.");
+    panel.setFeedback(
+      fb,
+      blocked[r.captureStatus] ||
+        (r.captureStatus === CAPTURE_STATUS.PARTIAL
+          ? "Captured with gaps — open the About page for full firmographics if needed."
+          : "Captured. Review before saving."),
+      blocked[r.captureStatus] ? "warn" : null
+    );
     renderCompanyDraft(r.draftView);
     $("company-send-state").textContent = "";
     $("company-send-actions").textContent = "";
+    panel.showView("company-review");
   }
 
   async function doCompanyClear() {
@@ -417,29 +781,98 @@
       renderCompanyDraft(null);
       $("company-send-state").textContent = "";
       $("company-send-actions").textContent = "";
+      panel.showView("company-review");
     }
+  }
+
+  function openCompanyConfirm() {
+    renderCompanyConfirm();
+    panel.showView("company-confirm");
+    panel.refreshPermissionState();
+  }
+
+  function showCompanyOutcome() {
+    $("saving-card").hidden = true;
+    $("save-card").hidden = true;
+    $("company-result-card").hidden = false;
+    panel.showView("outcome");
   }
 
   async function doCompanySend() {
     const state = $("company-send-state");
     const actions = $("company-send-actions");
+    state.textContent = "";
     actions.textContent = "";
+    $("save-card").hidden = true;
+    $("company-result-card").hidden = true;
+    $("saving-card").hidden = false;
+    $("saving-title").textContent = "Saving company evidence";
+    panel.showView("outcome");
+    shell.setSteps(3, {});
+    panel.setConnection("saving");
+    for (const node of document.querySelectorAll("[data-actions]")) node.hidden = true;
+    const savingActions = document.querySelector('[data-actions="saving"]');
+    if (savingActions) savingActions.hidden = false;
+
     const perm = await ensureHostPermission(panel.backendBase() + constants.COMPANY_INTAKE_PATH);
     if (!perm.granted) {
-      setStatus(state, "status-err", "Loopback access was not granted. Approve it to save.");
-      actions.appendChild(el("button", { class: "btn btn-ghost", text: "Retry", on: { click: doCompanySend } }));
+      panel.setConnection("not_allowed");
+      showCompanyOutcome();
+      shell.setSteps(3, { state: "failed", label: "Failed" });
+      state.appendChild(
+        callout(
+          "warning",
+          "Allow VM Prospector to reach the app",
+          "Loopback access was not granted, so nothing has been sent."
+        )
+      );
+      actions.appendChild(
+        el("button", {
+          class: "btn btn-primary full",
+          text: "Allow and save",
+          attrs: { type: "button" },
+          on: { click: doCompanySend },
+        })
+      );
       return;
     }
-    setStatus(state, "status-neutral", "Saving…");
+
     const r = await send({ type: "COMPANY_SEND" });
     if (r && r.ok) {
+      panel.setConnection("connected");
       renderCompanyStagedResult(r.result);
-    } else {
-      const detail = handoff.describeSendError(r);
-      setStatus(state, "status-err", detail.headline);
-      if (detail.canRetry !== false) {
-        actions.appendChild(el("button", { class: "btn btn-ghost", text: "Retry", on: { click: doCompanySend } }));
-      }
+      return;
+    }
+    const detail = handoff.describeSendError(r);
+    const unreachable = detail.code === "network_error" || detail.code === "timeout";
+    panel.setConnection(unreachable ? "unreachable" : "connected");
+    showCompanyOutcome();
+    shell.setSteps(3, { state: "failed", label: "Failed" });
+    state.appendChild(
+      callout(
+        "danger",
+        unreachable ? "Connection lost" : "Capture failed",
+        unreachable
+          ? "VM Prospector didn't answer. Nothing was saved, and what you reviewed is still here."
+          : "Nothing was saved. What you reviewed is still here."
+      )
+    );
+    state.appendChild(
+      box({ sunk: true }, [
+        el("span", { class: "eyebrow", text: "Details" }),
+        paragraph(detail.headline),
+        el("p", { class: "detail-block", text: "code: " + (detail.code || "unknown") }),
+      ])
+    );
+    if (detail.canRetry !== false) {
+      actions.appendChild(
+        el("button", {
+          class: "btn btn-primary full",
+          text: "Try again",
+          attrs: { type: "button" },
+          on: { click: doCompanySend },
+        })
+      );
     }
   }
 
@@ -447,19 +880,43 @@
     if (!result) return;
     const state = $("company-send-state");
     const actions = $("company-send-actions");
+    state.textContent = "";
     actions.textContent = "";
-    const already = result.alreadyReceived ? " (already received — idempotent)" : "";
-    setStatus(
-      state,
-      "status-ok",
-      `Stored${already}: outcome ${result.outcome || "stored"}` +
-        (result.snapshotId ? ` · id ${result.snapshotId}` : "")
+    showCompanyOutcome();
+    shell.setSteps(3, { done: true, label: "Done" });
+    const already = result.alreadyReceived;
+    state.appendChild(
+      callout(
+        "success",
+        already ? "Already saved (idempotent)" : "Saved successfully",
+        ((currentCompanyDraft && currentCompanyDraft.company && currentCompanyDraft.company.name) ||
+          "This company") + " · saved to the VM Prospector workflow."
+      )
     );
+    const activity = box({ sunk: true }, [el("span", { class: "eyebrow", text: "Activity" })]);
+    activity.appendChild(statusLine("Company page saved", badge("Done", { tone: "success" })));
+    activity.appendChild(statusLine("Page evidence kept", badge("Done", { tone: "success" })));
+    const website =
+      currentCompanyDraft && currentCompanyDraft.company
+        ? currentCompanyDraft.company.website
+        : null;
+    activity.appendChild(
+      statusLine(
+        "Domain",
+        website
+          ? badge(website, { tone: "success" })
+          : badge("Not shown — review in the app", { tone: "warning" })
+      )
+    );
+    if (result.outcome) {
+      activity.appendChild(statusLine("Backend outcome", badge(result.outcome, { tone: "brand" })));
+    }
+    state.appendChild(activity);
     if (result.workbenchUrl && handoff.isOpenableWorkbenchUrl(result.workbenchUrl)) {
       actions.appendChild(
         el("a", {
-          class: "btn btn-primary",
-          text: "Open company record",
+          class: "btn btn-primary full",
+          text: "Open company workspace",
           attrs: { href: result.workbenchUrl, target: "_blank", rel: "noreferrer" },
         })
       );
@@ -472,6 +929,9 @@
     $("refresh-mode").addEventListener("click", refreshMode);
     $("profile-capture-btn").addEventListener("click", doCapture);
     $("profile-clear-btn").addEventListener("click", doClear);
+    $("person-continue-btn").addEventListener("click", openPersonConfirm);
+    $("person-details-btn").addEventListener("click", () => panel.showView("person-details"));
+    $("person-details-done").addEventListener("click", openPersonConfirm);
     $("profile-exclude-exp").addEventListener("change", async () => {
       const r = await send({ type: "PROFILE_TOGGLE_SECTION", section: "experience" });
       if (r && r.ok) renderDraft(r.draftView);
@@ -479,6 +939,8 @@
 
     $("company-capture-btn").addEventListener("click", doCompanyCapture);
     $("company-clear-btn").addEventListener("click", doCompanyClear);
+    $("company-continue-btn").addEventListener("click", openCompanyConfirm);
+    $("company-back-btn").addEventListener("click", () => panel.showView("company-review"));
     $("company-send-btn").addEventListener("click", doCompanySend);
 
     const state = await send({ type: "PROFILE_GET_STATE" });
@@ -495,6 +957,10 @@
       renderCompanyDraft(companyState.draftView);
       if (companyState.lastResult) renderCompanyStagedResult(companyState.lastResult);
     }
+    // One explicit classification before the live follower takes over: it is
+    // the only call that returns the classifier's *reason*, which is what makes
+    // an unsupported page's guidance specific instead of generic.
+    await refreshMode();
     startLiveSync();
   }
 
@@ -507,7 +973,7 @@
     preview_ready: "Preview ready.",
     additional_content_loaded: "Additional content loaded — preview updated.",
     unsupported_surface: "This LinkedIn page is not a person profile.",
-    completed_with_warnings: "Preview ready — review the warnings below.",
+    completed_with_warnings: "Preview ready — review what could not be read.",
   };
 
   let sync = null;
@@ -530,13 +996,12 @@
       onState: (state) => {
         // Provenance and payload are painted from one state object, so they
         // cannot disagree.
-        paintMode({ surface: state.surface, url: state.url });
-        const feedback = $("profile-capture-feedback");
-        if (feedback) feedback.textContent = PHASE_TEXT[state.phase] || "";
         if (state.surface === SURFACES.PERSON_PROFILE) {
           renderDraft(state.draft);
         }
-        if (state.surface === SURFACES.SALESNAV_PEOPLE_RESULTS) panel.refreshDetect();
+        paintMode({ surface: state.surface, url: state.url });
+        const feedback = $("profile-capture-feedback");
+        if (feedback) panel.setFeedback(feedback, PHASE_TEXT[state.phase] || "");
       },
     });
     sync.start();
