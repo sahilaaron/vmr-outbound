@@ -496,7 +496,7 @@ unless a small unambiguous acceptance blocker is documented first.
 | --- | --- | --- | --- | --- |
 | D-1 | `LOGO_DEV_API_KEY` was not configured, so the DAT-010 candidate lookup could not run | environment | **resolved before the trial** — no longer blocking | not filed (config, not a product defect) |
 | D-5 | ~~Confirming a domain candidate 500s~~ — **withdrawn as a defect**; reclassified as an **environment-contamination incident**. The repository was switched to the DAT-017A branch while uvicorn ran with `--reload`; the hot-reloaded code queried a table the shared `vmr_dev` database has never had | **environment / trial integrity** | see the incident record | not a product defect; nothing to file against the product |
-| D-4 | A Sales Navigator capture's derived profile URL is an opaque member id, so the same person captured from their profile page will not match it | **identity fragmentation** | not for DAT-011 | to be filed — settles the open question Layer 3C left |
+| D-4 | A Sales Navigator capture's derived profile URL is an opaque member id, so the same person captured from their profile page will not match it | **identity fragmentation** | not for DAT-011 | to be filed as a standalone follow-up — **stands on its own**: observed before the WatchFiles reload, on `main@d99e274`, and unrelated to the missing-table error. It settles the open question Layer 3C left, and the contamination neither caused it nor weakens it. |
 | D-3 | Reported: captured company not visible in the app for a Sales Navigator capture | unresolved | no | **not reproduced** — cause unknown, left open |
 | D-OBS-3 | *Person observations* omits captured company and title; profile captures show the employer only via the experience table | presentation | no | not filed |
 | D-2 | `derived_value` provenance is rendered as *Needs review*, flagging ~100% of Sales Navigator rows and destroying the signal | **blocker for S3a** | yes, for that step | to be filed |
@@ -731,10 +731,26 @@ applied.
 
 #### What still stands, and what does not
 
-| Step | Status |
+The WatchFiles line in the console is the boundary. Everything the console shows
+*before* it was served by `main@d99e274` and is **retained in full** — it is not
+re-run, not re-litigated, and not discarded. Everything after it is invalid for
+DAT-011 until reproduced on `main@d99e274`.
+
+| Evidence | Status |
 | --- | --- |
-| A0 – A8, E1, E2 | **Valid.** Every one was observed before the reload — the console shows the capture POST, the pending reads, the lookup and its 4-candidate result all preceding the WatchFiles line. |
-| E3 onward | **Quarantined.** Not evidence about the merged baseline. |
+| A0 – A3 — detection, bounded scroll, cancellation and resume, review screen | **Valid** (pre-reload) |
+| A4 (S1), A5 (S2) — selection and the committed count matching the chosen count | **Valid** (pre-reload) |
+| A8 (S9/S10) — submission outcomes, `created` = 0, contact-first evidence store | **Valid** (pre-reload) |
+| Pending queue 50 → 80, scoped to this trial's identifiers | **Valid** (pre-reload) |
+| E1 — capture reaches the domain-decision surface | **Valid** (pre-reload) |
+| E2 — candidate lookup returns a ranked candidate set | **Valid** (pre-reload) |
+| **The profile capture's full domain pass** — lookup, **confirmation**, **two candidate rejections**, `domain_candidate_confirmed`, and **promotion gating** opening as a result | **Valid** (pre-reload). This is the strongest evidence in the trial that the domain-decision and promotion-gate path works on the baseline, and it is explicitly retained. |
+| D-4 — opaque Sales Navigator member-id fragmentation | **Valid** (pre-reload), and unrelated to the contamination — see below |
+| E3 onward on the salesnav capture | **Invalid for DAT-011** until reproduced on `main@d99e274` |
+
+The last uncontaminated checkpoint is therefore **E2 complete, with the profile
+capture's domain pass and promotion gating already demonstrated**. The trial
+resumes there. It is not restarted.
 
 #### E3 partially succeeded, which the error message hides
 
@@ -769,6 +785,12 @@ run from a clean checkout of the exact commit, with the reloader off, so that
 
 DAT-017A review is a **separate task with a separate environment**. It is not
 touched, staged, evaluated, or repaired here.
+
+The contamination is also **not** an umbrella that invalidates other findings by
+association. D-4 in particular was observed on the baseline, before the reload,
+in a different subsystem (capture-time identity, not domain resolution). It
+remains a legitimate standalone follow-up issue and is not withdrawn, downgraded,
+or folded into this incident.
 
 **The DAT-017A migration must not be applied to the DAT-011 database to repair
 this incident.** Applying `d7a3f18c62b4` would make the error go away by
@@ -860,5 +882,30 @@ contrast looked like a controlled comparison and was not.
 
 ## 5. Verdict
 
-**Not yet determined — the authenticated trial has not been performed.**
-Phase 1 reconciliation is complete; Phases 3–5 require the operator.
+**Not yet determined — the trial is in progress and suspended at an
+uncontaminated checkpoint.** It is not failed, and it is not restarted.
+
+**Status.** Phase 1 reconciliation complete. Phase 3 executed through **E2**,
+including the profile capture's full domain pass — lookup, confirmation, two
+candidate rejections, `domain_candidate_confirmed`, and promotion gating opening
+as a result. All of that was served by `main@d99e274` and is retained as valid
+evidence.
+
+**Suspended because** the backend stopped being the baseline mid-run: the
+repository was switched to `feat/dat-017a-company-domain-resolution` under a
+running `--reload` server, WatchFiles reloaded DAT-017A code, and it queried a
+`company_domain_resolutions` table the `vmr_dev` database has never had. See the
+environment-contamination incident in §4. No product defect is implied, and the
+salesnav capture shape is not the cause.
+
+**Resumption point.** E3 onward on the Sales Navigator capture, on
+`main@d99e274` with no DAT-017A code or migration present, beginning with an
+inspection of whether the WiseStamp confirmation committed — its POST returned
+303 before the redirected GET failed — rather than a blind re-press of *Confirm*.
+
+**Remaining before a verdict is possible:** E3–E7, Phase F backend truth, A9/A10,
+B, C, D (S12), and S11.
+
+**Standing separately from all of the above:** D-2 (a real blocker for S3a) and
+D-4 (identity fragmentation), both observed on the baseline and both to be filed
+as their own issues.
