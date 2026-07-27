@@ -495,7 +495,7 @@ unless a small unambiguous acceptance blocker is documented first.
 | Ref | Summary | Severity | Blocker | Issue |
 | --- | --- | --- | --- | --- |
 | D-1 | `LOGO_DEV_API_KEY` was not configured, so the DAT-010 candidate lookup could not run | environment | **resolved before the trial** — no longer blocking | not filed (config, not a product defect) |
-| D-5 | Confirming a domain candidate on a **Sales Navigator** capture returns HTTP 500 | **acceptance blocker** | yes — blocks E3/E6/E7 in scope | to be filed, awaiting traceback |
+| D-5 | ~~Confirming a domain candidate 500s~~ — **withdrawn**: not a product defect. DAT-017A code entered the tree mid-trial and ran against an un-migrated database | **trial integrity** | see baseline drift | not a defect; no issue to file |
 | D-4 | A Sales Navigator capture's derived profile URL is an opaque member id, so the same person captured from their profile page will not match it | **identity fragmentation** | not for DAT-011 | to be filed — settles the open question Layer 3C left |
 | D-3 | Reported: captured company not visible in the app for a Sales Navigator capture | unresolved | no | **not reproduced** — cause unknown, left open |
 | D-OBS-3 | *Person observations* omits captured company and title; profile captures show the employer only via the experience table | presentation | no | not filed |
@@ -696,7 +696,72 @@ member id should be resolved to a vanity handle at capture time, or carried as a
 second matchable key — and that is a backend design decision, not an acceptance
 step.
 
-### D-5 — confirming a candidate 500s on a Sales Navigator capture
+### Baseline drift — the code under test changed mid-trial
+
+**This is the most consequential finding of the session, and it is about the
+trial, not the product.**
+
+The application console shows, between the E2 lookup and the E3 confirm:
+
+```
+WatchFiles detected changes in 'app\models\company_domain_resolution.py',
+'migrations\versions\d7a3f18c62b4_dat_017a_company_domain_resolution.py',
+'app\services\resolution\{service,store,policy,gates}.py',
+'app\web\routes.py', 'app\services\captures\promotion.py',
+'app\core\features.py', 'app\models\enums.py' … Reloading...
+```
+
+**DAT-017A entered the working tree and uvicorn hot-reloaded onto it.** Section
+2.5 of this document records that DAT-017 is *not merged* and that no automatic
+resolution workflow may be described as current. From the reload onward, the
+running application was no longer `d99e274`.
+
+The 500 follows directly: `contact_capture_page` now calls
+`resolution_service.capture_view`, which queries `company_domain_resolutions` —
+a table created by the DAT-017A migration, which this database has never had
+applied. Code from one revision, schema from another.
+
+#### What still stands, and what does not
+
+| Step | Status |
+| --- | --- |
+| A0 – A8, E1, E2 | **Valid.** Every one was observed before the reload — the console shows the capture POST, the pending reads, the lookup and its 4-candidate result all preceding the WatchFiles line. |
+| E3 onward | **Quarantined.** Not evidence about the merged baseline. |
+
+#### E3 partially succeeded, which the error message hides
+
+The console is unambiguous about the order:
+
+```
+POST /contact-captures/<id>/company/confirm  ->  303 See Other
+GET  /contact-captures/<id>?ok=Confirmed+wisestamp.com. ... ->  500
+```
+
+**The confirmation itself worked.** The domain was accepted and the redirect
+carried the success message. What failed is the *page render afterwards*, in
+DAT-017A's decision view. An operator seeing "Internal Server Error" would
+reasonably conclude the confirmation failed; it did not.
+
+That distinction matters for the record: E3's behaviour was not observed to be
+broken. It simply cannot be *claimed* from this run, because the process that
+served it was not the process under acceptance.
+
+#### What this costs, and what it does not
+
+It costs the second half of the trial, which must be re-run. It does not
+invalidate the first half, and it does not implicate the merged product —
+nothing here suggests a fault in `d99e274`.
+
+It also demonstrates something worth keeping: an acceptance run against a
+working tree that can change under it is not reproducible. A future trial should
+run from a clean checkout of the exact commit, with the reloader off, so that
+"the code under test" is a fact rather than an assumption.
+
+### D-5 (withdrawn) — the 500 was not a product defect
+
+**Withdrawn.** Recorded here rather than deleted, because the reasoning that
+led to it is part of the evidence trail and because a withdrawn defect is
+itself a result.
 
 **Observed** [operator]: pressing *Confirm* on the rank-1 candidate of a trial
 capture returned **Internal Server Error**.
@@ -723,8 +788,17 @@ capture cannot be promoted without a confirmed domain. Sales Navigator is the
 acquisition surface DAT-011 exists to accept, so a capture from it that cannot
 be promoted is an acceptance blocker, not a cosmetic fault.
 
-**Not yet diagnosed.** The traceback is on the operator's application console
-and has not been read. No cause is asserted here until it has been.
+**Diagnosed from the traceback.** `relation "company_domain_resolutions" does
+not exist`, raised in `resolution/store.py` via `resolution_service.capture_view`
+— DAT-017A code querying a table this database never had. Not a fault in the
+merged baseline. See *Baseline drift* above.
+
+The earlier reasoning was sound as far as it went and still wrong in its
+conclusion: the shape difference between the salesnav and profile captures was
+real but coincidental. The profile capture was confirmed *before* the reload;
+the salesnav one *after*. Two variables moved at once and I attributed the
+result to the visible one. Recorded because the trap is worth naming — the
+contrast looked like a controlled comparison and was not.
 
 ## 5. Verdict
 
