@@ -413,7 +413,7 @@ Counts and sanitized identifiers only.
 | Check | Expected | Result |
 | --- | --- | --- |
 | Raw capture payload after promotion | unchanged except the canonical contact link | |
-| Contacts created by capture alone | **0** | |
+| Contacts created by capture alone | **0** | **PASS** [machine, supervised] — pending queue moved **50 → 80**, exactly +30. All thirty submitted captures are present and all thirty are *awaiting promotion*, i.e. none became a contact |
 | Contacts created by promotion | 1 per promoted capture | |
 | Campaign memberships | **0** | |
 | Email candidates / verifications / scores / drafts | **0** | |
@@ -421,6 +421,24 @@ Counts and sanitized identifiers only.
 | Fields with missing evidence | still null, with warnings | |
 
 ---
+
+### Scoped delta after the save
+
+Taken immediately after A8 **[machine, supervised]**:
+
+| Figure | Before the trial | After the save | Delta |
+| --- | --- | --- | --- |
+| Captures awaiting promotion | 50 | **80** | **+30** |
+
+The delta equals the submitted count exactly. Two things follow without needing
+a database query: every submitted capture was persisted, and every one of them
+is still *pending* — a capture leaves this queue only when it is promoted, so
+thirty pending rows is thirty people who did **not** become contacts. That is
+the same guarantee A8 showed from the panel side, now confirmed from the
+backend's own queue.
+
+The *Domain lookup unavailable* banner remains absent, so D-1 is still closed
+and the candidate lookup is available for Phase E.
 
 ## 4. Defects
 
