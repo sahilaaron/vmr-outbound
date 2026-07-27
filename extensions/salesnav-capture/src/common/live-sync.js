@@ -102,12 +102,14 @@
   /**
    * Whether a draft is complete enough that rereading it cannot add anything.
    *
-   * This is what stops a reread loop. A LinkedIn profile mutates continuously —
-   * images resolve, the feed rail updates, trackers fiddle with attributes — so
-   * a mutation observer left to itself would re-parse the page every debounce
-   * window for as long as it stayed open. Once every supported section has been
-   * read, further mutations have nothing to offer and are ignored until the page
-   * actually changes.
+   * This is what bounds rereading. A LinkedIn profile mutates in bursts rather
+   * than continuously: measured on a live profile, ~50 mutation batches in the
+   * first ten seconds after arrival and ~34 across ten seconds of operator
+   * scrolling, then none at all while the page sat idle. So the failure mode is
+   * not an endless loop but amplification — ungated, one scroll could cost a
+   * dozen full re-parses, and each re-parse also costs a contact-lookup request.
+   * Once every supported section has been read, further mutations have nothing
+   * to offer and are ignored until the page actually changes.
    */
   function isComplete(draft) {
     if (!draft) return false;

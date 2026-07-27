@@ -70,22 +70,30 @@
     }
   }
 
-  // LinkedIn is a single-page app: most profile-to-profile moves never reload.
-  // Patching the history methods is the only way to see them from in here.
+  // LinkedIn is a single-page app: most profile-to-profile moves never reload
+  // the document, so there is no second injection of this file to notice them.
+  //
+  // We deliberately do NOT patch history.pushState/replaceState here. A content
+  // script runs in an isolated world; assigning to `history.pushState` from in
+  // here replaces this world's binding, not the page's, and LinkedIn calls its
+  // own. Measured on a live profile-to-profile move: the page made one
+  // pushState call and one replaceState call, and fired no popstate at all — a
+  // patch installed from this world would have observed none of it.
+  //
+  // What does work is comparing location.href whenever the page changes shape,
+  // which the observer below does on every mutation burst. An SPA navigation
+  // always rewrites the document, so the move is seen on the first batch after
+  // the URL changes. The panel independently learns about the same move from
+  // chrome.tabs.onUpdated, which fires with changeInfo.url for history
+  // navigation; this signal is the faster of the two, not the only one.
+  //
+  // popstate stays because it is a real DOM event and does reach this world,
+  // covering operator back/forward moves that mutate little.
   let lastHref = location.href;
   function onLocationMaybeChanged() {
     if (location.href === lastHref) return;
     lastHref = location.href;
     notify(NAVIGATED);
-  }
-  for (const method of ["pushState", "replaceState"]) {
-    const original = history[method];
-    if (typeof original !== "function") continue;
-    history[method] = function patched() {
-      const result = original.apply(this, arguments);
-      onLocationMaybeChanged();
-      return result;
-    };
   }
   window.addEventListener("popstate", onLocationMaybeChanged);
 

@@ -525,3 +525,112 @@ on request, at the cost of the fixture no longer reproducing the live strategy.
   was found among the six. Those paths remain covered by fixtures only.
 * Follower count is observed but not a stored contract field; C1 verified only
   that it is never mistaken for the connection count.
+
+# Layer 6 — UI-011 live tab-following (#179)
+
+Run against the unpacked extension on an authenticated session, on real
+`/in/` profiles the operator opened. Profiles are labelled A/B/C; no name,
+handle, URL, member id or page content is recorded here.
+
+## What this layer actually verified, and what it did not
+
+This is a partial acceptance and is published as one deliberately. Two of the
+eight scenarios could not be observed in this environment:
+
+* The **side panel is browser UI, not page content**, so the automated browser
+  session cannot see it. Every assertion of the form "the panel displays X" is
+  therefore *not* covered by this layer. The panel's rendering is a pure
+  function of the live-sync state and is covered by 24 deterministic tests,
+  but that is a different claim from "the shipped panel showed the right
+  thing", and the two should not be conflated.
+* The **local backend was not running** (`127.0.0.1:8000` refused the
+  connection). "No backend write before explicit submission" and "automatic
+  lookups do not fire repeatedly" therefore have no live evidence. Absence of a
+  write against a backend that cannot be reached proves nothing.
+
+What this layer did verify is the browser-side mechanics the panel depends on,
+measured directly on live pages.
+
+## Finding 1 — the history patch could never have worked (fixed)
+
+The content script installed a wrapper over `history.pushState` and
+`history.replaceState` to notice single-page navigation, with a comment
+claiming this was "the only way to see them from in here".
+
+Measured on a live profile-to-profile move, performed by clicking an in-app
+profile link:
+
+| Observation | Value |
+|---|---|
+| Document reloaded | no — a main-world probe installed before the move survived it |
+| `pushState` calls made by the page | 1 |
+| `replaceState` calls made by the page | 1 |
+| `popstate` events fired | 0 |
+| URL | changed from one `/in/` profile to another |
+
+A content script runs in an isolated world. Assigning to `history.pushState`
+from there rebinds that world's copy; the page calls its own. The page made
+exactly the calls the wrapper was written to intercept, and the wrapper was in
+no position to see any of them. No test caught this because the test harness
+patches a fake history object in a single world, where the assignment does work.
+
+The signal itself was never lost, by accident rather than by design: the
+mutation observer calls the same href comparison on every burst, and an SPA
+navigation always rewrites the document. The panel also learns about the move
+independently from `chrome.tabs.onUpdated`, which fires with `changeInfo.url`
+for history navigation and which `live-sync` already handles without requiring
+`status === "complete"`.
+
+Fixed by removing the ineffective wrapper and documenting both paths that do
+work. `popstate` is kept: it is a real DOM event, it does reach the isolated
+world, and it covers back/forward moves that mutate little.
+
+## Finding 2 — the loop guard's stated premise was wrong (rationale corrected)
+
+The reread guard was committed with the justification that a LinkedIn profile
+"mutates continuously", so an ungated observer would re-parse forever. Measured
+with a `MutationObserver` over the whole body subtree:
+
+| Window | Mutation batches | Mutation records |
+|---|---|---|
+| ~11 s after arriving at a profile | 51 | 619 |
+| ~11 s spanning two operator scrolls | 34 | 229 |
+| 10 s idle, no interaction (profile 1) | 0 | 0 |
+| 10 s idle, no interaction (profile 2) | 0 | 0 |
+
+An idle profile is quiet. The guard is still correct, but for a different
+reason than the one recorded: the failure mode is burst amplification, not an
+endless loop. Ungated, a single scroll could cost a dozen full re-parses, and
+because each completed read triggers a contact-existence lookup, a dozen
+backend requests with it. The `minRereadMs` floor is what addresses that; the
+`isComplete` gate is what stops work after the page is fully read.
+
+The original commit message overstates this. It is corrected here and in the
+code comment rather than by rewriting published history.
+
+## Automatic backend behaviour, as read from the code
+
+`live-sync` performs no submission. The one automatic outbound request is
+`PROFILE_MATCH_STATE` → `lookupContact`, reached from `syncProfileSaveAction`
+whenever a draft is present:
+
+* `fetch(url, { signal })` with no `method` and no body — a GET.
+* Route is `@router.get`, and its handler runs a read query and returns
+  existence only: `match`, `contact_count`, and the normalized URL. It writes
+  no row and records no audit event.
+* It is skipped entirely while no draft exists, so the page-change and loading
+  phases of a sync do not call it. One completed read, one lookup.
+
+The profile URL travels in a query string to the loopback backend. That is
+pre-existing behaviour, but UI-011 makes it automatic: the URL of every profile
+the operator merely *looks at* now reaches the local backend without a click.
+Operators should know that; it is not hidden by this change, and it is called
+out here rather than left to be discovered.
+
+## Not verified in this layer
+
+* Every panel-display assertion (MODE/source URL, preview fields, experience
+  count, stale-value clearing, unsupported-page handling), for the reason above.
+* Rapid A → B → C late-result suppression, live. The three stale guards are
+  covered by tests; the live ordering was not observed.
+* Any backend-write or lookup-frequency claim, live.
