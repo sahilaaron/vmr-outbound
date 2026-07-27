@@ -441,10 +441,71 @@ the structural description above. Two of the four new tests fail against the
 pre-fix parser; the other two are guards that the pre-fix parser also passed on
 this fixture.
 
-## Re-verification
+## Re-verification through the shipped extension
 
-Samples A–F were re-run after the fix. F extracts correctly; A–E are byte-identical
-to their pre-fix results — the tightening changed nothing that already worked.
+The fix was first validated by running the parser's decision path against the
+live DOM. That is not the same as validating the extension, so all six samples
+were then re-run **through the unpacked extension's side panel**, operator-pressed,
+on `7268b63`. The results below are what the panel displayed.
+
+| Sample | Name | Headline | Location | Connections | Status |
+| --- | --- | --- | --- | --- | --- |
+| A | correct | 204-char headline intact | correct | `500` (follower count not substituted) | partial (experience not loaded) |
+| B | correct | correct | correct | `500` (not the 1,226 follower count) | partial |
+| C | correct | correct | correct | **`—` + warning** | partial |
+| D | correct | correct | correct | `500` | ok |
+| E | correct | 70-char headline intact, name keeps its trailing period | correct | `500` (not the 1,731 follower count) | partial |
+| F | correct | **correct — was the promo line** | **correct — was a dropdown option** | `500` | ok after scroll |
+
+Three results are worth calling out because they are the ones that could only be
+obtained live:
+
+**Sample C is the null-behaviour proof.** The page showed a follower count and
+**no** connection count. The panel reported connections as `—` with the sentence
+*"connections was shown but could not be read"*. Not `0`, not the follower
+count, and not silence: the `unparsed_value` code — "a region was there and I
+could not pair it" — survived from the parser to a sentence an operator can act
+on. A zero there would have been a blocker.
+
+**Recapture stability was confirmed on two profiles.** A and F were each captured
+twice, before and after scrolling. Name, headline, location, profile URL and
+connections were byte-identical across both captures; only the lazy-loaded
+Experience section changed, from `0` entries with *"Captured with gaps"* to the
+full list with status `ok`. Absent-and-flagged, then correct — never wrong.
+
+**The chained-experience layout was checked and is correct.** A profile with
+three roles at one employer records all three with distinct date ranges and
+marks exactly one `Current: yes`; the current-role field shows only that one.
+The history is retained deliberately as provenance.
+
+## Second defect found, NOT fixed here
+
+**D-2 — the panel's MODE card reports a stale source URL after navigation.**
+
+Observed on sample B: the panel displayed the *previous* profile's URL in its
+MODE card while the review card below correctly showed the *current* profile's
+data. The "N experience entries visible" badge is stale in the same way, and a
+`Refresh` press corrects both.
+
+The extracted data was never wrong — the content script reads the live tab. But
+a capture tool whose provenance line disagrees with its payload is a trust
+defect regardless, and an operator could reasonably believe they had captured a
+different person.
+
+This is **surface detection in the side panel, not top-card extraction**. It is
+out of DAT-016 scope and is deliberately not fixed in this branch; it needs its
+own issue and a `chrome.tabs.onUpdated` listener.
+
+## Unrelated finding worth an issue
+
+One sampled profile's **About** section ends with an instruction addressed to
+language models, telling any model reading it to disregard its previous
+instructions. It is captured verbatim into stored evidence, which is correct
+parser behaviour — About text is evidence, not instruction.
+
+It is recorded here because captured About text later flows into research and
+drafting stages. Any component that puts this field in front of a model must
+treat it as untrusted data. No change is made under DAT-016.
 
 ## Disclosed for review
 
