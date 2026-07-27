@@ -351,3 +351,116 @@ the excluded section, where they cannot influence any verdict.
 This layer accepts **DAT-014 provider resolution and contact promotion only**.
 It says nothing about extension extraction correctness — see DAT-016 (#167),
 which is open, and Layer 3B, whose step C1 fails.
+
+---
+
+# Layer 5 — authenticated top-card acceptance (DAT-016, C1)
+
+**Performed 2026-07-27** against real, operator-opened `/in/` profiles in an
+authenticated Chrome session, on branch `feat/dat-016-profile-selector-hardening`.
+
+Six live profiles were inspected. Everything below is sanitized: profiles are
+labelled A–F, field values are described by **shape** (word/digit pattern and
+length) rather than content, and no name, handle, URL, employer, school, member
+id or raw DOM is recorded. Live pages were read; nothing from them was committed.
+
+## What C1 established before any extraction ran
+
+`componentkey` attributes containing `topcard` **do exist** on the current
+profile DOM — typically five per page, two of which hold the name heading. The
+parser's Strategy A therefore selects the container on every live profile, and
+the measured heading-climb (Strategy C), which the synthetic fixtures exercised
+most heavily, is a fallback in practice.
+
+That distinction is the reason C1 found a defect the automated suite could not:
+Strategy A inherits whatever LinkedIn puts in its own card.
+
+## Samples
+
+| Sample | Structural characteristics | Blocks in card |
+| --- | --- | --- |
+| A | Complete card; two degree badges; very long headline (204 chars); followers **and** connections; contact-info row; mutuals | 19 |
+| B | Complete; pronoun line + two degree badges; company · school row with both logo slots; followers + connections | 20 |
+| C | Complete; pronoun + degree badges; company row with logo slot; followers only, no connection count node | 20 |
+| D | **Self-view**: no degree badge, no pronoun line, no mutuals; contact-info row present | 17 |
+| E | Complete; long headline (70 chars) with mixed punctuation and domain-like text | 20 |
+| F | **Interrupted card**: promo line, interface controls and an ad-preferences panel (≈70 `option`/`legend`/`label` elements) sitting **between the name and the real top-card rows** | 124 → 50 |
+
+## Field-by-field result
+
+Verified against what was visibly rendered on each page.
+
+| Field | A | B | C | D | E | F (before fix) | F (after fix) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Full name | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| Headline | PASS | PASS | PASS | PASS | PASS | **FAIL** — promo line returned | PASS |
+| Location | PASS | PASS | PASS | PASS | PASS | **FAIL** — dropdown option returned | PASS |
+| Current company | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| Current school (where shown) | n/a | PASS | PASS | n/a | n/a | n/a | PASS |
+| LinkedIn profile URL | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| Connection count | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| Follower count (not a stored field) | not mistaken for connections | same | same | same | same | same | same |
+| Section headings never became the name | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| Company/school row never became headline or location | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| Action labels never became a field | PASS | PASS | PASS | PASS | PASS | **at risk** | PASS |
+| Missing count never became `0` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+
+Every sample resolved location through the **contact-info row** strategy; the
+ordering fallback was never needed.
+
+## Defect found
+
+**D-1 — interrupted top card produced a confidently wrong headline and location.**
+
+* Visible: headline was a job title at an employer; location was a city/region/country line.
+* Extracted: headline was a promotional sentence (24 chars) from a block above the real card; location was an ad-preferences dropdown option, shaped like a place.
+* Structural cause: Strategy A selected LinkedIn's own card, which on this profile also contained a promo block and a preferences form. The candidate window's lower bound was the **name heading**, which assumes the heading is immediately followed by the rest of the card. It was not.
+* Classification: genuine parser defect — not a stale load, not an unsupported surface. Both fields were wrong, plausible, and unwarned. Blocker.
+
+A second, latent gap was measured on samples A, B, C and E: action labels
+rendered as `<div role="button">` or nested in a plain `<a>` were **not**
+classified as controls. They were harmless on those profiles only because they
+sat after the connection region, which the upper bound already excluded. On a
+profile with no visible count region they would have become location candidates.
+
+## Fixes
+
+All three are tightenings. None can invent a value; the worst any of them can do
+is leave a field null with a warning.
+
+1. **Anchored candidate window.** Lower bound is now the last name-row anchor
+   (degree badge, pronoun line, or the name) that still precedes the connection
+   region, instead of the name heading.
+2. **Non-profile subtrees are never collected.** Form controls, their labels and
+   legends, popup/menu/listbox roles, and `aria-hidden` subtrees.
+3. **Any `role="button"` is a control**, not only `<button>` and
+   `<a role="button">`; `menuitem` and `tab` included.
+
+Regression fixture: `profile-interrupted-topcard.html`, synthetic, authored from
+the structural description above. Two of the four new tests fail against the
+pre-fix parser; the other two are guards that the pre-fix parser also passed on
+this fixture.
+
+## Re-verification
+
+Samples A–F were re-run after the fix. F extracts correctly; A–E are byte-identical
+to their pre-fix results — the tightening changed nothing that already worked.
+
+## Disclosed for review
+
+The fixture contains one **real component identifier**,
+`componentkey="com.linkedin.sdui.profile.card.topcard"`, because Strategy A only
+fires when a `topcard` componentkey exists and a fixture that invents one would
+not exercise the live path. It is a build-time component path shared by every
+profile and carries no identity — no handle, member id, URN or token. Replaceable
+on request, at the cost of the fixture no longer reproducing the live strategy.
+
+## Limitations recorded, not fixed
+
+* `raw_lines` remains verbatim page text and therefore carries the interruption's
+  furniture on sample F. That is evidence noise, not a wrong field, and filtering
+  it would defeat its purpose.
+* No live profile with a `--` placeholder headline or a hidden connection count
+  was found among the six. Those paths remain covered by fixtures only.
+* Follower count is observed but not a stored contract field; C1 verified only
+  that it is never mistaken for the connection count.

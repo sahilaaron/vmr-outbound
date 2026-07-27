@@ -262,6 +262,7 @@
   function collectBlocks(root) {
     const out = [];
     const visit = (el) => {
+      if (isNonProfileSubtree(el)) return;
       const children = Array.from((el && el.children) || []);
       const own = directText(el);
       const childrenHaveText = children.some(hasAnyText);
@@ -279,14 +280,45 @@
     return out;
   }
 
+  // Subtrees whose text cannot be a person's name, headline or location, no
+  // matter what the page puts there: form controls and their labels, popup
+  // menus and listboxes, and anything hidden from assistive technology.
+  //
+  // This exists because of a live profile whose top-card container also held an
+  // ad-preferences panel — seventy-odd `<option>` and `<legend>` elements sitting
+  // in the same card as the name. Dropdown options are not profile content, and
+  // letting them compete for "location" is how a percentage or a filter label
+  // ends up stored as somebody's city.
+  const NON_PROFILE_TAGS = new Set([
+    "select", "option", "optgroup", "legend", "fieldset", "label",
+    "input", "textarea", "form", "style", "script", "dialog",
+  ]);  // fmt: skip
+  const NON_PROFILE_ROLES = new Set([
+    "listbox", "option", "menu", "menuitem", "dialog",
+    "tablist", "tab", "radiogroup", "combobox", "form", "search",
+  ]);  // fmt: skip
+
+  function isNonProfileSubtree(el) {
+    if (!el || !el.tagName) return false;
+    if (NON_PROFILE_TAGS.has(el.tagName.toLowerCase())) return true;
+    if (NON_PROFILE_ROLES.has((attr(el, "role") || "").toLowerCase())) return true;
+    return attr(el, "aria-hidden") === "true";
+  }
+
+  //: ARIA roles that make an element a control rather than content. Matched on
+  //: any element: live profiles render actions as `<div role="button">` and as
+  //: overflow-menu items just as often as they use a real `<button>`, and an
+  //: action label that escapes classification becomes a candidate for the
+  //: headline or the location.
+  const CONTROL_ROLES = new Set(["button", "menuitem", "tab"]);
+
   /** True when the block sits inside an interactive control. */
   function isActionBlock(el, topcardEl) {
     let node = el;
     const stop = topcardEl && topcardEl.parentElement;
     while (node && node !== stop) {
-      const tag = (node.tagName || "").toLowerCase();
-      if (tag === "button") return true;
-      if (tag === "a" && (attr(node, "role") || "").toLowerCase() === "button") return true;
+      if ((node.tagName || "").toLowerCase() === "button") return true;
+      if (CONTROL_ROLES.has((attr(node, "role") || "").toLowerCase())) return true;
       node = node.parentElement;
     }
     return false;
@@ -655,9 +687,44 @@
     const headingIndex = headingEl ? classified.findIndex((b) => b.el === headingEl || headingEl.contains(b.el)) : -1;
     const firstCountIndex = classified.findIndex((b) => b.kind === "count");
 
+    // The window the headline and location must lie in, bounded at BOTH ends by
+    // things the page itself labels.
+    //
+    // The upper bound is the connection region. The lower bound used to be the
+    // name heading — which assumed the heading is immediately followed by the
+    // rest of the card. A live profile disproved that: its card carried a promo
+    // block between the name and the real top-card rows, so "the first
+    // unaccounted-for block after the name" was promo text, and the headline and
+    // location were both confidently wrong. Wrong and plausible is the worst
+    // outcome this parser can produce.
+    //
+    // So the lower bound is the LAST name-row anchor — a degree badge, a pronoun
+    // line, or the name itself — that still precedes the connection region.
+    // Those anchors are unambiguous and always sit immediately above the
+    // headline. On an ordinary profile the last anchor is the degree badge right
+    // under the name and nothing changes; on the promo layout it lands below the
+    // interruption, which is exactly where the card really starts.
+    //
+    // Note this can only ever *remove* candidates. A tightened window cannot
+    // invent a value; at worst it leaves a field null with a warning, which is
+    // the outcome this parser is allowed to have.
+    const footerIndex = [
+      classified.findIndex((b) => b.kind === "contact_info"),
+      firstCountIndex,
+    ].filter((i) => i >= 0);
+    const footer = footerIndex.length ? Math.min(...footerIndex) : -1;
+
+    let lowerBound = headingIndex;
+    classified.forEach((b, index) => {
+      const isNameAnchor = b.kind === "degree" || b.kind === "pronoun" || b.kind === "name";
+      if (!isNameAnchor) return;
+      if (footer >= 0 && index >= footer) return;
+      if (index > lowerBound) lowerBound = index;
+    });
+
     const candidates = classified.filter((b, index) => {
       if (b.kind != null) return false;
-      if (headingIndex >= 0 && index <= headingIndex) return false;
+      if (lowerBound >= 0 && index <= lowerBound) return false;
       if (nameRow && nameRow !== headingEl && nameRow.contains(b.el)) return false;
       if (firstCountIndex >= 0 && index > firstCountIndex) return false;
       return true;

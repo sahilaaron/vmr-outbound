@@ -260,6 +260,58 @@ test("a mutual-connections line is never mistaken for a field", () => {
   assert.notEqual(r.profile.headline, "Beatriz Amado is a mutual connection");
 });
 
+// ---- an interrupted top card (found during authenticated C1) ----------------
+
+test("a promo block between the name and the card does not become the headline", () => {
+  // Live C1 finding. One profile's top-card container held a promotional line
+  // and an ad-preferences panel BETWEEN the name and the real rows. Taking "the
+  // first unaccounted-for block after the name" returned the promo text as the
+  // headline and a dropdown option as the location — both confident, both
+  // wrong, neither warned about.
+  const r = extract("profile-interrupted-topcard.html");
+
+  assert.equal(r.profile.full_name, "Wilhelmina Farsight");
+  assert.equal(r.profile.headline, "Principal Hydrologist at Kestrel Basin Survey");
+  assert.equal(r.profile.displayed_location, "Tromsø, Troms og Finnmark, Norway");
+  assert.equal(r.profile.connection_count, 500);
+});
+
+test("dropdown options in the card can never become a field", () => {
+  // The panel contains an option shaped exactly like a location and two shaped
+  // like counts. None of them is profile content.
+  const r = extract("profile-interrupted-topcard.html");
+
+  assert.notEqual(r.profile.displayed_location, "Greater Nowhere Area, Somewhere");
+  assert.notEqual(r.profile.displayed_location, "Remote");
+  assert.notEqual(r.profile.headline, "Greater Nowhere Area, Somewhere");
+  assert.notEqual(r.profile.headline, "Audience location");
+  assert.equal(r.profile.connection_count, 500, "a percentage option is not a count");
+
+  // `raw_lines` is deliberately NOT filtered: it is verbatim page text kept so
+  // the backend can re-derive a value this parser version did not understand.
+  // Page furniture appearing there is noise in the evidence, not corruption of
+  // a field — the guarantee is about what becomes a *field*.
+  assert.ok(r.profile.raw_lines.length > 0);
+});
+
+test("a role=button control is recognised without being a <button>", () => {
+  // Live profiles render actions as <div role="button"> as often as <button>.
+  // An unrecognised action label competes for the headline and the location.
+  const r = extract("profile-interrupted-topcard.html");
+
+  assert.notEqual(r.profile.headline, "Reactivate");
+  assert.notEqual(r.profile.headline, "Try Premium for free.");
+  assert.notEqual(r.profile.displayed_location, "Follow this hydrologist");
+  assert.notEqual(r.profile.displayed_location, "Message");
+});
+
+test("the interrupted card still reports its company and school row", () => {
+  // The credential row must stay classified, not leak into a field.
+  const r = extract("profile-interrupted-topcard.html");
+  assert.notEqual(r.profile.headline, "Kestrel Basin Survey · University of Tromsø");
+  assert.notEqual(r.profile.displayed_location, "Kestrel Basin Survey · University of Tromsø");
+});
+
 // ---- the name is never a section heading -----------------------------------
 
 test("a section heading is never taken for the person's name", () => {

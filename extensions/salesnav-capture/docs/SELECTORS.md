@@ -116,6 +116,17 @@ slot existing and a logo rendering are two different facts and are not conflated
 | B | `.pv-top-card` / `[class*="pv-top-card"]` (classic markup) |
 | C | Measured climb from the name heading (below) |
 
+**Strategy A is the one that fires on live profiles.** Authenticated C1
+acceptance established that `componentkey` attributes containing `topcard` do
+exist on the current DOM (typically five per page, two of them holding the name
+heading). The measured climb in Strategy C is therefore a fallback in practice,
+not the main path — worth knowing before trusting a fixture that exercises only
+the climb.
+
+It also means the container is only as tight as LinkedIn's own card, and on at
+least one live profile that card contained considerably more than a top card.
+See *The interrupted card* below.
+
 Strategy C replaced a climb to the nearest `<section>`. The current DOM has no
 `<section>` in the top card, so that climb ran to `<main>` and swallowed About
 and the activity feed — a 20-node card became a 200-node capture. The climb now
@@ -131,6 +142,48 @@ A floor (`TOPCARD_MIN_BLOCKS`) matters as much as the boundary: without it the
 first rung — a wrapper holding only the name — looks like a valid card and the
 capture collapses to the name alone.
 
+## The interrupted card (authenticated C1 finding)
+
+One live profile's top-card container also held a promotional line, a block of
+interface controls, and an ad-preferences panel — roughly seventy `<option>`,
+`<legend>` and `<label>` elements — sitting **between the name and the real
+top-card rows**. 124 text blocks in what should have been about twenty.
+
+Two fields came back confidently wrong, with no warning: the headline was the
+promo line, and the location was a dropdown option that happened to be shaped
+like a place. That is the exact failure mode this work exists to remove, and no
+synthetic fixture had predicted it.
+
+Three tightenings followed, all of which can only ever *remove* a candidate —
+none can invent a value, so the worst they can do is leave a field null with a
+warning:
+
+**1. The candidate window is anchored at both ends.** The upper bound was
+already the connection region. The lower bound is no longer the name heading —
+which assumed the heading is immediately followed by the rest of the card — but
+the **last name-row anchor** (degree badge, pronoun line, or the name itself)
+that still precedes the connection region. On an ordinary profile that anchor is
+the degree badge directly under the name and nothing changes; on the interrupted
+layout it lands below the interruption, which is where the card really starts.
+
+**2. Non-profile subtrees are never collected as blocks.** `select`, `option`,
+`optgroup`, `legend`, `fieldset`, `label`, `input`, `textarea`, `form`,
+`dialog`, anything with an ARIA role of `listbox`/`option`/`menu`/`menuitem`/
+`dialog`/`tablist`/`tab`/`radiogroup`/`combobox`/`form`/`search`, and anything
+`aria-hidden="true"`. A dropdown option is not a person's location.
+
+**3. Any element with `role="button"` is a control.** The check previously
+matched `<button>` and `<a role="button">` only. Live profiles render actions as
+`<div role="button">` at least as often, and an unrecognised action label
+competes for the headline and the location. `menuitem` and `tab` are covered too.
+
+`raw_lines` is deliberately **not** filtered by rule 2 — it is verbatim page text
+kept so the backend can re-derive a value this parser version did not understand.
+Page furniture appearing there is noise in the evidence, not corruption of a
+field.
+
+Fixture: `test/fixtures-profile/profile-interrupted-topcard.html`.
+
 ## Per-field strategies (ordered; first that resolves wins)
 
 Anything unresolved is `null` **plus an explicit warning**. Never a guess, never
@@ -139,7 +192,7 @@ a positional fallback.
 | Field | Strategy 1 (structural) | Strategy 2 (pattern) | Corroboration only |
 | --- | --- | --- | --- |
 | `full_name` | first `h1, h2, h3, [role=heading]` in the card **whose text is not a section heading**; own text read first so a nested verification badge cannot contribute; captured verbatim | first unclassified block | — |
-| `headline` | first unclassified block outside the name row, above the connection region | `--` ⇒ `null` + `placeholder_value` | `_8c535ff6` |
+| `headline` | first unclassified block in the anchored window (last name-row anchor → connection region) | `--` ⇒ `null` + `placeholder_value` | `_8c535ff6` |
 | `displayed_location` | the unclassified block sharing a row with the **Contact info** control | last unclassified block before the connection region, only when ≥2 exist | `fb33e5ec` on the row |
 | `connection_count` | token scan of the connection region (below) | `^(\d[\d,]*\+?)\s+connections$` | — |
 | followers | same token scan | `^(\d[\d,]*\+?)\s+followers$` | — |

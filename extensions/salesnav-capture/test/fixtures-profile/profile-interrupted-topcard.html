@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<!--
+  Synthetic fixture (DAT-016, authenticated C1): a top-card container that also
+  holds an unrelated panel BETWEEN the name and the real top-card rows.
+
+  Authored from a structural description of a live profile found during C1
+  acceptance — no captured markup, no real profile content. All names,
+  companies and schools are fictitious.
+
+  The shape being modelled, in document order inside one container:
+
+    1. the name heading;
+    2. a promotional line and a block of interface controls;
+    3. an ad-preferences panel: <select>/<option>/<legend>/<label>, including
+       percentage options and a location-shaped option;
+    4. THEN the genuine top card — degree badge, headline, company · school,
+       location row with Contact info, follower and connection counts.
+
+  Two failures this reproduces, both of which returned confident wrong values:
+
+    * "the first unaccounted-for block after the name" was the promo line, so
+      the promo text became the headline;
+    * the location row search found a dropdown option first, so a filter label
+      became the location.
+
+  Neither field was null and neither raised a warning — the parser was simply
+  wrong, quietly. That is the outcome DAT-016 exists to make impossible.
+-->
+<html>
+<head><title>Wilhelmina Farsight | LinkedIn</title></head>
+<body>
+  <main>
+    <div class="_2c9a1f4b">
+      <div componentkey="com.linkedin.sdui.profile.card.topcard">
+        <div class="_11ff22aa">
+          <div class="_a1b2c3d4">
+            <h2 class="_687a5045">Wilhelmina Farsight</h2>
+          </div>
+        </div>
+
+        <!-- (2) promotional interruption -->
+        <div class="_promo0001">
+          <span class="_687a5045">Try Premium for free.</span>
+          <div role="button" class="_9f8e7d6c"><span>Reactivate</span></div>
+          <button type="button">Dismiss</button>
+          <span class="_687a5045">Retention: 4%</span>
+          <div class="_687a5045">Audience insights</div>
+        </div>
+
+        <!-- (3) an ad-preferences panel living in the same card -->
+        <div class="_prefs0001">
+          <fieldset>
+            <legend>Audience location</legend>
+            <label for="loc">Region</label>
+            <select id="loc">
+              <option>Greater Nowhere Area, Somewhere</option>
+              <option>Remote</option>
+            </select>
+          </fieldset>
+          <fieldset>
+            <legend>Match rate</legend>
+            <select id="rate">
+              <option>25%</option>
+              <option>500%</option>
+            </select>
+          </fieldset>
+        </div>
+
+        <!-- (4) the genuine top card -->
+        <div class="_11223344">
+          <p class="_687a5045">· 2nd</p>
+        </div>
+        <p class="_687a5045 _8c535ff6">Principal Hydrologist at Kestrel Basin Survey</p>
+        <div class="_ed7c9012">
+          <figure class="_a7b8c9d0"><svg id="company-accent-4"></svg><img alt="Company logo" /></figure>
+          <p class="_687a5045 _7ba7f145">Kestrel Basin Survey · University of Tromsø</p>
+        </div>
+        <div class="_fb33e5ec">
+          <p class="_687a5045 _3ab7a3ad">Tromsø, Troms og Finnmark, Norway</p>
+          <p class="_687a5045">·</p>
+          <p class="_687a5045 _f373559d"><a class="_3344aabb">Contact info</a></p>
+        </div>
+        <div class="_c0ffee11">
+          <p class="_687a5045">4,120 followers</p>
+          <span class="_687a5045">·</span>
+          <span class="_687a5045">500+</span>
+          <span class="_687a5045">connections</span>
+        </div>
+        <div class="_8899aabb">
+          <div role="button" class="_ccddeeff"><span>Message</span></div>
+          <div role="button" class="_ccddeeff"><span>Follow this hydrologist</span></div>
+          <button type="button">More</button>
+        </div>
+      </div>
+      <section class="_dd00ee11">
+        <h2>About</h2>
+        <p>River-basin modelling and flood forecasting.</p>
+      </section>
+      <section class="_ee11ff22">
+        <h2>Experience</h2>
+        <div componentkey="entity-collection-item-exp-1">
+          <a href="https://www.linkedin.com/company/kestrel-basin-survey/"><img alt="logo" /></a>
+          <div>
+            <p>Principal Hydrologist</p>
+            <p>Kestrel Basin Survey · Full-time</p>
+            <p>Apr 2019 - Present · 7 yrs 4 mos</p>
+            <p>Tromsø, Troms og Finnmark, Norway · Hybrid</p>
+          </div>
+        </div>
+      </section>
+      <section class="_ff22aa33">
+        <h2>Education</h2>
+        <p>University of Tromsø</p>
+      </section>
+    </div>
+  </main>
+</body>
+</html>
