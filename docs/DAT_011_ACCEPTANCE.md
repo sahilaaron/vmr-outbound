@@ -210,7 +210,7 @@ returned, with counts and states only.
 | A6 | Confirm a flagged row is retained (S3a) | A row with a warning is still selectable and still submitted with its gap visible | |
 | A7 | Confirm nothing was invented for a skipped row (S3b) | No company borrowed from headline, school, location or an adjacent row | |
 | A8 | Save the reviewed set | Submitted count == selected count; outcome counts render; `created` is 0 | **PASS** [operator] — *30 of 30 prospects saved*; sole outcome `staged_unmatched` = 30; **`created` absent, i.e. 0**. **S9 and S10 satisfied** |
-| A9 | Close and reopen the panel | Last result and/or draft restored without recapturing or resaving | |
+| A9 | Close and reopen the panel | Last result and/or draft restored without recapturing or resaving | **PASS (draft)** [operator] — see *A9 — the draft survives* below. Result restoration retested separately |
 | A10 | Open the returned record via the panel's own link | The exact submission/capture record opens in the workbench | |
 
 #### A0 observations (2026-07-27)
@@ -641,7 +641,7 @@ Counts and sanitized identifiers only.
 | Contacts created by promotion | 1 per promoted capture | **PASS** [machine, supervised] — one promotion, one contact; scoped count 0 → 1 and pending 80 → 79. A second promote created none |
 | Campaign memberships | **0** | **PASS** [machine, supervised] — the promoted contact carries no campaign membership; the workbench states promotion "never adds a campaign membership" and the record agrees |
 | Email candidates / verifications / scores / drafts | **0** | **PASS** [machine, supervised] — email `—` / *unverified* / *"No address to verify yet."*, research *not requested*, scoring *not assessed* |
-| Repeated identical submission | one submission, one snapshot, one note | **not yet run** — S11 needs the operator to resubmit an identical batch from the panel |
+| Repeated identical submission | one submission, one snapshot, one note | **PASS** [operator save, machine-verified] — the unchanged batch was resaved; the backend replayed it. Pending stayed **78**, the submission kept its `submission_id` and `client_submission_id`, and its counts stayed `submitted 30 / staged_unmatched 30 / created 0`. No second submission, no duplicate captures. See *S11* below |
 | Fields with missing evidence | still null, with warnings | **PASS** [machine, supervised] — on a partial capture: `connection_count`, `open_to_work`, `about_text` all `—`, zero experience rows, `warnings 1`, and the table states *"No experience history was visible on the captured surface."* Absent evidence is reported as absent and explained, not filled in |
 
 ---
@@ -908,6 +908,64 @@ its reasons truthfully. A refusal reason that outlives its refusal is the same
 class of fault as an invented confidence score — the operator is being told
 something the system no longer believes. An operator who trusted it would go
 looking for candidates that are not there.
+
+### A9 — the draft survives a panel close, and the proof is arithmetic
+
+**Observed** [operator]: the panel was closed and reopened with no other action.
+
+It returned holding **31 rows, 30 selected, 1 excluded** — the operator's original
+selection intact — while the same panel reported *"4 rows currently visible on
+this page."*
+
+That pair of numbers is the whole proof. The live page had four rows rendered; the
+batch held thirty-one. A fresh read of the page could not have produced 31, so the
+batch was restored from storage rather than reconstructed from the DOM. No
+recapture, no resave.
+
+**The batch identity was verified from the backend, not assumed.** This trial's
+thirty (`01366e2e…`) were captured from **page 4** of the search; the pre-existing
+forty-seven (`471bcf00…`) came from page 3. The restored 31/30 batch is the trial
+draft, not a coincidental fresh capture of a similar page.
+
+**What did not restore: the last result.** The panel opened on step 1 of 3 with
+*Review selected*, not on the outcome view with its returned link. By inspection
+`lastResult` lives in `chrome.storage.local` and is cleared only by *Clear batch*
+— and the batch plainly survived, so the two should have restored together.
+Rather than guess at the cause, the result path was retested under controlled
+conditions (S11 below, which rewrites `lastResult`), and A9 re-run after it.
+
+### S11 — resubmitting the unchanged batch
+
+**Observed** [operator save, machine-verified]. The retained batch still carried
+its original submission identity, so saving it again is precisely the
+"unchanged input" case — the test and the recovery of `lastResult` in one action.
+
+The panel reported:
+
+> **30 of 30 prospects saved** — *"This submission had already been received — it
+> was replayed, not duplicated."*
+> **What happened:** 30 staged as a new person · Needs review
+
+The backend agreed, checked independently:
+
+| Measure | Before | After |
+| --- | --- | --- |
+| Pending queue | 78 | **78** |
+| Captures in the trial submission | 30 | **30** |
+| `submission_id` / `client_submission_id` | unchanged | **unchanged** |
+| Outcome counts | `submitted 30 / staged_unmatched 30 / created 0` | **identical** |
+
+**No second submission, no duplicated captures, and the extension said so
+plainly.** This is the guarantee that makes the acquisition path safe to retry:
+an operator who is unsure whether a save landed can press it again without
+consequence, and the system tells them which of the two happened rather than
+silently doing either.
+
+*(Observation, D-OBS-5: the headline still reads "30 of 30 prospects saved" on a
+replay — the truthful "already received" wording sits in the body beneath it.
+For a multi-row submission the headline alone would read as a fresh save. Minor,
+and the same family as D-6 / D-OBS-4: the data is right, one line of copy is
+generic.)*
 
 ### D-7 — the unresolved reason is asked for, kept, and never shown
 
