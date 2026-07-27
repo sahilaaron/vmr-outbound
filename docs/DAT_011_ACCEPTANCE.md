@@ -375,7 +375,7 @@ stable key. Nothing was submitted by the cancellation.
 | B1 | Review the extracted fields | Fields match the visible page; anything absent is shown as missing, never guessed | **PASS** [operator] — see *B1* below. Missing sections are named, and the panel states *"Empty fields stay empty — VM Prospector will not fill them in."* |
 | B2 | Capture → confirm → Save | Outcome is `refreshed_exact_match` or `staged_unmatched`; `created` is 0 | **PASS** [operator, machine-verified] — `submitted 1 / staged_unmatched 1 / created 0`. Promotion then linked it to the **existing** contact rather than making a second one. See *B2* below |
 | B3 | Save again without recapturing | *already saved — idempotent*, same submission | **PASS** [operator, machine-verified] — the control relabels itself *Refresh Contact*, the outcome reads **"1 already current — Unchanged"**, and the backend records `exact match unchanged`. Still one contact. See *B3* below |
-| B4 | Open a Sales Navigator person page | Reports *unsupported* with the reason — the shipped detector supports only the main `/in/` profile | |
+| B4 | Open a Sales Navigator person page | Reports *unsupported* with the reason — the shipped detector supports only the main `/in/` profile | **PASS** [operator] — *"This Sales Navigator view isn't supported. Open a people-search results page (/sales/search/people)."* The **specific** reason, not the generic one. See *B4* below |
 
 ### C. Company profile
 
@@ -1070,6 +1070,31 @@ at 04:15 with the stated reason *"most recent evidence"* under policy
 `freshness-v1`. And both captures survive independently — **evidence accumulates
 while identity does not multiply**, which is the contact-first architecture doing
 exactly what it claims.
+
+### B4 — declining a page it could easily have parsed
+
+**Observed** [operator] on a Sales Navigator **lead** page for the same person.
+
+The strip read *"This page isn't supported"*, the body *"Nothing to capture here
+— Open one of these and the panel switches by itself"*, followed by the three
+supported surfaces with their URL shapes, and then the reason:
+
+> *"This Sales Navigator view isn't supported. Open a people-search results page
+> (/sales/search/people)."*
+
+**That is the specific reason, not the fallback.** The detector distinguishes
+"a Sales Navigator view I don't handle" from "not a LinkedIn page at all", and
+the panel prints the one that actually applies. Guidance that names the right
+next URL is the difference between a dead end and a redirect.
+
+**The restraint is the finding.** That lead page was dense with exactly the data
+this product wants — current role with dates, contact information, a timeline,
+mutual connections. It would have been easy to parse and it is not in the
+declared scope, so the extension took none of it. A capture tool that quietly
+widened its own surface coverage would be a governance problem long before it
+was a bug; this one stops at the boundary and says where the boundary is.
+
+**Phase B is complete: B0–B4 all pass.**
 
 ### A10 / S6 — the panel's own link opens the exact record
 
