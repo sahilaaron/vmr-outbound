@@ -495,6 +495,7 @@ unless a small unambiguous acceptance blocker is documented first.
 | Ref | Summary | Severity | Blocker | Issue |
 | --- | --- | --- | --- | --- |
 | D-1 | `LOGO_DEV_API_KEY` was not configured, so the DAT-010 candidate lookup could not run | environment | **resolved before the trial** — no longer blocking | not filed (config, not a product defect) |
+| D-5 | Confirming a domain candidate on a **Sales Navigator** capture returns HTTP 500 | **acceptance blocker** | yes — blocks E3/E6/E7 in scope | to be filed, awaiting traceback |
 | D-4 | A Sales Navigator capture's derived profile URL is an opaque member id, so the same person captured from their profile page will not match it | **identity fragmentation** | not for DAT-011 | to be filed — settles the open question Layer 3C left |
 | D-3 | Reported: captured company not visible in the app for a Sales Navigator capture | unresolved | no | **not reproduced** — cause unknown, left open |
 | D-OBS-3 | *Person observations* omits captured company and title; profile captures show the employer only via the experience table | presentation | no | not filed |
@@ -694,6 +695,36 @@ It needs its own issue, because the fix is an identity question — whether the
 member id should be resolved to a vanity handle at capture time, or carried as a
 second matchable key — and that is a backend design decision, not an acceptance
 step.
+
+### D-5 — confirming a candidate 500s on a Sales Navigator capture
+
+**Observed** [operator]: pressing *Confirm* on the rank-1 candidate of a trial
+capture returned **Internal Server Error**.
+
+**Contrast that isolates it.** The same action succeeded earlier in this session
+on a **profile** capture — confirmed, rejected two candidates, reached
+`domain_candidate_confirmed`, and enabled promotion. The failing capture differs
+in shape: `capture_mode = salesnav_people_search`, `extraction_status = partial`,
+**0 experience observations**.
+
+**Ruled out by inspection, so far:**
+
+* The form is well-formed — it posts `decision=candidate` with the candidate's
+  domain as a hidden field.
+* `company_hints` is safe with zero experiences: `_current_role` falls back to
+  `current_employment_hint` and then to `{}`, and the company name did render on
+  the page, so hints resolve.
+* The route catches `PromotionError` and redirects with a message, so a 500
+  means an exception of a *different* type escaped — the failure is inside
+  `enrichment.confirm_record` or `evaluate_company`, not in the guard clauses.
+
+**Impact.** This blocks the in-scope E3, and therefore E6 and E7, because a
+capture cannot be promoted without a confirmed domain. Sales Navigator is the
+acquisition surface DAT-011 exists to accept, so a capture from it that cannot
+be promoted is an acceptance blocker, not a cosmetic fault.
+
+**Not yet diagnosed.** The traceback is on the operator's application console
+and has not been read. No cause is asserted here until it has been.
 
 ## 5. Verdict
 
