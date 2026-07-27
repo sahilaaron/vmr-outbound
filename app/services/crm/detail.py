@@ -54,6 +54,7 @@ from app.services.crm.states import (
     states_for_capture,
     states_for_contact,
 )
+from app.services.resolution import service as resolution_service
 
 # Shown wherever a downstream stage has not run. Phrased as a statement about
 # the system, not about the person: "nothing has been requested" is a fact,
@@ -152,6 +153,11 @@ class CompanyLink:
     linkedin_company_id: str | None
     is_resolved: bool
     resolution_note: str
+    # How that domain was decided, when automatic resolution decided it
+    # (DAT-017A). None means no decision record exists for this company, which
+    # is the ordinary case for an imported or operator-supplied domain and is
+    # NOT the same as an uncertain one.
+    domain_resolution: resolution_service.DecisionView | None = None
 
 
 @dataclass
@@ -367,6 +373,9 @@ def _company_link_for_contact(
         linkedin_company_id=current.company_linkedin_id if current is not None else None,
         is_resolved=company is not None,
         resolution_note=note,
+        # Read through the permanent edge, not through the domain string above:
+        # a decision belongs to the company a contact is actually linked to.
+        domain_resolution=resolution_service.contact_view(session, contact),
     )
 
 

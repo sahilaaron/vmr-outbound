@@ -23,6 +23,7 @@ from app.models.enums import EmailCandidateSource
 from app.services.email.normalization import build_identity
 from app.services.email.patterns import engine_version, generate_local_parts
 from app.services.imports.normalization import is_valid_email, normalize_email
+from app.services.resolution import gates
 
 # Domain-pattern observations older than this contribute no ranking boost: stale
 # pattern evidence must not keep steering selection (EML-004 "fresh ... evidence").
@@ -158,6 +159,20 @@ def generate_candidates(session: Session, contact: Contact) -> CandidateGenerati
     """
 
     result = CandidateGenerationResult()
+
+    # Email discovery is one of the stages a provisional company domain does NOT
+    # authorize (DAT-017A). Checked here rather than in the route that calls it,
+    # because generating addresses at a domain nobody has confirmed is the
+    # failure the rule exists to prevent — and a rule that only a route enforces
+    # is one refactor away from not being enforced at all. Refused, not raised:
+    # the caller already renders ``needs_review`` with its reason.
+    gate = gates.authorize_contact(
+        session, contact=contact, stage=gates.DownstreamStage.EMAIL_DISCOVERY
+    )
+    if gate.blocked:
+        result.needs_review = True
+        result.review_reason = gate.reason
+        return result
 
     # Replace any prior candidate set for a deterministic regenerate.
     for existing in session.scalars(

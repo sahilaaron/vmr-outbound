@@ -31,6 +31,7 @@ from app.models import audit_event as _audit_event  # noqa: E402,F401
 from app.models import campaign as _campaign  # noqa: E402,F401
 from app.models import capture_promotion as _capture_promotion  # noqa: E402,F401
 from app.models import company as _company  # noqa: E402,F401
+from app.models import company_domain_resolution as _company_domain_resolution  # noqa: E402,F401
 from app.models import company_dossier as _company_dossier  # noqa: E402,F401
 from app.models import company_field_value as _company_field_value  # noqa: E402,F401
 from app.models import contact as _contact  # noqa: E402,F401

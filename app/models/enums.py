@@ -244,15 +244,24 @@ class EnrichmentConfirmationSource(enum.StrEnum):
     ``PRIOR_MAPPING`` (DAT-014) when a domain was reused from an EARLIER
     operator confirmation of the same normalized company.
 
-    ``PRIOR_MAPPING`` is the only non-interactive source, and it is not an
-    exception to the rule that the operator decides: it replays a decision the
-    operator already made. A provider's top-ranked name match never qualifies.
+    ``PRIOR_MAPPING`` and ``AUTOMATIC_POLICY`` are the only non-interactive
+    sources, and neither is an exception to the rule that a domain is never
+    guessed. ``PRIOR_MAPPING`` replays a decision the operator already made for
+    the same normalized company. ``AUTOMATIC_POLICY`` (DAT-017A) records a
+    CONFIRMED decision reached by the versioned company-domain resolution
+    policy, which confirms only from evidence that was ALREADY established — an
+    approved mapping, or a permanent Company whose identity and domain are both
+    on record. A provider's top-ranked name match never qualifies for either:
+    provider-backed evidence reaches ``provisional`` at best, and a provisional
+    decision deliberately writes no confirmation here at all, so it can never
+    become a reusable approved mapping for the next capture.
     """
 
     CANDIDATE = "candidate"
     MANUAL = "manual"
     UNRESOLVED = "unresolved"
     PRIOR_MAPPING = "prior_mapping"
+    AUTOMATIC_POLICY = "automatic_policy"
 
 
 class CompanyResolutionOutcome(enum.StrEnum):
@@ -266,13 +275,21 @@ class CompanyResolutionOutcome(enum.StrEnum):
     ``EXISTING_COMPANY_RESOLVED`` is the only outcome reachable without asking
     the provider: a previously CONFIRMED decision for the same normalized
     company already names the domain. Everything a provider returns is a
-    *candidate* awaiting the operator, because a top-ranked name match is not
-    evidence of identity.
+    *candidate*, because a top-ranked name match is not evidence of identity.
+
+    ``DOMAIN_PROVISIONAL`` (DAT-017A) is the one outcome that authorizes a
+    promotion on provider-backed evidence alone, and it says so out loud rather
+    than borrowing a confirmed-sounding name. It permits exactly two things —
+    creating/reusing the permanent Company and linking the Contact — so company
+    research can start. It authorizes nothing further: qualification, drafting,
+    email discovery, campaign eligibility and sending all stay closed until the
+    identity is confirmed (see :mod:`app.services.resolution.gates`).
     """
 
     PENDING_LOOKUP = "pending_lookup"
     EXISTING_COMPANY_RESOLVED = "existing_company_resolved"
     DOMAIN_CANDIDATE_CONFIRMED = "domain_candidate_confirmed"
+    DOMAIN_PROVISIONAL = "domain_provisional"
     CANDIDATE_REVIEW_REQUIRED = "candidate_review_required"
     MULTIPLE_CANDIDATES_REVIEW_REQUIRED = "multiple_candidates_review_required"
     NO_CANDIDATE = "no_candidate"
@@ -674,3 +691,50 @@ class CompanyConflictKind(enum.StrEnum):
     SNAPSHOT_DOMAIN_MISMATCH = "snapshot_domain_mismatch"
     # This company has no domain at all, so domain-based identity cannot apply.
     NO_CANONICAL_DOMAIN = "no_canonical_domain"
+
+
+class DomainResolutionState(enum.StrEnum):
+    """How certain the system is about a captured employer's domain (DAT-017A).
+
+    Three states, and the middle one is the whole point. Before DAT-017A a
+    captured company was either operator-confirmed or it was nothing, so the
+    only way to get a normal LinkedIn capture moving was for a human to approve
+    every domain by hand. Collapsing that middle ground into "confirmed" would
+    have bought throughput by lying; leaving it at "unresolved" kept the lie out
+    but kept the operator in.
+
+    * ``CONFIRMED`` — deterministic evidence that was already established
+      (an approved mapping, or a permanent Company whose identity and domain are
+      both on record) names this domain. Good enough for normal downstream use.
+    * ``PROVISIONAL`` — a provider-backed candidate is likely enough to start
+      company research and no better evidence contradicts it, but nothing has
+      corroborated it independently. It authorizes research and nothing else.
+    * ``UNRESOLVED`` — evidence is missing, ambiguous, conflicting, invalid, or
+      the provider failed. No domain is selected, and none is invented.
+
+    ``PROVISIONAL`` is deliberately not a weaker ``CONFIRMED``: the difference
+    is enforced by :mod:`app.services.resolution.gates`, not left to whoever
+    reads the value next.
+    """
+
+    CONFIRMED = "confirmed"
+    PROVISIONAL = "provisional"
+    UNRESOLVED = "unresolved"
+
+
+class DomainResolutionKind(enum.StrEnum):
+    """Why a company-domain resolution decision was written (DAT-017A).
+
+    Decisions are append-only. A correction never edits or deletes the decision
+    it disagrees with — it supersedes it — so this records which of the three
+    ways produced each row and the earlier evidence stays readable.
+    """
+
+    # The first automatic evaluation for a capture.
+    AUTOMATIC = "automatic"
+    # A later automatic re-evaluation that reached a DIFFERENT answer. An
+    # identical re-evaluation writes nothing at all, so this never accumulates
+    # duplicate rows saying the same thing.
+    RECALCULATION = "recalculation"
+    # An operator disagreed with the automatic decision and said so explicitly.
+    OPERATOR_CORRECTION = "operator_correction"

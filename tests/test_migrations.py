@@ -41,6 +41,16 @@ def _load_migration(revision_filename: str) -> object:
 
 _BACKFILL_SQL = str(_load_migration("c48b1f70a3d2_app_003_company_workspace.py")._BACKFILL)
 
+#: The revision immediately BELOW APP-003. Downgrading *to* it is what runs
+#: APP-003's own downgrade, named explicitly so the test keeps exercising that
+#: migration as later ones stack on top of it.
+_APP_003_PARENT = _load_migration("c48b1f70a3d2_app_003_company_workspace.py").down_revision
+
+#: The revision immediately below DAT-017A, for the same reason.
+_DAT_017A_PARENT = _load_migration(
+    "d7a3f18c62b4_dat_017a_company_domain_resolution.py"
+).down_revision
+
 
 @pytest.fixture()
 def temp_database_url() -> Iterator[str]:
@@ -206,14 +216,114 @@ def test_app_003_downgrade_refuses_while_the_workspace_holds_data(
                 {"c": company_id, "id": contact_id},
             )
 
-        blocked = _alembic(["downgrade", "-1"], temp_database_url)
+        # Target APP-003 by revision rather than by "one step below head". Later
+        # migrations stack on top of it, so a relative step would silently start
+        # testing whichever migration happens to be newest instead of this one.
+        blocked = _alembic(["downgrade", _APP_003_PARENT], temp_database_url)
         assert blocked.returncode != 0, "the downgrade must refuse while a link exists"
         assert "contact-to-company link" in (blocked.stdout + blocked.stderr)
 
         with engine.begin() as conn:
             conn.execute(text("UPDATE contacts SET company_id = NULL"))
 
-        cleared = _alembic(["downgrade", "-1"], temp_database_url)
+        cleared = _alembic(["downgrade", _APP_003_PARENT], temp_database_url)
         assert cleared.returncode == 0, f"{cleared.stdout}\n{cleared.stderr}"
+    finally:
+        engine.dispose()
+
+
+def _seed_capture(conn: Connection) -> uuid.UUID:
+    """A minimal capture row — the anchor a resolution decision hangs from."""
+
+    capture_id = uuid.uuid4()
+    conn.execute(
+        text(
+            "INSERT INTO linkedin_profile_snapshots "
+            " (id, client_capture_id, content_hash, schema_version, source, "
+            "  extraction_status, payload, profile_fields, outcome) "
+            "VALUES (:id, :c, :h, '1.0.0', 'test', 'ok', '{}'::jsonb, '{}'::jsonb, "
+            # PostgreSQL stores the enum LABEL, which is the member NAME.
+            " 'UNMATCHED_STAGED')"
+        ),
+        {"id": capture_id, "c": str(capture_id), "h": uuid.uuid4().hex},
+    )
+    return capture_id
+
+
+def test_dat_017a_downgrade_refuses_while_resolution_decisions_exist(
+    temp_database_url: str,
+) -> None:
+    """A decision cannot be re-derived, so the reversal refuses rather than drops it.
+
+    A resolution decision is the only record of which evidence produced a company
+    link, how certain it was, what the provider offered, and what an operator
+    changed. Today's evidence is not the evidence the decision was made on, so
+    rebuilding one is impossible and dropping one is silent data loss.
+
+    As with APP-003, the refusal is conditional on there being something to
+    protect — an empty schema reverses cleanly, which is what keeps the round
+    trip above meaningful.
+    """
+
+    assert _alembic(["upgrade", "head"], temp_database_url).returncode == 0
+
+    engine = create_engine(temp_database_url)
+    try:
+        with engine.begin() as conn:
+            capture_id = _seed_capture(conn)
+            conn.execute(
+                text(
+                    "INSERT INTO company_domain_resolutions "
+                    " (id, capture_id, decision_number, is_current, state, decision_kind, "
+                    "  policy_version, selected_domain, reasons) "
+                    "VALUES (:id, :cap, 1, true, 'PROVISIONAL', 'AUTOMATIC', "
+                    " 'company-domain-resolution/practical-v1', 'seed.example', "
+                    " '[\"single_aligned_provider_candidate\"]'::jsonb)"
+                ),
+                {"id": uuid.uuid4(), "cap": capture_id},
+            )
+
+        blocked = _alembic(["downgrade", _DAT_017A_PARENT], temp_database_url)
+        assert blocked.returncode != 0, "the downgrade must refuse while a decision exists"
+        assert "resolution decision" in (blocked.stdout + blocked.stderr)
+
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM company_domain_resolutions"))
+
+        cleared = _alembic(["downgrade", _DAT_017A_PARENT], temp_database_url)
+        assert cleared.returncode == 0, f"{cleared.stdout}\n{cleared.stderr}"
+    finally:
+        engine.dispose()
+
+
+def test_dat_017a_downgrade_refuses_while_a_promotion_uses_the_new_enum_label(
+    temp_database_url: str,
+) -> None:
+    """Rebuilding the enum without ``DOMAIN_PROVISIONAL`` must not silently recast a row.
+
+    The downgrade recreates ``company_resolution_outcome`` without the label it
+    added. A promotion still carrying that label could not survive the cast, so
+    the migration checks for one first and stops with a readable message rather
+    than failing halfway through on a type error.
+    """
+
+    assert _alembic(["upgrade", "head"], temp_database_url).returncode == 0
+
+    engine = create_engine(temp_database_url)
+    try:
+        with engine.begin() as conn:
+            capture_id = _seed_capture(conn)
+            conn.execute(
+                text(
+                    "INSERT INTO contact_capture_promotions "
+                    " (id, capture_id, company_outcome, contact_outcome, notes_linked) "
+                    "VALUES (:id, :cap, 'DOMAIN_PROVISIONAL', 'PENDING', 0)"
+                ),
+                {"id": uuid.uuid4(), "cap": capture_id},
+            )
+
+        blocked = _alembic(["downgrade", _DAT_017A_PARENT], temp_database_url)
+        assert blocked.returncode != 0, "the downgrade must refuse while the label is in use"
+        assert "labels it added" in (blocked.stdout + blocked.stderr)
     finally:
         engine.dispose()

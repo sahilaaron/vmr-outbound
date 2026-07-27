@@ -5,9 +5,89 @@
    operator's behalf, merge an ambiguous identity, or make a contact
    outreach-eligible. #}
 
-{% macro resolution_card(resolution, lookup_available) %}
+{% from "_macros.html" import resolution_badge, resolution_detail %}
+
+{% macro resolution_card(resolution, lookup_available, auto_available=false, decision=none, history=[]) %}
 {% set promotion = resolution.promotion %}
 {% set record = resolution.record %}
+
+{# --- Automatic domain resolution (DAT-017A) ------------------------------
+   Shown above the manual candidate controls because it is what normally settles
+   a capture now. It never removes those controls: an operator can always
+   correct a decision, and a correction is kept as history rather than replacing
+   what it disagreed with. #}
+{% if decision or auto_available %}
+<div class="table-wrap">
+  <div class="toolbar">
+    <strong class="small">Automatic domain resolution</strong>
+    {{ resolution_badge(decision) }}
+  </div>
+  <div style="padding: 12px;">
+    {% if decision %}
+    {% if decision.is_provisional %}
+    <div class="notice warn" role="status" style="margin-bottom:12px">
+      <strong>Provisional domain.</strong>
+      Good enough to create the company and start research. Not good enough to qualify,
+      draft, look for an email address, add to a campaign, or send — those are refused in
+      the backend until the identity is confirmed.
+    </div>
+    {% endif %}
+    {{ resolution_detail(decision) }}
+    {% else %}
+    <p class="small muted-text">
+      No automatic decision has been made for this capture yet. Running it never invents a
+      domain: it reuses evidence already on record and asks the provider only when there is
+      nothing on record to reuse.
+    </p>
+    {% endif %}
+  </div>
+
+  <div class="row gap wrap" style="padding: 0 12px 12px;">
+    <form method="post" action="/contact-captures/{{ resolution.snapshot.id }}/company/resolve">
+      <button class="btn" type="submit" {% if not auto_available %}disabled{% endif %}>
+        {% if decision %}Re-run automatic resolution{% else %}Resolve domain automatically{% endif %}
+      </button>
+    </form>
+    <form method="post" action="/contact-captures/{{ resolution.snapshot.id }}/company/correct" class="row gap">
+      <input class="input" type="text" name="domain" placeholder="correct domain, e.g. example.com" />
+      <input class="input" type="text" name="note" placeholder="why?" />
+      <button class="btn" type="submit">Correct this decision</button>
+    </form>
+    <form method="post" action="/contact-captures/{{ resolution.snapshot.id }}/company/correct" class="row gap">
+      <input type="hidden" name="decision" value="unresolved" />
+      <input class="input" type="text" name="note" placeholder="why leave it unresolved?" />
+      <button class="btn btn-ghost" type="submit">Correct to unresolved</button>
+    </form>
+  </div>
+  {% if not auto_available %}
+  <p class="small muted-text" style="padding: 0 12px 12px;">
+    Automatic resolution is switched off for this workbench. Corrections still apply, and
+    the manual controls below are unaffected.
+  </p>
+  {% endif %}
+</div>
+
+{% if history | length > 1 %}
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Earlier decisions (kept, never overwritten)</strong></div>
+  <div style="padding: 12px;">
+    {% for past in history %}
+    {% if past.decision.superseded_at %}
+    <details style="margin-bottom:10px">
+      <summary class="small">
+        #{{ past.decision.decision_number }} · {{ past.headline }}
+        {% if past.decision.selected_domain %}· <span class="mono">{{ past.decision.selected_domain }}</span>{% endif %}
+        · superseded {{ past.decision.superseded_at | dt }}
+      </summary>
+      <div style="margin-top:12px">{{ resolution_detail(past) }}</div>
+    </details>
+    {% endif %}
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+{% endif %}
+
 <div class="table-wrap">
   <div class="toolbar">
     <strong class="small">Company resolution and promotion</strong>

@@ -68,6 +68,7 @@ from app.services.imports.importer import (
     run_import,
 )
 from app.services.imports.preview import preview_import, preview_pending_batch
+from app.services.resolution import service as resolution_service
 from app.services.verification import console as verification_console
 from app.services.verification import queue as verification_queue
 from app.services.verification import service as verification_service
@@ -2110,6 +2111,36 @@ def _promotion_enabled() -> bool:
     return get_settings().features.contact_capture_promotion
 
 
+def _auto_resolution_enabled() -> bool:
+    """Whether the workbench may run automatic company-domain resolution.
+
+    Both switches, because automatic resolution is a way of settling a capture's
+    promotion: with promotion off there is nothing for a decision to feed.
+    """
+
+    features = get_settings().features
+    return features.contact_capture_promotion and features.automatic_company_domain_resolution
+
+
+def _provider_access() -> resolution_service.ProviderAccess:
+    """How the provider may be reached, or an access with no key at all.
+
+    A missing switch or missing key yields an unusable access rather than an
+    error: the policy then decides from stored evidence and reports the provider
+    truthfully as not run, instead of the page pretending it asked and heard
+    nothing.
+    """
+
+    settings = get_settings()
+    usable = settings.features.salesnav_domain_enrichment and settings.has_logo_dev_key()
+    return resolution_service.ProviderAccess(
+        api_key=settings.logo_dev_api_key if usable else None,
+        search_url=settings.logo_dev_search_url,
+        timeout=settings.logo_dev_timeout_seconds,
+        max_candidates=settings.logo_dev_max_candidates,
+    )
+
+
 def _load_capture(db: Session, capture_id: str) -> LinkedInProfileSnapshot | None:
     parsed_id = _parse_uuid(capture_id)
     return db.get(LinkedInProfileSnapshot, parsed_id) if parsed_id else None
@@ -2251,6 +2282,97 @@ async def capture_company_reject(
     return _redirect(target, ok=f"Rejected {domain}. The decision is kept with the candidates.")
 
 
+@router.post("/contact-captures/{capture_id}/company/resolve")
+def capture_company_resolve(
+    request: Request, capture_id: str, db: Session = Depends(get_db)
+) -> Response:
+    """Run automatic company-domain resolution for this capture (DAT-017A)."""
+
+    if not _promotion_enabled():
+        return _redirect("/", err="Capture promotion is not enabled.")
+    snapshot = _load_capture(db, capture_id)
+    if snapshot is None:
+        return _redirect("/contact-captures/pending", err="That capture does not exist.")
+    target = f"/contact-captures/{snapshot.id}"
+    if not _auto_resolution_enabled():
+        return _redirect(target, err="Automatic company-domain resolution is not enabled.")
+    try:
+        # ``force`` because this button is an explicit operator request to
+        # re-evaluate. Without it a capture that already has a decision would
+        # silently do nothing, which would read as a broken button rather than
+        # as the idempotence it actually is.
+        outcome = resolution_service.resolve(
+            db,
+            snapshot=snapshot,
+            access=_provider_access(),
+            actor="workbench",
+            force=True,
+        )
+    except resolution_service.ResolutionError as exc:
+        db.rollback()
+        return _redirect(target, err=str(exc))
+    except enrichment.ApiKeyMissing:
+        db.rollback()
+        return _redirect(target, err="logo.dev API key is not configured. No lookup ran.")
+    db.commit()
+
+    view = resolution_service.build_decision_view(outcome.decision)
+    headline = view.headline if view else outcome.state.value
+    if not outcome.created:
+        return _redirect(
+            target, ok=f"{headline}. Nothing changed — the evidence still says the same thing."
+        )
+    spent = "one provider lookup was used" if outcome.provider_call_made else "no provider call"
+    if outcome.selected_domain:
+        return _redirect(target, ok=f"{headline}: {outcome.selected_domain} · {spent}.")
+    return _redirect(target, err=f"{headline}. No domain was selected · {spent}.")
+
+
+@router.post("/contact-captures/{capture_id}/company/correct")
+async def capture_company_correct(
+    request: Request, capture_id: str, db: Session = Depends(get_db)
+) -> Response:
+    """Record an operator's correction of a resolution decision (DAT-017A)."""
+
+    if not _promotion_enabled():
+        return _redirect("/", err="Capture promotion is not enabled.")
+    snapshot = _load_capture(db, capture_id)
+    if snapshot is None:
+        return _redirect("/contact-captures/pending", err="That capture does not exist.")
+    target = f"/contact-captures/{snapshot.id}"
+    form = await request.form()
+    note = str(form.get("note", "")).strip() or None
+    raw_domain = str(form.get("domain", "")).strip()
+    to_unresolved = str(form.get("decision", "")).strip() == "unresolved"
+
+    if not to_unresolved and not raw_domain:
+        return _redirect(target, err="Enter the correct domain, or correct it to unresolved.")
+    try:
+        outcome = resolution_service.correct(
+            db,
+            snapshot=snapshot,
+            domain=None if to_unresolved else raw_domain,
+            actor="workbench",
+            note=note,
+        )
+    except resolution_service.ResolutionError as exc:
+        db.rollback()
+        return _redirect(target, err=str(exc))
+    db.commit()
+    if outcome.selected_domain:
+        return _redirect(
+            target,
+            ok=(
+                f"Corrected to {outcome.selected_domain}. The earlier decision is kept as "
+                f"decision #{outcome.decision.decision_number - 1}."
+            ),
+        )
+    return _redirect(
+        target,
+        ok="Corrected to unresolved. The earlier decision and its candidates are kept.",
+    )
+
+
 @router.post("/contact-captures/{capture_id}/promote")
 def capture_promote(request: Request, capture_id: str, db: Session = Depends(get_db)) -> Response:
     """Promote a resolved capture into a canonical contact."""
@@ -2316,6 +2438,12 @@ def contact_capture_page(
             "lookup_available": (
                 settings.features.salesnav_domain_enrichment and settings.has_logo_dev_key()
             ),
+            # Decisions are shown whenever they exist, even with the switch since
+            # turned off: a decision that produced a live company link must stay
+            # explainable regardless of the current configuration.
+            "auto_available": _auto_resolution_enabled(),
+            "decision": resolution_service.capture_view(db, snapshot.id),
+            "history": resolution_service.history_view(db, snapshot.id),
             "page_title": "Contact capture",
         },
     )

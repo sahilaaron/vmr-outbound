@@ -29,7 +29,12 @@ Before changing the repository, read:
 7. `docs/COMPANY_WORKSPACE.md` — the permanent company workspace and the
    dossier-ready schema (APP-003), when the work touches companies, company
    research, firmographic provenance, or company identity conflicts.
-8. Documents explicitly referenced by the current goal.
+8. `docs/COMPANY_DOMAIN_RESOLUTION.md` — the versioned company-domain resolution
+   policy, its three confidence states, and what each one authorizes (DAT-017A),
+   when the work touches automatic domain resolution, the
+   confirmed/provisional/unresolved distinction, or any downstream stage gated
+   on it.
+9. Documents explicitly referenced by the current goal.
 
 The root `CLAUDE.md` is a condensed pointer into these documents; it never
 overrides them.
