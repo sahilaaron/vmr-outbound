@@ -206,7 +206,7 @@ returned, with counts and states only.
 | A2 | Press *Stop reading this page* once, mid-pass | Pass stops promptly; view returns to top; rows already loaded remain reviewable; nothing submitted; feedback reads *Stopped* | **PASS** [operator] — stopped on request, view returned to the top, and only the rows read up to that point were merged into the existing batch |
 | A3 | Press *Read this page again*; let it finish | Pass ends by itself; **no** page-2 advance, no new tab, no URL change | **PASS** [operator] — observed during A1: terminated on its own with no page advance, new tab or URL change |
 | A4 | Review the list | ≥2 distinct companies among eligible rows; any no-company rows appear under *N skipped — no company name* and are absent from the list | **PASS on S1** [operator] — ≥2 distinct companies across the reviewed rows. **S3b not exercised**: no row on either page lacked a company, so no skipped block appeared |
-| A5 | Deselect at least one row | *Review selected (N)* and the Save label follow the selection | |
+| A5 | Deselect at least one row | *Review selected (N)* and the Save label follow the selection | **PASS** [operator] — one row deselected: tiles moved to 30 selected / 1 deselected, the badge to *30 need review*, and the primary action to *Capture 30 prospects*. **S2 satisfied** |
 | A6 | Confirm a flagged row is retained (S3a) | A row with a warning is still selectable and still submitted with its gap visible | |
 | A7 | Confirm nothing was invented for a skipped row (S3b) | No company borrowed from headline, school, location or an adjacent row | |
 | A8 | Save the reviewed set | Submitted count == selected count; outcome counts render; `created` is 0 | |
@@ -304,6 +304,23 @@ by itself, which is what the *2 pages* tile records.
 without a company, so the skipped-row path produced nothing to observe. Recorded
 as not exercised rather than as a pass — DAT-018's Layer 3C S8 makes the same
 point about needing to find or construct such a search.
+
+#### A5 result — deselection (2026-07-27)
+
+One row deselected on the review screen. Every count that describes the set
+moved together **[operator]**:
+
+| Element | Before | After |
+| --- | --- | --- |
+| `SELECTED` tile | 31 | **30** |
+| `DESELECTED` tile | 0 | **1** |
+| Summary badge | *31 need review* | *30 need review* |
+| Primary action | *Capture 31 prospects* | *Capture 30 prospects* |
+
+This is #131 S2, inverted by UI-012 from "exclude" to "deselect" as the
+reconciliation predicted. The point of the step is that the number the operator
+is about to commit to is the number they actually chose — and the button, the
+tiles and the badge all agree.
 
 #### A2 result — operator cancellation (2026-07-27)
 
