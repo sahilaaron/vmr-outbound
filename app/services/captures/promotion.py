@@ -54,6 +54,7 @@ from app.models.contact_capture import ContactCaptureNote
 from app.models.enums import (
     CompanyResolutionOutcome,
     ContactPromotionOutcome,
+    DomainResolutionState,
     EnrichmentConfirmationSource,
     EnrichmentConfirmationStatus,
     EnrichmentLookupStatus,
@@ -68,6 +69,7 @@ from app.services.imports import dedup
 from app.services.imports import normalization as norm
 from app.services.profiles import refresh as refresh_service
 from app.services.provenance import service as provenance
+from app.services.resolution import store as resolution_store
 from app.services.suppressions import evaluate_suppression
 
 PROMOTION_ACTOR = "capture-promotion"
@@ -92,11 +94,18 @@ _RETRYABLE_LOOKUP_STATUSES = frozenset(
     }
 )
 
-# The two company outcomes that authorize a promotion attempt.
+# The company outcomes that authorize a promotion attempt.
+#
+# DAT-017A adds the third. A provisional domain is allowed to create identity —
+# the permanent Company and the Contact link — because that is what company
+# research needs to exist at all. It is NOT allowed to authorize anything after
+# research; that boundary is enforced by app.services.resolution.gates, not by
+# withholding the promotion.
 _RESOLVED_COMPANY_OUTCOMES = frozenset(
     {
         CompanyResolutionOutcome.EXISTING_COMPANY_RESOLVED,
         CompanyResolutionOutcome.DOMAIN_CANDIDATE_CONFIRMED,
+        CompanyResolutionOutcome.DOMAIN_PROVISIONAL,
     }
 )
 
@@ -337,9 +346,18 @@ def evaluate_company(
         return outcome
 
     if record.confirmation_status is EnrichmentConfirmationStatus.CONFIRMED:
+        # PRIOR_MAPPING and AUTOMATIC_POLICY both mean "a domain already on
+        # record named this company". AUTOMATIC_POLICY (DAT-017A) only ever
+        # confirms from an approved mapping or an existing permanent Company —
+        # never from a provider candidate — so reporting it as an existing
+        # company resolution is exact rather than generous.
         outcome = (
             CompanyResolutionOutcome.EXISTING_COMPANY_RESOLVED
-            if record.confirmation_source is EnrichmentConfirmationSource.PRIOR_MAPPING
+            if record.confirmation_source
+            in (
+                EnrichmentConfirmationSource.PRIOR_MAPPING,
+                EnrichmentConfirmationSource.AUTOMATIC_POLICY,
+            )
             else CompanyResolutionOutcome.DOMAIN_CANDIDATE_CONFIRMED
         )
         promotion.company_outcome = outcome
@@ -352,6 +370,24 @@ def evaluate_company(
         promotion.blocked_reason = "the operator left this company deliberately unresolved"
         session.flush()
         return CompanyResolutionOutcome.LEFT_UNRESOLVED
+
+    # Unconfirmed, but a DAT-017A decision may already have settled it at the
+    # provisional level. A provisional domain deliberately writes no confirmation
+    # onto the enrichment record — that is what stops it becoming a reusable
+    # approved mapping — so it has to be read from the decision itself, or every
+    # later view of this capture would quietly report it back as "awaiting your
+    # confirmation" and undo the resolution.
+    live = resolution_store.current_decision(session, promotion.capture_id)
+    if (
+        live is not None
+        and live.state is DomainResolutionState.PROVISIONAL
+        and live.selected_domain
+    ):
+        promotion.company_outcome = CompanyResolutionOutcome.DOMAIN_PROVISIONAL
+        promotion.resolved_domain = live.selected_domain
+        promotion.blocked_reason = None
+        session.flush()
+        return CompanyResolutionOutcome.DOMAIN_PROVISIONAL
 
     # Unconfirmed: can an earlier operator decision settle it deterministically?
     if allow_auto_confirm:
@@ -725,13 +761,19 @@ def promote(
             reason=promotion_row.blocked_reason or "the company domain is not resolved yet",
         )
 
+    # A confirmed domain lives on the enrichment record. A DAT-017A provisional
+    # domain deliberately does not (it must never become a reusable approved
+    # mapping), so for that outcome the promotion record's resolved_domain — set
+    # from the decision — is the authoritative source.
     domain = record.confirmed_domain if record is not None else None
+    if company_outcome is CompanyResolutionOutcome.DOMAIN_PROVISIONAL:
+        domain = promotion_row.resolved_domain
     if not domain:
         return _block(
             session,
             promotion=result,
             outcome=ContactPromotionOutcome.PROMOTION_BLOCKED,
-            reason="the confirmed company decision carries no domain",
+            reason="the resolved company decision carries no domain",
         )
 
     if not identity.is_nameable:
@@ -815,6 +857,7 @@ def promote(
             last_name=identity.last_name,
             company_name=hints.name or company.name,
             company_domain=domain,
+            company_id=company.id,
             title=identity.title,
             linkedin_url=snapshot.normalized_profile_url,
             natural_key=natural_key,
@@ -825,6 +868,15 @@ def promote(
     else:
         contact = matched
         contact_outcome = ContactPromotionOutcome.CONTACT_EXACT_MATCH_LINKED
+
+    # The permanent company edge (APP-003, required by DAT-017A). Filled only
+    # when it is empty: a contact already linked to another company is a real
+    # disagreement, and re-parenting it here would be a silent merge of two
+    # company identities. APP-003 already reports that disagreement as a
+    # reviewable conflict, which is where it belongs.
+    if contact.company_id is None:
+        contact.company_id = company.id
+        session.flush()
 
     _record_provenance(
         session, snapshot=snapshot, contact=contact, identity=identity, hints=hints, actor=actor

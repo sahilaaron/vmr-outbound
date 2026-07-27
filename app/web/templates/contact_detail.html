@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import verify_icon, state_badge, campaign_badge, identity_badge, research_badge, qualification_badge, suppression_badge %}
+{% from "_macros.html" import verify_icon, state_badge, campaign_badge, identity_badge, research_badge, qualification_badge, suppression_badge, resolution_badge, resolution_detail %}
 {% block content %}
 {#
   Contact detail. The operator should be able to answer six questions here:
@@ -137,9 +137,24 @@
         <tr><th scope="row">Captured name</th><td>{{ detail.company.captured_name or "—" }}</td></tr>
         <tr><th scope="row">Domain</th><td class="mono">{{ detail.company.domain or "—" }}</td></tr>
         <tr><th scope="row">LinkedIn company</th><td class="mono small">{{ detail.company.linkedin_company_url or "—" }}</td></tr>
+        <tr><th scope="row">Domain resolution</th><td>{{ resolution_badge(detail.company.domain_resolution) }}</td></tr>
       </tbody>
     </table>
     <p class="small muted-text" style="margin-top:8px">{{ detail.company.resolution_note }}</p>
+
+    {% if detail.company.domain_resolution %}
+    {% if detail.company.domain_resolution.is_provisional %}
+    <div class="notice warn" role="status" style="margin-top:12px">
+      <strong>This company's domain is provisional.</strong>
+      Company research may start. Email discovery, qualification, drafting, campaign
+      eligibility and sending are refused for this contact until the identity is confirmed.
+    </div>
+    {% endif %}
+    <details style="margin-top:12px">
+      <summary class="small">Why this domain — the resolution decision</summary>
+      <div style="margin-top:12px">{{ resolution_detail(detail.company.domain_resolution) }}</div>
+    </details>
+    {% endif %}
   </div>
 </div>
 {% endif %}

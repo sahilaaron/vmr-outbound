@@ -58,6 +58,20 @@ class FeatureFlags(BaseModel):
     # outreach-eligible; suppression stays authoritative. The lookup itself also
     # requires ``salesnav_domain_enrichment`` and a configured logo.dev key.
     contact_capture_promotion: bool = False
+    # Automatic company-domain resolution for captured contacts (DAT-017A). Off
+    # by default: while off, every captured company waits for an explicit
+    # operator decision exactly as DAT-014 built it, and no decision record is
+    # ever written. When on, the versioned resolution policy may decide a domain
+    # without asking and reports one of three truthful states — ``confirmed``
+    # (evidence that was already established), ``provisional`` (a provider-backed
+    # candidate, good enough to start company research and nothing else), or
+    # ``unresolved`` (never a fabricated domain). It never treats provider rank
+    # as confirmation, never merges companies, and a provisional domain never
+    # opens qualification, drafting, email discovery, campaign eligibility or
+    # sending. The lookup half still also requires ``salesnav_domain_enrichment``
+    # and a configured logo.dev key; without them the policy decides from stored
+    # evidence only and stays truthful about the provider being unavailable.
+    automatic_company_domain_resolution: bool = False
     # Operator workbench UI (server-rendered pages). Off by default so the UI
     # stays disabled until it is deliberately enabled for local operation.
     workbench: bool = False

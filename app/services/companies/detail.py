@@ -30,6 +30,8 @@ from app.models.enums import ResearchState
 from app.services.companies import conflicts as company_conflicts
 from app.services.companies import dossiers as company_dossiers
 from app.services.companies import provenance as company_provenance
+from app.services.resolution import gates as resolution_gates
+from app.services.resolution import service as resolution_service
 
 # Shown where a research engine would report, so the page never implies one
 # exists. APP-004 owns building it.
@@ -69,6 +71,13 @@ class CompanyDetailView:
     current_dossier: company_dossiers.DossierSummary | None
     conflicts: list[company_conflicts.CompanyConflict]
     research_note: str
+    # How this company's domain was decided (DAT-017A), and whether that is
+    # settled enough to research. ``domain_resolution`` is None for a company
+    # whose domain never came from automatic resolution — an import, an
+    # operator, a pre-DAT-017A promotion — which is a different statement from
+    # "resolved and uncertain" and is shown as one.
+    domain_resolution: resolution_service.DecisionView | None = None
+    research_readiness: resolution_gates.ResearchReadiness | None = None
 
     @property
     def linked_count(self) -> int:
@@ -138,4 +147,8 @@ def get_company_detail(session: Session, company_id: uuid.UUID) -> CompanyDetail
         current_dossier=current,
         conflicts=company_conflicts.for_company(session, company=company),
         research_note=RESEARCH_NOT_BUILT,
+        domain_resolution=resolution_service.company_view(session, company.id),
+        research_readiness=resolution_gates.research_readiness(
+            session, company_id=company.id, domain=company.domain
+        ),
     )

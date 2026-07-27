@@ -143,3 +143,104 @@
   {%- if present -%}<span class="badge ok">present</span>
   {%- else -%}<span class="badge muted" title="This version did not address the section. That is not the same as finding nothing.">not addressed</span>{%- endif -%}
 {%- endmacro %}
+
+{# --- Company-domain resolution (DAT-017A) ----------------------------------
+   Three states, three different words, and "provisional" is never dressed up as
+   a success. It is the state that says a domain is good enough to research and
+   not good enough to act on, and an operator who cannot see that difference
+   cannot honour it. No decision at all is a fourth, separate thing: a domain
+   that came from an import or an operator was never uncertain and is not
+   reported as though it were. #}
+
+{% macro resolution_badge(view) -%}
+  {%- if view is none -%}
+  <span class="badge muted" title="This domain did not come from automatic resolution — it was imported, entered, or confirmed by hand. Nothing restricts it.">not auto-resolved</span>
+  {%- else -%}
+  {%- set v = view.decision.state.value -%}
+  {%- if v == "confirmed" -%}
+  <span class="badge ok" title="Evidence already on record names this domain. Normal downstream use is allowed.">domain confirmed</span>
+  {%- elif v == "provisional" -%}
+  <span class="badge warn" title="A provider-backed match that nothing has independently confirmed. Company research only — no qualification, drafting, email discovery, campaign or sending.">domain provisional</span>
+  {%- else -%}
+  <span class="badge err" title="No domain could be decided from the available evidence. Nothing was invented.">domain unresolved</span>
+  {%- endif -%}
+  {%- endif -%}
+{%- endmacro %}
+
+{# Research readiness is its own dimension, exactly like research state. A
+   provisional domain IS research-ready, and saying so plainly — rather than
+   reporting a bare "ready" — is the whole point of having the state. #}
+{% macro research_ready_badge(readiness) -%}
+  {%- if readiness is none -%}<span class="badge muted">unknown</span>
+  {%- elif readiness.ready and readiness.is_provisional -%}
+  <span class="badge info" title="{{ readiness.reason }}">research-ready · provisional</span>
+  {%- elif readiness.ready -%}<span class="badge ok" title="{{ readiness.reason }}">research-ready</span>
+  {%- else -%}<span class="badge warn" title="{{ readiness.reason }}">not research-ready</span>{%- endif -%}
+{%- endmacro %}
+
+{# One decision in full: what it decided, why, what it warns about, and every
+   candidate it looked at — including the rejected ones, with the reason. A
+   rejection is the evidence an operator needs in order to disagree with the
+   policy, so hiding it would leave them with nothing but the conclusion. #}
+{% macro resolution_detail(view) %}
+{% set d = view.decision %}
+<table>
+  <tbody>
+    <tr><th scope="row">State</th><td>{{ resolution_badge(view) }} <span class="small muted-text">{{ view.review_label }}</span></td></tr>
+    <tr><th scope="row">Selected domain</th>
+      <td>{% if d.selected_domain %}<span class="mono">{{ d.selected_domain }}</span>{% else %}<span class="muted-text">none — no domain was invented</span>{% endif %}</td></tr>
+    <tr><th scope="row">Why</th><td>
+      {% if view.reasons %}{% for reason in view.reasons %}<div>{{ reason }}</div>{% endfor %}
+      {% else %}<span class="muted-text">—</span>{% endif %}
+    </td></tr>
+    {% if view.warnings %}
+    <tr><th scope="row">Important</th><td>
+      {% for warning in view.warnings %}<div class="small">{{ warning }}</div>{% endfor %}
+    </td></tr>
+    {% endif %}
+    <tr><th scope="row">Provider</th><td>
+      {{ d.provider or "—" }}
+      {% if d.provider_rank %}<span class="small muted-text">· the provider ranked it {{ d.provider_rank }}; recorded, never treated as evidence</span>{% endif %}
+    </td></tr>
+    <tr><th scope="row">Paid provider call</th><td>
+      {% if d.provider_call_made %}yes — this decision spent one lookup{% else %}no — decided from evidence already held{% endif %}
+    </td></tr>
+    <tr><th scope="row">Decision</th><td class="small">
+      #{{ d.decision_number }} · {{ d.decision_kind.value.replace("_", " ") }} ·
+      policy {{ d.policy_version }} · {{ d.decided_at | dt }}{% if d.decided_by %} · {{ d.decided_by }}{% endif %}
+      {% if d.superseded_at %} · <strong>superseded {{ d.superseded_at | dt }}</strong>{% endif %}
+    </td></tr>
+    {% if d.company_name_original %}
+    <tr><th scope="row">Company name</th><td>
+      {{ d.company_name_original }}
+      <span class="small muted-text">· matched as <span class="mono">{{ d.company_name_normalized or "—" }}</span></span>
+    </td></tr>
+    {% endif %}
+    {% if d.correction_note %}
+    <tr><th scope="row">Operator note</th><td class="wrap">{{ d.correction_note }}</td></tr>
+    {% endif %}
+  </tbody>
+</table>
+
+{% if view.candidates %}
+<h3 class="small" style="margin-top:16px">Candidates considered</h3>
+<table>
+  <thead><tr><th scope="col">Rank</th><th scope="col">Domain</th><th scope="col">Provider name</th><th scope="col">Used</th><th scope="col">Why not</th></tr></thead>
+  <tbody>
+    {% for candidate in view.candidates %}
+    <tr>
+      <td>{{ candidate.rank or "—" }}</td>
+      <td class="mono wrap">{{ candidate.domain }}</td>
+      <td class="wrap">{{ candidate.name or "—" }}</td>
+      <td>
+        {% if candidate.domain == d.selected_domain %}<span class="badge ok">selected</span>
+        {% elif candidate.aligned %}<span class="badge info">eligible</span>
+        {% else %}<span class="badge muted">rejected</span>{% endif %}
+      </td>
+      <td class="small wrap">{{ (candidate.rejection_reason or "—") | replace("_", " ") }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endmacro %}

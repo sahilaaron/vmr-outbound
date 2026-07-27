@@ -1,0 +1,71 @@
+{
+  "_comment": [
+    "Sanitized samples of logo.dev Search Brands responses, shaped exactly like the",
+    "documented array-of-brand-objects body the DAT-010 client parses.",
+    "",
+    "Every domain is under a reserved .example TLD and every company name is",
+    "invented. Nothing here is a real brand, a real customer, or a real prospect,",
+    "and no API key, quota, or account identifier appears anywhere: these are",
+    "SHAPES the policy must handle, captured so the practical v1 rules are proved",
+    "against realistic provider output rather than against hand-written dicts that",
+    "only ever contain what the policy expects.",
+    "",
+    "The awkward shapes are the point. A brand search asked for a company name it",
+    "does not know answers with whatever it does know — a LinkedIn page, a",
+    "directory listing, a website builder, a domain for sale — and the policy has",
+    "to reject all of those without ever leaving the capture looking resolved."
+  ],
+  "clean_single_match": {
+    "_note": "One brand whose name and domain both match the query. Resolves to provisional — never confirmed, because one provider agreeing with itself is not corroboration.",
+    "query": "Meridian Works",
+    "body": [
+      { "domain": "meridianworks.example", "name": "Meridian Works" }
+    ]
+  },
+  "two_plausible_matches_for_this_capture": {
+    "_note": "The same ambiguity, for the employer the committed capture fixture names. Kept separate so the web tests can reach the conflicting-candidates state through the real capture rather than by editing one.",
+    "query": "Meridian Works",
+    "body": [
+      { "domain": "meridianworks.example", "name": "Meridian Works" },
+      { "domain": "meridian-works.example", "name": "Meridian Works" }
+    ]
+  },
+  "two_plausible_matches": {
+    "_note": "Two brands that both align with the query. Stays unresolved: choosing between equally-matching companies is exactly the guess this policy exists to avoid.",
+    "query": "Northwind Labs",
+    "body": [
+      { "domain": "northwindlabs.example", "name": "Northwind Labs" },
+      { "domain": "northwind-labs.example", "name": "Northwind Labs" }
+    ]
+  },
+  "platforms_and_directories": {
+    "_note": "The realistic failure mode: the provider answers with the places a company appears rather than the company. Every entry is rejected with its own reason and the capture stays unresolved.",
+    "query": "Calder & Finch",
+    "body": [
+      { "domain": "linkedin.com", "name": "Calder & Finch | LinkedIn" },
+      { "domain": "crunchbase.com", "name": "Calder & Finch - Crunchbase" },
+      { "domain": "calderfinch.wixsite.com", "name": "Calder and Finch" },
+      { "domain": "hugedomains.com", "name": "calderfinch.com is for sale" }
+    ]
+  },
+  "unrelated_top_rank": {
+    "_note": "The provider's first result is confidently wrong. Rank is recorded and ignored; no candidate aligns, so nothing is selected.",
+    "query": "Harbourline Freight",
+    "body": [
+      { "domain": "harbour.example", "name": "Harbour Hotels" },
+      { "domain": "freightco.example", "name": "Freight Company" }
+    ]
+  },
+  "malformed_entry": {
+    "_note": "A brand object carrying an unusable domain. It is rejected as invalid rather than normalized into something that looks plausible.",
+    "query": "Ashgrove Systems",
+    "body": [
+      { "domain": "not a domain", "name": "Ashgrove Systems" }
+    ]
+  },
+  "empty": {
+    "_note": "Searched, and the provider genuinely has nothing. Truthfully unresolved, and distinct from a provider that could not be reached.",
+    "query": "Quilloway Partners",
+    "body": []
+  }
+}

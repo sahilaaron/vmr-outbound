@@ -1,5 +1,6 @@
 {% extends "base.html" %}
-{% from "_macros.html" import research_badge, conflict_badge, domain_badge, section_badge %}
+{% from "_macros.html" import research_badge, conflict_badge, domain_badge, section_badge,
+                              resolution_badge, research_ready_badge, resolution_detail %}
 
 {% block content %}
 <div class="page-head">
@@ -46,10 +47,54 @@
             {% else %}<span class="muted-text">—</span>{% endif %}
           </td>
         </tr>
+        <tr>
+          <th scope="row">Domain resolution</th>
+          <td>
+            {{ resolution_badge(detail.domain_resolution) }}
+            {{ research_ready_badge(detail.research_readiness) }}
+          </td>
+        </tr>
         <tr><th scope="row">First seen</th><td>{{ detail.company.created_at | dt }}</td></tr>
         <tr><th scope="row">Last updated</th><td>{{ detail.company.updated_at | dt }}</td></tr>
       </tbody>
     </table>
+  </div>
+</div>
+
+{# --- Domain resolution (DAT-017A) ---------------------------------------- #}
+<div class="card" style="margin-top:20px">
+  <div class="card-head">
+    <h2>Domain resolution</h2>
+    <span class="hint">How this company's domain was decided, and what that permits</span>
+  </div>
+  <div class="card-body">
+    {% if detail.domain_resolution %}
+    {% if detail.domain_resolution.is_provisional %}
+    <div class="notice warn" role="status">
+      <strong>This company's domain is provisional.</strong>
+      Company research may start. Qualification, personalized drafting, email discovery,
+      campaign eligibility and sending stay closed until the identity is confirmed — that
+      is enforced in the backend, not just shown here.
+    </div>
+    {% endif %}
+    {{ resolution_detail(detail.domain_resolution) }}
+    <p class="small muted-text" style="margin-top:12px">
+      Correcting a decision is done on the capture it came from, where the earlier decision
+      and its candidates are kept alongside the correction.
+    </p>
+    {% else %}
+    <div class="empty">
+      <p class="empty-title">No automatic resolution decision for this company.</p>
+      <p>
+        Its domain was imported, entered, or confirmed by hand rather than decided by the
+        resolution policy. Nothing about it is restricted, and no decision record exists to
+        show — which is a different statement from a domain that was examined and doubted.
+      </p>
+    </div>
+    {% endif %}
+    {% if detail.research_readiness %}
+    <p class="small muted-text" style="margin-top:12px">{{ detail.research_readiness.reason }}</p>
+    {% endif %}
   </div>
 </div>
 
