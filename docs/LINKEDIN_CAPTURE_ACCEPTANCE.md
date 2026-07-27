@@ -532,23 +532,26 @@ Run against the unpacked extension on an authenticated session, on real
 `/in/` profiles the operator opened. Profiles are labelled A/B/C; no name,
 handle, URL, member id or page content is recorded here.
 
-## What this layer actually verified, and what it did not
+## How this layer was evidenced
 
-This is a partial acceptance and is published as one deliberately. Two of the
-eight scenarios could not be observed in this environment:
+Two passes with different reach, kept apart on purpose:
 
-* The **side panel is browser UI, not page content**, so the automated browser
-  session cannot see it. Every assertion of the form "the panel displays X" is
-  therefore *not* covered by this layer. The panel's rendering is a pure
-  function of the live-sync state and is covered by 24 deterministic tests,
-  but that is a different claim from "the shipped panel showed the right
-  thing", and the two should not be conflated.
-* The **local backend was not running** (`127.0.0.1:8000` refused the
-  connection). "No backend write before explicit submission" and "automatic
-  lookups do not fire repeatedly" therefore have no live evidence. Absence of a
-  write against a backend that cannot be reached proves nothing.
+* **Pass 1 — instrumented browser session.** Could drive navigation and measure
+  the live page directly, but could **not** see the side panel: the panel is
+  browser UI, not page content. It also ran while the local backend was down
+  (`127.0.0.1:8000` refused the connection), so it could make no claim about
+  backend writes. It produced findings 1 and 2 below.
+* **Pass 2 — operator at the machine.** Could see the panel, with the extension
+  reloaded at the final revision and the backend running. It produced the
+  results under "Operator-observed results".
 
-What this layer did verify is the browser-side mechanics the panel depends on,
+Neither pass alone accepts this feature. Each result below names its pass, and
+the closing section lists what neither pass covered. No claim here rests on
+"the tests pass": the 24 deterministic tests cover the state that drives the
+panel, which is a different claim from "the shipped panel showed the right
+thing", and the two are not merged.
+
+What pass 1 verified is the browser-side mechanics the panel depends on,
 measured directly on live pages.
 
 ## Finding 1 — the history patch could never have worked (fixed)
@@ -627,10 +630,73 @@ the operator merely *looks at* now reaches the local backend without a click.
 Operators should know that; it is not hidden by this change, and it is called
 out here rather than left to be discovered.
 
-## Not verified in this layer
+## Operator-observed results (pass 2)
 
-* Every panel-display assertion (MODE/source URL, preview fields, experience
-  count, stale-value clearing, unsupported-page handling), for the reason above.
-* Rapid A → B → C late-result suppression, live. The three stale guards are
-  covered by tests; the live ordering was not observed.
-* Any backend-write or lookup-frequency claim, live.
+Observed by the operator at the machine, with the extension reloaded at the
+final revision and the backend running. Roughly five to eight real profiles
+were visited. Sanitized: no name, handle, URL or captured value is recorded.
+
+| # | Scenario | Result |
+|---|---|---|
+| 1 | Moving across ~5–8 profiles with no `Refresh` press | **PASS** — the panel followed every move on its own |
+| 2 | Source card and preview describe the same profile | **PASS** — stayed aligned throughout |
+| 3 | Name, company, location and experience update on each move | **PASS** — fields tracked the profile actually open |
+| 4 | No repeated reread, flicker or refresh loop during normal navigation | **PASS** — none visible |
+| 5 | Explicit `Save Contact` creates the capture | **PASS** — succeeded once `CONTACT_CAPTURE_INTAKE` was enabled |
+| 6 | No automatic save while merely browsing | **PASS** — none appeared in the operator flow |
+
+Scenario 5 is worth noting operationally: the capture routes are behind
+`CONTACT_CAPTURE_INTAKE`, and with the flag off the backend returns 404 rather
+than failing loudly in the panel. That is the intended boundary, not a defect,
+but an operator who has not enabled the flag will see saves quietly do nothing.
+
+Scenario 4 is a *visual* result over normal browsing. It is consistent with the
+bounds measured in pass 1, but it is not a counted measurement of rereads, and
+it is not evidence about idle-time request frequency — see the limitations.
+
+## Automatic contact lookup — accepted decision
+
+`PROFILE_MATCH_STATE` → `lookupContact` is **approved as a read-only existence
+check**. It exists so the panel can label its primary action `Save Contact` or
+`Refresh Contact` before the operator commits.
+
+The standing constraint, recorded so any future change is measured against it:
+
+> Merely browsing a profile must never create persistence. The automatic lookup
+> may read whether a contact exists; it must not create, modify, promote or
+> capture one, and it must not cause any row, audit event or draft to be written
+> on the backend. If a change would make browsing produce a write, it is not a
+> refinement of this lookup — it is a different feature and needs its own
+> decision.
+
+Verified read-only by inspection: `fetch(url, { signal })` with no method and no
+body; `@router.get` on the backend; the handler runs one read query and returns
+`match`, `contact_count` and the normalized URL; no row written and no audit
+event recorded. Operator observation (scenario 6) is consistent with this, but
+the code is the binding evidence, not the observation.
+
+The trade-off is stated plainly: the URL of every profile the operator merely
+looks at now reaches the loopback backend in a query string, without a click.
+That is accepted, not overlooked.
+
+## Not verified — disclosed limitations, not passes
+
+None of the following were tested. They are listed so nobody reads the table
+above as covering them.
+
+* **Rapid A → B → C stale-result race.** Not separately tested in either pass.
+  Normal-speed navigation passed, which is not the same thing: the race only
+  appears when a slow read for A or B returns after the operator has already
+  reached C. The three stale guards (sequence, generation, page key) are covered
+  by deterministic tests only.
+* **Unsupported-page clearing.** Not tested. Whether stale profile data is
+  cleared or visibly marked unavailable when the operator leaves `/in/` for an
+  unsupported page has test coverage only.
+* **Automatic lookup request frequency.** Not measured, idle or otherwise. No
+  request count of any kind was observed live.
+* **Database-level proof of zero writes before submission.** The database was
+  not inspected before and after a browsing session. The operator saw no
+  automatic save in the UI, and the code path is read-only by inspection, but
+  neither is a row count.
+* **Panel behaviour in pass 1.** The instrumented session could not see the
+  panel at all; every display result above comes from pass 2 only.
