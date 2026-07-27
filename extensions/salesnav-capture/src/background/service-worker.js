@@ -161,6 +161,11 @@ async function askContentScript(message) {
           "src/common/constants.js",
           "src/common/normalize.js",
           "src/common/extraction.js",
+          // content-script.js requires self.SNCapture.scroller (DAT-018 D). It
+          // must be injected here as well as in the manifest, or a Sales
+          // Navigator page opened BEFORE install/reload bails out at the
+          // shared-module guard and capture silently stops working.
+          "src/common/scroller.js",
           "src/content/content-script.js",
         ],
       });
@@ -238,6 +243,12 @@ async function captureActivePage() {
     collapsed: merged.collapsed,
     uncertain: merged.uncertain,
     overLimit,
+    // DAT-018 B: rows the page showed but that carry no Company Name. They are
+    // reported truthfully and never entered the batch, so they cannot be sent.
+    skipped: result.skipped || [],
+    skippedCount: result.skippedCount || 0,
+    visibleCount: result.visibleCount != null ? result.visibleCount : null,
+    scroll: result.scroll || null,
     batchView: buildBatchView(batch),
   };
 }
@@ -974,6 +985,23 @@ async function getMigrationNotice() {
   };
 }
 
+/**
+ * Discard the campaign-era archive (DAT-018 C).
+ *
+ * The archive card is shown only while an archive exists, so hiding it without
+ * clearing the archive would make it reappear on the next panel load. Discard
+ * therefore removes the archive itself, which is what the button says it does.
+ * This is destructive and irreversible, so it is an explicit operator action
+ * and the panel offers Download first.
+ */
+async function discardLegacyArchive() {
+  await chrome.storage.local.remove([
+    CONTACT_STORAGE.MIGRATION_NOTICE,
+    CONTACT_STORAGE.LEGACY_ARCHIVE,
+  ]);
+  return { ok: true };
+}
+
 async function dismissMigrationNotice() {
   await chrome.storage.local.remove(CONTACT_STORAGE.MIGRATION_NOTICE);
   return { ok: true };
@@ -1040,6 +1068,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         break;
       case "DISMISS_MIGRATION_NOTICE":
         sendResponse(await dismissMigrationNotice());
+        break;
+      case "DISCARD_LEGACY_ARCHIVE":
+        sendResponse(await discardLegacyArchive());
         break;
       case "DETECT_SURFACE":
         sendResponse(await detectActiveSurface());

@@ -13,14 +13,14 @@
 (function () {
   "use strict";
   const NS = self.SNCapture;
-  if (!NS || !NS.extraction) {
+  if (!NS || !NS.extraction || !NS.scroller) {
     // Shared modules failed to load; fail visibly rather than silently.
     // (Should not happen: manifest loads them before this file.)
     // eslint-disable-next-line no-console
     console.warn("[salesnav-capture] shared modules missing");
     return;
   }
-  const { extraction, constants } = NS;
+  const { extraction, constants, scroller } = NS;
 
   function nowIso() {
     return new Date().toISOString();
@@ -43,32 +43,44 @@
   }
 
   /**
-   * Scroll the results container in steps to force lazy rows to render, bounded
-   * by a time budget and stabilization of the row count. Returns a promise.
-   * This is a single, discrete, operator-initiated pass — not a background loop.
+   * One operator-initiated incremental pass over the results already on screen.
+   * Smooth, bounded and cancellable; never paginates, navigates, or runs on its
+   * own. See src/common/scroller.js for the stop conditions and the note on why
+   * a small bounded jitter exists (DOM/layout timing, not detection avoidance).
    */
-  async function materializeRows() {
-    const budgetMs = constants.LIMITS.CAPTURE_SCROLL_BUDGET_MS;
+  let cancelRequested = false;
+
+  function requestScrollCancel() {
+    cancelRequested = true;
+  }
+
+  async function materializeRows(onProgress) {
+    cancelRequested = false;
     const container = findScrollContainer();
-    const scroller = container || document.scrollingElement || document.documentElement;
-    const start = Date.now();
-    let lastCount = -1;
-    let stable = 0;
-
-    while (Date.now() - start < budgetMs && stable < 3) {
-      const count = document.querySelectorAll('[data-anonymize="person-name"]').length;
-      if (count === lastCount) stable += 1;
-      else stable = 0;
-      lastCount = count;
-
-      const step = Math.max(400, Math.floor((scroller.clientHeight || 600) * 0.9));
-      scroller.scrollBy ? scroller.scrollBy(0, step) : window.scrollBy(0, step);
-      await sleep(250);
-    }
-    // Return to top so the operator's view is not left scrolled away.
-    if (scroller.scrollTo) scroller.scrollTo(0, 0);
-    else window.scrollTo(0, 0);
-    await sleep(100);
+    const target = container || document.scrollingElement || document.documentElement;
+    return scroller.runScrollPass({
+      scroller: {
+        get scrollTop() {
+          return target.scrollTop;
+        },
+        get clientHeight() {
+          return target.clientHeight || window.innerHeight || 0;
+        },
+        get scrollHeight() {
+          return target.scrollHeight || 0;
+        },
+        scrollTo(opt) {
+          if (typeof target.scrollTo === "function") target.scrollTo(opt);
+          else target.scrollTop = opt.top;
+        },
+      },
+      countRows: () => document.querySelectorAll('[data-anonymize="person-name"]').length,
+      sleep,
+      now: () => Date.now(),
+      random: () => Math.random(),
+      isCancelled: () => cancelRequested,
+      onProgress: onProgress || (() => {}),
+    });
   }
 
   function sleep(ms) {
@@ -100,17 +112,38 @@
         capturedAt: nowIso(),
       });
     }
-    await materializeRows();
-    return extraction.extractPage(document, {
+    const scrollResult = await materializeRows((progress) => {
+      // Progress is advisory: the panel may not be listening, and a delivery
+      // failure must never abort the pass the operator started.
+      try {
+        chrome.runtime.sendMessage({ type: "CS_SCROLL_PROGRESS", progress });
+      } catch (_e) {
+        /* panel closed */
+      }
+    });
+    const page = extraction.extractPage(document, {
       sourceSearchUrl: location.href,
       capturedAt: nowIso(),
     });
+    page.scroll = {
+      stopReason: scrollResult.stopReason,
+      steps: scrollResult.steps,
+      rows: scrollResult.rows,
+      startRows: scrollResult.startRows,
+      elapsedMs: scrollResult.elapsedMs,
+    };
+    return page;
   }
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (!msg || !msg.type) return;
     if (msg.type === "CS_DETECT") {
       sendResponse(detect());
+      return; // sync
+    }
+    if (msg.type === "CS_CANCEL_SCROLL") {
+      requestScrollCancel();
+      sendResponse({ ok: true });
       return; // sync
     }
     if (msg.type === "CS_CAPTURE") {

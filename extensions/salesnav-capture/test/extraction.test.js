@@ -30,36 +30,69 @@ test("normal page: extracts all rows with core fields and provenance", () => {
   assert.equal(first.sourcePageNumber, 2);
   assert.equal(first.sourcePosition, 1);
   assert.equal(first.capturedAt, "2026-07-23T00:00:00.000Z");
-  // No public /in/ url present -> null + missing warning, never fabricated.
-  assert.equal(first.linkedinProfileUrl, null);
-  assert.ok(codes(first).includes(WARNINGS.MISSING_FIELD));
+  // DAT-018 A: no visible /in/ link, so the canonical profile URL is DERIVED
+  // from the member identifier the lead URL already encodes. The derivation is
+  // marked as such and the lead URL is preserved untouched as source evidence.
+  assert.equal(first.linkedinProfileUrl, "https://www.linkedin.com/in/ACwAAAB1x9k");
+  assert.equal(first.linkedinProfileUrlSource, "derived_from_sales_lead");
+  assert.equal(first.linkedinMemberId, "ACwAAAB1x9k");
+  assert.equal(first.salesNavLeadUrl, "https://www.linkedin.com/sales/lead/ACwAAAB1x9k");
+  assert.ok(codes(first).includes(WARNINGS.DERIVED_VALUE));
+  // A derivation is never silently presented as an observation.
+  assert.ok(!codes(first).includes(WARNINGS.MISSING_FIELD) ||
+    !first.warnings.some((w) => w.code === WARNINGS.MISSING_FIELD && w.field === "linkedinProfileUrl"));
 });
 
 test("missing fields: explicit nulls + missing_field warnings, no guessing", () => {
   const r = capture("results-missing-fields.html");
   assert.equal(r.status, CAPTURE_STATUS.OK);
   // The name-less "ghost" row has no anchor and is not fabricated into a record.
-  assert.equal(r.count, 2);
-  const jordan = r.records.find((x) => x.rawFullName === "Jordan Field");
-  assert.equal(jordan.title, null);
-  assert.equal(jordan.companyName, null);
-  assert.ok(codes(jordan).includes(WARNINGS.MISSING_FIELD));
+  // Two rows are discovered; DAT-018 B then withholds the one with no company.
+  assert.equal(r.visibleCount, 2);
+  assert.equal(r.count, 1);
+  assert.equal(r.skippedCount, 1);
+  assert.equal(r.skipped[0].rawFullName, "Jordan Field");
+  assert.equal(r.skipped[0].reason, "missing_company_name");
+  // Skipping one row must not cost the other: Madonna still comes through, with
+  // her genuinely-missing surname reported rather than invented.
   const madonna = r.records.find((x) => x.rawFullName === "Madonna");
+  assert.ok(madonna, "the remaining valid row must still be captured");
   assert.equal(madonna.lastName, null);
+  assert.equal(madonna.companyName, "Solo Ventures");
   assert.ok(codes(madonna).includes(WARNINGS.MISSING_FIELD));
 });
 
 test("alternate/changed selectors: falls back to structural discovery + class selectors", () => {
-  const r = capture("results-alternate-selectors.html");
+  const r = capture("results-alternate-company.html");
   assert.equal(r.status, CAPTURE_STATUS.OK);
   assert.equal(r.count, 2);
   const lena = r.records[0];
   assert.equal(lena.rawFullName, "Lena Fischer");
   assert.equal(lena.title, "Chief Financial Officer");
   assert.equal(lena.location, "Munich, Bavaria, Germany");
+  assert.equal(lena.companyName, "Novaline Freight");
   assert.equal(lena.salesNavLeadUrl, "https://www.linkedin.com/sales/lead/ACwAAAF9ghi");
-  // company absent under alternate structure -> missing, not guessed
-  assert.equal(lena.companyName, null);
+  // The lead URL still yields the canonical profile URL under the fallback path.
+  assert.equal(lena.linkedinProfileUrl, "https://www.linkedin.com/in/ACwAAAF9ghi");
+  assert.equal(lena.linkedinProfileUrlSource, "derived_from_sales_lead");
+});
+
+test("alternate selectors with no company at all: rows discovered, then withheld", () => {
+  // Structural discovery must still FIND the rows (that is what this fixture
+  // proves); the eligibility gate is what withholds them, not a parse failure.
+  const r = capture("results-alternate-selectors.html");
+  assert.equal(r.status, CAPTURE_STATUS.OK);
+  assert.equal(r.visibleCount, 2);
+  assert.equal(r.count, 0);
+  assert.equal(r.skippedCount, 2);
+  assert.deepEqual(
+    r.skipped.map((x) => x.rawFullName),
+    ["Lena Fischer", "Samuel Adeyemi"]
+  );
+  assert.ok(r.skipped.every((x) => x.reason === "missing_company_name"));
+  assert.deepEqual(r.pageWarnings, [
+    { code: "rows_skipped", reason: "missing_company_name", count: 2 },
+  ]);
 });
 
 test("empty search: reported as empty, never a successful capture", () => {
@@ -100,8 +133,11 @@ test("malformed urls: flagged, never repaired or fabricated", () => {
   // name/title still captured
   assert.equal(broken.rawFullName, "Broken Link Person");
   const offPlatform = r.records[1];
-  // evil.example.com/in/phish must NOT become a captured profile url
+  // evil.example.com/in/phish must NOT become a captured profile url, and with
+  // no usable lead URL there is nothing to derive from either — the row keeps a
+  // null profile URL rather than acquiring a fabricated one (DAT-018 A).
   assert.equal(offPlatform.linkedinProfileUrl, null);
+  assert.equal(offPlatform.linkedinProfileUrlSource, null);
   assert.ok(codes(offPlatform).includes(WARNINGS.MALFORMED_URL));
 });
 

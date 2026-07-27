@@ -101,6 +101,59 @@
     return "unknown";
   }
 
+  // A Sales Navigator member identifier as it appears in /sales/lead/<id>.
+  // Deliberately conservative: an opaque token of URL-safe characters. Anything
+  // outside this shape is refused rather than repaired, so a malformed lead URL
+  // can never become a fabricated profile URL.
+  const SALESNAV_MEMBER_ID = /^[A-Za-z0-9_-]{3,128}$/;
+
+  /**
+   * Read the member identifier out of a supported Sales Navigator lead URL.
+   *
+   * Supported shape (DAT-018): `/sales/lead/<member-id>`, with any query string,
+   * fragment, volatile comma-suffix, or extra route material removed first.
+   * `/sales/people/…` is NOT supported here — it is a different route whose
+   * segment is not the member identifier, so deriving from it would be a guess.
+   *
+   * @returns {{id: string|null, reason: string|null}}
+   */
+  function salesNavMemberId(leadUrl) {
+    const normalized = normalizeLinkedInUrl(leadUrl);
+    if (!normalized.valid) return { id: null, reason: normalized.reason || "unparseable" };
+
+    let pathname;
+    try {
+      pathname = new URL(normalized.url).pathname;
+    } catch (_e) {
+      return { id: null, reason: "unparseable" };
+    }
+    const match = /^\/sales\/lead\/([^/]+)/.exec(pathname);
+    if (!match) return { id: null, reason: "not_a_lead_url" };
+
+    // normalizeLinkedInUrl already drops the ",NAME_SEARCH,…" suffix; strip it
+    // again defensively in case this is called with a pre-normalized value.
+    const id = match[1].split(",")[0];
+    if (!id) return { id: null, reason: "missing_identifier" };
+    if (!SALESNAV_MEMBER_ID.test(id)) return { id: null, reason: "malformed_identifier" };
+    return { id, reason: null };
+  }
+
+  /**
+   * Derive the canonical public profile URL encoded in a Sales Navigator lead
+   * URL: `/sales/lead/<member-id>` -> `https://www.linkedin.com/in/<member-id>`.
+   *
+   * This is a DERIVATION, not an observation. Callers must record which of the
+   * two it was, and must prefer an actually visible `/in/` URL when one exists.
+   * Returns `{url: null}` with a reason rather than fabricating anything.
+   *
+   * @returns {{url: string|null, memberId: string|null, reason: string|null}}
+   */
+  function profileUrlFromSalesNavLead(leadUrl) {
+    const { id, reason } = salesNavMemberId(leadUrl);
+    if (!id) return { url: null, memberId: null, reason };
+    return { url: "https://www.linkedin.com/in/" + id, memberId: id, reason: null };
+  }
+
   /** Extract the `page` query parameter from a search URL, if present. */
   function pageNumberFromUrl(searchUrl) {
     const raw = cleanText(searchUrl);
@@ -121,6 +174,8 @@
     splitName,
     normalizeLinkedInUrl,
     classifyLinkedInUrl,
+    salesNavMemberId,
+    profileUrlFromSalesNavLead,
     pageNumberFromUrl,
   };
 });

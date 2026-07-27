@@ -346,11 +346,46 @@
       const parts = [`+${r.added} added`];
       if (r.collapsed) parts.push(`${r.collapsed} duplicate(s) collapsed`);
       if (r.uncertain) parts.push(`${r.uncertain} uncertain identity`);
+      if (r.skippedCount) {
+        parts.push(`${r.skippedCount} skipped — no company name`);
+      }
       if (r.overLimit) parts.push("batch limit reached — extra rows skipped");
       fb.textContent = parts.join(" · ");
+      renderSkipped(r.skipped, r.skippedCount);
     }
     renderBatch(r.batchView);
     refreshDetect();
+  }
+
+  /**
+   * List the rows this page showed but did not offer, and why (DAT-018 B).
+   * A skipped row is never added to the batch and can never be submitted; the
+   * company is never inferred from headline, school, location or nearby text.
+   */
+  function renderSkipped(skipped, count) {
+    const card = $("skipped-card");
+    const list = $("skipped-list");
+    if (!card || !list) return;
+    const rows = skipped || [];
+    if (!count) {
+      card.hidden = true;
+      list.textContent = "";
+      return;
+    }
+    card.hidden = false;
+    list.textContent = "";
+    $("skipped-summary").textContent =
+      `${count} visible row${count === 1 ? "" : "s"} skipped: no Company Name on the page. ` +
+      "Nothing was guessed and nothing was submitted for them.";
+    for (const row of rows) {
+      list.appendChild(
+        el("div", { class: "meta" }, [
+          el("span", { class: "small muted", text: `row ${row.sourcePosition}: ` }),
+          el("span", { class: "small", text: row.rawFullName || "(no name read)" }),
+          el("span", { class: "badge badge-warn", text: row.reason }),
+        ])
+      );
+    }
   }
 
   // ---- batch rendering ----------------------------------------------------
@@ -481,16 +516,32 @@
 
   // ---- migration notice ---------------------------------------------------
 
+  /**
+   * DAT-018 C. The old "Workflow updated" card mixed two things: a status
+   * notice about the campaign-era retirement, and the ONLY route back to
+   * archived drafts held in local storage.
+   *
+   * Code inspection (service-worker `exportLegacyArchive`, storage key
+   * `cc_legacy_v1_archive`) shows the archive is genuinely recoverable state:
+   * if this affordance disappears while an archive exists, those drafts become
+   * unreachable. The notice text is not — it tells the operator nothing they
+   * can act on.
+   *
+   * So the notice is gone and the card now appears ONLY while an archive
+   * exists, named for the action it offers rather than for a workflow event.
+   */
   function renderMigration(state) {
-    const card = $("migration-card");
+    const card = $("archive-card");
     const info = (state && state.migration) || {};
-    if (!info.notice) {
+    if (!info.hasArchive) {
       card.hidden = true;
       return;
     }
     card.hidden = false;
-    $("migration-message").textContent = info.notice.message || "";
-    $("migration-export").hidden = !info.hasArchive;
+    $("archive-message").textContent =
+      "Drafts from the campaign-era workflow are still stored locally. They " +
+      "cannot be submitted under the current contract — download them if you " +
+      "still need them, then discard.";
   }
 
   // ---- settings -----------------------------------------------------------
@@ -579,8 +630,8 @@
       }
     });
     $("migration-dismiss").addEventListener("click", async () => {
-      await send({ type: "DISMISS_MIGRATION_NOTICE" });
-      $("migration-card").hidden = true;
+      await send({ type: "DISCARD_LEGACY_ARCHIVE" });
+      $("archive-card").hidden = true;
     });
     $("migration-export").addEventListener("click", () =>
       send({ type: "EXPORT_LEGACY_ARCHIVE" })

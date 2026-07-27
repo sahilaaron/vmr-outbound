@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "VMR Contact Capture",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Operator-driven acquisition of LinkedIn and Sales Navigator contacts for the VMR Outbound Agent. Saves people as permanent contacts; no campaign selection, no scraping automation, no credentials stored.",
   "minimum_chrome_version": "116",
   "permissions": ["storage", "sidePanel", "downloads", "activeTab", "scripting"],
@@ -27,6 +27,7 @@
         "src/common/constants.js",
         "src/common/normalize.js",
         "src/common/extraction.js",
+        "src/common/scroller.js",
         "src/content/content-script.js"
       ],
       "run_at": "document_idle"

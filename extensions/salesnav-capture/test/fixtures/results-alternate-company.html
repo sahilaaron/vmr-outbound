@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<!-- "Changed structure" variant WITH a company link: the durable
+     data-anonymize hooks are gone, so extraction must fall back to structural
+     discovery and to the entity-lockup class selectors for every field,
+     including the company anchor inside a second subtitle block.
+
+     Companion to results-alternate-selectors.html, which has no company at all
+     and therefore exercises the DAT-018 eligibility gate instead. Together they
+     keep both behaviours covered: fallback extraction still works, AND a row
+     with no company is skipped rather than guessed.
+
+     All names/companies fictitious. -->
+<html lang="en">
+  <head><meta charset="UTF-8" /><title>Sales Navigator — Results</title></head>
+  <body>
+    <main>
+      <div class="search-results-container">
+        <ul>
+          <li class="artdeco-list__item pl3 pv3">
+            <div class="artdeco-entity-lockup">
+              <div class="artdeco-entity-lockup__title">
+                <a href="/sales/lead/ACwAAAF9ghi,NAME_SEARCH,cc"><span dir="ltr">Lena Fischer</span></a>
+              </div>
+              <div class="artdeco-entity-lockup__subtitle">Chief Financial Officer</div>
+              <div class="artdeco-entity-lockup__subtitle">
+                <a href="/sales/company/4242">Novaline Freight</a>
+              </div>
+              <div class="artdeco-entity-lockup__caption">Munich, Bavaria, Germany</div>
+            </div>
+          </li>
+          <li class="artdeco-list__item pl3 pv3">
+            <div class="artdeco-entity-lockup">
+              <div class="artdeco-entity-lockup__title">
+                <a href="/sales/lead/ACwAAAG0jkl,NAME_SEARCH,dd"><span dir="ltr">Samuel Adeyemi</span></a>
+              </div>
+              <div class="artdeco-entity-lockup__subtitle">Operations Lead</div>
+              <div class="artdeco-entity-lockup__subtitle">
+                <a href="/sales/company/5151">Harbor Analytics</a>
+              </div>
+              <div class="artdeco-entity-lockup__caption">Lagos, Nigeria</div>
+            </div>
+          </li>
+        </ul>
+      </div>
+    </main>
+  </body>
+</html>
