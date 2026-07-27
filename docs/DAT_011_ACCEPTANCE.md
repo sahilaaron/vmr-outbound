@@ -53,6 +53,35 @@ capture ids reachable from them. Pre-existing rows are never counted, never
 altered, and never "cleaned up". Where a database-wide figure is informative it
 is reported separately and labelled as such, and it decides nothing.
 
+### How this trial is operated, and what that costs the evidence
+
+Two surfaces, two operators, recorded because it changes what the evidence
+proves.
+
+* **The side panel is operator-only.** Browser automation reads and clicks
+  *page* content. A side panel is browser UI, not page content — a screenshot
+  taken through the automation tools returns the tab viewport with no browser
+  chrome in it. Layer 6 recorded the same limitation during UI-011 ("could
+  **not** see the side panel"), and it was re-confirmed here rather than
+  assumed. Every A, B, C and D step is therefore performed by Sahil.
+* **The workbench is loopback and carries no LinkedIn session.** Phase E and the
+  Phase 4 inspection run against `http://127.0.0.1:8000`. Those were driven
+  through browser automation at Sahil's explicit instruction, with him present.
+
+That second point is a real qualification on #131, which says *"the operator
+controls page navigation, capture, review, submission, candidate selection,
+preview, and confirm"*. For the workbench half, the decisions were Sahil's and
+the clicks were not. It does not change what the product did, but a reader
+deciding whether operator control is proven should know which half is which, so
+each result below is marked **[operator]** or **[machine, supervised]**.
+
+### Working constraint: the workbench renders real captured people
+
+`/contact-captures/pending` lists 50 pre-existing captures with real names,
+titles and companies. No screenshot of a workbench listing page may be committed
+or pasted into evidence, and no captured value is reproduced in this document.
+Where a figure is needed it is read as a count.
+
 ---
 
 ## 2. Issue reconciliation
@@ -246,10 +275,38 @@ unless a small unambiguous acceptance blocker is documented first.
 
 | Ref | Summary | Severity | Blocker | Issue |
 | --- | --- | --- | --- | --- |
+| D-1 | `LOGO_DEV_API_KEY` is not configured in the trial environment, so the DAT-010 candidate lookup cannot run — see below | environment | blocks S7 / E2 only | not yet filed |
 | D-OBS-1 | `created` is a declared capture counter no outcome can increment; the panel carries a label for it | observation | no | not yet filed |
 | D-OBS-2 | Acceptance and CLAUDE docs still describe the pre-UI-012 panel and the old product name | documentation | no | not yet filed |
 
 ---
+
+### D-1 — domain candidate lookup is unavailable in this environment
+
+Observed on `/contact-captures/pending`: *"Domain lookup unavailable — Company-domain
+enrichment is disabled or no provider key is configured."*
+
+The banner covers two causes and does not say which. Isolated without firing a
+provider call: the Overview page lists `salesnav_domain_enrichment` among the
+enabled features, and `lookup_available` is
+`_enrichment_enabled() and get_settings().has_logo_dev_key()`. The flag half is
+true, so the missing half is the **key**.
+
+Not a product defect — configuration. Its scope is narrow and worth stating
+precisely, because it does not block Phase E as a whole:
+
+* **S7 / E2 (provider candidate lookup)** — blocked. Cannot run without a key.
+* **E4 (typed-domain override)**, **E5 (left unresolved)**, **E6/E7
+  (promotion and its idempotency)** — unaffected. The page says so itself
+  ("You can still open a capture and enter a domain by hand"), and
+  `confirm_domain` accepts `decision=manual` and `decision=unresolved`
+  independently of the provider.
+
+Layer 4B already proved the live provider path end to end against the real
+endpoint with a real key, including the ambiguity that motivates operator
+confirmation. So E2 is a re-confirmation on the shipped path, not first proof —
+which is why this is recorded as an environment blocker on one step rather than
+on DAT-011.
 
 ## 5. Verdict
 
