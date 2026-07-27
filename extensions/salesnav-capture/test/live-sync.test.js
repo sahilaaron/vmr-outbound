@@ -105,9 +105,12 @@ function harness(script) {
   let previewResult = cfg.draft || draft();
   let previewGate = null;
 
+  let fakeNow = 100000;
   const sync = createLiveSync({
     chrome,
     debounceMs: 5,
+    minRereadMs: cfg.minRereadMs == null ? 0 : cfg.minRereadMs,
+    nowFn: () => fakeNow,
     setTimeoutFn: clock.setTimeoutFn,
     clearTimeoutFn: clock.clearTimeoutFn,
     detect: async () => {
@@ -135,6 +138,9 @@ function harness(script) {
     },
     setDraft: (d) => {
       previewResult = d;
+    },
+    advance: (ms) => {
+      fakeNow += ms;
     },
     gate: () => {
       let release;
@@ -262,7 +268,7 @@ test("automatic preview performs no backend write", async () => {
 // --- 7. Debounced reread on mutation ----------------------------------------
 
 test("a burst of DOM mutations causes one reread, not one per mutation", async () => {
-  const h = harness();
+  const h = harness({ draft: draft({ status: "partial", missingSections: ["experience"] }) });
   h.sync.start();
   await settle();
   const before = h.calls.preview;
@@ -299,7 +305,9 @@ test("content that loads after the operator scrolls updates the preview", async 
 // --- 9. Stable fields --------------------------------------------------------
 
 test("a reread that finds the same content leaves the fields unchanged", async () => {
-  const h = harness();
+  // Deliberately an INCOMPLETE draft: a complete one is not reread at all,
+  // which is the loop guard and is covered separately below.
+  const h = harness({ draft: draft({ status: "partial", missingSections: ["experience"] }) });
   h.sync.start();
   await settle();
   await settle();
@@ -311,7 +319,8 @@ test("a reread that finds the same content leaves the fields unchanged", async (
   await settle();
 
   assert.deepEqual(h.sync.state.draft.profile, first.profile);
-  assert.equal(h.sync.state.phase, PHASES.READY, "unchanged content is not 'additional content'");
+  assert.equal(h.sync.state.phase, PHASES.WARNINGS, "an incomplete page keeps warning");
+  assert.equal(h.sync.state.pagePreviews, 2, "it did reread");
 });
 
 // --- 10. Stale results -------------------------------------------------------
@@ -385,7 +394,7 @@ test("stop() removes every listener it added", async () => {
 // --- 12. Repeated events do not duplicate data -------------------------------
 
 test("repeated preview events neither submit nor accumulate drafts", async () => {
-  const h = harness();
+  const h = harness({ draft: draft({ status: "partial", missingSections: ["experience"] }) });
   h.sync.start();
   await settle();
   await settle();
@@ -497,4 +506,102 @@ test("a query-only change does not reset the draft", async () => {
 
   assert.equal(h.sync.state.pageKey, pageKeyOf(PROFILE_A));
   assert.deepEqual(h.sync.state.draft.profile, first.profile);
+});
+
+
+// --- the reread loop guard ---------------------------------------------------
+
+test("a fully read page ignores further DOM mutations", async () => {
+  // LinkedIn mutates continuously — images resolve, the rail updates, trackers
+  // fiddle with attributes. Without this, the panel would re-parse the page
+  // every debounce window for as long as it stayed open.
+  const h = harness();
+  h.sync.start();
+  await settle();
+  await settle();
+  const after = h.calls.preview;
+  assert.equal(h.sync.state.phase, PHASES.READY);
+
+  for (let i = 0; i < 20; i += 1) {
+    h.chrome.runtime.onMessage.fire({ type: "PS_DOM_CHANGED" });
+    h.clock.tick();
+    await settle();
+  }
+
+  assert.equal(h.calls.preview, after, "a complete page is not re-parsed on churn");
+});
+
+test("navigation is honoured even when the current page was complete", async () => {
+  const h = harness();
+  h.sync.start();
+  await settle();
+  await settle();
+  const after = h.calls.preview;
+
+  h.setPage({ surface: SURFACES.PERSON_PROFILE, url: PROFILE_B });
+  h.chrome.tabs.onUpdated.fire(1, { url: PROFILE_B });
+  h.clock.tick();
+  await settle();
+  await settle();
+
+  assert.equal(h.calls.preview, after + 1, "a new page is new information regardless");
+  assert.equal(h.sync.state.url, PROFILE_B);
+});
+
+test("mutation rereads are floored to a minimum interval", async () => {
+  const h = harness({
+    draft: draft({ status: "partial", missingSections: ["experience"] }),
+    minRereadMs: 1500,
+  });
+  h.sync.start();
+  await settle();
+  await settle();
+  const after = h.calls.preview;
+
+  // Immediately after a read, a mutation is ignored.
+  h.chrome.runtime.onMessage.fire({ type: "PS_DOM_CHANGED" });
+  h.clock.tick();
+  await settle();
+  assert.equal(h.calls.preview, after, "too soon");
+
+  // Once the floor has elapsed it is honoured.
+  h.advance(2000);
+  h.chrome.runtime.onMessage.fire({ type: "PS_DOM_CHANGED" });
+  h.clock.tick();
+  await settle();
+  await settle();
+  assert.equal(h.calls.preview, after + 1);
+});
+
+test("the reread floor is per page, so a failed first read can retry at once", async () => {
+  // The floor exists to stop one page being re-parsed in a loop. It must not
+  // carry across a navigation: if the first read of a NEW page fails, the very
+  // next mutation there should be allowed to retry, not wait out a timer that
+  // was started by the previous profile.
+  const h = harness({ minRereadMs: 1500 });
+  h.sync.start();
+  await settle();
+  await settle();
+
+  h.setDraft(() => {
+    throw new Error("read failed");
+  });
+  h.setPage({ surface: SURFACES.PERSON_PROFILE, url: PROFILE_B });
+  h.chrome.tabs.onUpdated.fire(1, { url: PROFILE_B });
+  h.clock.tick();
+  await settle();
+  await settle();
+  const after = h.calls.preview;
+  assert.equal(h.sync.state.draft, null, "the failed read left no draft");
+
+  // No time has passed on the fake clock, so only the per-page reset can let
+  // this through.
+  h.setDraft(draft());
+  h.chrome.runtime.onMessage.fire({ type: "PS_DOM_CHANGED" });
+  h.clock.tick();
+  await settle();
+  await settle();
+
+  assert.equal(h.calls.preview, after + 1, "the new page retried immediately");
+  assert.equal(h.sync.state.phase, PHASES.READY);
 });

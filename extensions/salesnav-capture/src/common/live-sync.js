@@ -100,6 +100,22 @@
   }
 
   /**
+   * Whether a draft is complete enough that rereading it cannot add anything.
+   *
+   * This is what stops a reread loop. A LinkedIn profile mutates continuously —
+   * images resolve, the feed rail updates, trackers fiddle with attributes — so
+   * a mutation observer left to itself would re-parse the page every debounce
+   * window for as long as it stayed open. Once every supported section has been
+   * read, further mutations have nothing to offer and are ignored until the page
+   * actually changes.
+   */
+  function isComplete(draft) {
+    if (!draft) return false;
+    if (Array.isArray(draft.missingSections) && draft.missingSections.length) return false;
+    return draft.status === "ok";
+  }
+
+  /**
    * How much a draft actually contains, used to tell "a reread found more" from
    * "a reread found the same thing". Only counts sections that arrive late.
    */
@@ -131,6 +147,9 @@
     const debounceMs = opts.debounceMs == null ? DEFAULT_DEBOUNCE_MS : opts.debounceMs;
     const setTimer = opts.setTimeoutFn || ((fn, ms) => setTimeout(fn, ms));
     const clearTimer = opts.clearTimeoutFn || ((id) => clearTimeout(id));
+    const nowMs = opts.nowFn || (() => Date.now());
+    //: Floor between mutation-driven rereads. Navigation ignores this.
+    const minRereadMs = opts.minRereadMs == null ? 1500 : opts.minRereadMs;
 
     // `generation` increments on every *page* change. `syncSeq` increments on
     // every sync attempt. A result must match both to be applied: generation
@@ -155,6 +174,7 @@
       // this page gained something on a reread — not that we arrived somewhere
       // new, which is every field being different by definition.
       pagePreviews: 0,
+      lastReadAt: null,
       writes: 0, // stays 0 forever; asserted in tests as a property of the design
     };
 
@@ -200,6 +220,9 @@
           warnings: false,
           lastSignature: "none",
           pagePreviews: 0,
+          // The reread floor is per page. Carrying the previous page's read time
+          // forward would mute this page's first lazy-load burst for no reason.
+          lastReadAt: null,
           phase: PREVIEWABLE.has(surface) ? PHASES.DETECTED : PHASES.WAITING,
         });
       } else {
@@ -247,14 +270,26 @@
         lastSignature: signature,
         previews: state.previews + 1,
         pagePreviews: state.pagePreviews + 1,
+        lastReadAt: nowMs(),
         phase: warned ? PHASES.WARNINGS : grew ? PHASES.UPDATED : PHASES.READY,
       });
       void force;
       void reason;
     }
 
-    /** Coalesce bursts of events into one read. */
+    /**
+     * Coalesce bursts of events into one read.
+     *
+     * Mutation-driven rereads carry two extra brakes that navigation-driven
+     * ones do not need: they stop entirely once the page has been read
+     * completely, and they never run more often than `minRereadMs`. Navigation
+     * is always honoured — a new page is new information by definition.
+     */
     function scheduleSync(reason) {
+      if (reason === "dom_mutation") {
+        if (isComplete(state.draft)) return; // nothing left to gain from this page
+        if (state.lastReadAt != null && nowMs() - state.lastReadAt < minRereadMs) return;
+      }
       if (debounceTimer != null) clearTimer(debounceTimer);
       debounceTimer = setTimer(() => {
         debounceTimer = null;
@@ -359,5 +394,5 @@
     };
   }
 
-  return { createLiveSync, PHASES, PREVIEWABLE, pageKeyOf, hasWarnings, contentSignature };
+  return { createLiveSync, PHASES, PREVIEWABLE, pageKeyOf, hasWarnings, contentSignature, isComplete };
 });
