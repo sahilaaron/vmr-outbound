@@ -406,6 +406,33 @@ stable key. Nothing was submitted by the cancellation.
 | E6 | Promote the confirmed capture | `contact_created`; labels and notes carried; capture linked | |
 | E7 | Promote again | `already_promoted`; no second contact | |
 
+#### E2 in scope — the candidate record, in detail (2026-07-27)
+
+Run on a trial capture **[machine, supervised]**. What the record held after the
+lookup:
+
+| Field | Value |
+| --- | --- |
+| `lookup` | `ok · 1 attempt(s) · logo.dev (logo.dev/search-brands/v1)` with a timestamp |
+| Candidates returned | **4** |
+| Rank ordering | preserved as the provider returned it (1…4) |
+| **Confidence** | **"not provided by this provider"** on every candidate |
+| `confirmed domain` | `—` |
+| `resolved company` | `—` |
+| `promoted contact` | `not promoted` |
+| `why not promoted` | *"several domain candidates are waiting for your confirmation"* |
+
+Three acceptance points land here at once. Confidence is **recorded as absent
+rather than invented** — the provider returns no score, and the record says so
+instead of manufacturing one. The provider's ordering is preserved as `rank`
+without being treated as a decision. And promotion is **refused while candidates
+wait**, with the refusal stating its own reason.
+
+The candidate set was genuinely ambiguous: a `.com`, a `.net`, a `-dev.com` and
+a different brand entirely. Auto-accepting rank 1 would have been right this
+time and wrong on the `-dev` variant — which is the argument for confirmation,
+made again on live data.
+
 #### E2 / E3 scope note — exercised on a pre-existing capture
 
 The operator ran the domain path on a capture from the **pre-existing 50**, not
