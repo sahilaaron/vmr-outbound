@@ -827,3 +827,128 @@ def test_search_covers_name_and_domain(db_session: Session) -> None:
     )
     assert by_name == 1
     assert by_domain == 1
+
+
+# --- 8. Dossier ownership, enforced by the database --------------------------
+#
+# `interpret()` refuses a cross-company submission, and that is tested above.
+# These tests bypass the service entirely, because a service check only protects
+# the path that calls it: a direct write, a data migration, a fixture or a
+# future import can all reach these tables without passing through it. A dossier
+# attributed to the wrong organisation is the kind of wrong that reads as fact,
+# so the guarantee belongs in the schema.
+
+
+def test_a_cross_company_dossier_is_rejected_by_the_database(db_session: Session) -> None:
+    """The service is not in the loop here. The composite foreign key is."""
+
+    owner = make_company(db_session, name="Owner", domain="owner.example")
+    other = make_company(db_session, name="Other", domain="other.example")
+    submission, _created = company_dossiers.submit(
+        db_session, company=owner, producer="p", payload={"x": 1}
+    )
+
+    # Constructed by hand: company_id says one company, submission_id points at
+    # a submission belonging to the other.
+    db_session.add(
+        CompanyDossierVersion(
+            company_id=other.id,
+            submission_id=submission.id,
+            version_number=1,
+            interpreter="direct-write",
+        )
+    )
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+
+def test_a_dossier_cannot_be_moved_to_another_company_by_update(db_session: Session) -> None:
+    """The constraint holds on UPDATE, not only on INSERT.
+
+    An insert-only guard would let a row be created correctly and then walked
+    across to the wrong company afterwards.
+    """
+
+    owner = make_company(db_session, name="Owner", domain="owner.example")
+    other = make_company(db_session, name="Other", domain="other.example")
+    version = submit_and_interpret(db_session, owner, sections={"overview": {}})
+
+    version.company_id = other.id
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+
+def test_a_same_company_dossier_is_accepted(db_session: Session) -> None:
+    """The counterpart that makes the two tests above meaningful."""
+
+    owner = make_company(db_session, name="Owner", domain="owner.example")
+    submission, _created = company_dossiers.submit(
+        db_session, company=owner, producer="p", payload={"x": 1}
+    )
+    db_session.add(
+        CompanyDossierVersion(
+            company_id=owner.id,
+            submission_id=submission.id,
+            version_number=1,
+            interpreter="direct-write",
+        )
+    )
+    db_session.flush()
+
+    stored = db_session.scalars(
+        select(CompanyDossierVersion).where(CompanyDossierVersion.company_id == owner.id)
+    ).all()
+    assert len(stored) == 1
+
+
+def test_a_dossier_cannot_point_at_a_submission_that_does_not_exist(
+    db_session: Session,
+) -> None:
+    """The composite key still carries the existence guarantee it replaced."""
+
+    company = make_company(db_session)
+    db_session.add(
+        CompanyDossierVersion(
+            company_id=company.id,
+            submission_id=uuid.uuid4(),
+            version_number=1,
+            interpreter="direct-write",
+        )
+    )
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+
+def test_deleting_a_company_removes_its_dossiers_without_tripping_the_key(
+    db_session: Session,
+) -> None:
+    """Why the key is NO ACTION rather than RESTRICT.
+
+    Deleting a company cascades into both the submissions and the versions in
+    one statement. A RESTRICT key is checked immediately and can fire on the
+    half-applied intermediate state depending on the order the cascades run;
+    NO ACTION defers to the end of the statement, by which time both sides are
+    consistent again.
+    """
+
+    company = make_company(db_session)
+    submit_and_interpret(db_session, company, sections={"overview": {}})
+    company_id = company.id
+
+    db_session.delete(company)
+    db_session.flush()
+
+    assert (
+        db_session.scalars(
+            select(CompanyDossierVersion).where(CompanyDossierVersion.company_id == company_id)
+        ).all()
+        == []
+    )
+    assert (
+        db_session.scalars(
+            select(CompanyResearchSubmission).where(
+                CompanyResearchSubmission.company_id == company_id
+            )
+        ).all()
+        == []
+    )

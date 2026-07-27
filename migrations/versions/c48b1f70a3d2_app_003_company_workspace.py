@@ -257,6 +257,14 @@ def upgrade() -> None:
             "content_hash",
             name="uq_company_research_submissions_content",
         ),
+        # Redundant against the primary key, and required anyway: a composite
+        # foreign key must reference a uniquely-constrained set of columns. This
+        # is the target that lets a dossier version point at (id, company_id).
+        sa.UniqueConstraint(
+            "id",
+            "company_id",
+            name="uq_company_research_submissions_id_company",
+        ),
     )
     op.create_index(
         "ix_company_research_submissions_company",
@@ -304,13 +312,25 @@ def upgrade() -> None:
             name="fk_company_dossier_versions_company_id_companies",
             ondelete="CASCADE",
         ),
-        # RESTRICT: an interpretation cannot outlive the payload it interprets,
-        # or it becomes an unfalsifiable claim.
+        # Existence AND ownership, in one composite key.
+        #
+        # A dossier version must interpret a submission about the same company.
+        # A single-column key on submission_id proves the submission exists and
+        # says nothing about whose it is, so a cross-company dossier — a claim
+        # attributed to the wrong organisation — would satisfy it. Referencing
+        # (id, company_id) makes the pair inseparable at the database, where a
+        # direct write, a data migration or a future import path cannot get
+        # around it.
+        #
+        # NO ACTION, not RESTRICT: both refuse to orphan a version when a
+        # submission is deleted directly, but NO ACTION defers its check to the
+        # end of the statement, which lets DELETE FROM companies cascade into
+        # both tables at once instead of tripping on a half-applied state.
         sa.ForeignKeyConstraint(
-            ["submission_id"],
-            ["company_research_submissions.id"],
-            name="fk_company_dossier_versions_submission",
-            ondelete="RESTRICT",
+            ["submission_id", "company_id"],
+            ["company_research_submissions.id", "company_research_submissions.company_id"],
+            name="fk_company_dossier_versions_submission_owner",
+            ondelete="NO ACTION",
         ),
         sa.UniqueConstraint(
             "company_id",

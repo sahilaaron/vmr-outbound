@@ -130,9 +130,38 @@ know" into "there is none", which is the failure this whole model exists to
 prevent.
 
 At most one version per company is current, enforced by a partial unique index.
-Selecting a different one supersedes the previous — it does not delete it. A
-submission cannot be deleted while any interpretation of it survives (`RESTRICT`),
-because an interpretation without its payload is an unfalsifiable claim.
+Selecting a different one supersedes the previous — it does not delete it.
+
+### Ownership is a schema guarantee, not a service check
+
+A dossier version must interpret a submission about the **same** company. That is
+enforced by a composite foreign key:
+
+```
+company_dossier_versions (submission_id, company_id)
+  -> company_research_submissions (id, company_id)
+```
+
+`interpret()` also validates it, but a service check only protects the path that
+calls it. A direct write, a data migration, a fixture or a future import path can
+all reach the table without passing through the service, and a dossier attributed
+to the wrong organisation is the kind of wrong that reads as fact.
+
+A single-column key on `submission_id` would prove the submission exists and say
+nothing about whose it is. Referencing `(id, company_id)` is what makes the pair
+inseparable, which is why it *replaces* the narrower key rather than supplementing
+it — it already implies everything that one guaranteed. `company_research_submissions`
+therefore carries a `(id, company_id)` unique constraint: redundant against its
+primary key, and required, because a composite foreign key must reference a
+uniquely-constrained set of columns.
+
+The key is `NO ACTION` rather than `RESTRICT`. Both refuse to orphan a version
+when a submission is deleted directly — an interpretation without its payload is
+an unfalsifiable claim — but `RESTRICT` is checked immediately while `NO ACTION`
+defers to the end of the statement. That difference is what lets
+`DELETE FROM companies` cascade into both tables in one statement without the
+check firing on a half-applied intermediate state. Both behaviours have their own
+regression test.
 
 ## Research state
 

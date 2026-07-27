@@ -47,6 +47,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -73,6 +74,16 @@ class CompanyResearchSubmission(Base):
             "company_id",
             "content_hash",
             name="uq_company_research_submissions_content",
+        ),
+        # Redundant against the primary key, and required anyway: a composite
+        # foreign key needs a unique constraint on exactly the columns it
+        # references. This is what lets CompanyDossierVersion point at
+        # (id, company_id) and have the database check that a dossier and the
+        # submission it reads describe the same company.
+        UniqueConstraint(
+            "id",
+            "company_id",
+            name="uq_company_research_submissions_id_company",
         ),
     )
 
@@ -140,6 +151,33 @@ class CompanyDossierVersion(Base):
             postgresql_where="is_current",
         ),
         CheckConstraint("version_number > 0", name="ck_company_dossier_version_positive"),
+        # Ownership, enforced by the database rather than by a service check.
+        #
+        # A dossier version must interpret a submission about the SAME company.
+        # `interpret()` validates that, but a service check only protects the
+        # path that calls it: a direct write, a data migration, a future import
+        # or a fixture can all reach this table without passing through it, and
+        # a cross-company dossier is a claim attributed to the wrong
+        # organisation — the kind of wrong that reads as fact.
+        #
+        # Composite, not two separate keys. `submission_id -> submissions.id`
+        # alone proves the submission exists; it says nothing about whose it is.
+        # Referencing (id, company_id) is what makes the pair inseparable, and
+        # it replaces the single-column key rather than supplementing it, since
+        # it already implies everything the narrower one guaranteed.
+        #
+        # NO ACTION rather than RESTRICT, deliberately. Both refuse to orphan a
+        # version when a submission is deleted directly, which is the guarantee
+        # that matters. RESTRICT checks immediately; NO ACTION defers to the end
+        # of the statement, which is what lets `DELETE FROM companies` cascade
+        # into both tables at once without the check firing on a half-applied
+        # intermediate state. The regression tests cover both cases.
+        ForeignKeyConstraint(
+            ["submission_id", "company_id"],
+            ["company_research_submissions.id", "company_research_submissions.company_id"],
+            name="fk_company_dossier_versions_submission_owner",
+            ondelete="NO ACTION",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -148,21 +186,12 @@ class CompanyDossierVersion(Base):
         ForeignKey("companies.id", ondelete="CASCADE"),
         nullable=False,
     )
-    # The submission this version reads. RESTRICT, not CASCADE: a version
-    # without its source payload would be an unfalsifiable claim, so the raw
-    # submission cannot be removed while an interpretation of it survives.
-    submission_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        # Named explicitly: the repository naming convention would generate
-        # fk_<table>_<column>_<referred table>, which is 70 characters here and
-        # PostgreSQL truncates identifiers at 63.
-        ForeignKey(
-            "company_research_submissions.id",
-            ondelete="RESTRICT",
-            name="fk_company_dossier_versions_submission",
-        ),
-        nullable=False,
-    )
+    # The submission this version reads. The foreign key is the composite one
+    # in __table_args__ above, which carries both the existence guarantee and
+    # the ownership guarantee. A version without its source payload would be an
+    # unfalsifiable claim, so the raw submission cannot be removed while an
+    # interpretation of it survives.
+    submission_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
 
     # --- Who interpreted it ---------------------------------------------------
