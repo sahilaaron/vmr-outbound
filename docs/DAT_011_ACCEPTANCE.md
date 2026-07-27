@@ -374,7 +374,7 @@ stable key. Nothing was submitted by the cancellation.
 | B0 | Open a `linkedin.com/in/…` main profile | Strip reads *LinkedIn · Person profile*; panel follows the tab without a Refresh press | **PASS** [operator] — the strip switched to *LinkedIn · Person profile* with the profile URL, unprompted |
 | B1 | Review the extracted fields | Fields match the visible page; anything absent is shown as missing, never guessed | **PASS** [operator] — see *B1* below. Missing sections are named, and the panel states *"Empty fields stay empty — VM Prospector will not fill them in."* |
 | B2 | Capture → confirm → Save | Outcome is `refreshed_exact_match` or `staged_unmatched`; `created` is 0 | **PASS** [operator, machine-verified] — `submitted 1 / staged_unmatched 1 / created 0`. Promotion then linked it to the **existing** contact rather than making a second one. See *B2* below |
-| B3 | Save again without recapturing | *already saved — idempotent*, same submission | |
+| B3 | Save again without recapturing | *already saved — idempotent*, same submission | **PASS** [operator, machine-verified] — the control relabels itself *Refresh Contact*, the outcome reads **"1 already current — Unchanged"**, and the backend records `exact match unchanged`. Still one contact. See *B3* below |
 | B4 | Open a Sales Navigator person page | Reports *unsupported* with the reason — the shipped detector supports only the main `/in/` profile | |
 
 ### C. Company profile
@@ -1037,6 +1037,39 @@ overwrites what's already there."*
 
 **This forces a correction to D-4** — recorded in the defect section rather than
 left as filed.
+
+### B3 — the second capture of the same page changes nothing
+
+**Observed** [operator, machine-verified], and it completes the story B2 started.
+
+The panel had already relabelled its primary control from *Save Contact* to
+**Refresh Contact** — the affordance describes what the action will now do rather
+than repeating the first-time wording. Pressing it returned:
+
+> **Prospect saved** — *What happened:* **1 already current** · **Unchanged**
+
+with *Open contact* now offered alongside *Open capture record*, because a
+canonical contact exists to open.
+
+The backend agrees. The contact's evidence list now carries **two** captures of
+the same profile:
+
+| Ingested | Outcome |
+| --- | --- |
+| 04:05 | `unmatched staged` |
+| 04:15 | `exact match unchanged` |
+
+Contact count for that company: still **1**.
+
+**Three claims land together here.** The exact-URL match now succeeds at ingest,
+because promotion had written the observed handle onto the contact — so the
+system learned the person's real identity from the second capture and used it on
+the third. Nothing was overwritten silently: field provenance shows
+`linkedin_url`, `title` and `company_name` sourced from `linkedin-profile-capture`
+at 04:15 with the stated reason *"most recent evidence"* under policy
+`freshness-v1`. And both captures survive independently — **evidence accumulates
+while identity does not multiply**, which is the contact-first architecture doing
+exactly what it claims.
 
 ### A10 / S6 — the panel's own link opens the exact record
 
