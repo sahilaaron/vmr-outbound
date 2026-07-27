@@ -204,12 +204,12 @@ decision gets made.
 * `contacts.company_domain` is untouched and still `NOT NULL`.
 * No intake contract changed; the extension was not modified.
 * Campaign, import, review, contact and verification screens are unchanged.
-* `Insight` / `InsightEvidence` are left exactly as they were. ADR 0002 says they
-  "become the Dossier"; they are unreferenced stubs with no versioning, no
-  owner-exclusivity check and no current-selection, so adapting them would have
-  meant rewriting them into something else while keeping a misleading name. They
-  stay for the `ScoreEvidence` foreign key that points at them. Retiring them is a
-  separate decision.
+* APP-003 left `Insight` / `InsightEvidence` unchanged. INS-001 now gives those
+  records their narrower intended job: reusable versioned claims and their
+  traceable source observations. They do not replace the raw submission or the
+  nine-section dossier. A dossier is a versioned reading of one research
+  submission; insights are individual claims derived from research or other
+  evidence and remain the records cited by `ScoreEvidence`.
 
 ## Schema
 

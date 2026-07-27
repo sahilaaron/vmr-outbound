@@ -34,7 +34,10 @@ Before changing the repository, read:
    when the work touches automatic domain resolution, the
    confirmed/provisional/unresolved distinction, or any downstream stage gated
    on it.
-9. Documents explicitly referenced by the current goal.
+9. `docs/INSIGHT_EVIDENCE.md` — the shared Company/Contact claim and evidence
+   boundary (INS-001), when the work creates, consumes, scores, reviews, or
+   personalizes from research evidence.
+10. Documents explicitly referenced by the current goal.
 
 The root `CLAUDE.md` is a condensed pointer into these documents; it never
 overrides them.
