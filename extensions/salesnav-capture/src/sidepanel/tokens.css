@@ -4,13 +4,12 @@
    A trimmed, self-hosted subset of the VMR design system: only the
    tokens the side panel actually uses. Nothing is fetched at runtime.
 
-   Deliberate substitution: the design system loads Manrope / Source
-   Sans 3 / IBM Plex Mono from Google Fonts. An extension page must not
-   pull remote resources (the manifest CSP is `script-src 'self'`, and a
-   remote font request from the panel would be a new network egress), so
-   the three type roles map onto platform stacks with the same texture:
-   a grotesk for display, a humanist sans for body, a mono for figures.
-   Swap in bundled @font-face files if the licensed faces are provided.
+   The three type roles are the design system's own faces — Manrope,
+   Source Sans 3, IBM Plex Mono — bundled as woff2 and registered in
+   fonts.css rather than pulled from Google Fonts, because an extension
+   page must not fetch a remote resource. The platform stacks are kept
+   behind each family as a fallback for text outside the bundled
+   subsets, not as a substitute for the face.
    ============================================================ */
 
 :root {
@@ -76,12 +75,12 @@
   --focus-ring: rgba(70, 77, 169, 0.45);
 
   /* ---- Type ---- */
-  --font-display: "Segoe UI Variable Display", "Segoe UI", Inter, system-ui,
+  --font-display: "Manrope", "Segoe UI Variable Display", "Segoe UI", system-ui,
     -apple-system, BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif;
-  --font-body: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, Roboto,
-    Helvetica, Arial, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, "Cascadia Mono", Menlo, Consolas,
-    monospace;
+  --font-body: "Source Sans 3", "Segoe UI", system-ui, -apple-system,
+    BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, "Cascadia Mono",
+    Menlo, Consolas, monospace;
 
   --text-2xs: 0.6875rem;
   --text-xs: 0.75rem;

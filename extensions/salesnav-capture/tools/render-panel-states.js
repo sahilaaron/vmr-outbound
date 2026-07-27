@@ -434,10 +434,16 @@ async function blocked(surface, detect) {
 async function main() {
   const outdir = path.resolve(process.argv[2] || path.join(__dirname, "..", "..", "..", "panel-states"));
   fs.mkdirSync(path.join(outdir, "assets"), { recursive: true });
-  for (const file of ["tokens.css", "sidepanel.css"]) {
+  fs.mkdirSync(path.join(outdir, "fonts"), { recursive: true });
+  for (const file of ["fonts.css", "tokens.css", "sidepanel.css"]) {
     fs.copyFileSync(path.join(SRC, file), path.join(outdir, file));
   }
   fs.copyFileSync(path.join(SRC, "assets", "vmr-mark.svg"), path.join(outdir, "assets", "vmr-mark.svg"));
+  // The bundled faces travel with the snapshot, so a rendered state shows the
+  // panel's real typography rather than whatever the viewer happens to have.
+  for (const font of fs.readdirSync(path.join(SRC, "fonts"))) {
+    fs.copyFileSync(path.join(SRC, "fonts", font), path.join(outdir, "fonts", font));
+  }
 
   const written = [];
   for (const state of STATES) {

@@ -415,11 +415,75 @@ test("the stylesheet adapts to the narrowest realistic side panel", () => {
   assert.match(css, /overflow-wrap: anywhere/);
 });
 
+// --- typography ---------------------------------------------------------------
+
+test("the three design-system faces are bundled, not substituted", () => {
+  const fontsCss = fs.readFileSync(path.join(SRC, "sidepanel", "fonts.css"), "utf8");
+  const tokens = fs.readFileSync(path.join(SRC, "sidepanel", "tokens.css"), "utf8");
+  const dir = path.join(SRC, "sidepanel", "fonts");
+
+  // Every face the design system specifies is declared and reachable locally.
+  for (const family of ["Manrope", "Source Sans 3", "IBM Plex Mono"]) {
+    assert.ok(fontsCss.includes(`font-family: "${family}"`), `${family} is not declared`);
+  }
+  const referenced = [...fontsCss.matchAll(/url\("fonts\/([^"]+)"\)/g)].map((m) => m[1]);
+  for (const file of referenced) {
+    assert.ok(fs.existsSync(path.join(dir, file)), `missing bundled font file: ${file}`);
+  }
+
+  // Every weight the stylesheet actually asks for must be a real file, or the
+  // browser synthesises it and the face stops being the designed one.
+  const declared = new Set(
+    [...fontsCss.matchAll(/font-family: "([^"]+)";\s*\n\s*font-style: normal;\s*\n\s*font-weight: (\d+)/g)].map(
+      (m) => `${m[1]}/${m[2]}`
+    )
+  );
+  const required = [
+    ["Manrope", [600, 700, 800]],
+    ["Source Sans 3", [400, 600, 700]],
+    ["IBM Plex Mono", [400, 500, 600]],
+  ];
+  for (const [family, weights] of required) {
+    for (const weight of weights) {
+      assert.ok(declared.has(`${family}/${weight}`), `${family} ${weight} is not bundled`);
+    }
+  }
+
+  // And each role actually resolves to its face first, with the platform stack
+  // kept behind it for text outside the bundled subsets.
+  assert.match(tokens, /--font-display:\s*"Manrope"/);
+  assert.match(tokens, /--font-body:\s*"Source Sans 3"/);
+  assert.match(tokens, /--font-mono:\s*"IBM Plex Mono"/);
+  for (const role of ["--font-display", "--font-body", "--font-mono"]) {
+    const decl = tokens.slice(tokens.indexOf(role));
+    assert.match(decl.slice(0, decl.indexOf(";")), /,/, `${role} has no fallback stack`);
+  }
+
+  // Bundled fonts are redistributed, so the licence ships with them.
+  assert.ok(fs.existsSync(path.join(dir, "OFL.txt")), "the font licence is not bundled");
+  assert.match(fs.readFileSync(path.join(dir, "OFL.txt"), "utf8"), /SIL Open Font License/);
+});
+
+test("the panel links the bundled faces before the tokens that use them", () => {
+  const html = fs.readFileSync(path.join(SRC, "sidepanel", "sidepanel.html"), "utf8");
+  assert.ok(html.indexOf('href="fonts.css"') > -1, "fonts.css is not linked");
+  assert.ok(
+    html.indexOf('href="fonts.css"') < html.indexOf('href="tokens.css"'),
+    "fonts.css must be linked before tokens.css"
+  );
+});
+
 test("no remote font or stylesheet is referenced from the panel", () => {
   const html = fs.readFileSync(path.join(SRC, "sidepanel", "sidepanel.html"), "utf8");
   const tokens = fs.readFileSync(path.join(SRC, "sidepanel", "tokens.css"), "utf8");
   const css = fs.readFileSync(path.join(SRC, "sidepanel", "sidepanel.css"), "utf8");
-  for (const [name, src] of [["sidepanel.html", html], ["tokens.css", tokens], ["sidepanel.css", css]]) {
+  const fontsCss = fs.readFileSync(path.join(SRC, "sidepanel", "fonts.css"), "utf8");
+  for (const [name, src] of [
+    ["sidepanel.html", html],
+    ["tokens.css", tokens],
+    ["sidepanel.css", css],
+    ["fonts.css", fontsCss],
+  ]) {
     const withoutComments = src.replace(/<!--[\s\S]*?-->/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
     const remote = (withoutComments.match(/https?:\/\/[^\s"'()]+/g) || []).filter(
       (u) => !/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/.test(u)

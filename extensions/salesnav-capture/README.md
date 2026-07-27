@@ -108,6 +108,14 @@ Rendered snapshots of every state are in
 controllers driven through a stubbed `chrome.*`, so a snapshot is the panel that
 ships, not a mock-up.
 
+Typography is the design system's own: **Manrope** for headings, names, buttons
+and badges; **Source Sans 3** for body and helper text; **IBM Plex Mono** for
+counts, identifiers, status text and URLs. The faces are bundled as woff2 under
+`src/sidepanel/fonts/` and registered in `fonts.css` — the design system loads
+them from Google Fonts, which an extension page must not do. Only the subsets
+and weights the panel uses ship; the platform stacks stay behind each family so
+text outside those subsets still renders. Licences: `src/sidepanel/fonts/OFL.txt`.
+
 Status is never carried by colour alone: every tone is paired with a word, and
 badges carry a shape. A field the page did not show stays visibly empty and is
 labelled as missing — it is never filled in, and never quietly dropped.
