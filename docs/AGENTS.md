@@ -26,7 +26,10 @@ Before changing the repository, read:
    companies, captures, evidence, labels, notes, workflow state, or campaigns.
 6. `docs/CONTACT_CRM.md` — what the contact CRM (APP-002) actually does, its
    product rules, and its accepted limitations.
-7. Documents explicitly referenced by the current goal.
+7. `docs/COMPANY_WORKSPACE.md` — the permanent company workspace and the
+   dossier-ready schema (APP-003), when the work touches companies, company
+   research, firmographic provenance, or company identity conflicts.
+8. Documents explicitly referenced by the current goal.
 
 The root `CLAUDE.md` is a condensed pointer into these documents; it never
 overrides them.

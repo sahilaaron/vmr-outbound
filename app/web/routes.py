@@ -30,11 +30,13 @@ from app.models.contact_capture import ContactCaptureNote, ContactCaptureSubmiss
 from app.models.enums import (
     CampaignStatus,
     ContactWorkflowState,
+    DossierSection,
     EnrichmentConfirmationSource,
     IdentityResolutionType,
     ImportBatchStatus,
     ImportRowOutcome,
     ImportSourceFormat,
+    ResearchState,
     VerificationUsageEventType,
 )
 from app.models.linkedin_company import LinkedInCompanySnapshot
@@ -49,6 +51,8 @@ from app.services.campaigns import (
     list_campaigns,
 )
 from app.services.captures import promotion as capture_promotion
+from app.services.companies import detail as company_detail
+from app.services.companies import records as company_records
 from app.services.crm import annotations as crm_annotations
 from app.services.crm import detail as crm_detail
 from app.services.crm import records as crm_records
@@ -168,6 +172,19 @@ def _tri_state(raw: str | None) -> bool | None:
     """
 
     return {"yes": True, "no": False}.get((raw or "").strip().lower())
+
+
+def _research_state(raw: str | None) -> ResearchState | None:
+    """A research-state filter from a query parameter, or None.
+
+    Unrecognised values mean no filter. A hand-edited URL should widen the list
+    rather than produce an error page or silently show nothing.
+    """
+
+    try:
+        return ResearchState((raw or "").strip().lower())
+    except ValueError:
+        return None
 
 
 def _positive_int(raw: str | None) -> int | None:
@@ -1484,6 +1501,92 @@ def contact_detail_page(
             "millionverifier_enabled": settings.features.millionverifier,
             "active_nav": "contacts",
             "page_title": detail.full_name,
+        },
+    )
+
+
+@router.get("/companies", response_class=HTMLResponse)
+def companies_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    """The permanent company list (APP-003).
+
+    Companies exist on their own account. No campaign is read, accepted or
+    required here, and there is no campaign column to filter on: a company is
+    not a target list.
+    """
+
+    params = request.query_params
+    filters = company_records.CompanyFilters(
+        view=params.get("view") or company_records.VIEW_ALL,
+        search=params.get("q") or None,
+        research_state=_research_state(params.get("research")),
+        has_linkedin=_tri_state(params.get("has_linkedin")),
+        sort=params.get("sort") or company_records.SORT_RECENT,
+    ).normalized()
+
+    page = _page_number(request)
+    rows, total = company_records.list_company_rows(
+        db, filters=filters, limit=PAGE_SIZE, offset=(page - 1) * PAGE_SIZE
+    )
+
+    filter_params = {
+        key: value
+        for key, value in (
+            ("view", filters.view if filters.view != company_records.VIEW_ALL else None),
+            ("q", filters.search),
+            ("research", filters.research_state.value if filters.research_state else None),
+            ("has_linkedin", params.get("has_linkedin") or None),
+            ("sort", filters.sort if filters.sort != company_records.SORT_RECENT else None),
+        )
+        if value
+    }
+    filter_url = "/companies" + (f"?{urlencode(filter_params)}" if filter_params else "")
+
+    return _render(
+        request,
+        db,
+        "companies.html",
+        {
+            "rows": rows,
+            "total": total,
+            "page": page,
+            "pages": _pages(total),
+            "filters": filters,
+            "filter_url": filter_url,
+            "views": company_records.VIEWS,
+            "sorts": company_records.SORTS,
+            "research_states": list(ResearchState),
+            "active_nav": "companies",
+            "page_title": "Companies",
+        },
+    )
+
+
+@router.get("/companies/{company_id}", response_class=HTMLResponse)
+def company_detail_page(
+    request: Request, company_id: str, db: Session = Depends(get_db)
+) -> HTMLResponse:
+    """The company workspace: identity, people, provenance, dossiers, conflicts.
+
+    Read-only. Every write path a company could need — confirming a domain,
+    promoting a capture — already exists on the capture resolution screens, and
+    duplicating them here would give an operator two places to make the same
+    decision differently.
+    """
+
+    parsed_id = _parse_uuid(company_id)
+    detail = company_detail.get_company_detail(db, parsed_id) if parsed_id else None
+    if detail is None:
+        return _not_found(request, db, "That company does not exist.")
+
+    return _render(
+        request,
+        db,
+        "company_detail.html",
+        {
+            "detail": detail,
+            "sections": list(DossierSection),
+            "active_nav": "companies",
+            "page_title": detail.company.name,
         },
     )
 

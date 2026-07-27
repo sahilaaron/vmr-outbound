@@ -42,6 +42,14 @@ class Contact(Base):
         # people may share a natural key when they have distinct emails.
         Index("ix_contacts_natural_key", "natural_key"),
         Index("ix_contacts_company_domain", "company_domain"),
+        # The permanent company edge (APP-003). Partial: the value is in listing
+        # one company's people, and NULL means "not linked yet" rather than a
+        # row worth indexing.
+        Index(
+            "ix_contacts_company_id",
+            "company_id",
+            postgresql_where="company_id IS NOT NULL",
+        ),
         # A tombstoned duplicate points at its survivor. Indexed so a survivor's
         # merged-away duplicates are cheap to list on the contact record.
         Index("ix_contacts_merged_into_id", "merged_into_id"),
@@ -54,6 +62,29 @@ class Contact(Base):
     last_name: Mapped[str] = mapped_column(String(255), nullable=False)
     company_name: Mapped[str] = mapped_column(String(512), nullable=False)
     company_domain: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    # --- The permanent company edge (APP-003) --------------------------------
+    #
+    # Until APP-003 the only contact-to-company link was ``company_domain``
+    # compared against ``companies.domain`` at read time. That worked but tied
+    # the edge to a mutable string: correcting a company's domain silently
+    # re-parented everyone under it, with nothing recording that it had happened.
+    #
+    # ``company_id`` is the real edge. ``company_domain`` stays, and stays NOT
+    # NULL — it is identity and dedup input (``natural_key`` is built from it),
+    # it is the captured evidence of what the source said, and legacy rows still
+    # need it. The two are allowed to disagree: that disagreement is a reviewable
+    # conflict, not a bug to paper over (see app.services.companies.conflicts).
+    #
+    # Deliberately nullable, and deliberately left NULL rather than guessed when
+    # no company matches, when several do, or when the domain is missing or
+    # malformed. Making it NOT NULL is a later decision that needs the backfill
+    # to have actually converged first.
+    company_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("companies.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     # --- Normalized identity (optional) --------------------------------------
     email: Mapped[str | None] = mapped_column(String(320), nullable=True)
