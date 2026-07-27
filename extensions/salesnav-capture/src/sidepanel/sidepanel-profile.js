@@ -16,7 +16,7 @@
 (function () {
   "use strict";
 
-  const { constants, handoff, permissions } = self.SNCapture;
+  const { constants, handoff, permissions, liveSync } = self.SNCapture;
   const { SURFACES, CAPTURE_STATUS } = constants;
   const panel = self.VMRPanel;
   const $ = (id) => document.getElementById(id);
@@ -117,11 +117,14 @@
     else panel.setSaveHandler({ handler: null, reset: true });
   }
 
-  async function refreshMode() {
+  // UI-011: the source card is painted from the SAME detect result that decides
+  // the mode and targets the parser. Previously it was painted on demand, which
+  // is how it came to display one profile's URL beside another profile's data.
+  function paintMode(detected) {
     const statusEl = $("mode-status");
     const detailEl = $("mode-detail");
-    const r = await send({ type: "DETECT_SURFACE" });
-    const mode = (r && r.surface) || SURFACES.UNSUPPORTED;
+    const r = detected || {};
+    const mode = r.surface || SURFACES.UNSUPPORTED;
     const label = MODE_LABELS[mode] || "Unsupported Page";
     const cls =
       mode === SURFACES.CHALLENGE || mode === SURFACES.UNAVAILABLE
@@ -130,8 +133,15 @@
           ? "status-warn"
           : "status-ok";
     setStatus(statusEl, cls, label);
-    detailEl.textContent = (r && r.url) || "";
+    detailEl.textContent = r.url || "";
     showSections(mode);
+    return mode;
+  }
+
+  async function refreshMode() {
+    const statusEl = $("mode-status");
+    const detected = await send({ type: "DETECT_SURFACE" });
+    const mode = paintMode(detected);
 
     if (mode === SURFACES.SALESNAV_PEOPLE_RESULTS) panel.refreshDetect();
 
@@ -471,7 +481,51 @@
       renderCompanyDraft(companyState.draftView);
       if (companyState.lastResult) renderCompanyStagedResult(companyState.lastResult);
     }
-    refreshMode();
+    startLiveSync();
+  }
+
+  // ---- UI-011: follow the active tab ---------------------------------------
+
+  const PHASE_TEXT = {
+    waiting_for_supported_profile: "Waiting for a LinkedIn profile…",
+    profile_detected: "Profile detected — reading…",
+    loading_profile_content: "Reading this profile…",
+    preview_ready: "Preview ready.",
+    additional_content_loaded: "Additional content loaded — preview updated.",
+    unsupported_surface: "This LinkedIn page is not a person profile.",
+    completed_with_warnings: "Preview ready — review the warnings below.",
+  };
+
+  let sync = null;
+
+  function startLiveSync() {
+    if (sync) {
+      sync.start();
+      return;
+    }
+    sync = liveSync.createLiveSync({
+      chrome,
+      // The two capabilities this controller gets. Neither writes anything:
+      // DETECT_SURFACE classifies the tab, PROFILE_CAPTURE reads the DOM into a
+      // local draft. No backend call, no contact, no promotion, no campaign.
+      detect: () => send({ type: "DETECT_SURFACE" }),
+      preview: async () => {
+        const r = await send({ type: "PROFILE_CAPTURE" });
+        return r && r.ok ? r.draftView : null;
+      },
+      onState: (state) => {
+        // Provenance and payload are painted from one state object, so they
+        // cannot disagree.
+        paintMode({ surface: state.surface, url: state.url });
+        const feedback = $("profile-capture-feedback");
+        if (feedback) feedback.textContent = PHASE_TEXT[state.phase] || "";
+        if (state.surface === SURFACES.PERSON_PROFILE) {
+          renderDraft(state.draft);
+        }
+        if (state.surface === SURFACES.SALESNAV_PEOPLE_RESULTS) panel.refreshDetect();
+      },
+    });
+    sync.start();
   }
 
   document.addEventListener("DOMContentLoaded", init);
