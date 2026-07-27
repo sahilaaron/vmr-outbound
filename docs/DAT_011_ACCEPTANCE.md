@@ -205,7 +205,7 @@ returned, with counts and states only.
 | A1 | Press *Capture visible contacts*; watch | Progress card appears with a live row count; scrolling is incremental, not jumpy | **PASS** [operator] — live count observed at 15 → 21 → 24; pass ended on its own; *Stop reading this page* offered throughout |
 | A2 | Press *Stop reading this page* once, mid-pass | Pass stops promptly; view returns to top; rows already loaded remain reviewable; nothing submitted; feedback reads *Stopped* | **PASS** [operator] — stopped on request, view returned to the top, and only the rows read up to that point were merged into the existing batch |
 | A3 | Press *Read this page again*; let it finish | Pass ends by itself; **no** page-2 advance, no new tab, no URL change | **PASS** [operator] — observed during A1: terminated on its own with no page advance, new tab or URL change |
-| A4 | Review the list | ≥2 distinct companies among eligible rows; any no-company rows appear under *N skipped — no company name* and are absent from the list | |
+| A4 | Review the list | ≥2 distinct companies among eligible rows; any no-company rows appear under *N skipped — no company name* and are absent from the list | **PASS on S1** [operator] — ≥2 distinct companies across the reviewed rows. **S3b not exercised**: no row on either page lacked a company, so no skipped block appeared |
 | A5 | Deselect at least one row | *Review selected (N)* and the Save label follow the selection | |
 | A6 | Confirm a flagged row is retained (S3a) | A row with a warning is still selectable and still submitted with its gap visible | |
 | A7 | Confirm nothing was invented for a skipped row (S3b) | No company borrowed from headline, school, location or an adjacent row | |
@@ -275,6 +275,35 @@ longer mounted in the virtualized list. Situational presentation, not a data
 fault — recorded, not filed.
 
 **A0-1 is explained, and it is a defect.** See D-2.
+
+#### A4 result — the reviewed set (2026-07-27)
+
+Observed on the step-2 screen **[operator]**, batch accumulated across two
+operator-navigated pages:
+
+| Element | Value |
+| --- | --- |
+| Step rail | *STEP 2 OF 3* |
+| Eyebrow | *SAVE TO VMR* |
+| Selected / deselected | **31** / **0** |
+| Missing fields / uncertain id / selector fails | **0** / **0** / **0** |
+| Pages | **2** |
+| Distinct companies across rows | ≥2 — **S1 PASS** |
+| Skipped block | **absent** — no row on either page lacked a company |
+| Per-row assurance line | *"Will be saved and flagged for review. Nothing is guessed."* |
+| Per-row links | *profile* and *lead* both present |
+| Will be submitted | **31 prospects** |
+| Labels & note card | present, with *"Labels classify permanent contacts — they are not campaigns."* |
+| Primary action | *Capture 31 prospects* |
+
+**Paging was operator-driven.** The source URL moved from `page=4` to `page=5`
+between passes because the operator navigated there; the panel advanced nothing
+by itself, which is what the *2 pages* tile records.
+
+**S3b could not be exercised on this data.** Neither page contained a row
+without a company, so the skipped-row path produced nothing to observe. Recorded
+as not exercised rather than as a pass — DAT-018's Layer 3C S8 makes the same
+point about needing to find or construct such a search.
 
 #### A2 result — operator cancellation (2026-07-27)
 
@@ -432,11 +461,41 @@ incomplete or uncertain record and verify truthful handling" cannot be verified
 while every row claims to need review. It does not block S1, S2, S5, S6, S11,
 S12 or any backend check.
 
-**Proposed minimal fix** — not applied, pending Sahil's decision: give
-`derived_value` a label and treat it as provenance rather than fault, so it
-shows as a neutral *Derived* marker with its source field, and `recordTone`
-stops returning the warning tone for it alone. Roughly a label-map entry and one
-predicate. No extraction, contract or payload change.
+**Confirmed at the review step, and worse than first recorded.** The step-2
+screen shows the panel contradicting itself in a single view:
+
+| Element | Value |
+| --- | --- |
+| Summary badge | *31 need review* (no *ready* badge at all) |
+| `MISSING FIELDS` tile | **0** |
+| `UNCERTAIN ID` tile | **0** |
+| `SELECTOR FAILS` tile | **0** |
+| Per-row codes shown | `derived_value: linkedinProfileUrl`, `duplicate collapsed: stableKey` |
+
+Its own tiles report zero missing fields, zero uncertain identities and zero
+selector failures — that is, **no row has a data problem** — while the badge
+above them says all 31 need review. An operator reading top-to-bottom is told
+two incompatible things about the same set.
+
+**A second code is mis-presented, not just one.** `duplicate_collapsed` is
+dedupe bookkeeping: the same person seen twice across passes, merged by stable
+key. It appears on these rows precisely *because* A2's cancelled re-read merged
+into the existing batch — correct behaviour being reported as a fault. So the
+defect is the general one: the panel treats **every** warning code as a problem,
+and two of the codes it is most likely to see are routine provenance and routine
+deduplication.
+
+**Proposed minimal fix** — not applied, pending Sahil's decision: classify
+warning codes into *fault* and *bookkeeping*, render bookkeeping as neutral
+provenance markers with their source field, and let `recordTone` return the
+warning tone only for genuine faults. `derived_value` and `duplicate_collapsed`
+move to bookkeeping; the missing/selector/uncertain codes stay faults. A label
+map entry per code and one predicate. No extraction, contract or payload change.
+
+**Revised acceptance impact.** Still S3a only, but the reason is sharper: with
+every row flagged, the trial cannot demonstrate truthful handling of a genuinely
+incomplete record, because the panel gives an incomplete row and a perfect row
+the same badge.
 
 ### D-3 (provisional) — a captured company can be invisible on the record page
 
