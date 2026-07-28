@@ -74,3 +74,9 @@ the truthful-extraction standard if forced in.
 | Individual Sales Navigator lead page as a capture surface | Investigated and NOT added: it would need a new host permission scope, and the lead page exposes no canonical `/in/` URL, so every capture would stay unmatched — the same outcome the results-row path already produces safely. |
 | Label management UI (rename, merge, delete, colour) | The extension must not become a taxonomy manager. The backend owns the registry; management belongs in the workbench if real use proves the need. |
 | Bulk label/note editing across saved contacts | No evidence of the need before the first real acquisition run. |
+
+## Deferred by DAT-020A (Sales Navigator resolving alias)
+
+| Idea | Why deferred |
+| --- | --- |
+| **DAT-020B — cross-tab redirect provenance** | Attaching a redirected vanity capture to the Contact created from a member id needs evidence the extension currently discards: that it opened alias for member `X` in tab `T`, and the capture happened in `T` after that redirect. Without it there is no deterministic link, and name/company bridging is forbidden. Full paste-ready issue in [`DAT_020B_FOLLOW_UP.md`](DAT_020B_FOLLOW_UP.md). |

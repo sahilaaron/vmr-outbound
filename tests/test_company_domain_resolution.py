@@ -826,8 +826,9 @@ class TestPromotion:
         )
         assert outcome.state is DomainResolutionState.PROVISIONAL
 
-        result = promo.promote(db_session, snapshot=capture, actor="test")
-
+        # DAT-017A: resolving IS the promotion. No Confirm, no Promote.
+        result = outcome.promotion_result
+        assert result is not None
         assert result.contact_outcome is ContactPromotionOutcome.CONTACT_CREATED
         assert result.company_outcome is CompanyResolutionOutcome.DOMAIN_PROVISIONAL
         assert result.contact is not None
@@ -835,6 +836,12 @@ class TestPromotion:
             "the permanent edge is what DAT-017A required, not the domain string alone"
         )
         assert result.contact.company_domain == DOMAIN
+
+        # Pressing Promote afterwards is a no-op, not a second person.
+        again = promo.promote(db_session, snapshot=capture, actor="test")
+        assert again.contact_outcome is ContactPromotionOutcome.ALREADY_PROMOTED
+        assert again.contact is not None
+        assert again.contact.id == result.contact.id
 
     def test_promotion_is_still_idempotent_and_creates_no_second_contact(
         self, db_session: Session, capture: LinkedInProfileSnapshot
@@ -858,17 +865,27 @@ class TestPromotion:
 
         A provisional decision writes no confirmation to the candidate store, so
         a view rebuild that only looked there would report the capture back as
-        "awaiting your confirmation" and quietly disable the promote button.
+        "awaiting your confirmation" and quietly undo the resolution.
+
+        Since DAT-017A promotes automatically, the tell is no longer a live
+        Promote button — the capture is already promoted, so there is correctly
+        nothing left to press. What must survive the rebuild is the provisional
+        state itself, the domain, and the contact it produced.
         """
 
-        resolution.resolve(
+        outcome = resolution.resolve(
             db_session, snapshot=capture, access=access(transport_sample("clean_single_match"))
         )
         view = promo.build_view(db_session, capture)
 
         assert view.promotion.company_outcome is CompanyResolutionOutcome.DOMAIN_PROVISIONAL
         assert view.promotion.resolved_domain == DOMAIN
-        assert view.can_promote is True
+        # Already promoted, so nothing is awaiting a click...
+        assert view.can_promote is False
+        assert view.promotion.promoted_contact_id is not None
+        # ...and the contact it made is the one the resolution reported.
+        assert outcome.contact is not None
+        assert view.promotion.promoted_contact_id == outcome.contact.id
 
     def test_an_unresolved_capture_still_cannot_be_promoted(
         self, db_session: Session, capture: LinkedInProfileSnapshot

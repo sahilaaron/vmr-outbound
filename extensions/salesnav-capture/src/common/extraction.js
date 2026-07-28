@@ -349,6 +349,7 @@
     const linkedinProfileUrl = profile.url;
     const linkedinProfileUrlSource = profile.url ? "observed" : null;
     let linkedinMemberId = null;
+    let linkedinAliasUrl = null;
 
     // Read the member id whenever a lead URL is present — including when a real
     // profile URL is also visible. A row showing both is the one place the two
@@ -358,6 +359,13 @@
       const member = normalize.salesNavMemberId(lead.url);
       if (member.id) {
         linkedinMemberId = member.id;
+        // DAT-020. LinkedIn's /in/ route accepts the member id and redirects to
+        // the person, so this alias is a genuinely useful way to open a profile
+        // whose handle is not known yet. It is kept in its OWN field: it is
+        // navigation and evidence, never the published handle, and it must not
+        // reach `linkedinProfileUrl`. Built from the verbatim id — folding the
+        // case would break the very redirect it exists for.
+        linkedinAliasUrl = "https://www.linkedin.com/in/" + member.id;
       } else {
         // A lead URL we cannot read an identifier out of. Refuse rather than
         // fabricate; the row keeps its lead URL as evidence.
@@ -424,6 +432,7 @@
       linkedinProfileUrl,
       linkedinProfileUrlSource,
       linkedinMemberId,
+      linkedinAliasUrl,
       salesNavLeadUrl: lead.url,
       companyLinkedInUrl,
       salesNavCompanyUrl,

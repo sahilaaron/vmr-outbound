@@ -24,6 +24,20 @@
   </div>
   <div style="padding: 12px;">
     {% if decision %}
+    {% if promotion.promoted_contact_id and decision.is_provisional %}
+    <div class="notice" role="status" style="margin-bottom:12px">
+      <strong>Resolved automatically — provisional.</strong>
+      The company and contact were created from this decision without asking you to
+      confirm or promote. The domain is still <em>provisional</em>, and nothing below
+      re-states it as confirmed.
+    </div>
+    {% elif promotion.promoted_contact_id %}
+    <div class="notice" role="status" style="margin-bottom:12px">
+      <strong>Resolved automatically — confirmed.</strong>
+      The company and contact were created from evidence already on record, so no
+      provider call and no confirmation click was needed.
+    </div>
+    {% endif %}
     {% if decision.is_provisional %}
     <div class="notice warn" role="status" style="margin-bottom:12px">
       <strong>Provisional domain.</strong>
@@ -174,6 +188,14 @@
 </div>
 
 {% if promotion.promoted_contact_id is none %}
+{# DAT-017A. Everything below is the manual path: candidate Confirm, manual
+   domain entry, and Promote. It is shown only while a capture is still waiting
+   for a decision — which now means the cases where operator judgement is
+   genuinely the missing ingredient: conflicting evidence, several plausible
+   candidates, no eligible candidate, a provider failure, an ambiguous identity,
+   or a deliberate override. A capture the policy already resolved has been
+   promoted automatically and never reaches here, so nobody is asked to confirm
+   a conclusion they did not reach. #}
 <div class="table-wrap">
   <div class="toolbar"><strong class="small">Domain candidates</strong></div>
   <table>
