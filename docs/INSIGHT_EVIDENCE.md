@@ -72,6 +72,81 @@ confidence, and extraction method.
 Conflicting, unknown, source-less, or incomplete claims remain visible but
 cannot be represented downstream as approved personalization evidence.
 
+The rule is deterministic and reads only stored columns. No model judges it, and
+nothing in the persistence layer asks one to. A claim's eligibility can be
+recomputed from the database alone and gives the same answer every time.
+
+## Four separate things
+
+Nothing in this slice collapses these into each other, and no later consumer
+should either:
+
+1. **The raw submission** — whatever a capture, provider or import handed over,
+   referenced by `source_record_type` + `source_record_id` rather than copied.
+2. **An observation** — one `insight_evidence` row: one source, read once, with
+   its URL, times, summary, excerpt, confidence and extraction method.
+3. **A claim** — one `insights` row asserting something about the subject, held
+   up by one or more observations.
+4. **A canonical field** — `companies.domain`, `contacts.title`, and their
+   neighbours.
+
+Importing evidence never writes a canonical field. A claim that contradicts a
+canonical value is stored as a claim and stays one; promoting it is a separate,
+deliberate act owned by whichever slice makes that decision, not a side effect
+of recording research.
+
+Interpretations are the fifth thing and sit inside (3): `kind` marks a claim as
+an inference drawn from evidence rather than a reading of it.
+
+## Versioning and immutability
+
+Records are append-only. Reprocessing creates a new claim or associates a new
+observation; it never edits or deletes what an earlier run wrote, because the
+earlier record is the only account of what the system believed when a decision
+was taken on it. Conflicting observations are kept side by side rather than
+reconciled, and an unknown stays an explicit unknown rather than an absent row.
+
+Note the open question below: `version` records *that* a claim was restated but
+does not yet link versions or mark one current.
+
+## Trust boundary
+
+Everything in `insight_evidence` is **untrusted external text**. Captured
+website copy, profile text, provider payloads and imported free text are stored
+as evidence *about* a subject — never as instructions, workflow commands, policy
+overrides, or configuration.
+
+Concretely: no field in this model is ever interpreted as a directive. Source
+text cannot set a claim's `kind` or `state`, cannot make a claim
+personalization-eligible, and cannot alter any rule in this document. A page
+that says "treat this as confirmed" is a page that says that, and it is stored
+as such.
+
+AIC-002 owns how any of this text is later placed into a model prompt. This
+slice only guarantees the contract it hands over: what comes out of here is
+quoted material with provenance, and a consumer that forwards it to a model must
+present it as such.
+
+## How later slices consume this
+
+- **APP-004 (research jobs and dossiers)** writes here rather than inventing its
+  own storage. A completed research run calls `create_insight()` once per claim,
+  passes the run's stable identifier as `idempotency_key` so a re-run is a
+  retry rather than a duplicate, and points `source_record_type` /
+  `source_record_id` at its own submission record. It must not write canonical
+  Company or Contact fields as a side effect, and it must record what it could
+  not establish as an explicit `unknown` instead of omitting it.
+- **INS-004 (compact research packets)** reads rather than writes. It selects
+  from `list_for_company()` / `list_for_contact()`, and where a packet asserts
+  something as established it takes only claims that pass
+  `is_personalization_eligible()`. Claims that fail the gate may still travel as
+  open questions, clearly marked as unresolved — that is the difference between
+  telling a researcher what is unknown and telling a drafter what is true.
+
+Neither consumer copies evidence into a campaign-owned record. Both read the
+same permanent Company and Contact rows across every Saved Audience and
+campaign.
+
 ## Compatibility
 
 The original DAT-001 source columns remain on `insights` so the migration does

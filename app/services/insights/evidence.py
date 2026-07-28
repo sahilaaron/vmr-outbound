@@ -4,6 +4,14 @@ The service accepts already-retrieved evidence; it does not browse, interpret a
 research engine payload, qualify a Contact, or approve personalization. Its job
 is narrower: validate the shared boundary and preserve claims separately from
 the observations that support them.
+
+Everything arriving here is untrusted external text. Source URLs, titles,
+summaries and excerpts are stored as observations *about* a subject and are
+never read as instructions, workflow commands, policy overrides or
+configuration. The caller declares ``kind`` and ``state``; no wording inside the
+evidence can set them, and :func:`is_personalization_eligible` decides from
+stored columns alone, so nothing a page asserts about itself can promote it. How
+this text is later placed into a model prompt belongs to AIC-002, not here.
 """
 
 from __future__ import annotations
@@ -290,6 +298,10 @@ def is_personalization_eligible(session: Session, *, insight: Insight) -> bool:
     This is not campaign eligibility and not an approval. It only prevents a
     source-less, conflicted, or explicitly unknown claim from being presented
     downstream as approved personalization evidence.
+
+    Deterministic by construction: it reads stored columns and nothing else, so
+    the same row always gives the same answer and no model judgement sits inside
+    the persistence layer.
     """
 
     if insight.state is not InsightState.SUPPORTED:
