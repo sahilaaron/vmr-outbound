@@ -11,8 +11,8 @@ Every active build must move a captured person closer to a sendable, campaign-sp
 ## Canonical MVP workflow
 
 ```text
-Campaign setup
-→ Campaign + Collection assignment during capture
+Capture permanent Contacts
+→ optionally auto-add them to a Campaign through persistent extension selection
 → Contact and Company identity resolution
 → Company-domain resolution
 → Company research
@@ -37,6 +37,18 @@ The backend continues to use jobs and workers. The operator-facing application c
 - **Agent Job** — one resumable, inspectable unit of pipeline work.
 
 A Contact may belong to many Collections and many Campaigns. Campaign-specific scores, messages, approvals and send outcomes must never be stored as permanent Contact facts.
+
+## Capture model
+
+Capture is always campaign-independent at the Contact level.
+
+- Every successful capture creates or updates a permanent Contact.
+- Campaign selection in the extension is optional.
+- If a Campaign is selected, the system auto-adds the resolved Contact to that Campaign by creating or updating Campaign Contact membership.
+- If no Campaign is selected, the Contact is still captured normally.
+- Selecting a Campaign never changes identity resolution, Contact ownership or canonical data rules.
+
+In other words, Campaign selection is a filing shortcut, not a prerequisite for capture.
 
 ## Campaign setup
 
@@ -63,10 +75,9 @@ The extension must:
 2. allow multiple Labels;
 3. persist the selected Campaign and Labels across every normal LinkedIn person capture and every Sales Navigator list capture;
 4. keep them active until the operator deselects them;
-5. attach the selection to every captured row without extra clicks;
-6. import captures into permanent Contacts while also creating or updating Campaign Contact membership.
-
-A capture may still exist without a Campaign, but the primary MVP path is campaign-labelled capture.
+5. attach selected Labels to every captured Contact without extra clicks;
+6. when a Campaign is selected, auto-add each resolved Contact to that Campaign without changing the permanent Contact record;
+7. continue to support normal capture when no Campaign is selected.
 
 ## Locked Agent order
 
@@ -122,7 +133,7 @@ Global Agent settings define defaults. Campaign settings may disable or override
 The first usable model is complete when one operator can:
 
 1. configure a Campaign;
-2. capture between 100 and 2,000 Sales Navigator contacts with persistent Campaign and Label selection;
+2. capture between 100 and 2,000 Sales Navigator contacts, with optional persistent Campaign auto-add and persistent Labels;
 3. see the captures converge into permanent Contacts and Companies;
 4. run domain resolution, research, email discovery and verification automatically;
 5. generate company insights, outreach scores and campaign-specific personalized email copy;
@@ -146,11 +157,12 @@ The repository already contains substantial parts of the foundation:
 - MillionVerifier-backed exact-address verification;
 - company evidence and insight models.
 
-The immediate work is to connect these capabilities into the canonical Campaign-to-send pipeline rather than continue building them as isolated features.
+The immediate work is to connect these capabilities into the canonical Contact-to-send pipeline rather than continue building them as isolated features.
 
 ## Operating principles
 
 - **One person, one Contact.** Campaign membership never duplicates the permanent person.
+- **Capture never requires a Campaign.** Campaign selection only auto-adds a Contact after capture.
 - **One company, reusable research.** Domain and research work should be reused across Contacts and Campaigns.
 - **Campaign-specific output stays campaign-specific.** Scores, messages, approvals and send state belong to Campaign Contact.
 - **Evidence before interpretation.** Raw captures and sourced research remain separate from AI-derived insights.
