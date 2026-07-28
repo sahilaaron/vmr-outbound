@@ -401,6 +401,7 @@ def _profile_projection(person: dict[str, Any], normalized_url: str | None) -> d
         "linkedin_profile_url": normalized_url or person.get("linkedin_profile_url"),
         "public_identifier": person.get("linkedin_public_identifier"),
         "salesnav_lead_url": person.get("salesnav_lead_url"),
+        "salesnav_member_id": person.get("salesnav_member_id"),
         "full_name": person.get("full_name"),
         "first_name": person.get("first_name"),
         "last_name": person.get("last_name"),
@@ -570,6 +571,12 @@ def _build_snapshot(
         capture_mode=str(payload.get("capture_mode")),
         source_surface=source.get("surface"),
         salesnav_lead_url=person.get("salesnav_lead_url"),
+        # DAT-019: stored verbatim. The member id is case-sensitive and must not
+        # travel through the URL normalizer, which lowercases slugs.
+        salesnav_member_id=person.get("salesnav_member_id"),
+        # Only a link actually on the page counts as observed. The extension no
+        # longer synthesises one, so a null URL here is honest uncertainty.
+        profile_url_source="observed" if normalized_url else None,
         operator_labels=requested_labels or None,
         captured_at=_parse_dt(capture.get("captured_at")),
         extraction_status=str(extraction.get("status")),

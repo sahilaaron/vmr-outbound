@@ -138,21 +138,13 @@
     return { id, reason: null };
   }
 
-  /**
-   * Derive the canonical public profile URL encoded in a Sales Navigator lead
-   * URL: `/sales/lead/<member-id>` -> `https://www.linkedin.com/in/<member-id>`.
-   *
-   * This is a DERIVATION, not an observation. Callers must record which of the
-   * two it was, and must prefer an actually visible `/in/` URL when one exists.
-   * Returns `{url: null}` with a reason rather than fabricating anything.
-   *
-   * @returns {{url: string|null, memberId: string|null, reason: string|null}}
-   */
-  function profileUrlFromSalesNavLead(leadUrl) {
-    const { id, reason } = salesNavMemberId(leadUrl);
-    if (!id) return { url: null, memberId: null, reason };
-    return { url: "https://www.linkedin.com/in/" + id, memberId: id, reason: null };
-  }
+  // DAT-019 removed `profileUrlFromSalesNavLead`, which turned a member id into
+  // `https://www.linkedin.com/in/<member-id>`. That alias resolves, but it is not
+  // the person's public handle, and putting it in the canonical identity slot
+  // split one person into two identities that exact-string matching could never
+  // reconcile (#195). `salesNavMemberId` above returns the identifier itself,
+  // which is what callers should carry. A display-only link can be built from it
+  // where a clickable row is wanted — but never as an identity.
 
   /** Extract the `page` query parameter from a search URL, if present. */
   function pageNumberFromUrl(searchUrl) {
@@ -175,7 +167,6 @@
     normalizeLinkedInUrl,
     classifyLinkedInUrl,
     salesNavMemberId,
-    profileUrlFromSalesNavLead,
     pageNumberFromUrl,
   };
 });

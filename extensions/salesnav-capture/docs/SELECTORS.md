@@ -53,31 +53,40 @@ rejected (flagged `malformed_url`), never repaired.
 
 ## Canonical profile URL from the lead URL (DAT-018)
 
-`/sales/lead/<member-id>` carries the member identifier, so the canonical public
-profile URL is `https://www.linkedin.com/in/<member-id>`. Derivation is a
-**fallback**: a visibly present `/in/` link is stronger evidence and always wins.
+`/sales/lead/<member-id>` carries the member identifier. It is read and kept as
+`linkedinMemberId` — **an identifier, never a URL**. The public profile URL is
+recorded only when an `/in/` link is actually visible on the row.
 
-This reverses the earlier rule below, on the strength of Sahil's authenticated
-Sales Navigator trial (issue #185). The reversal is deliberately narrow:
+**DAT-019 reversed the DAT-018 derivation.** DAT-018 built
+`https://www.linkedin.com/in/<member-id>` whenever no link was visible and put
+it in the canonical profile-URL slot. That alias does resolve — LinkedIn's
+`/in/` route accepts the member id and redirects to the person — so the problem
+was never a dead link. It is that identity is matched by **exact normalized
+string**: the alias and the person's published handle are two different keys for
+one human, so capturing them from a results row and from their own profile page
+produced two identities that could never reconcile.
 
-- only `/sales/lead/` is supported — `/sales/people/` carries a different
-  segment, so deriving from it would be a guess;
+The consequence was predicted in this file and filed as issue #195 once it was
+observed live in the DAT-011 trial.
+
+The rule now:
+
+- only `/sales/lead/` is read — `/sales/people/` carries a different segment;
 - query strings, fragments, the volatile `,NAME_SEARCH,…` suffix and any extra
   route material are stripped before the identifier is read;
 - the identifier must match `^[A-Za-z0-9_-]{3,128}$`. Anything else is refused
   with a reason rather than repaired;
+- the identifier is preserved **verbatim and case-sensitively** — the alias
+  LinkedIn accepts carries the case through, so folding it breaks the value;
 - the original Sales Navigator URL is preserved unchanged as `salesNavLeadUrl`;
-- the record carries `linkedinProfileUrlSource` (`observed` |
-  `derived_from_sales_lead`) and a `derived_value` warning, so a derivation can
-  never be mistaken for something read off the page.
+- `linkedinProfileUrlSource` is `observed` or null. There is no third state,
+  because nothing is derived any more;
+- a row that shows **both** a lead URL and a real `/in/` link keeps both. That
+  pair, observed together on one page, is what relates the two identifier forms
+  for one person without anything being inferred.
 
-**Known consequence, flagged for review.** If a member id is an opaque URN
-rather than a vanity handle, the derived URL will not be string-equal to a
-vanity `/in/` URL already stored for the same person. Backend identity matching
-is exact-URL (DAT-012E), so the same human could fail to match and be staged as
-unmatched. Row identity inside the extension keys off the observed lead URL, so
-this does not affect in-batch dedupe — but it is a real backend consideration
-and is recorded in the DAT-018 delivery notes rather than silently absorbed.
+A clickable link may still be built from the member id for display. That is a
+convenience for the operator, never an identity.
 
 ## What is intentionally NOT derived
 

@@ -87,6 +87,7 @@
     "linkedin_profile_url",
     "linkedin_public_identifier",
     "salesnav_lead_url",
+    "salesnav_member_id",
     "full_name",
     "first_name",
     "last_name",
@@ -218,6 +219,8 @@
         linkedin_profile_url: p.linkedin_profile_url != null ? p.linkedin_profile_url : null,
         linkedin_public_identifier: p.public_identifier != null ? p.public_identifier : null,
         salesnav_lead_url: null,
+        // A person-profile capture never comes from Sales Navigator.
+        salesnav_member_id: null,
         full_name: p.full_name != null ? p.full_name : null,
         first_name: normalize.splitName(p.full_name).firstName,
         last_name: normalize.splitName(p.full_name).lastName,
@@ -278,6 +281,10 @@
         linkedin_profile_url: isProfileUrl ? url : null,
         linkedin_public_identifier: isProfileUrl ? publicIdentifier(url) : null,
         salesnav_lead_url: rec.salesNavLeadUrl || null,
+        // DAT-019: the opaque Sales Navigator member identifier, verbatim and
+        // case-preserved. A declared identifier of its own — never a URL, never
+        // the public handle, and never a substitute for either.
+        salesnav_member_id: rec.linkedinMemberId || null,
         full_name: rec.rawFullName || null,
         first_name: rec.firstName || null,
         last_name: rec.lastName || null,
@@ -489,6 +496,7 @@
       for (const f of [
         "linkedin_public_identifier",
         "salesnav_lead_url",
+        "salesnav_member_id",
         "full_name",
         "first_name",
         "last_name",

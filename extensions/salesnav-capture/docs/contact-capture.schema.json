@@ -133,6 +133,7 @@
         "linkedin_profile_url",
         "linkedin_public_identifier",
         "salesnav_lead_url",
+        "salesnav_member_id",
         "full_name",
         "first_name",
         "last_name",
@@ -155,6 +156,11 @@
         "salesnav_lead_url": {
           "type": ["string", "null"],
           "description": "Sales Navigator lead URL when visible. Never a canonical person identity: it cannot match a contact."
+        },
+        "salesnav_member_id": {
+          "type": ["string", "null"],
+          "pattern": "^[A-Za-z0-9_-]{3,128}$",
+          "description": "Opaque Sales Navigator member identifier, read from the lead URL and preserved VERBATIM — it is case-sensitive. A declared identifier in its own right: two Sales Navigator captures of the same member match on it exactly. It is never a URL, never the public handle, and is never substituted into linkedin_profile_url; https://www.linkedin.com/in/<member-id> does resolve, but it is an alias rather than the person's published handle and does not string-match it."
         },
         "full_name": { "type": ["string", "null"] },
         "first_name": { "type": ["string", "null"] },

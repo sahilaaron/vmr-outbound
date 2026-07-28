@@ -322,40 +322,49 @@
     if (!lead.url) warnings.push({ code: WARNINGS.MISSING_FIELD, field: "salesNavLeadUrl" });
     else selectorsUsed.leadUrl = leadHit.selector;
 
-    // Public /in/ profile URL. An actually visible link is the strongest
-    // evidence and always wins. When none is present, DAT-018 derives the
-    // canonical URL from the member identifier the lead URL already encodes —
-    // a documented reversal of the earlier "never derive" rule, made on the
-    // strength of Sahil's authenticated Sales Navigator trial. The derivation is
-    // recorded as such and never overwrites the lead URL.
+    // Public /in/ profile URL. Only a link actually visible on the page counts.
+    //
+    // DAT-018 A used to synthesise `/in/<member-id>` from the lead URL whenever
+    // no link was visible. That URL does resolve — LinkedIn's /in/ route accepts
+    // the opaque member id and redirects to the person. The problem is not that
+    // it points nowhere; it is that identity here is matched by exact normalized
+    // string, so the alias and the vanity handle are two different keys for one
+    // person. Capture the same human from a results row and from their own
+    // profile page and you get two identities that can never match (DAT-019 /
+    // #195). Three committed contracts already said not to do it: identity is
+    // never repaired from a lead URL, a missing profile URL stays honestly
+    // uncertain, and the lead URL is never an identity key.
+    //
+    // So the canonical URL stays null and the member identifier is captured
+    // under its own name. It is a real, stable identifier — it is simply not the
+    // person's public handle, and only the handle belongs in the identity slot.
+    // A clickable link can still be built from the member id for display; that
+    // is a convenience, not an identity.
     const profileHit = firstHref(container, PUBLIC_PROFILE_SELECTORS);
     const profile = resolveUrl(profileHit.value);
     if (profileHit.value && !profile.valid) {
       warnings.push({ code: WARNINGS.MALFORMED_URL, field: "linkedinProfileUrl", raw: profileHit.value });
     }
 
-    let linkedinProfileUrl = profile.url;
-    let linkedinProfileUrlSource = profile.url ? "observed" : null;
+    const linkedinProfileUrl = profile.url;
+    const linkedinProfileUrlSource = profile.url ? "observed" : null;
     let linkedinMemberId = null;
 
-    if (!linkedinProfileUrl && lead.url) {
-      const derived = normalize.profileUrlFromSalesNavLead(lead.url);
-      if (derived.url) {
-        linkedinProfileUrl = derived.url;
-        linkedinProfileUrlSource = "derived_from_sales_lead";
-        linkedinMemberId = derived.memberId;
-        warnings.push({
-          code: WARNINGS.DERIVED_VALUE,
-          field: "linkedinProfileUrl",
-          from: "salesNavLeadUrl",
-        });
+    // Read the member id whenever a lead URL is present — including when a real
+    // profile URL is also visible. A row showing both is the one place the two
+    // identifier forms are observed together for one person, and that pair is
+    // what lets the backend relate them later without inferring anything.
+    if (lead.url) {
+      const member = normalize.salesNavMemberId(lead.url);
+      if (member.id) {
+        linkedinMemberId = member.id;
       } else {
         // A lead URL we cannot read an identifier out of. Refuse rather than
         // fabricate; the row keeps its lead URL as evidence.
         warnings.push({
           code: WARNINGS.MALFORMED_URL,
           field: "salesNavMemberId",
-          reason: derived.reason,
+          reason: member.reason,
         });
       }
     }

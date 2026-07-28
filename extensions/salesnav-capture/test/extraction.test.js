@@ -30,17 +30,24 @@ test("normal page: extracts all rows with core fields and provenance", () => {
   assert.equal(first.sourcePageNumber, 2);
   assert.equal(first.sourcePosition, 1);
   assert.equal(first.capturedAt, "2026-07-23T00:00:00.000Z");
-  // DAT-018 A: no visible /in/ link, so the canonical profile URL is DERIVED
-  // from the member identifier the lead URL already encodes. The derivation is
-  // marked as such and the lead URL is preserved untouched as source evidence.
-  assert.equal(first.linkedinProfileUrl, "https://www.linkedin.com/in/ACwAAAB1x9k");
-  assert.equal(first.linkedinProfileUrlSource, "derived_from_sales_lead");
+  // DAT-019: no visible /in/ link, so there is no public profile URL to record.
+  // The member identifier the lead URL encodes is captured under its own name
+  // instead of being dressed up as a handle, and the lead URL is preserved
+  // untouched as source evidence.
+  assert.equal(first.linkedinProfileUrl, null);
+  assert.equal(first.linkedinProfileUrlSource, null);
   assert.equal(first.linkedinMemberId, "ACwAAAB1x9k");
   assert.equal(first.salesNavLeadUrl, "https://www.linkedin.com/sales/lead/ACwAAAB1x9k");
-  assert.ok(codes(first).includes(WARNINGS.DERIVED_VALUE));
-  // A derivation is never silently presented as an observation.
-  assert.ok(!codes(first).includes(WARNINGS.MISSING_FIELD) ||
-    !first.warnings.some((w) => w.code === WARNINGS.MISSING_FIELD && w.field === "linkedinProfileUrl"));
+  assert.ok(codes(first).includes(WARNINGS.MISSING_FIELD));
+  assert.ok(!codes(first).includes(WARNINGS.DERIVED_VALUE));
+  // DAT-019 inverts what this used to assert. There is no derivation left to
+  // mislabel as an observation; instead the absent profile URL must be reported
+  // as missing, so an uncertain identity is visible rather than papered over.
+  assert.ok(
+    first.warnings.some(
+      (w) => w.code === WARNINGS.MISSING_FIELD && w.field === "linkedinProfileUrl"
+    )
+  );
 });
 
 test("missing fields: explicit nulls + missing_field warnings, no guessing", () => {
@@ -72,9 +79,10 @@ test("alternate/changed selectors: falls back to structural discovery + class se
   assert.equal(lena.location, "Munich, Bavaria, Germany");
   assert.equal(lena.companyName, "Novaline Freight");
   assert.equal(lena.salesNavLeadUrl, "https://www.linkedin.com/sales/lead/ACwAAAF9ghi");
-  // The lead URL still yields the canonical profile URL under the fallback path.
-  assert.equal(lena.linkedinProfileUrl, "https://www.linkedin.com/in/ACwAAAF9ghi");
-  assert.equal(lena.linkedinProfileUrlSource, "derived_from_sales_lead");
+  // The lead URL yields the member identifier, and nothing more (DAT-019).
+  assert.equal(lena.linkedinProfileUrl, null);
+  assert.equal(lena.linkedinProfileUrlSource, null);
+  assert.equal(lena.linkedinMemberId, "ACwAAAF9ghi");
 });
 
 test("alternate selectors with no company at all: rows discovered, then withheld", () => {

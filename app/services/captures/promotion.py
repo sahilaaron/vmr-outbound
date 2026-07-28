@@ -58,9 +58,11 @@ from app.models.enums import (
     EnrichmentConfirmationSource,
     EnrichmentConfirmationStatus,
     EnrichmentLookupStatus,
+    LinkedInIdentifierKind,
 )
 from app.models.linkedin_profile import LinkedInProfileSnapshot
 from app.models.salesnav_enrichment import SalesNavCompanyEnrichment
+from app.services import identity_links
 from app.services.audit import record_audit_event
 from app.services.captures import labels as labels_service
 from app.services.enrichment import companies as enrichment
@@ -82,6 +84,11 @@ PROMOTE_AUDIT_ACTION = "capture.promoted"
 # Snapshot-derived fields proposed to the DAT-005 freshness policy after a
 # promotion. Everything else the capture observed stays snapshot evidence only.
 _PROVENANCE_FIELDS = ("title", "company_name", "linkedin_url")
+
+# ``linkedin_profile_snapshots.profile_url_source`` value meaning the /in/ URL was
+# a link actually on the page. Anything else — notably the pre-DAT-019
+# ``derived_from_sales_lead`` — is evidence, never an identity (DAT-019).
+_OBSERVED_URL_SOURCE = "observed"
 
 # Lookup statuses that mean "ask again later", as opposed to "asked, and the
 # provider genuinely has nothing".
@@ -721,12 +728,22 @@ def _record_provenance(
     identity: PersonIdentity,
     hints: CompanyHints,
     actor: str,
+    linkedin_url: str | None = None,
 ) -> None:
     """Append the capture's observations to the DAT-005 ledger and reconcile.
 
-    The promotion does not decide which value wins — the versioned freshness
-    policy does, exactly as it does for a DAT-013 refresh. A manual override or
-    newer evidence still beats this capture.
+    The promotion does not decide which value wins for ``title`` and
+    ``company_name`` — the versioned freshness policy does, exactly as it does
+    for a DAT-013 refresh. A manual override or newer evidence still beats this
+    capture.
+
+    ``linkedin_url`` is the exception, and deliberately so. Freshness ranks by
+    recency, and recency is the wrong question for a published handle: a later
+    capture is not better evidence about who someone is, and a derived alias is
+    not evidence at all. The caller decides whether this capture's URL may become
+    canonical (``identity_links.propose_canonical_url``) and passes only a value
+    that passed that rule; anything else is not offered to the ledger, so the
+    freshness policy cannot quietly overturn it (DAT-019).
     """
 
     observed_at = (snapshot.captured_at or snapshot.ingested_at or datetime.now(UTC)).astimezone(
@@ -737,8 +754,8 @@ def _record_provenance(
         proposed["title"] = identity.title
     if hints.name:
         proposed["company_name"] = hints.name
-    if snapshot.normalized_profile_url:
-        proposed["linkedin_url"] = snapshot.normalized_profile_url
+    if linkedin_url:
+        proposed["linkedin_url"] = linkedin_url
     for field_name in _PROVENANCE_FIELDS:
         if field_name not in proposed:
             continue
@@ -843,13 +860,75 @@ def promote(
     assert identity.first_name is not None
     assert identity.last_name is not None
 
-    # --- Person identity: exact URL first, then the deterministic natural key --
+    # --- Person identity ------------------------------------------------------
+    #
+    # DAT-019. Identity is resolved against ``linkedin_identity_links`` first: an
+    # indexed read per identifier kind, over ACTIVE, non-suspect rows only, so a
+    # flagged legacy alias, a superseded association and a row awaiting review
+    # can never answer a match.
+    #
+    # Only a DIRECTLY OBSERVED profile URL is an identity here. A snapshot whose
+    # URL was derived from a lead URL before DAT-019 carries
+    # ``profile_url_source = 'derived_from_sales_lead'``; that value stays stored
+    # as evidence but is not a published handle, so it takes no part in matching.
     natural_key = norm.build_natural_key(identity.first_name, identity.last_name, domain)
     matched: Contact | None = None
     match_kind = "created"
 
-    if snapshot.normalized_profile_url:
-        url_matches = refresh_service.find_exact_matches(session, snapshot.normalized_profile_url)
+    observed_url = (
+        snapshot.normalized_profile_url
+        if snapshot.profile_url_source == _OBSERVED_URL_SOURCE
+        else None
+    )
+    member_id = snapshot.salesnav_member_id
+
+    by_url = identity_links.lookup_contact(
+        session, LinkedInIdentifierKind.PUBLIC_VANITY_URL, observed_url
+    )
+    by_member = identity_links.lookup_contact(
+        session, LinkedInIdentifierKind.SALESNAV_MEMBER_ID, member_id
+    )
+
+    # The two identifiers on one capture point at two different people. That is a
+    # contradiction, not a merge: both contacts are preserved and the operator
+    # decides. Evidence is recorded against the capture rather than guessed at.
+    if by_url is not None and by_member is not None and by_url.id != by_member.id:
+        return _block(
+            session,
+            promotion=result,
+            outcome=ContactPromotionOutcome.CONTACT_IDENTITY_AMBIGUOUS,
+            reason=(
+                "this capture's LinkedIn URL and Sales Navigator member id already "
+                "belong to two different contacts; kept separate for review rather "
+                "than merged"
+            ),
+            detail={
+                "ambiguous_contact_ids": sorted({str(by_url.id), str(by_member.id)}),
+                "observed_profile_url": observed_url,
+                "salesnav_member_id": member_id,
+            },
+        )
+
+    if by_url is not None:
+        matched = by_url
+        match_kind = "linked_by_identity_link_url"
+    elif by_member is not None:
+        matched = by_member
+        match_kind = "linked_by_identity_link_member_id"
+
+    # Compatibility fallback, deliberately retained.
+    #
+    # ``linkedin_identity_links`` is back-filled by the DAT-019 migration for
+    # every contact that already carried a LinkedIn URL, but two groups are not
+    # represented in it: contacts whose URL was duplicated across rows (recorded
+    # `needs_review` rather than active, so they must not silently match), and
+    # any contact whose URL was written by a path other than promotion after the
+    # migration ran. Dropping the old exact-URL scan would quietly stop matching
+    # those, which is a regression in the direction of creating duplicates. It is
+    # therefore consulted only when the indexed lookup found nothing, and only
+    # for a directly observed URL.
+    if matched is None and observed_url:
+        url_matches = refresh_service.find_exact_matches(session, observed_url)
         if len(url_matches) > 1:
             return _block(
                 session,
@@ -882,6 +961,30 @@ def promote(
             matched = deduped.contact
             match_kind = "linked_by_natural_key"
 
+    # DAT-019. The natural key can land on a different person from the one an
+    # identifier already names. Deciding between them is exactly the judgement
+    # this system refuses to make automatically, so it is checked BEFORE anything
+    # is created — an ambiguity discovered afterwards would have to be reported
+    # against a contact that should not have been touched.
+    for owner in (by_url, by_member):
+        if owner is not None and matched is not None and owner.id != matched.id:
+            return _block(
+                session,
+                promotion=result,
+                outcome=ContactPromotionOutcome.CONTACT_IDENTITY_AMBIGUOUS,
+                reason=(
+                    "a LinkedIn identifier on this capture is already held by a "
+                    "different contact than the one this person's name and company "
+                    "resolve to; kept separate for review rather than merged"
+                ),
+                detail={
+                    "ambiguous_contact_ids": sorted({str(owner.id), str(matched.id)}),
+                    "natural_key": natural_key,
+                    "observed_profile_url": observed_url,
+                    "salesnav_member_id": member_id,
+                },
+            )
+
     # --- Suppression is authoritative, before anything is created -------------
     decision = evaluate_suppression(
         session, email=matched.email if matched else None, domain=domain
@@ -912,7 +1015,9 @@ def promote(
             company_domain=domain,
             company_id=company.id,
             title=identity.title,
-            linkedin_url=snapshot.normalized_profile_url,
+            # Only a directly observed handle. A member id is an identifier, not
+            # a published URL, and a legacy alias is not one either (DAT-019).
+            linkedin_url=observed_url,
             natural_key=natural_key,
         )
         session.add(contact)
@@ -921,6 +1026,67 @@ def promote(
     else:
         contact = matched
         contact_outcome = ContactPromotionOutcome.CONTACT_EXACT_MATCH_LINKED
+
+    # An existing contact may gain a handle it did not have, but a handle it
+    # already has is never displaced by weaker evidence. `canonical_url` is the
+    # value that survived that rule, and it is the ONLY one offered to the DAT-005
+    # ledger below — otherwise freshness would rank by recency and quietly
+    # overturn the decision just made here.
+    #
+    # A contact created by this promotion took its handle from this capture, so
+    # that value is canonical by construction and needs no arbitration.
+    canonical_url: str | None = None
+    if matched is None:
+        canonical_url = observed_url
+    elif observed_url:
+        accepted = identity_links.propose_canonical_url(
+            session, contact=contact, url=observed_url, observed=True
+        )
+        session.flush()
+        if accepted:
+            canonical_url = contact.linkedin_url
+
+    # --- Identity links: what this capture proved about who this is -----------
+    #
+    # Recorded after the contact exists so every link points at a real row. A
+    # conflict here does not merge and does not raise: `record_observed` writes
+    # `needs_review` evidence, the existing association is left alone, and the
+    # capture is reported as ambiguous below.
+    identity_conflicts: list[str] = []
+    if member_id and observed_url:
+        # The only automatic bridge: both identifiers directly observed in this
+        # one authenticated capture, for the same displayed person.
+        bridge = identity_links.bridge_observed_pair(
+            session,
+            contact=contact,
+            member_id=member_id,
+            vanity_url=observed_url,
+            decided_by=actor,
+            capture_id=snapshot.id,
+            source_surface=snapshot.source_surface,
+        )
+        for outcome_part in (bridge.member, bridge.vanity):
+            if outcome_part is not None and outcome_part.conflicting_contact_id is not None:
+                identity_conflicts.append(str(outcome_part.conflicting_contact_id))
+    else:
+        for kind, value in (
+            (LinkedInIdentifierKind.SALESNAV_MEMBER_ID, member_id),
+            (LinkedInIdentifierKind.PUBLIC_VANITY_URL, observed_url),
+        ):
+            if not value:
+                continue
+            link_outcome = identity_links.record_observed(
+                session,
+                contact=contact,
+                kind=kind,
+                value=value,
+                decided_by=actor,
+                capture_id=snapshot.id,
+                source_surface=snapshot.source_surface,
+            )
+            if link_outcome.conflicting_contact_id is not None:
+                identity_conflicts.append(str(link_outcome.conflicting_contact_id))
+    session.flush()
 
     # The permanent company edge (APP-003, required by DAT-017A). Filled only
     # when it is empty: a contact already linked to another company is a real
@@ -932,7 +1098,13 @@ def promote(
         session.flush()
 
     _record_provenance(
-        session, snapshot=snapshot, contact=contact, identity=identity, hints=hints, actor=actor
+        session,
+        snapshot=snapshot,
+        contact=contact,
+        identity=identity,
+        hints=hints,
+        actor=actor,
+        linkedin_url=canonical_url,
     )
 
     applied: list[str] = []
@@ -962,6 +1134,12 @@ def promote(
     promotion_row.promoted_by = actor
     promotion_row.promoted_at = datetime.now(UTC)
     promotion_row.detail = {"match_kind": match_kind, "natural_key": natural_key}
+    if identity_conflicts:
+        # Defence in depth. The guard above blocks before anything is created, so
+        # reaching here means an identifier was claimed between that check and
+        # this write. The link row already records it as `needs_review`; naming it
+        # on the promotion keeps the contradiction visible to the operator.
+        promotion_row.detail["identity_link_conflicts"] = sorted(set(identity_conflicts))
     session.flush()
 
     result.contact = contact

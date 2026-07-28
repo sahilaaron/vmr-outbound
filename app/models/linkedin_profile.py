@@ -54,6 +54,9 @@ class LinkedInProfileSnapshot(Base):
         Index("ix_li_profile_snapshots_public_identifier", "public_identifier"),
         Index("ix_li_profile_snapshots_matched_contact_id", "matched_contact_id"),
         Index("ix_li_profile_snapshots_submission_id", "submission_id"),
+        # DAT-019: repeated Sales Navigator captures of the same member resolve
+        # against each other on this identifier, so the lookup is indexed.
+        Index("ix_li_profile_snapshots_salesnav_member_id", "salesnav_member_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -94,6 +97,18 @@ class LinkedInProfileSnapshot(Base):
     # The Sales Navigator lead URL when the row showed one. NEVER an identity
     # key: it cannot match a contact and is preserved as context only.
     salesnav_lead_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # DAT-019. The opaque Sales Navigator member identifier read from that lead
+    # URL, stored VERBATIM with its original casing — it is case-sensitive, and
+    # the vanity-URL normalizer folds case. Unlike the lead URL this IS a
+    # matchable identifier, but only against other member ids: it is not the
+    # contact's published handle and never becomes one on its own. The link
+    # between the two forms lives in ``linkedin_identity_links``.
+    salesnav_member_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # How ``normalized_profile_url`` was obtained: "observed" when a real /in/
+    # link was on the page, "derived_from_sales_lead" for rows captured before
+    # DAT-019 stopped synthesising one. The flag is what lets a legacy alias be
+    # excluded from canonical matching without rewriting the stored value.
+    profile_url_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # Label NAMES the operator requested for this capture, verbatim. Canonical
     # label rows and assignments live in the contact_labels tables.
     operator_labels: Mapped[list[Any] | None] = mapped_column(JSONB, nullable=True)
