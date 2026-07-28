@@ -104,6 +104,16 @@ class LinkedInProfileSnapshot(Base):
     # contact's published handle and never becomes one on its own. The link
     # between the two forms lives in ``linkedin_identity_links``.
     salesnav_member_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # DAT-020A. LinkedIn's resolving alias for that member id,
+    # ``https://www.linkedin.com/in/<verbatim-member-id>``, exactly as the
+    # extension derived it. Immutable capture evidence and an operator
+    # navigation aid — nothing more. It is DERIVED, so it is deliberately kept
+    # out of every identity path: it is never copied into
+    # ``normalized_profile_url``, never written to ``contacts.linkedin_url``,
+    # and never becomes a PUBLIC_VANITY_URL identity claim. Storing it beside
+    # the observed handle and the opaque id is what lets an export show all
+    # three without any of them being mistaken for another.
+    salesnav_alias_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     # How ``normalized_profile_url`` was obtained: "observed" when a real /in/
     # link was on the page, "derived_from_sales_lead" for rows captured before
     # DAT-019 stopped synthesising one. The flag is what lets a legacy alias be

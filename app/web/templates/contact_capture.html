@@ -29,6 +29,32 @@
       <tr><td class="mono">source_surface</td><td class="wrap">{{ snapshot.source_surface or "—" }}</td></tr>
       <tr><td class="mono">normalized_profile_url</td><td class="wrap">{{ snapshot.normalized_profile_url or "— (identity uncertain: no main profile URL was visible)" }}</td></tr>
       <tr><td class="mono">salesnav_lead_url</td><td class="wrap">{{ snapshot.salesnav_lead_url or "—" }}</td></tr>
+      {# DAT-020A. The three things a capture can know about this person's
+         LinkedIn identity, kept on three separate rows and labelled for what
+         each one is. normalized_profile_url above is the observed handle; these
+         two are not, and neither is ever promoted into it. #}
+      <tr><td class="mono">salesnav_member_id</td><td class="wrap">
+        {{ snapshot.salesnav_member_id or "—" }}
+        {% if snapshot.salesnav_member_id %}
+        <div class="small muted-text">
+          Opaque Sales Navigator identifier, verbatim and case-sensitive. Matchable against
+          other member ids only — it is not this person's published handle.
+        </div>
+        {% endif %}
+      </td></tr>
+      <tr><td class="mono">salesnav_alias_url</td><td class="wrap">
+        {% if snapshot.salesnav_alias_url %}
+        <a href="{{ snapshot.salesnav_alias_url }}" target="_blank" rel="noopener noreferrer nofollow"
+           data-linkedin="derived"
+           title="Open resolving LinkedIn alias — derived from the Sales Navigator ID">{{ snapshot.salesnav_alias_url }}</a>
+        <div class="small muted-text">
+          Derived resolving alias, not an observed profile URL. LinkedIn redirects it to the
+          person, so it opens the right profile before their handle is known — but it is
+          navigation and evidence only. It is never stored as this contact's LinkedIn URL and
+          never becomes a public-vanity identity claim.
+        </div>
+        {% else %}—{% endif %}
+      </td></tr>
       <tr><td class="mono">captured_at</td><td class="wrap">{{ snapshot.captured_at or "—" }}</td></tr>
       <tr><td class="mono">ingested_at</td><td class="wrap">{{ snapshot.ingested_at }}</td></tr>
       <tr><td class="mono">extraction_status</td><td class="wrap">{{ snapshot.extraction_status }}</td></tr>

@@ -402,6 +402,9 @@ def _profile_projection(person: dict[str, Any], normalized_url: str | None) -> d
         "public_identifier": person.get("linkedin_public_identifier"),
         "salesnav_lead_url": person.get("salesnav_lead_url"),
         "salesnav_member_id": person.get("salesnav_member_id"),
+        # DAT-020A. Derived navigation alias, projected under its own key so a
+        # reader of profile_fields cannot mistake it for the observed handle.
+        "salesnav_alias_url": person.get("salesnav_alias_url"),
         "full_name": person.get("full_name"),
         "first_name": person.get("first_name"),
         "last_name": person.get("last_name"),
@@ -574,6 +577,10 @@ def _build_snapshot(
         # DAT-019: stored verbatim. The member id is case-sensitive and must not
         # travel through the URL normalizer, which lowercases slugs.
         salesnav_member_id=person.get("salesnav_member_id"),
+        # DAT-020A: stored as evidence only. Deliberately NOT fed to
+        # ``normalized_profile_url`` above — that field takes a directly
+        # observed handle or stays null, and a derived alias is neither.
+        salesnav_alias_url=person.get("salesnav_alias_url"),
         # Only a link actually on the page counts as observed. The extension no
         # longer synthesises one, so a null URL here is honest uncertainty.
         profile_url_source="observed" if normalized_url else None,
