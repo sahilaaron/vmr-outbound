@@ -165,13 +165,13 @@ against today's schema, and this is the case the fourth state exists for.
 from app.services.seller import context
 
 seller = context.assemble(session, campaign_id=campaign.id)  # or campaign_id=None
-seller.profile                    # SellerProfile | None
-seller.offerings                  # tuple[OfferingContext, ...]
+seller.profile  # SellerProfile | None
+seller.offerings  # tuple[OfferingContext, ...]
 seller.offerings[0].proof_points  # active, linked to that offering
 seller.offerings[0].restricted_claims
 seller.offerings[0].personas
-seller.offerings[0].is_archived   # named by the campaign, since withdrawn
-seller.global_restricted_claims   # apply whatever the campaign sells
+seller.offerings[0].is_archived  # named by the campaign, since withdrawn
+seller.global_restricted_claims  # apply whatever the campaign sells
 ```
 
 Read-only and deterministic: it never writes, audits, calls a model, or costs
