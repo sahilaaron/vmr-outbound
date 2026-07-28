@@ -140,7 +140,7 @@ unmerged dependency).
 | S2 | Exclude at least one record before submission | **RENAMED** | UI-012 inverted the control: a ticked box means *included*. Same `TOGGLE_EXCLUDE` message. Step becomes "deselect at least one and confirm the Save count follows". |
 | S3 | Retain one incomplete/uncertain record, verify truthful handling | **RENAMED + SPLIT** | DAT-018 created two distinct truthful behaviours that must not be conflated. **S3a retained-and-flagged**: missing location, uncertain identity, no stable link — kept, badged, submitted with the gap visible. **S3b skipped**: no company name — never enters the batch, reported as *N skipped — no company name*, nothing invented. |
 | S4 | Submit to an active or draft campaign through the extension selector | **OBSOLETE** | Contact-first. No selector exists; `campaign-decoupling.test.js` forbids one; the contract declares no campaign property and a submission carrying one is rejected 422. **Replacement:** prove capture completes with no campaign and creates 0 campaign memberships. |
-| S5 | Close/reopen the surface, restore the last staged result | **VALID** | Draft + `lastResult` restoration, preserved through UI-012. **Contradicted by the trial** — the draft half restores, the result half does not. See D-8; this reconciliation claim was wrong. |
+| S5 | Close/reopen the surface, restore the last staged result | **VALID** | Draft + `lastResult` restoration, preserved through UI-012. **Contradicted by the trial** — the draft half restores, the result half does not. See D-8; this reconciliation claim was wrong. **D-8 is fixed under UI-016 / #194 (§8); the live S5 re-run is still owed.** |
 | S6 | Open the exact returned batch in the workbench | **RENAMED** | "Batch" is now a **submission**. The response returns `operator_workbench_url` and per-record `capture_url` / `contact_url`; the panel will only open loopback URLs under known prefixes (`handoff.isOpenableWorkbenchUrl`). |
 | S7 | DAT-010 domain candidate lookup for unique companies | **MOVED** | No longer in the extension. `POST /contact-captures/{id}/company/lookup` in the workbench, over the DAT-010 provider client, gated by `SALESNAV_DOMAIN_ENRICHMENT` + `CONTACT_CAPTURE_PROMOTION`. |
 | S8 | Confirm one candidate, override one, leave one unresolved | **MOVED, fully exercisable** | `POST …/company/confirm` accepts `decision=candidate` (confirm), `decision=manual` (typed domain override) and `decision=unresolved` (`LEFT_UNRESOLVED`); `POST …/company/reject` preserves a rejection with its reason. All three of #131's actions exist. |
@@ -210,7 +210,7 @@ returned, with counts and states only.
 | A6 | Confirm a flagged row is retained (S3a) | A row with a warning is still selectable and still submitted with its gap visible | **PASS for the provenance case; fault case NOT EXERCISED** [operator] — 63 rows across 3 pages, none carrying a review fault. See §6 |
 | A7 | Confirm nothing was invented for a skipped row (S3b) | No company borrowed from headline, school, location or an adjacent row | **PASS — 2026-07-28 re-run** [operator, code-verified] — a company name was **visible as plain text** on the skipped row and was still not taken. See §6 |
 | A8 | Save the reviewed set | Submitted count == selected count; outcome counts render; `created` is 0 | **PASS** [operator] — *30 of 30 prospects saved*; sole outcome `staged_unmatched` = 30; **`created` absent, i.e. 0**. **S9 and S10 satisfied** |
-| A9 | Close and reopen the panel | Last result and/or draft restored without recapturing or resaving | **PARTIAL** [operator] — the **draft** restores intact (selection and all); the **last result does not**. Reproduced deterministically after a fresh save. Cause found and demonstrated: **D-8** |
+| A9 | Close and reopen the panel | Last result and/or draft restored without recapturing or resaving | **PARTIAL** [operator] — the **draft** restores intact (selection and all); the **last result does not**. Reproduced deterministically after a fresh save. Cause found and demonstrated: **D-8**. **Fixed under UI-016 / #194 and verified in the harness (§8); this row stays PARTIAL until the live re-run is performed.** |
 | A10 | Open the returned record via the panel's own link | The exact submission/capture record opens in the workbench | **PASS** [operator, machine-verified] — *Open captured contacts* opened `/contact-captures/submissions/01366e2e…`, the exact submission, with `client_submission_id 77ae7ae0…`, `contacts 30`, `created 0`. Reachable only straight after a save — see D-8 |
 
 #### A0 observations (2026-07-27)
@@ -680,7 +680,7 @@ unless a small unambiguous acceptance blocker is documented first.
 | D-6 | After a candidate is confirmed, the capture page keeps showing a stale *"why not promoted"* reason that contradicts the confirmed state | operator truth | no — promotion is gated on the outcome, not the message | **filed as #192** (UI-014) — tracked separately; not implemented inside DAT-011 |
 | D-9 | Promotion never sets `contact.company_id`, and nothing else ever does, so every promoted contact lacks the permanent company edge — the Companies list reads *Contacts 0* for companies that have contacts | **backend truth** | no | to be filed |
 | D-10 | The Companies **list** reports `Identity: consistent` for a company whose **detail** page reports a conflict — `count_for_companies` omits the `CONTACT_LINK_UNRESOLVED` kind | operator truth | no | to be filed |
-| D-8 | On reopening the panel the restored outcome view is overwritten by the first surface detection, so the last result and its *Open captured contacts* link are unreachable | **blocker for S5 (result half) and S6** | yes, for those steps | to be filed — **UI-012 regression**, reproduced in the panel harness |
+| D-8 | On reopening the panel the restored outcome view is overwritten by the first surface detection, so the last result and its *Open captured contacts* link are unreachable | **blocker for S5 (result half) and S6** | yes, for those steps | **filed as #194 (UI-016); fixed on `fix/ui-016-retained-result-restoration`** — harness-verified, live re-run owed. See §8 |
 | D-7 | The operator's typed *"why leave it unresolved?"* reason is stored and audited but never displayed back on the capture page | evidence visibility | no — the reason is persisted, not lost | **filed as #193** — tracked separately; not implemented inside DAT-011 |
 | D-OBS-6 | The same company is recorded as the vanity company slug from the company page and as the numeric company id from a person capture — the company-level twin of D-4 | latent | no | not filed — companies resolve by domain, so nothing matches on these URLs today |
 | D-OBS-5 | A replayed submission still headlines *"30 of 30 prospects saved"*; the truthful *"already received"* wording sits in the body | presentation | no | not filed — fits #192 |
@@ -1443,6 +1443,9 @@ with the UI-012 panel work, and the fix is small: distinguish "first detection
 after open" from "the page changed", or have the detection repaint refuse to
 leave a sticky view regardless of `changed`.
 
+**Resolved under UI-016 / #194** — the first of those two options, plus a second
+cause this diagnosis had not reached. See §8.
+
 ### D-7 — the unresolved reason is asked for, kept, and never shown
 
 **Observed** [machine, supervised]. The *Leave unresolved* action offers a
@@ -1732,7 +1735,7 @@ One incident and one correction, both about method:
 | D-2 | `derived_value` renders as *Needs review*, destroying the signal | **#191** |
 | D-6 | Stale promotion refusal after confirmation | **#192** (with D-OBS-4) |
 | D-7 | Unresolved reason stored, audited, never displayed | **#193** |
-| D-8 | Restored outcome overwritten by the first detection — blocks S5's result half and S6 | to file — **UI-012 regression**, reproduced in the panel harness |
+| D-8 | Restored outcome overwritten by the first detection — blocks S5's result half and S6 | **#194 (UI-016)** — fixed on `fix/ui-016-retained-result-restoration`; see §8 |
 | D-9 | Promotion never writes `contact.company_id`; nothing else does either | to file |
 | D-10 | Companies list reports *consistent* where the detail page reports a conflict | to file |
 | D-4 | Derived member-id URL is not a usable identity key | to file, **rewritten and narrowed** |
@@ -1974,3 +1977,91 @@ overwritten by the first detection), D-9 (`contact.company_id` never written by
 application code), D-10 (companies list contradicts the company detail page), and
 D-4 as rewritten. D-9 was re-observed incidentally during this run: both existing
 companies still show `Contacts 0` on the list while carrying promoted contacts.
+
+---
+
+## 8. D-8 resolved — UI-016 / #194 (2026-07-28)
+
+Implemented on `fix/ui-016-retained-result-restoration`, branched from
+`main@4483548` ("DAT-011: merge authenticated acceptance evidence (#206)").
+
+**This section records what was verified by machine. The live S5 / A9 re-run has
+not been performed and nothing here should be read as claiming it was.**
+
+### The diagnosis held, and it was incomplete
+
+D-8 as recorded above is correct: `paintMode()` computes `changed` as
+`mode !== currentMode` with `currentMode` starting `null`, so on a cold panel
+open it is unconditionally true and the sticky guard cannot protect a starting
+panel. That is fixed.
+
+Building the regression tests surfaced a **second cause the original diagnosis
+had not reached**, and without it the fix would have worked exactly once:
+
+`startLiveSync()` runs at the end of panel init and immediately calls
+`preview()`, which sends `PROFILE_CAPTURE`. In the worker that message *removes*
+`LAST_PROFILE_RESULT` — correct for the operator pressing *Read this page again*,
+wrong for a preview that runs by itself on every open. So a restored result
+would have been repainted correctly and then deleted from storage, and the
+*next* reopen would have shown the draft again. The panel's automatic read now
+carries `live: true`, and only an operator-initiated read discards the retained
+result.
+
+### What changed
+
+| File | Change |
+| --- | --- |
+| `src/background/service-worker.js` | Every retained result is stored beside the capture context it came from — `{ kind, url }` under a versioned envelope. Reads tolerate a record written before this existed and return `context: null` rather than guessing. `PROFILE_CAPTURE` gained `live`. A new page merged into a results batch now discards the retained result, as a profile recapture already did. |
+| `src/sidepanel/sidepanel.js` | Holds the context of the outcome on screen and answers `retainedStatus(surface, url)` → `match` / `other` / `unknown`. A save in flight and a failed save are explicitly context-free. |
+| `src/sidepanel/sidepanel-profile.js` | The cold-open guard. A restored outcome is kept only when it can be *placed* on the detected page; genuine navigation still releases it. |
+| `test/retained-result.test.js` | 18 new tests. |
+
+`STICKY_VIEWS` is unchanged, detection is not suppressed, and no backend,
+contract or schema change was made.
+
+### Machine verification
+
+Extension suite on an LF checkout of the branch: **370 tests, 370 pass**
+(baseline `main@4483548` was 352; the 18 new tests account for the difference).
+
+The new tests were run against the **pre-fix** source to prove they fail for the
+stated reason: **12 of 18 fail**, including the cold-open restore, the first-paint
+overwrite, the D-8 listings reproduction and the live-follower deletion. The six
+that pass pre-fix are the negative cases — profile A's result must not appear on
+profile B, a context-free result must not be restored, a newer draft must win —
+which pass trivially when nothing restores at all, and which exist to stop the
+fix over-reaching.
+
+Coverage maps to #194's acceptance criteria as follows.
+
+| Criterion | Test |
+| --- | --- |
+| A completed result survives close/reopen on the same context | *a completed result is still on screen after the panel is reopened* |
+| Restoring creates no backend submission or snapshot | *restoring a result sends nothing to the backend* |
+| A newer unsent draft is not overwritten | *a newer unsent draft is not covered by an older result*; *reading a profile again discards the result…*; *capturing more rows discards the result…* |
+| Profile A's result never appears on profile B | *a result saved on profile A never appears on profile B*; *a listings result is not restored onto a person profile* |
+| A genuine page change still updates the panel | *navigating from the restored result to another profile updates the panel*; *navigating to an unsupported page releases the restored result* |
+| Returned links remain exact and usable | *the returned workbench link comes back with the restored result (S6)* |
+
+### Two environment notes for whoever re-runs this
+
+Running the extension suite against a **Windows working tree** produces two
+failures that are line-ending artefacts, not defects:
+
+- `capture-cancellation.test.js` — *"the cancellation path introduces no
+  navigation or pagination"* slices the worker source at `indexOf("\n}\n")`,
+  which never matches CRLF. Confirmed by converting the **unmodified** `main`
+  worker to CRLF: the same test fails identically.
+- `profile-topcard.test.js` — *"the company · school row is located by its logo
+  slots"* fails on the CRLF tree both before and after this change.
+
+Both pass on an LF checkout. Neither is touched by this branch.
+
+### Still owed
+
+- **The live S5 / A9 re-run has not been done.** Save a contact, close the panel,
+  reopen it, and confirm the outcome and its *Open captured contacts* link come
+  back on the same profile; then reopen a **second** time to confirm the live
+  follower has not eaten the result; then open a different profile and confirm
+  the first profile's result does not appear.
+- A9, S5 and S6 stay at their current recorded states until that is done.

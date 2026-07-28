@@ -28,6 +28,10 @@
   let currentDraft = null;
   let currentCompanyDraft = null;
   let currentMode = null;
+  // UI-016: consumed by the first paintMode after the panel opens. See the
+  // guard in paintMode for why a starting panel needs telling apart from a
+  // running one.
+  let firstPaint = true;
   let profileMatch = null;
   // The match state arrives after the draft is first painted, so the review has
   // to be repainted once when it lands — and exactly once, never in a loop.
@@ -190,7 +194,17 @@
   function paintMode(detected) {
     const r = detected || {};
     const mode = r.surface || SURFACES.UNSUPPORTED;
-    const changed = mode !== currentMode;
+    const cold = firstPaint;
+    firstPaint = false;
+    // On a cold open there is no previous mode to differ from, so `changed`
+    // would be true no matter what the operator was last looking at. That is
+    // exactly what made a restored outcome unreachable (UI-016 / D-8): the
+    // guard below could protect a running panel and never a starting one.
+    // Whether a restored outcome survives is decided by `outcomeHolds`, which
+    // asks about the page rather than about the surface kind.
+    const changed = !cold && mode !== currentMode;
+    const onOutcome = shell.getView() === "outcome";
+    const holds = onOutcome && outcomeHolds(mode, r.url, cold);
     currentMode = mode;
 
     if (mode === SURFACES.SALESNAV_PEOPLE_RESULTS) {
@@ -218,12 +232,37 @@
 
     // A different page means the previous outcome is no longer what the
     // operator is looking at; anything else leaves their place alone.
-    if (changed || !panel.isSticky()) {
+    const keepsPlace = panel.isSticky() && !changed && (!onOutcome || holds);
+    if (!keepsPlace) {
       panel.showView(DEFAULT_VIEW[mode] || "unsupported");
       if (mode === SURFACES.PERSON_PROFILE) syncPersonActions();
       if (mode === SURFACES.COMPANY_PROFILE) syncCompanyActions();
+    } else if (holds) {
+      // The outcome stays, but "Back to this page" has to land on the page the
+      // operator is actually looking at — not on whatever the panel happened to
+      // be showing while it was starting up.
+      panel.setReturnView(DEFAULT_VIEW[mode] || "unsupported");
     }
     return mode;
+  }
+
+  /**
+   * Whether the outcome currently on screen is still the operator's place.
+   *
+   * An outcome belongs to the page it was captured from, so "is this still that
+   * page?" — not "did the surface kind change?" — is the question that releases
+   * it. Asked this way it answers for a panel that has just opened as well as
+   * one that has been running, and it still lets genuine navigation through.
+   *
+   * A cold open restores only an outcome that can be placed on this page: an
+   * outcome whose page is unknown is not put back, so one profile's result can
+   * never appear above another profile's. While running, only a positive
+   * mismatch releases the view — a save in flight or a failed save has no page
+   * of its own and must stay where the operator is standing.
+   */
+  function outcomeHolds(mode, url, cold) {
+    const status = panel.retainedStatus(mode, url);
+    return cold ? status === "match" : status !== "other";
   }
 
   /** The one-word state of the detected page, shown in the strip. */
@@ -843,6 +882,9 @@
   async function doCompanySend() {
     const state = $("company-send-state");
     const actions = $("company-send-actions");
+    // A save in flight has no saved page yet; the outcome is placed when the
+    // backend answers (UI-016).
+    panel.setRetainedContext(null);
     state.textContent = "";
     actions.textContent = "";
     $("save-card").hidden = true;
@@ -882,9 +924,11 @@
     const r = await send({ type: "COMPANY_SEND" });
     if (r && r.ok) {
       panel.setConnection("connected");
-      renderCompanyStagedResult(r.result);
+      renderCompanyStagedResult(r.result, r.resultContext);
       return;
     }
+    // Nothing was saved, so this outcome belongs to no page.
+    panel.setRetainedContext(null);
     const detail = handoff.describeSendError(r);
     const unreachable = detail.code === "network_error" || detail.code === "timeout";
     panel.setConnection(unreachable ? "unreachable" : "connected");
@@ -918,8 +962,10 @@
     }
   }
 
-  function renderCompanyStagedResult(result) {
+  function renderCompanyStagedResult(result, context) {
     if (!result) return;
+    // UI-016: painted and placed from one value, exactly as the person outcome is.
+    panel.setRetainedContext(context);
     const state = $("company-send-state");
     const actions = $("company-send-actions");
     state.textContent = "";
@@ -991,13 +1037,21 @@
       if (state.metadata) panel.setMetadata(state.metadata);
       renderDraft(state.draftView);
       // Recovery: a saved outcome (and the reviewed draft that produced it)
-      // survives panel close/reopen without recapture or resave.
-      if (state.lastResult) panel.renderSaveResult(state.lastResult);
+      // survives panel close/reopen without recapture or resave. Reading state
+      // is all this does — no capture, no submission, nothing sent.
+      //
+      // A capture read after that save removes the result in the worker, so a
+      // newer unsent draft is never sitting behind an older outcome by the time
+      // the panel asks. The context restored alongside it decides whether the
+      // outcome is put back on this page or left behind on its own.
+      if (state.lastResult) panel.renderSaveResult(state.lastResult, state.lastResultContext);
     }
     const companyState = await send({ type: "COMPANY_GET_STATE" });
     if (companyState && companyState.ok) {
       renderCompanyDraft(companyState.draftView);
-      if (companyState.lastResult) renderCompanyStagedResult(companyState.lastResult);
+      if (companyState.lastResult) {
+        renderCompanyStagedResult(companyState.lastResult, companyState.lastResultContext);
+      }
     }
     // One explicit classification before the live follower takes over: it is
     // the only call that returns the classifier's *reason*, which is what makes
@@ -1032,7 +1086,11 @@
       // local draft. No backend call, no contact, no promotion, no campaign.
       detect: () => send({ type: "DETECT_SURFACE" }),
       preview: async () => {
-        const r = await send({ type: "PROFILE_CAPTURE" });
+        // `live` marks this as the panel looking, not the operator reading. A
+        // read the operator asked for replaces what they had saved; a preview
+        // that runs by itself every time the panel opens must not, or the
+        // retained result would survive exactly one reopen (UI-016).
+        const r = await send({ type: "PROFILE_CAPTURE", live: true });
         return r && r.ok ? r.draftView : null;
       },
       onState: (state) => {
