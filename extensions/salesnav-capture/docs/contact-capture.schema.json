@@ -134,6 +134,7 @@
         "linkedin_public_identifier",
         "salesnav_lead_url",
         "salesnav_member_id",
+        "salesnav_alias_url",
         "full_name",
         "first_name",
         "last_name",
@@ -161,6 +162,10 @@
           "type": ["string", "null"],
           "pattern": "^[A-Za-z0-9_-]{3,128}$",
           "description": "Opaque Sales Navigator member identifier, read from the lead URL and preserved VERBATIM — it is case-sensitive. A declared identifier in its own right: two Sales Navigator captures of the same member match on it exactly. It is never a URL, never the public handle, and is never substituted into linkedin_profile_url; https://www.linkedin.com/in/<member-id> does resolve, but it is an alias rather than the person's published handle and does not string-match it."
+        },
+        "salesnav_alias_url": {
+          "type": ["string", "null"],
+          "description": "DERIVED resolving alias, https://www.linkedin.com/in/<verbatim-member-id>. LinkedIn accepts it and redirects to the person, so it is a usable way to open a profile whose handle is not known yet. It is navigation aid and evidence ONLY: never the canonical published profile URL, never written to contacts.linkedin_url, and never an active PUBLIC_VANITY_URL identity claim. Recorded whenever a member id is readable, including alongside an observed handle, because it is evidence of what the row showed; where both exist the observed handle takes precedence, visually and semantically."
         },
         "full_name": { "type": ["string", "null"] },
         "first_name": { "type": ["string", "null"] },

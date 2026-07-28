@@ -88,6 +88,7 @@
     "linkedin_public_identifier",
     "salesnav_lead_url",
     "salesnav_member_id",
+    "salesnav_alias_url",
     "full_name",
     "first_name",
     "last_name",
@@ -221,6 +222,7 @@
         salesnav_lead_url: null,
         // A person-profile capture never comes from Sales Navigator.
         salesnav_member_id: null,
+        salesnav_alias_url: null,
         full_name: p.full_name != null ? p.full_name : null,
         first_name: normalize.splitName(p.full_name).firstName,
         last_name: normalize.splitName(p.full_name).lastName,
@@ -285,6 +287,9 @@
         // case-preserved. A declared identifier of its own — never a URL, never
         // the public handle, and never a substitute for either.
         salesnav_member_id: rec.linkedinMemberId || null,
+        // DAT-020: LinkedIn's resolving alias for that member id. Navigation
+        // and evidence only — explicitly NOT the published handle.
+        salesnav_alias_url: rec.linkedinAliasUrl || null,
         full_name: rec.rawFullName || null,
         first_name: rec.firstName || null,
         last_name: rec.lastName || null,
@@ -497,6 +502,7 @@
         "linkedin_public_identifier",
         "salesnav_lead_url",
         "salesnav_member_id",
+        "salesnav_alias_url",
         "full_name",
         "first_name",
         "last_name",

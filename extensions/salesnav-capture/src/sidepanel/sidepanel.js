@@ -869,6 +869,53 @@
   }
 
   /** A1 · the selectable row list. A ticked box means "included in the save". */
+  // ---- DAT-020: the LinkedIn action beside a prospect ------------------------
+  //
+  // Two different things, deliberately distinguishable rather than merged into
+  // one "open LinkedIn" button:
+  //
+  //   observed  the handle the row actually showed. Authoritative identity.
+  //   derived   https://www.linkedin.com/in/<verbatim-member-id>. LinkedIn
+  //             accepts it and redirects, so it opens the right person — but it
+  //             is a navigation aid built from an opaque id, not the published
+  //             handle, and it never becomes canonical identity.
+  //
+  // An observed handle always wins, visually and semantically. The derived alias
+  // says so in its own label, its title and its accessible name, so an operator
+  // is never told the system knows a handle it does not.
+  function linkedInAction(rec, name) {
+    const who = name || "this prospect";
+    if (rec.linkedinProfileUrl) {
+      return el("a", {
+        class: "li-action observed",
+        text: "in",
+        attrs: {
+          href: rec.linkedinProfileUrl,
+          target: "_blank",
+          rel: "noreferrer",
+          title: "Open LinkedIn profile",
+          "aria-label": `Open the LinkedIn profile of ${who}`,
+          "data-linkedin": "observed",
+        },
+      });
+    }
+    if (rec.linkedinAliasUrl) {
+      return el("a", {
+        class: "li-action derived",
+        text: "in",
+        attrs: {
+          href: rec.linkedinAliasUrl,
+          target: "_blank",
+          rel: "noreferrer",
+          title: "Open resolving LinkedIn alias — derived from the Sales Navigator ID",
+          "aria-label": `Open the resolving LinkedIn alias for ${who}, derived from the Sales Navigator ID`,
+          "data-linkedin": "derived",
+        },
+      });
+    }
+    return null;
+  }
+
   function renderRecords() {
     const boxEl = $("records");
     boxEl.textContent = "";
@@ -940,7 +987,12 @@
           class: "prospect" + (rec._excluded ? " deselected" : ""),
           attrs: tone ? { "data-tone": tone } : {},
         },
-        [el("label", { class: "check stacked" }, [checkbox]), body, rowBadge]
+        [
+          el("label", { class: "check stacked" }, [checkbox]),
+          body,
+          linkedInAction(rec, rec.rawFullName),
+          rowBadge,
+        ]
       );
       boxEl.appendChild(row);
     });
@@ -1030,6 +1082,22 @@
           el("a", {
             text: "profile",
             attrs: { href: rec.linkedinProfileUrl, target: "_blank", rel: "noreferrer" },
+          })
+        );
+      // DAT-020: only when no handle was observed, so the review screen never
+      // offers two competing "this is their profile" links for one person.
+      else if (rec.linkedinAliasUrl)
+        links.appendChild(
+          el("a", {
+            text: "resolving alias",
+            attrs: {
+              href: rec.linkedinAliasUrl,
+              target: "_blank",
+              rel: "noreferrer",
+              title: "Derived from the Sales Navigator ID, not a published handle",
+              "aria-label": `Open the resolving LinkedIn alias for ${rec.rawFullName || "this prospect"}, derived from the Sales Navigator ID`,
+              "data-linkedin": "derived",
+            },
           })
         );
       if (rec.salesNavLeadUrl)

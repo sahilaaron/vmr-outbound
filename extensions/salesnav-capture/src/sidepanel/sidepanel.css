@@ -1112,3 +1112,36 @@ textarea:focus {
     display: none;
   }
 }
+
+/* DAT-020 — the LinkedIn action beside a prospect.
+   An observed handle is the confident, brand-coloured state. A derived
+   resolving alias is deliberately quieter and outlined: it opens the right
+   person, but it is built from an opaque Sales Navigator id rather than read
+   off the page, and the difference should be visible before it is read. */
+.li-action {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  text-decoration: none;
+  align-self: center;
+}
+.li-action.observed {
+  background: var(--brand, #0a66c2);
+  color: #fff;
+}
+.li-action.derived {
+  background: transparent;
+  color: var(--muted, #5b6472);
+  border: 1px dashed var(--line, #c9d0d9);
+}
+.li-action:focus-visible {
+  outline: 2px solid var(--brand, #0a66c2);
+  outline-offset: 2px;
+}
