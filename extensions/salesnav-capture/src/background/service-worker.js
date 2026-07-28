@@ -36,6 +36,7 @@ const {
   profileSchema,
   contactSchema,
   migration,
+  normalize,
   permissions,
   handoff,
   surface,
@@ -99,14 +100,55 @@ async function setBatch(batch) {
   await chrome.storage.local.set({ [STORAGE.DRAFT_BATCH]: batch });
   return batch;
 }
-// Last successful staging result — a small, safe summary kept so the operator
-// can reopen the staged batch after the popup closes, without recapturing.
+// ---- retained results (UI-016) ---------------------------------------------
+//
+// A retained result is the small, safe summary of a successful submission, kept
+// so the operator can reopen it — and its returned workbench link — after the
+// panel closes, without recapturing or resaving.
+//
+// The result alone cannot say WHICH page it describes, so a panel restoring it
+// had no way to tell "this is still your result" from "this belongs to the
+// person you were looking at ten minutes ago". Each retained result is therefore
+// stored beside the capture context it came from:
+//
+//   { kind: "listings" | "profile" | "company", url: <normalized URL | null> }
+//
+// A record written before this existed has no context. It is returned with
+// `context: null`, and the panel declines to place it rather than guess.
+
+const RETAINED_RESULT_VERSION = 1;
+
+/** The stored shape: the result the operator sees, and the page it belongs to. */
+function retainedRecord(result, context) {
+  return { v: RETAINED_RESULT_VERSION, result, context: context || null };
+}
+
+/** Read a retained record, tolerating one written before UI-016. */
+function readRetainedRecord(raw) {
+  if (!raw) return { result: null, context: null };
+  if (raw.v === RETAINED_RESULT_VERSION) {
+    return { result: raw.result || null, context: raw.context || null };
+  }
+  return { result: raw, context: null };
+}
+
+/** The capture context of one LinkedIn page. A URL that will not normalize
+ *  yields a null url, which reads downstream as "cannot be placed". */
+function pageContext(kind, url) {
+  const n = normalize.normalizeLinkedInUrl(url);
+  return { kind, url: n.valid ? n.url : null };
+}
+
+// A results batch is captured across several pages of one search, so it belongs
+// to the listings workflow rather than to any single URL.
+const LISTINGS_CONTEXT = { kind: "listings", url: null };
+
 async function getLastResult() {
   const data = await chrome.storage.local.get(STORAGE.LAST_RESULT);
-  return data[STORAGE.LAST_RESULT] || null;
+  return readRetainedRecord(data[STORAGE.LAST_RESULT]);
 }
-async function setLastResult(result) {
-  await chrome.storage.local.set({ [STORAGE.LAST_RESULT]: result });
+async function setLastResult(result, context) {
+  await chrome.storage.local.set({ [STORAGE.LAST_RESULT]: retainedRecord(result, context) });
   return result;
 }
 async function clearLastResult() {
@@ -277,6 +319,11 @@ async function captureActivePage() {
   // The reviewed content changed, so the previous submission id no longer
   // describes it. A new id is minted at send time.
   batch.clientSubmissionId = null;
+  // UI-016: for the same reason the retained result no longer describes this
+  // batch. Newly captured rows are unsent work, and an older result must never
+  // stand in front of them — the same rule `profileCapture` already applies to
+  // a recaptured profile.
+  await clearLastResult();
   if (result.sourcePageNumber != null && !batch.pagesCaptured.includes(result.sourcePageNumber)) {
     batch.pagesCaptured.push(result.sourcePageNumber);
   }
@@ -540,8 +587,12 @@ async function saveIncludedContacts(explicitTarget) {
   const { payload, metadata } = await buildBatchSubmission();
   const response = await postSubmission(payload, explicitTarget);
   if (response.ok) {
-    await setLastResult(response.result);
+    await setLastResult(response.result, LISTINGS_CONTEXT);
     await rememberLabels(metadata.labels);
+    // The panel paints this outcome now and may restore it later. Both paths
+    // are handed the same context, so a live outcome and a restored one are
+    // placed by identical rules.
+    response.resultContext = LISTINGS_CONTEXT;
   }
   return response;
 }
@@ -618,11 +669,22 @@ async function setProfileDraft(draft) {
 }
 async function getLastProfileResult() {
   const data = await chrome.storage.local.get(PROFILE_STORAGE.LAST_PROFILE_RESULT);
-  return data[PROFILE_STORAGE.LAST_PROFILE_RESULT] || null;
+  return readRetainedRecord(data[PROFILE_STORAGE.LAST_PROFILE_RESULT]);
 }
-async function setLastProfileResult(result) {
-  await chrome.storage.local.set({ [PROFILE_STORAGE.LAST_PROFILE_RESULT]: result });
+async function setLastProfileResult(result, context) {
+  await chrome.storage.local.set({
+    [PROFILE_STORAGE.LAST_PROFILE_RESULT]: retainedRecord(result, context),
+  });
   return result;
+}
+
+/** The person a reviewed profile draft describes, as a capture context. */
+function profileDraftContext(draft) {
+  const url =
+    draft && draft.extraction && draft.extraction.profile
+      ? draft.extraction.profile.linkedin_profile_url
+      : null;
+  return pageContext("profile", url);
 }
 
 async function findActiveTab() {
@@ -698,7 +760,14 @@ function buildProfileDraftView(draft) {
   };
 }
 
-async function profileCapture() {
+/**
+ * Read the person profile in the active tab into the reviewed draft.
+ *
+ * `live` is true for the side panel's automatic preview and false (the default)
+ * for a read the operator asked for. Both produce the same draft; they differ
+ * only in what they are allowed to discard. Neither sends anything.
+ */
+async function profileCapture(live) {
   const r = await askProfileContentScript({ type: "PS_CAPTURE" });
   if (!r.ok) return { ok: false, error: r.error, message: r.message };
   const result = r.resp;
@@ -725,7 +794,12 @@ async function profileCapture() {
     extraction: result,
   };
   await setProfileDraft(draft);
-  await chrome.storage.local.remove(PROFILE_STORAGE.LAST_PROFILE_RESULT);
+  // A read the operator asked for is new unsent work, and the result of the
+  // previous read no longer describes it. The panel's own live preview is not
+  // that: it runs by itself whenever the panel opens, so treating it as a
+  // recapture would discard the saved outcome the operator came back for
+  // (UI-016).
+  if (!live) await chrome.storage.local.remove(PROFILE_STORAGE.LAST_PROFILE_RESULT);
   return {
     ok: true,
     captureStatus: result.status,
@@ -792,8 +866,10 @@ async function saveProfileContact(explicitTarget) {
   }
   const response = await postSubmission(payload, explicitTarget);
   if (response.ok) {
-    await setLastProfileResult(response.result);
+    const context = profileDraftContext(draft);
+    await setLastProfileResult(response.result, context);
     await rememberLabels(metadata.labels);
+    response.resultContext = context;
   }
   return response;
 }
@@ -828,7 +904,16 @@ async function setCompanyDraft(draft) {
 }
 async function getLastCompanyResult() {
   const data = await chrome.storage.local.get(PROFILE_STORAGE.LAST_COMPANY_RESULT);
-  return data[PROFILE_STORAGE.LAST_COMPANY_RESULT] || null;
+  return readRetainedRecord(data[PROFILE_STORAGE.LAST_COMPANY_RESULT]);
+}
+
+/** The company a reviewed company draft describes, as a capture context. */
+function companyDraftContext(draft) {
+  const url =
+    draft && draft.extraction && draft.extraction.company
+      ? draft.extraction.company.company_linkedin_url
+      : null;
+  return pageContext("company", url);
 }
 
 const COMPANY_CS_FILES = [
@@ -954,8 +1039,11 @@ async function companySend() {
     const result = handoff.sanitizeProfileStageResult(body, {
       stagedAt: new Date().toISOString(),
     });
-    await chrome.storage.local.set({ [PROFILE_STORAGE.LAST_COMPANY_RESULT]: result });
-    return { ok: true, status: resp.status, result };
+    const context = companyDraftContext(draft);
+    await chrome.storage.local.set({
+      [PROFILE_STORAGE.LAST_COMPANY_RESULT]: retainedRecord(result, context),
+    });
+    return { ok: true, status: resp.status, result, resultContext: context };
   } catch (e) {
     clearTimeout(timer);
     if (e && e.name === "AbortError") {
@@ -1062,12 +1150,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case "GET_STATE": {
         const batch = await ensureBatch();
         const prefs = await getPrefs();
-        const lastResult = await getLastResult();
+        const retained = await getLastResult();
         sendResponse({
           ok: true,
           prefs,
           batchView: buildBatchView(batch),
-          lastResult,
+          lastResult: retained.result,
+          lastResultContext: retained.context,
           metadata: await getOperatorMetadata(),
           migration: await getMigrationNotice(),
         });
@@ -1127,12 +1216,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         break;
       case "PROFILE_GET_STATE": {
         const draft = await getProfileDraft();
-        const lastResult = await getLastProfileResult();
+        const retained = await getLastProfileResult();
         sendResponse({
           ok: true,
           prefs: await getPrefs(),
           draftView: buildProfileDraftView(draft),
-          lastResult,
+          lastResult: retained.result,
+          lastResultContext: retained.context,
           metadata: await getOperatorMetadata(),
           migration: await getMigrationNotice(),
         });
@@ -1145,7 +1235,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         sendResponse(await profileDetect());
         break;
       case "PROFILE_CAPTURE":
-        sendResponse(await profileCapture());
+        sendResponse(await profileCapture(msg.live === true));
         break;
       case "PROFILE_TOGGLE_SECTION":
         sendResponse(await profileToggleSection(msg.section));
@@ -1156,14 +1246,17 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case "SAVE_CONTACT":
         sendResponse(await saveProfileContact(msg.target));
         break;
-      case "COMPANY_GET_STATE":
+      case "COMPANY_GET_STATE": {
+        const retained = await getLastCompanyResult();
         sendResponse({
           ok: true,
           prefs: await getPrefs(),
           draftView: buildCompanyDraftView(await getCompanyDraft()),
-          lastResult: await getLastCompanyResult(),
+          lastResult: retained.result,
+          lastResultContext: retained.context,
         });
         break;
+      }
       case "COMPANY_CAPTURE":
         sendResponse(await companyCapture());
         break;

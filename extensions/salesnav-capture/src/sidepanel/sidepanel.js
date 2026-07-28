@@ -18,7 +18,7 @@
 (function () {
   "use strict";
 
-  const { constants, contactSchema, handoff, warnings: warningClass } = self.SNCapture;
+  const { constants, contactSchema, handoff, normalize, warnings: warningClass } = self.SNCapture;
   const WARN = constants.WARNINGS;
   const shell = self.VMRShell;
   const { el, badge, callout, kv, statusLine, box, paragraph } = shell;
@@ -75,6 +75,49 @@
 
   function isSticky() {
     return STICKY_VIEWS.has(shell.getView());
+  }
+
+  // ---- UI-016: which page does the outcome on screen belong to? ------------
+  //
+  // An outcome is about one specific capture — this person, this company, this
+  // search. Sticking to it while the operator is standing in it is right;
+  // sticking to it once they have navigated somewhere else is how one profile's
+  // result would come to sit above another profile's page. The context recorded
+  // beside the retained result is what tells the two apart.
+
+  let retainedContext = null;
+
+  const CONTEXT_KIND_FOR_SURFACE = {
+    [constants.SURFACES.SALESNAV_PEOPLE_RESULTS]: "listings",
+    [constants.SURFACES.PERSON_PROFILE]: "profile",
+    [constants.SURFACES.COMPANY_PROFILE]: "company",
+  };
+
+  /** Record the page an outcome belongs to; null when it has none. */
+  function setRetainedContext(context) {
+    retainedContext = context && context.kind ? context : null;
+  }
+
+  /**
+   * Whether the retained outcome belongs to the page just detected.
+   *
+   *   "match"   — this outcome is about this page
+   *   "other"   — it is about a different page
+   *   "unknown" — it has no page: a save in flight, a failed save, or a result
+   *               stored before UI-016. Not knowing is stated, never guessed;
+   *               the caller decides what to do with it.
+   */
+  function retainedStatus(surfaceName, url) {
+    if (!retainedContext) return "unknown";
+    const kind = CONTEXT_KIND_FOR_SURFACE[surfaceName] || null;
+    if (kind !== retainedContext.kind) return "other";
+    // A results batch is captured across several pages of one search, so it is
+    // placed by workflow rather than by URL.
+    if (kind === "listings") return "match";
+    if (!retainedContext.url) return "unknown";
+    const here = normalize.normalizeLinkedInUrl(url);
+    if (!here.valid) return "unknown";
+    return here.url === retainedContext.url ? "match" : "other";
   }
 
   function setFeedback(elm, text, tone) {
@@ -240,8 +283,11 @@
    * backend response only — nothing is inferred, and a record that needs review
    * stays visible as needing review.
    */
-  function renderSaveResult(result) {
+  function renderSaveResult(result, context) {
     if (!result) return;
+    // UI-016: the outcome and the page it belongs to are set together, from one
+    // value, so a painted outcome can never disagree with where it came from.
+    setRetainedContext(context);
     setConnection("connected");
     const state = $("save-state");
     const actions = $("save-actions");
@@ -365,6 +411,10 @@
   /** Paint a failed submission: what failed, what survived, one way forward. */
   function renderSaveFailure(detail, options) {
     const o = options || {};
+    // UI-016: a failure is not about a saved page — nothing was saved. It has no
+    // context, so re-detection holds it where the operator is standing rather
+    // than deciding it belongs elsewhere.
+    setRetainedContext(null);
     const state = $("save-state");
     const actions = $("save-actions");
     state.textContent = "";
@@ -412,6 +462,9 @@
 
   async function doSave() {
     if (!saveHandler) return;
+    // A save in flight has no saved page yet; the outcome is placed when the
+    // backend answers (UI-016).
+    setRetainedContext(null);
     const isBatch = currentBatch && shell.getView() !== "person-confirm";
     $("save-card").hidden = true;
     $("company-result-card").hidden = true;
@@ -453,7 +506,10 @@
 
     const r = await saveHandler();
     if (r && r.ok) {
-      renderSaveResult(r.result);
+      // The worker returns the context it stored beside the result, so the
+      // outcome painted now and the outcome restored after a reopen are placed
+      // by exactly the same value.
+      renderSaveResult(r.result, r.resultContext);
       return;
     }
     const detail = handoff.describeSendError(r);
@@ -1115,6 +1171,8 @@
     refreshPermissionState,
     showView,
     isSticky,
+    setRetainedContext,
+    retainedStatus,
     setFeedback,
     doSave,
     getPrefs: () => currentPrefs,
@@ -1219,7 +1277,9 @@
       renderBatch(state.batchView);
       // Recovery: if contacts were already saved (panel closed/reloaded, or a
       // navigation failed), restore the outcome without recapturing or resaving.
-      if (state.lastResult) renderSaveResult(state.lastResult);
+      // The context travels with it so the first page detection can tell whether
+      // this outcome is still the page the operator is looking at (UI-016).
+      if (state.lastResult) renderSaveResult(state.lastResult, state.lastResultContext);
     }
     refreshPermissionState();
     refreshLabelSuggestions();
