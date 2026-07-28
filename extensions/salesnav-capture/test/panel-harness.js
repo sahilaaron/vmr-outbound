@@ -20,6 +20,7 @@ const SCRIPTS = [
   ["common", "constants.js"],
   ["common", "normalize.js"],
   ["common", "dedupe.js"],
+  ["common", "warnings.js"],
   ["common", "schema.js"],
   ["common", "contact-schema.js"],
   ["common", "permissions.js"],

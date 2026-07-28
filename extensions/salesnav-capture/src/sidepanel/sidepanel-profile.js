@@ -17,7 +17,7 @@
 (function () {
   "use strict";
 
-  const { constants, handoff, permissions, liveSync } = self.SNCapture;
+  const { constants, handoff, permissions, liveSync, warnings: warningClass } = self.SNCapture;
   const { SURFACES, CAPTURE_STATUS } = constants;
   const panel = self.VMRPanel;
   const shell = self.VMRShell;
@@ -51,6 +51,11 @@
     unparsed_timeline: () => "a role's dates could not be read",
     unrecognized_layout: (what) => `${what || "a block"} used an unrecognised layout`,
     no_stable_identity: () => "no stable identity could be established",
+    duplicate_uncertain_identity: () => "identity is uncertain — this may be a duplicate",
+    // UI-013 — provenance, not a fault. The value is present; this says how it
+    // was produced so a derivation can never read as an observation.
+    derived_value: (what) => `${what || "a value"} was worked out from another value on the page`,
+    duplicate_collapsed: () => "seen more than once and recorded once",
   };
 
   // Wire-contract field names read as machine identifiers. The operator sees
@@ -78,22 +83,33 @@
     return s ? s.charAt(0).toUpperCase() + s.slice(1) : "A section";
   }
 
-  function warningBadges(warningLists) {
+  /**
+   * Badges for one set of warning lists.
+   *
+   * UI-013: `only` selects a class — "faults", "provenance", or undefined for
+   * both. The classification comes from common/warnings.js; this function only
+   * decides wording and tone. A code with no label here reads as an unlabelled
+   * note rather than leaking its raw identifier to the operator.
+   */
+  function warningBadges(warningLists, only) {
     const seen = new Map();
-    for (const list of warningLists) {
-      for (const w of list || []) {
-        if (!w || !w.code) continue;
-        const raw = w.field || w.section || null;
-        const what = fieldLabel(raw);
-        const key = w.code + (raw ? ":" + raw : "");
-        if (seen.has(key)) continue;
-        const build = WARNING_LABELS[w.code];
-        seen.set(key, build ? build(what) : key);
-      }
+    for (const w of warningClass.flatten(warningLists)) {
+      const provenance = warningClass.isProvenance(w.code);
+      if (only === "faults" && provenance) continue;
+      if (only === "provenance" && !provenance) continue;
+      const raw = w.field || w.section || null;
+      const what = fieldLabel(raw);
+      const key = w.code + (raw ? ":" + raw : "");
+      if (seen.has(key)) continue;
+      const build = WARNING_LABELS[w.code];
+      seen.set(key, {
+        label: build ? build(what) : "an unlabelled capture note",
+        tone: provenance ? "info" : "warning",
+      });
     }
     return Array.from(seen.entries())
       .slice(0, 12)
-      .map(([key, label]) => badge(label, { tone: "warning", title: key }));
+      .map(([key, v]) => badge(v.label, { tone: v.tone, title: key }));
   }
 
   function allWarnings(draftView) {
@@ -104,11 +120,19 @@
     );
   }
 
+  /**
+   * True when something about this capture needs the operator's attention.
+   *
+   * UI-013: provenance notes no longer count. A profile whose only warnings say
+   * where a value came from is complete, and saying otherwise made the review
+   * badge meaningless. A partial capture status and missing sections are still
+   * genuine gaps and still count.
+   */
   function hasGaps(draftView) {
     if (!draftView) return false;
     if (draftView.status === CAPTURE_STATUS.PARTIAL) return true;
     if ((draftView.missingSections || []).length) return true;
-    return warningBadges(allWarnings(draftView)).length > 0;
+    return warningClass.hasReviewFault(warningClass.flatten(allWarnings(draftView)));
   }
 
   // ---- mode switching ------------------------------------------------------
@@ -311,7 +335,10 @@
       );
     }
 
-    const gapBadges = warningBadges(allWarnings(draftView));
+    // UI-013: faults drive the "could not be read" box; provenance notes are
+    // rendered separately, below, so nothing is hidden and nothing is mislabelled.
+    const gapBadges = warningBadges(allWarnings(draftView), "faults");
+    const provenanceBadges = warningBadges(allWarnings(draftView), "provenance");
     const missing = draftView.missingSections || [];
 
     if (gapBadges.length || missing.length) {
@@ -377,6 +404,21 @@
             `Experience (${draftView.experienceCount} entr${draftView.experienceCount === 1 ? "y" : "ies"})`,
             confirmedBadge(draftView.experienceCount > 0, "Confirmed", "Not loaded")
           ),
+        ])
+      );
+    }
+
+    // Provenance notes, whichever branch ran above. Always rendered, never
+    // toned as a fault: these say how a value was produced, not that it is wrong.
+    if (provenanceBadges.length) {
+      boxEl.appendChild(
+        box({ sunk: true }, [
+          el("span", { class: "eyebrow", text: "Where these values came from" }),
+          el("div", { class: "badge-row" }, provenanceBadges),
+          paragraph("Recorded so a worked-out value is never mistaken for one read off the page.", {
+            tiny: true,
+            muted: true,
+          }),
         ])
       );
     }
