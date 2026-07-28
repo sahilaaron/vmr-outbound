@@ -841,3 +841,64 @@ class ContextReadinessState(enum.StrEnum):
     INCOMPLETE = "incomplete"
     NOT_CONFIGURED = "not_configured"
     NOT_APPLICABLE = "not_applicable"
+
+
+class LinkedInIdentifierKind(enum.StrEnum):
+    """The two forms a LinkedIn person identity arrives in (DAT-019).
+
+    They are deliberately separate kinds rather than one "linkedin id" column,
+    because they have different semantics and different comparison rules.
+
+    ``PUBLIC_VANITY_URL`` is the published or directly observed ``/in/`` URL. It
+    is normalized before storage and compared case-insensitively, as LinkedIn
+    handles are.
+
+    ``SALESNAV_MEMBER_ID`` is the opaque Sales Navigator member identifier. It is
+    stored VERBATIM: it is case-sensitive, and the vanity-URL normalizer folds
+    case, so putting it through that path corrupts the identifier. Building
+    ``/in/<member-id>`` from it produces a URL that does resolve, but that alias
+    is not automatically the contact's canonical published profile URL and never
+    becomes one on its own.
+    """
+
+    PUBLIC_VANITY_URL = "public_vanity_url"
+    SALESNAV_MEMBER_ID = "salesnav_member_id"
+
+
+class IdentityLinkState(enum.StrEnum):
+    """Whether an identifier currently speaks for a contact (DAT-019).
+
+    ``ACTIVE`` is the single claim that answers lookups. ``SUPERSEDED`` is
+    retained history — reversal never deletes, so an association can be undone
+    without losing the record that it was once made. ``NEEDS_REVIEW`` is a claim
+    that could not be accepted because another contact already holds the
+    identifier: both identifiers survive and an operator decides, because an
+    unresolved duplicate is safer than a false merge.
+    """
+
+    ACTIVE = "active"
+    SUPERSEDED = "superseded"
+    NEEDS_REVIEW = "needs_review"
+
+
+class IdentityLinkDecision(enum.StrEnum):
+    """What justified an identity link (DAT-019).
+
+    ``OBSERVED_CAPTURE`` — the identifier was read off a page for this person.
+
+    ``SAME_CAPTURE_OBSERVED`` — the only automatic bridge between the two
+    identifier forms. Both were directly observed in the SAME authenticated
+    capture for the same displayed person, so relating them is an observation
+    rather than an inference. Name, company, title, separate but compatible
+    captures, and generated aliases are all explicitly insufficient.
+
+    ``MIGRATION_BACKFILL`` — reconstructed from data that already existed. These
+    may carry ``suspected_alias``; they are never treated as canonical.
+
+    ``OPERATOR`` — a human decided, through the DAT-004 review path.
+    """
+
+    OBSERVED_CAPTURE = "observed_capture"
+    SAME_CAPTURE_OBSERVED = "same_capture_observed"
+    MIGRATION_BACKFILL = "migration_backfill"
+    OPERATOR = "operator"

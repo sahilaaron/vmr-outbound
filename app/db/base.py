@@ -45,6 +45,7 @@ from app.models import identity_resolution as _identity_resolution  # noqa: E402
 from app.models import import_batch as _import_batch  # noqa: E402,F401
 from app.models import insight as _insight  # noqa: E402,F401
 from app.models import linkedin_company as _linkedin_company  # noqa: E402,F401
+from app.models import linkedin_identity_link as _linkedin_identity_link  # noqa: E402,F401
 from app.models import linkedin_profile as _linkedin_profile  # noqa: E402,F401
 from app.models import provenance as _provenance  # noqa: E402,F401
 from app.models import qa_evaluation as _qa_evaluation  # noqa: E402,F401
