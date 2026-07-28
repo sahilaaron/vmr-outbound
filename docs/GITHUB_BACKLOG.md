@@ -217,6 +217,22 @@ Use `Deferred` for intentionally parked cards.
 
 ---
 
+## EPIC 14 — Seller-Side Knowledge Base
+
+The seller half of the system's context: what we sell, what we may factually say
+about it, and who we say it to. Entered by an operator — entering a record is
+the authorization for it, so nothing here has a review state and no model ever
+writes to it. Introduced by
+[ADR 0003](decisions/0003-seller-knowledge-base.md); behaviour and limits are in
+[`docs/SELLER_KNOWLEDGE_BASE.md`](SELLER_KNOWLEDGE_BASE.md).
+
+| ID | Priority | Card | Done when |
+| --- | --- | --- | --- |
+| KB-001 | P1 | Build the seller-side knowledge base | An operator can maintain the company profile, offerings, proof points, restricted claims and personas; associate proof points, restrictions and personas with offerings; associate any number of offerings with a campaign and remove them safely; and see deterministic, explainable context readiness. Archiving never strands a campaign, no seller record needs a second approval, and the whole area stays behind a default-off switch. |
+| KB-002 | P2 | Warn before archiving an offering a live campaign names | Archiving surfaces the campaigns that reference the offering and asks for confirmation, instead of only listing them on the offering page (ADR 0003, Q1). |
+| KB-003 | P2 | Keep company-profile history | The profile supersedes rather than overwrites, so an earlier positioning stays readable (ADR 0003, Q2). Only worth doing once positioning actually changes in practice. |
+| KB-004 | P2 | Decide whether drafting needs per-campaign restricted claims | DRF-* states a real requirement that global and offering scopes cannot express, or the question is closed (ADR 0003, Q3). |
+
 ## Parked Backlog — Do Not Build Before the First-Campaign Review
 
 | ID | Priority | Card | Activation condition |

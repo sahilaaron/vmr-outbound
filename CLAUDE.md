@@ -9,6 +9,9 @@ human-approved 100-contact pilot campaign — not a platform.
 2. `docs/AGENTS.md` — permanent engineering and safety rules.
 3. `docs/CLAUDE.md` — AI judgment boundaries, MCP limits, research/draft contracts.
 4. `docs/PROJECT_TRACKING.md` — management tracker and handoff rules.
+5. `docs/SELLER_KNOWLEDGE_BASE.md` — the seller-side knowledge base (KB-001),
+   when the work touches offerings, proof points, restricted claims, personas,
+   campaign-to-offering associations, or context readiness.
 
 When instructions conflict: Sahil's latest explicit instruction > GOAL >
 AGENTS > CLAUDE > PROJECT_TRACKING > existing conventions.
