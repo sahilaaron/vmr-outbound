@@ -1,0 +1,30 @@
+{# Knowledge Base sub-navigation. One slug per section, matched against
+   ``kb_section`` from the route. #}
+<div class="page-head">
+  <div class="head-row">
+    <div>
+      <h1>Knowledge Base</h1>
+      <div class="sub">
+        What we sell, what we may say about it, and who we say it to. Entered by
+        an operator — this is our own knowledge, not researched prospect data.
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="filter-chips" role="group" aria-label="Knowledge Base sections" style="margin-bottom:16px">
+  {% set sections = [
+    ("overview", "Overview", "/knowledge-base", none),
+    ("company", "Company", "/knowledge-base/company", none),
+    ("offerings", "Offerings", "/knowledge-base/offerings", "offerings"),
+    ("proof-points", "Proof Points", "/knowledge-base/proof-points", "proof_points"),
+    ("restricted-claims", "Restricted Claims", "/knowledge-base/restricted-claims", "restricted_claims"),
+    ("personas", "Personas", "/knowledge-base/personas", "personas"),
+  ] %}
+  {% for slug, label, href, count_key in sections %}
+  <a class="chip {{ 'on' if kb_section == slug else '' }}" href="{{ href }}">
+    {{ label }}
+    {% if count_key and kb_counts and kb_counts[count_key].active %}<span class="count">{{ kb_counts[count_key].active }}</span>{% endif %}
+  </a>
+  {% endfor %}
+</div>

@@ -37,7 +37,13 @@ Before changing the repository, read:
 9. `docs/INSIGHT_EVIDENCE.md` — the shared Company/Contact claim and evidence
    boundary (INS-001), when the work creates, consumes, scores, reviews, or
    personalizes from research evidence.
-10. Documents explicitly referenced by the current goal.
+10. `docs/SELLER_KNOWLEDGE_BASE.md` — the seller-side knowledge base (KB-001):
+    what the selling company records about itself, why it is structurally
+    separate from researched prospect evidence, and why operator entry is the
+    only approval it has. Read it when the work touches offerings, proof points,
+    restricted claims, personas, campaign-to-offering associations, context
+    readiness, or any future assembly of context for drafting.
+11. Documents explicitly referenced by the current goal.
 
 The root `CLAUDE.md` is a condensed pointer into these documents; it never
 overrides them.

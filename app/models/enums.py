@@ -753,3 +753,91 @@ class DomainResolutionKind(enum.StrEnum):
     RECALCULATION = "recalculation"
     # An operator disagreed with the automatic decision and said so explicitly.
     OPERATOR_CORRECTION = "operator_correction"
+
+
+class SellerRecordState(enum.StrEnum):
+    """Whether a seller-side knowledge record may still be used (KB-001).
+
+    Seller knowledge is operator-authored, and an operator who stops standing
+    behind a statement needs somewhere to put it that is not deletion. A
+    campaign that already referenced an offering must keep reading the same
+    row afterwards, so the knowledge base archives and never deletes.
+
+    * ``ACTIVE`` — the operator stands behind this record today. It counts
+      towards context readiness and future context assembly may read it.
+    * ``ARCHIVED`` — the operator has withdrawn it. It stays readable, keeps
+      every association it already had, and still resolves for any campaign
+      that references it, but it is excluded from readiness counts and from
+      the default pickers used when composing new context.
+
+    Archiving is reversible. It is deliberately not a third "draft" state:
+    entering a record IS the approval (KB-001), so there is no stage between
+    "an operator wrote this" and "this may be used".
+    """
+
+    ACTIVE = "active"
+    ARCHIVED = "archived"
+
+
+class SellerOfferingType(enum.StrEnum):
+    """What kind of commercial item a seller offering is (KB-001).
+
+    A closed set, because the category is used for organisation and reporting
+    and free text would make those counts meaningless. ``OTHER`` exists so an
+    operator is never forced to mis-file something; the offering's own notes
+    carry the detail. Adding a member later is one ``ALTER TYPE ... ADD VALUE``
+    and does not invalidate stored rows.
+    """
+
+    PRODUCT = "product"
+    SERVICE = "service"
+    SOLUTION = "solution"
+    SUBSCRIPTION = "subscription"
+    RESEARCH_REPORT = "research_report"
+    RESEARCH_ENGAGEMENT = "research_engagement"
+    OTHER = "other"
+
+
+class SellerClaimScope(enum.StrEnum):
+    """How widely a restricted claim applies (KB-001).
+
+    * ``GLOBAL`` — the restriction holds for everything the system may write,
+      whatever a campaign is selling. It carries no offering associations.
+    * ``OFFERING`` — the restriction is specific to named offerings and is
+      meaningless without them, so the service refuses to store one with an
+      empty association set.
+
+    The distinction is kept explicit rather than inferred from "does this row
+    have links", because a scoping mistake would silently narrow a rule that
+    was meant to apply everywhere.
+    """
+
+    GLOBAL = "global"
+    OFFERING = "offering"
+
+
+class ContextReadinessState(enum.StrEnum):
+    """Whether a single piece of seller context exists (KB-001).
+
+    This is a description of what an operator has entered, not a score, not a
+    quality judgement, and not permission to do anything. It is computed by
+    deterministic Python over stored columns (``app.services.seller.readiness``)
+    and never by a model.
+
+    * ``CONFIGURED`` — everything this item asks for is present.
+    * ``INCOMPLETE`` — some of it is present and some named part is missing.
+      The reason always says which part.
+    * ``NOT_CONFIGURED`` — nothing has been entered for this item yet.
+    * ``NOT_APPLICABLE`` — the item cannot apply to this subject at all, for a
+      structural reason the reason string states. It is not a pass and not a
+      failure; it means the question does not arise here.
+
+    ``INCOMPLETE`` and ``NOT_CONFIGURED`` are deliberately distinct, for the
+    same reason a NULL dossier section is not an empty one: "started and
+    unfinished" and "never begun" call for different actions.
+    """
+
+    CONFIGURED = "configured"
+    INCOMPLETE = "incomplete"
+    NOT_CONFIGURED = "not_configured"
+    NOT_APPLICABLE = "not_applicable"

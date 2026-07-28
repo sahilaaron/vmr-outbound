@@ -51,6 +51,9 @@ _DAT_017A_PARENT = _load_migration(
     "d7a3f18c62b4_dat_017a_company_domain_resolution.py"
 ).down_revision
 
+#: The revision immediately below KB-001, for the same reason.
+_KB_001_PARENT = _load_migration("b8e5d34a91c7_kb_001_seller_knowledge_base.py").down_revision
+
 
 @pytest.fixture()
 def temp_database_url() -> Iterator[str]:
@@ -325,5 +328,101 @@ def test_dat_017a_downgrade_refuses_while_a_promotion_uses_the_new_enum_label(
         blocked = _alembic(["downgrade", _DAT_017A_PARENT], temp_database_url)
         assert blocked.returncode != 0, "the downgrade must refuse while the label is in use"
         assert "labels it added" in (blocked.stdout + blocked.stderr)
+    finally:
+        engine.dispose()
+
+
+def test_kb_001_downgrade_refuses_while_the_knowledge_base_holds_typed_content(
+    temp_database_url: str,
+) -> None:
+    """Operator-typed seller knowledge exists nowhere else, so the reversal refuses.
+
+    A proof point or a positioning paragraph did not come from an import, a
+    provider, or a captured page - a person wrote it. There is nothing to
+    recompute it from, so dropping the tables would be silent, unrecoverable
+    data loss rather than a reversible schema change.
+
+    As with APP-003 and DAT-017A, the refusal is conditional on there being
+    something to protect: an empty schema reverses cleanly, which is what keeps
+    the round-trip test above meaningful.
+    """
+
+    assert _alembic(["upgrade", "head"], temp_database_url).returncode == 0
+
+    engine = create_engine(temp_database_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO seller_proof_points (id, statement, state) "
+                    "VALUES (:id, :statement, 'ACTIVE')"
+                ),
+                {"id": uuid.uuid4(), "statement": "Covering this market since 2009."},
+            )
+
+        blocked = _alembic(["downgrade", _KB_001_PARENT], temp_database_url)
+        assert blocked.returncode != 0, "the downgrade must refuse while typed content exists"
+        assert "operator-entered content" in (blocked.stdout + blocked.stderr)
+
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM seller_proof_points"))
+
+        cleared = _alembic(["downgrade", _KB_001_PARENT], temp_database_url)
+        assert cleared.returncode == 0, f"{cleared.stdout}\n{cleared.stderr}"
+    finally:
+        engine.dispose()
+
+
+def test_kb_001_campaign_offerings_survive_an_archived_offering(
+    temp_database_url: str,
+) -> None:
+    """Archiving is a state flip, so the association a campaign made still resolves.
+
+    Asserted at the database level rather than through the service, because it
+    is the schema - no delete path, and a foreign key to a row that is never
+    removed - that keeps a historical campaign intact, not a convention the
+    service layer happens to follow.
+    """
+
+    assert _alembic(["upgrade", "head"], temp_database_url).returncode == 0
+
+    engine = create_engine(temp_database_url)
+    try:
+        campaign_id = uuid.uuid4()
+        offering_id = uuid.uuid4()
+        with engine.begin() as conn:
+            conn.execute(
+                text("INSERT INTO campaigns (id, name, status) VALUES (:id, :name, 'DRAFT')"),
+                {"id": campaign_id, "name": "KB-001 archive check"},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO seller_offerings (id, name, offering_type, state) "
+                    "VALUES (:id, :name, 'RESEARCH_REPORT', 'ACTIVE')"
+                ),
+                {"id": offering_id, "name": "Cement outlook"},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO campaign_offerings (id, campaign_id, offering_id) "
+                    "VALUES (:id, :campaign, :offering)"
+                ),
+                {"id": uuid.uuid4(), "campaign": campaign_id, "offering": offering_id},
+            )
+            conn.execute(
+                text("UPDATE seller_offerings SET state = 'ARCHIVED' WHERE id = :id"),
+                {"id": offering_id},
+            )
+
+        with engine.connect() as conn:
+            still_linked = conn.execute(
+                text(
+                    "SELECT o.name, o.state FROM campaign_offerings link "
+                    "JOIN seller_offerings o ON o.id = link.offering_id "
+                    "WHERE link.campaign_id = :campaign"
+                ),
+                {"campaign": campaign_id},
+            ).all()
+        assert still_linked == [("Cement outlook", "ARCHIVED")]
     finally:
         engine.dispose()
