@@ -2244,16 +2244,24 @@ async def capture_company_confirm(
     if source is None:
         return _redirect(target, err="Choose a candidate, enter a domain, or leave it unresolved.")
     try:
-        capture_promotion.confirm_domain(
+        promotion = capture_promotion.confirm_domain(
             db, snapshot=snapshot, source=source, domain=domain, actor="workbench", note=note
         )
     except capture_promotion.PromotionError as exc:
         db.rollback()
         return _redirect(target, err=str(exc))
+    resolved_domain = promotion.resolved_domain
     db.commit()
     if source is EnrichmentConfirmationSource.UNRESOLVED:
         return _redirect(target, ok="Recorded as deliberately unresolved. Nothing was promoted.")
-    return _redirect(target, ok=f"Confirmed {domain}. You can promote this capture now.")
+    # Say which decision was actually recorded. A manual override and a
+    # confirmed provider candidate share one outcome value, so naming the
+    # outcome here would credit the provider for a domain the operator typed.
+    how = "Entered" if source is EnrichmentConfirmationSource.MANUAL else "Confirmed the candidate"
+    return _redirect(
+        target,
+        ok=f"{how} {resolved_domain or domain}. You can promote this capture now.",
+    )
 
 
 @router.post("/contact-captures/{capture_id}/company/reject")
@@ -2388,14 +2396,14 @@ def capture_promote(request: Request, capture_id: str, db: Session = Depends(get
     except capture_promotion.PromotionError as exc:
         db.rollback()
         return _redirect(target, err=str(exc))
+    company_phrase = capture_promotion.company_outcome_phrase(
+        result.company_outcome, record=capture_promotion.get_enrichment(db, snapshot.id)
+    )
     db.commit()
     if result.promoted:
         return _redirect(
             target,
-            ok=(
-                f"{result.contact_outcome.value.replace('_', ' ')} · "
-                f"company {result.company_outcome.value.replace('_', ' ')}."
-            ),
+            ok=(f"{result.contact_outcome.value.replace('_', ' ')} · company {company_phrase}."),
         )
     return _redirect(target, err=result.blocked_reason or "This capture could not be promoted.")
 

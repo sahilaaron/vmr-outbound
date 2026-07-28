@@ -1113,3 +1113,179 @@ def test_observed_at_is_taken_from_the_capture_not_the_clock(
     assert captured_at is not None
     assert all(o is not None and o.astimezone(UTC) == captured_at.astimezone(UTC) for o in observed)
     assert captured_at < datetime.now(UTC)
+
+
+# --- UI-014: stale promotion-refusal copy -------------------------------------
+
+
+def test_confirming_a_candidate_clears_the_earlier_refusal(
+    db_session: Session, capture: LinkedInProfileSnapshot
+) -> None:
+    """The page must not say "promotable" and "blocked" in the same breath.
+
+    DAT-011 saw exactly that: the capture moved to domain_candidate_confirmed and
+    promotion worked, while the row still carried the refusal from before the
+    confirmation. The refusal is what the page renders, so a stale one is a
+    contradiction an operator has to resolve by guessing.
+    """
+
+    promotion, _record = run_lookup(db_session, capture, transport_returning(*TWO_BRANDS))
+    assert promotion.blocked_reason, "the multi-candidate state must give a reason"
+
+    promotion = promo.confirm_domain(
+        db_session,
+        snapshot=capture,
+        source=EnrichmentConfirmationSource.CANDIDATE,
+        domain=DOMAIN,
+        actor="operator-a",
+    )
+
+    assert promotion.company_outcome is CompanyResolutionOutcome.DOMAIN_CANDIDATE_CONFIRMED
+    assert promotion.blocked_reason is None
+    view = promo.build_view(db_session, capture)
+    assert view.can_promote
+    assert view.promotion.blocked_reason is None
+
+
+def test_the_refusal_stays_cleared_when_the_page_is_reloaded(
+    db_session: Session, capture: LinkedInProfileSnapshot
+) -> None:
+    """``build_view`` re-evaluates on every visit, so it is where copy comes back."""
+
+    run_lookup(db_session, capture, transport_returning(*TWO_BRANDS))
+    _confirm(db_session, capture)
+
+    for _ in range(3):
+        view = promo.build_view(db_session, capture)
+        assert view.promotion.blocked_reason is None
+        assert "waiting for your confirmation" not in (view.promotion.blocked_reason or "")
+
+
+def test_a_manual_domain_also_clears_the_earlier_refusal(
+    db_session: Session, capture: LinkedInProfileSnapshot
+) -> None:
+    run_lookup(db_session, capture, transport_returning(*TWO_BRANDS))
+
+    promotion = promo.confirm_domain(
+        db_session,
+        snapshot=capture,
+        source=EnrichmentConfirmationSource.MANUAL,
+        domain="typed-by-hand.example",
+        actor="operator-a",
+    )
+
+    assert promotion.blocked_reason is None
+    assert promotion.resolved_domain == "typed-by-hand.example"
+
+
+def test_the_refusal_counts_the_candidates_actually_waiting(
+    db_session: Session, capture: LinkedInProfileSnapshot
+) -> None:
+    """A rejection shrinks the set, so the sentence describing it has to shrink too."""
+
+    promotion, _record = run_lookup(db_session, capture, transport_returning(*TWO_BRANDS))
+    assert promotion.blocked_reason == "2 domain candidates are waiting for your confirmation"
+
+    promotion = promo.reject_candidate(
+        db_session,
+        snapshot=capture,
+        domain="meridian-works.example",
+        actor="operator-a",
+        reason="different company, similar name",
+    )
+
+    assert promotion.company_outcome is CompanyResolutionOutcome.CANDIDATE_REVIEW_REQUIRED
+    assert promotion.blocked_reason == "1 domain candidate is waiting for your confirmation"
+    assert "2 domain candidates" not in (promotion.blocked_reason or "")
+
+
+def test_a_genuinely_blocked_capture_keeps_its_reason(
+    db_session: Session, capture: LinkedInProfileSnapshot
+) -> None:
+    """Clearing stale copy must not clear true copy.
+
+    Each of these is a real refusal, and each has to survive both the evaluation
+    that produced it and every later page load.
+    """
+
+    run_lookup(db_session, capture, transport_returning())
+    view = promo.build_view(db_session, capture)
+    assert view.promotion.company_outcome is CompanyResolutionOutcome.NO_CANDIDATE
+    assert "no usable domain candidate" in (view.promotion.blocked_reason or "")
+    assert not view.can_promote
+
+    promo.confirm_domain(
+        db_session,
+        snapshot=capture,
+        source=EnrichmentConfirmationSource.UNRESOLVED,
+        domain=None,
+        actor="operator-a",
+        note="two entities share this name",
+    )
+    view = promo.build_view(db_session, capture)
+    assert view.promotion.company_outcome is CompanyResolutionOutcome.LEFT_UNRESOLVED
+    assert view.promotion.blocked_reason == "the operator left this company deliberately unresolved"
+    assert not view.can_promote
+
+
+def test_promotion_still_succeeds_after_the_refusal_is_cleared(
+    db_session: Session, capture: LinkedInProfileSnapshot
+) -> None:
+    """The gate itself was never wrong, and must stay exactly as strict."""
+
+    run_lookup(db_session, capture, transport_returning(*TWO_BRANDS))
+    _confirm(db_session, capture)
+
+    result = promo.promote(db_session, snapshot=capture, actor="test")
+
+    assert result.promoted
+    assert result.company_outcome is CompanyResolutionOutcome.DOMAIN_CANDIDATE_CONFIRMED
+    assert result.blocked_reason is None
+    assert result.promotion.blocked_reason is None
+
+
+@pytest.mark.parametrize(
+    ("source", "domain", "expected"),
+    [
+        (EnrichmentConfirmationSource.CANDIDATE, DOMAIN, "domain candidate confirmed"),
+        (EnrichmentConfirmationSource.MANUAL, "typed-by-hand.example", "domain entered manually"),
+    ],
+)
+def test_the_outcome_phrase_names_how_the_domain_was_decided(
+    db_session: Session,
+    capture: LinkedInProfileSnapshot,
+    source: EnrichmentConfirmationSource,
+    domain: str,
+    expected: str,
+) -> None:
+    """One outcome value covers both, so the enum name alone credits the provider.
+
+    A domain the operator typed is not a candidate the provider offered, and
+    telling them it was misreports whose decision it is.
+    """
+
+    run_lookup(db_session, capture, transport_returning(*TWO_BRANDS))
+    promotion = promo.confirm_domain(
+        db_session, snapshot=capture, source=source, domain=domain, actor="operator-a"
+    )
+    record = promo.get_enrichment(db_session, capture.id)
+
+    assert promotion.company_outcome is CompanyResolutionOutcome.DOMAIN_CANDIDATE_CONFIRMED
+    assert promo.company_outcome_phrase(promotion.company_outcome, record=record) == expected
+
+
+def test_the_outcome_phrase_falls_back_to_the_outcome_when_it_cannot_narrow_it(
+    db_session: Session, capture: LinkedInProfileSnapshot
+) -> None:
+    """A provisional domain has no confirmation source by design; say so plainly."""
+
+    assert (
+        promo.company_outcome_phrase(CompanyResolutionOutcome.DOMAIN_PROVISIONAL, record=None)
+        == "domain provisional"
+    )
+    assert (
+        promo.company_outcome_phrase(
+            CompanyResolutionOutcome.DOMAIN_CANDIDATE_CONFIRMED, record=None
+        )
+        == "domain candidate confirmed"
+    )

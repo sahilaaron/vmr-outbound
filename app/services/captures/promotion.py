@@ -362,6 +362,12 @@ def evaluate_company(
         )
         promotion.company_outcome = outcome
         promotion.resolved_domain = record.confirmed_domain
+        # The confirmation is what the operator came here to do, so whatever
+        # refused promotion before it — candidates awaiting review, no domain,
+        # a failed lookup — has just stopped being true. Leaving the old reason
+        # on the row makes the page say promotion is available and blocked at
+        # the same time, and the row is what the page reads.
+        promotion.blocked_reason = None
         session.flush()
         return outcome
 
@@ -423,7 +429,7 @@ def evaluate_company(
 
     outcome = _outcome_from_lookup(record)
     promotion.company_outcome = outcome
-    promotion.blocked_reason = _company_blocked_reason(outcome)
+    promotion.blocked_reason = _company_blocked_reason(outcome, record=record)
     session.flush()
     return outcome
 
@@ -441,7 +447,21 @@ def _outcome_from_lookup(record: SalesNavCompanyEnrichment) -> CompanyResolution
     return CompanyResolutionOutcome.MULTIPLE_CANDIDATES_REVIEW_REQUIRED
 
 
-def _company_blocked_reason(outcome: CompanyResolutionOutcome) -> str | None:
+def _company_blocked_reason(
+    outcome: CompanyResolutionOutcome,
+    *,
+    record: SalesNavCompanyEnrichment | None = None,
+) -> str | None:
+    """Why promotion is refused right now, counted from the current candidates.
+
+    "Several" survives a rejection unchanged and so quietly outlives the set it
+    described. The count is read from ``record.candidates``, which a rejection
+    shrinks, so the sentence is re-derived rather than remembered.
+    """
+
+    if outcome is CompanyResolutionOutcome.MULTIPLE_CANDIDATES_REVIEW_REQUIRED:
+        waiting = len(record.candidates or []) if record is not None else 0
+        return f"{waiting} domain candidates are waiting for your confirmation"
     return {
         CompanyResolutionOutcome.PENDING_LOOKUP: "run the company-domain lookup first",
         CompanyResolutionOutcome.LOOKUP_UNAVAILABLE: (
@@ -451,12 +471,45 @@ def _company_blocked_reason(outcome: CompanyResolutionOutcome) -> str | None:
             "no usable domain candidate — enter a domain manually or leave this capture pending"
         ),
         CompanyResolutionOutcome.CANDIDATE_REVIEW_REQUIRED: (
-            "a domain candidate is waiting for your confirmation"
-        ),
-        CompanyResolutionOutcome.MULTIPLE_CANDIDATES_REVIEW_REQUIRED: (
-            "several domain candidates are waiting for your confirmation"
+            "1 domain candidate is waiting for your confirmation"
         ),
     }.get(outcome)
+
+
+#: How a resolved company outcome should be described to the operator. The
+#: outcome enum alone cannot say it: a manual override and a confirmed provider
+#: candidate both store ``DOMAIN_CANDIDATE_CONFIRMED``, so reporting the enum
+#: name credits the provider for a domain the operator typed.
+_CONFIRMATION_PHRASES = {
+    EnrichmentConfirmationSource.CANDIDATE: "domain candidate confirmed",
+    EnrichmentConfirmationSource.MANUAL: "domain entered manually",
+    EnrichmentConfirmationSource.PRIOR_MAPPING: "domain reused from an earlier confirmation",
+    EnrichmentConfirmationSource.AUTOMATIC_POLICY: "domain confirmed automatically from evidence",
+    EnrichmentConfirmationSource.UNRESOLVED: "deliberately left unresolved",
+}
+
+
+def company_outcome_phrase(
+    outcome: CompanyResolutionOutcome,
+    *,
+    record: SalesNavCompanyEnrichment | None = None,
+) -> str:
+    """A truthful operator-facing phrase for a company-resolution outcome.
+
+    Falls back to the outcome name whenever the record cannot narrow it —
+    a provisional domain has no confirmation source by design, and saying
+    "provisional" is already exact.
+    """
+
+    if (
+        outcome is CompanyResolutionOutcome.DOMAIN_CANDIDATE_CONFIRMED
+        and record is not None
+        and record.confirmation_source is not None
+    ):
+        phrase = _CONFIRMATION_PHRASES.get(record.confirmation_source)
+        if phrase is not None:
+            return phrase
+    return outcome.value.replace("_", " ")
 
 
 def run_lookup(
