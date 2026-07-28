@@ -1,5 +1,11 @@
 # LinkedIn capture — acceptance
 
+> **DAT-011 / #131** reconciles the acceptance contract against the merged
+> contact-first architecture and records the authenticated trial:
+> [`DAT_011_ACCEPTANCE.md`](./DAT_011_ACCEPTANCE.md). Layer 3C steps S1 and S2
+> below describe the pre-UI-012 panel (the compact chip and the old product
+> name) and are superseded there.
+
 Layer 3 (DAT-013) is the **current** contact-first acceptance. Layers 1 and 2
 below are the DAT-012 campaign-era evidence, retained because the extraction
 adapters, safety behaviour, and company-evidence path they cover are unchanged.
