@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% from "_macros.html" import seller_state_badge %}
+{% block content %}
+{% include "_kb_nav.html" %}
+
+<div class="notice info" role="status">
+  <div>
+    A proof point is a first-party statement an operator is prepared to stand
+    behind. It is not researched evidence: prospect insights carry a source URL,
+    a retrieval time and a confidence because nobody here vouches for them.
+    These are ours, so the reference field is an internal pointer and is optional.
+  </div>
+</div>
+
+<div class="grid-2">
+  <div class="table-wrap">
+    <div class="toolbar">
+      <strong class="small">{{ "All proof points" if show_archived else "Active proof points" }}</strong>
+      <div class="filter-chips" role="group" aria-label="Filter by state">
+        <a class="chip {{ 'on' if not show_archived }}" href="/knowledge-base/proof-points">Active</a>
+        <a class="chip {{ 'on' if show_archived }}" href="/knowledge-base/proof-points?archived=1">Include archived</a>
+      </div>
+    </div>
+    {% if proof_points %}
+    <table>
+      <thead>
+        <tr><th>Statement</th><th>Used by</th><th>State</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for record in proof_points %}
+        <tr>
+          <td class="wrap">
+            {{ record.statement }}
+            {% if record.supporting_detail %}
+            <div class="small muted-text">{{ record.supporting_detail | truncate(140) }}</div>
+            {% endif %}
+            {% if record.source_reference %}
+            <div class="small muted-text">Reference: <span class="mono">{{ record.source_reference | truncate(80) }}</span></div>
+            {% endif %}
+          </td>
+          <td class="small">
+            {% set used = offerings_by_record[record.id] %}
+            {% if used %}
+              {% for offering in used %}
+              <div><a href="/knowledge-base/offerings/{{ offering.id }}">{{ offering.name }}</a></div>
+              {% endfor %}
+            {% else %}
+              <span class="badge muted" title="Stored and reusable; not yet associated with an offering.">unassociated</span>
+            {% endif %}
+          </td>
+          <td>{{ seller_state_badge(record.state) }}</td>
+          <td>
+            <form method="post" action="/knowledge-base/proof-points/{{ record.id }}/state">
+              {% if record.state.value == 'archived' %}
+              <input type="hidden" name="action" value="restore">
+              <button class="btn small secondary" type="submit">Restore</button>
+              {% else %}
+              <input type="hidden" name="action" value="archive">
+              <button class="btn small secondary" type="submit">Archive</button>
+              {% endif %}
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty">
+      <div class="empty-title">{{ "No proof points yet" if not show_archived else "No proof points" }}</div>
+      <p>Scale of coverage, years of experience, validated statistics — anything factual we can support.</p>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Add a proof point</h2></div>
+    <div class="card-body">
+      <form method="post" action="/knowledge-base/proof-points">
+        <div class="field">
+          <label for="p-statement">Statement</label>
+          <textarea id="p-statement" name="statement" rows="3" required maxlength="4000"
+                    placeholder="e.g. We have published cement market coverage every year since 2009."></textarea>
+        </div>
+        <div class="field">
+          <label for="p-detail">Supporting detail <span class="opt">(optional)</span></label>
+          <textarea id="p-detail" name="supporting_detail" rows="3"></textarea>
+        </div>
+        <div class="field">
+          <label for="p-source">Source or internal reference <span class="opt">(optional)</span></label>
+          <input type="text" id="p-source" name="source_reference" maxlength="1024"
+                 placeholder="Report name, document, or who to ask">
+        </div>
+        <button class="btn" type="submit">Add proof point</button>
+        <div class="help" style="margin-top:8px">
+          Proof points are global. Associate one with offerings from the
+          offering's page — it is referenced, never copied.
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

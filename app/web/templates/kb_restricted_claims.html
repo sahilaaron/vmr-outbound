@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% from "_macros.html" import seller_state_badge, claim_scope_badge, entry_list %}
+{% block content %}
+{% include "_kb_nav.html" %}
+
+<div class="notice warn" role="status">
+  <div>
+    <strong>These are things generated copy must not say.</strong>
+    They are stored as individual records so one can be withdrawn without
+    editing the rest, and so a future drafting step can retrieve the ones that
+    apply as a list. Nothing drafts yet — recording a restriction today does not
+    enforce it against anything, because there is nothing generating text.
+  </div>
+</div>
+
+<div class="grid-2">
+  <div class="table-wrap">
+    <div class="toolbar">
+      <strong class="small">{{ "All restrictions" if show_archived else "Active restrictions" }}</strong>
+      <div class="filter-chips" role="group" aria-label="Filter by state">
+        <a class="chip {{ 'on' if not show_archived }}" href="/knowledge-base/restricted-claims">Active</a>
+        <a class="chip {{ 'on' if show_archived }}" href="/knowledge-base/restricted-claims?archived=1">Include archived</a>
+      </div>
+    </div>
+    {% if claims %}
+    <table>
+      <thead>
+        <tr><th>Restriction</th><th>Applies to</th><th>State</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for claim in claims %}
+        <tr>
+          <td class="wrap">
+            <strong>{{ claim.title }}</strong>
+            <div class="small muted-text">{{ claim.explanation | truncate(180) }}</div>
+            {% if claim.examples %}
+            <details style="margin-top:6px">
+              <summary class="small">Examples</summary>
+              {{ entry_list(claim.examples) }}
+            </details>
+            {% endif %}
+          </td>
+          <td class="small">
+            {{ claim_scope_badge(claim.scope) }}
+            {% if claim.scope.value == 'offering' %}
+              {% set used = offerings_by_record[claim.id] %}
+              {% if used %}
+                {% for offering in used %}
+                <div><a href="/knowledge-base/offerings/{{ offering.id }}">{{ offering.name }}</a></div>
+                {% endfor %}
+              {% else %}
+                <div><span class="badge warn" title="Scoped to offerings but linked to none, so it currently restricts nothing.">not linked yet</span></div>
+              {% endif %}
+            {% endif %}
+          </td>
+          <td>{{ seller_state_badge(claim.state) }}</td>
+          <td>
+            <form method="post" action="/knowledge-base/restricted-claims/{{ claim.id }}/state">
+              {% if claim.state.value == 'archived' %}
+              <input type="hidden" name="action" value="restore">
+              <button class="btn small secondary" type="submit">Restore</button>
+              {% else %}
+              <input type="hidden" name="action" value="archive">
+              <button class="btn small secondary" type="submit">Archive</button>
+              {% endif %}
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty">
+      <div class="empty-title">{{ "No restrictions yet" if not show_archived else "No restrictions" }}</div>
+      <p>Unsupported guarantees, invented client names, unverified pricing, prohibited comparisons.</p>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Add a restriction</h2></div>
+    <div class="card-body">
+      <form method="post" action="/knowledge-base/restricted-claims">
+        <div class="field">
+          <label for="c-title">Title</label>
+          <input type="text" id="c-title" name="title" required maxlength="255"
+                 placeholder="e.g. No named clients without written approval">
+        </div>
+        <div class="field">
+          <label for="c-explanation">Explanation</label>
+          <textarea id="c-explanation" name="explanation" rows="4" required
+                    placeholder="What is prohibited, and why."></textarea>
+        </div>
+        <div class="field">
+          <label for="c-examples">Examples <span class="opt">(one per line, optional)</span></label>
+          <textarea id="c-examples" name="examples" rows="3"></textarea>
+        </div>
+        <div class="field">
+          <label for="c-scope">Applies to</label>
+          <select id="c-scope" name="scope">
+            {% for scope in claim_scopes %}
+            <option value="{{ scope.value }}" {{ "selected" if scope.value == "global" }}>
+              {{ "Everything (global)" if scope.value == "global" else "Named offerings only" }}
+            </option>
+            {% endfor %}
+          </select>
+          <div class="help">
+            An offering-scoped restriction restricts nothing until you link it
+            to offerings from their pages.
+          </div>
+        </div>
+        <button class="btn" type="submit">Add restriction</button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

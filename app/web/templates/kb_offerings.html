@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% from "_macros.html" import seller_state_badge %}
+{% block content %}
+{% include "_kb_nav.html" %}
+
+<div class="grid-2">
+  <div class="table-wrap">
+    <div class="toolbar">
+      <strong class="small">{{ "All offerings" if show_archived else "Active offerings" }}</strong>
+      <div class="filter-chips" role="group" aria-label="Filter by state">
+        <a class="chip {{ 'on' if not show_archived }}" href="/knowledge-base/offerings">Active</a>
+        <a class="chip {{ 'on' if show_archived }}" href="/knowledge-base/offerings?archived=1">Include archived</a>
+      </div>
+    </div>
+    {% if offerings %}
+    <table>
+      <thead>
+        <tr><th>Offering</th><th>Type</th><th>State</th></tr>
+      </thead>
+      <tbody>
+        {% for offering in offerings %}
+        <tr>
+          <td>
+            <a href="/knowledge-base/offerings/{{ offering.id }}">{{ offering.name }}</a>
+            {% if offering.short_description %}
+            <div class="small muted-text">{{ offering.short_description | truncate(110) }}</div>
+            {% endif %}
+          </td>
+          <td class="small">{{ offering.offering_type.value.replace("_", " ") }}</td>
+          <td>{{ seller_state_badge(offering.state) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty">
+      <div class="empty-title">{{ "No offerings yet" if not show_archived else "No offerings" }}</div>
+      <p>
+        An offering is anything we may promote — a product, a service, a
+        subscription, a report category, or a research engagement.
+      </p>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Add an offering</h2></div>
+    <div class="card-body">
+      <form method="post" action="/knowledge-base/offerings">
+        <div class="field">
+          <label for="o-name">Name</label>
+          <input type="text" id="o-name" name="name" required maxlength="255"
+                 placeholder="e.g. Cement market outlook, annual">
+          <div class="help">Must be unique among active offerings.</div>
+        </div>
+        <div class="field">
+          <label for="o-type">Type</label>
+          <select id="o-type" name="offering_type">
+            {% for offering_type in offering_types %}
+            <option value="{{ offering_type.value }}" {{ "selected" if offering_type.value == "other" }}>
+              {{ offering_type.value.replace("_", " ") }}
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="field">
+          <label for="o-short">Short description <span class="opt">(optional)</span></label>
+          <textarea id="o-short" name="short_description" rows="2" maxlength="2000"></textarea>
+        </div>
+        <button class="btn" type="submit">Add offering</button>
+        <div class="help" style="margin-top:8px">
+          You can add the full description, problems, use cases and associations
+          on the offering's own page.
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

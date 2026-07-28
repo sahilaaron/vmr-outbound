@@ -244,3 +244,57 @@
 </table>
 {% endif %}
 {% endmacro %}
+
+{# Whether one piece of seller context has been entered (KB-001).
+   Four states, and the colours say what each one asks of the operator:
+   configured is done, incomplete is started, not configured is untouched, and
+   not applicable is a question that does not arise here — which is why it is
+   muted rather than red. This is never a score and never permission. #}
+{% macro readiness_badge(state) %}
+  {% set value = state.value if state.value is defined else state %}
+  {% if value == 'configured' %}
+    <span class="badge ok" title="Entered.">configured</span>
+  {% elif value == 'incomplete' %}
+    <span class="badge warn" title="Started, with something named still missing.">incomplete</span>
+  {% elif value == 'not_applicable' %}
+    <span class="badge muted" title="This question does not arise here. It is not a gap you can close.">not applicable</span>
+  {% else %}
+    <span class="badge info" title="Nothing has been entered for this yet.">not configured</span>
+  {% endif %}
+{% endmacro %}
+
+{# Whether a seller knowledge record is still in use (KB-001). Archived records
+   are kept and stay readable: a campaign that already names one still resolves
+   to it. #}
+{% macro seller_state_badge(state) %}
+  {% set value = state.value if state.value is defined else state %}
+  {% if value == 'archived' %}
+    <span class="badge muted" title="Withdrawn from use and kept. Campaigns that already name it still show it.">archived</span>
+  {% else %}
+    <span class="badge ok" title="In use.">active</span>
+  {% endif %}
+{% endmacro %}
+
+{# How widely a restricted claim applies (KB-001). #}
+{% macro claim_scope_badge(scope) %}
+  {% set value = scope.value if scope.value is defined else scope %}
+  {% if value == 'offering' %}
+    <span class="badge info" title="Applies only to the offerings it is linked to.">offering-scoped</span>
+  {% else %}
+    <span class="badge warn" title="Applies to everything, whatever a campaign is selling.">global</span>
+  {% endif %}
+{% endmacro %}
+
+{# A list-shaped seller field. ``None`` and ``[]`` are different answers:
+   nobody filled this in, versus an operator saying nothing applies. #}
+{% macro entry_list(values) %}
+  {% if values is none %}
+    <span class="badge muted" title="Nobody has filled this in. This is not the same as 'none'.">not entered</span>
+  {% elif values %}
+    <div class="toolbar" style="gap:6px">
+      {% for value in values %}<span class="chip">{{ value }}</span>{% endfor %}
+    </div>
+  {% else %}
+    <span class="small muted-text" title="Entered, and deliberately empty.">none apply</span>
+  {% endif %}
+{% endmacro %}

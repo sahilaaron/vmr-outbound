@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% from "_macros.html" import readiness_badge %}
+{% block content %}
+{% include "_kb_nav.html" %}
+
+<div class="notice info" role="status">
+  <div>
+    <strong>This page is seller knowledge, not prospect research.</strong>
+    Everything here is typed by an operator, and entering it is what authorizes
+    its use — there is no second approval step. Researched facts about prospect
+    companies and contacts live under Companies and Contacts, are gathered from
+    outside sources, and carry their own evidence and provenance.
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Context readiness</h2>
+    <span class="hint">Counted from stored records — not a score, and it blocks nothing</span>
+  </div>
+  <div class="card-body">
+    <p class="small muted-text mt-0">
+      {{ report.configured_count }} of {{ report.applicable_count }} items are
+      configured. Nothing in the application is prevented by an item being
+      missing; this is a description of what exists, calculated in plain code
+      from the database.
+    </p>
+    <div class="table-wrap" style="margin-top:12px">
+      <table>
+        <thead>
+          <tr><th>Item</th><th>State</th><th>Why</th><th></th></tr>
+        </thead>
+        <tbody>
+          {% for item in report.items %}
+          <tr>
+            <td><strong>{{ item.label }}</strong></td>
+            <td>{{ readiness_badge(item.state) }}</td>
+            <td class="small wrap">{{ item.reason }}</td>
+            <td>
+              {% if item.link %}<a class="btn small secondary" href="{{ item.link }}">Open</a>{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Where this is used</h2>
+  </div>
+  <div class="card-body">
+    <dl class="kv">
+      <dt>Campaigns</dt>
+      <dd class="small">
+        A campaign may name any number of offerings, or none. The association
+        records what the campaign concerns; it never writes the campaign's email
+        copy and never chooses its call to action — the campaign operator does
+        both directly.
+      </dd>
+      <dt>Drafting</dt>
+      <dd class="small">
+        Not built yet. When it is, it will read this knowledge base through one
+        retrieval boundary rather than querying these tables directly. Nothing
+        here generates or rewrites text today.
+      </dd>
+      <dt>Prospect research</dt>
+      <dd class="small">
+        Unaffected. Seller knowledge and researched prospect evidence stay
+        structurally separate, and this area changes nothing about how any
+        contact is researched, scored, verified, or suppressed.
+      </dd>
+    </dl>
+  </div>
+</div>
+
+{% if profile is none %}
+<div class="empty" style="margin-top:20px">
+  <div class="empty-title">Nothing entered yet</div>
+  <p>Start with the company profile — the rest reads more usefully once it exists.</p>
+  <a class="btn" href="/knowledge-base/company">Enter the company profile</a>
+</div>
+{% endif %}
+{% endblock %}

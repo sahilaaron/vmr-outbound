@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "_kb_nav.html" %}
+
+<div class="card">
+  <div class="card-head">
+    <h2>Company profile</h2>
+    <span class="hint">Who we are. One profile; saving replaces it.</span>
+  </div>
+  <div class="card-body">
+    {% if profile is none %}
+    <div class="notice info" role="status">
+      <div>No profile has been entered yet. Everything except the name is optional.</div>
+    </div>
+    {% endif %}
+    <form method="post" action="/knowledge-base/company">
+      <div class="field">
+        <label for="kb-name">Company name</label>
+        <input type="text" id="kb-name" name="name" required maxlength="255"
+               value="{{ profile.name if profile else '' }}">
+        <div class="help">The name the system uses when it refers to us.</div>
+      </div>
+
+      <div class="field">
+        <label for="kb-short">Short description <span class="opt">(optional)</span></label>
+        <textarea id="kb-short" name="short_description" rows="2" maxlength="2000">{{ profile.short_description if profile and profile.short_description else '' }}</textarea>
+        <div class="help">One or two sentences, for places with no room for the long version.</div>
+      </div>
+
+      <div class="field">
+        <label for="kb-desc">Standard description <span class="opt">(optional)</span></label>
+        <textarea id="kb-desc" name="description" rows="5">{{ profile.description if profile and profile.description else '' }}</textarea>
+      </div>
+
+      <div class="field">
+        <label for="kb-positioning">Positioning <span class="opt">(optional)</span></label>
+        <textarea id="kb-positioning" name="positioning" rows="4">{{ profile.positioning if profile and profile.positioning else '' }}</textarea>
+        <div class="help">How we sit against the alternatives a buyer already has.</div>
+      </div>
+
+      <hr class="sep">
+
+      <div class="form-grid">
+        <div class="field">
+          <label for="kb-industries">Industries served <span class="opt">(one per line)</span></label>
+          <textarea id="kb-industries" name="industries_served" rows="5">{{ (profile.industries_served or []) | join("\n") if profile else '' }}</textarea>
+        </div>
+        <div class="field">
+          <label for="kb-geos">Geographies served <span class="opt">(one per line)</span></label>
+          <textarea id="kb-geos" name="geographies_served" rows="5">{{ (profile.geographies_served or []) | join("\n") if profile else '' }}</textarea>
+        </div>
+        <div class="field">
+          <label for="kb-caps">Capabilities <span class="opt">(one per line)</span></label>
+          <textarea id="kb-caps" name="capabilities" rows="5">{{ (profile.capabilities or []) | join("\n") if profile else '' }}</textarea>
+        </div>
+        <div class="field">
+          <label for="kb-diffs">Differentiators <span class="opt">(one per line)</span></label>
+          <textarea id="kb-diffs" name="differentiators" rows="5">{{ (profile.differentiators or []) | join("\n") if profile else '' }}</textarea>
+        </div>
+      </div>
+      <p class="small muted-text">
+        An empty box means "not entered". If something genuinely does not apply,
+        say so in the notes rather than leaving it blank — readiness reports the
+        two differently.
+      </p>
+
+      <hr class="sep">
+
+      <div class="field">
+        <label for="kb-comms">Brand and communication guidance <span class="opt">(optional)</span></label>
+        <textarea id="kb-comms" name="communication_guidance" rows="4">{{ profile.communication_guidance if profile and profile.communication_guidance else '' }}</textarea>
+        <div class="help">
+          How we should sound. Things we must <em>not</em> say belong in
+          Restricted Claims, where each one can be withdrawn on its own.
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="kb-notes">General notes <span class="opt">(optional)</span></label>
+        <textarea id="kb-notes" name="notes" rows="4">{{ profile.notes if profile and profile.notes else '' }}</textarea>
+      </div>
+
+      <button class="btn" type="submit">Save company profile</button>
+    </form>
+  </div>
+</div>
+
+{% if profile %}
+<div class="card">
+  <div class="card-head"><h2>Record</h2></div>
+  <div class="card-body tight">
+    <dl class="kv">
+      <dt>Last saved</dt><dd class="small">{{ profile.updated_at | dt }}</dd>
+      <dt>First entered</dt><dd class="small">{{ profile.created_at | dt }}</dd>
+    </dl>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

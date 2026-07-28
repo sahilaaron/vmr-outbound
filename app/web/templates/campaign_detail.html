@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import campaign_badge, batch_badge, state_badge, pager %}
+{% from "_macros.html" import campaign_badge, batch_badge, state_badge, pager, seller_state_badge, readiness_badge %}
 {% block content %}
 <div class="page-head">
   <div class="crumbs"><a href="/campaigns">Campaigns</a><span>/</span>{{ overview.campaign.name }}</div>
@@ -19,6 +19,72 @@
   <div class="stat"><div class="label">{{ state.replace("_", " ") }}</div><div class="value">{{ count }}</div></div>
   {% endfor %}
 </div>
+
+{% if knowledge_base_on %}
+{# Campaign-to-offering association (KB-001). Optional, unordered, and with no
+   primary: it records what this campaign concerns, and it never writes the
+   campaign's email copy or chooses its call to action. #}
+<div class="card">
+  <div class="card-head">
+    <h2>Offerings this campaign concerns</h2>
+    <span class="hint">Optional — for organisation and reporting. It does not write copy or choose a CTA.</span>
+  </div>
+  <div class="card-body">
+    {% if campaign_offerings %}
+    <div class="toolbar" style="gap:6px">
+      {% for offering in campaign_offerings %}
+      <form method="post" action="/campaigns/{{ overview.campaign.id }}/offerings/{{ offering.id }}/remove" style="display:inline">
+        <span class="chip">
+          <a href="/knowledge-base/offerings/{{ offering.id }}">{{ offering.name }}</a>
+          {% if offering.state.value == 'archived' %}{{ seller_state_badge(offering.state) }}{% endif %}
+          <button class="btn small secondary" type="submit" aria-label="Remove {{ offering.name }} from this campaign">remove</button>
+        </span>
+      </form>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="small muted-text mt-0">
+      This campaign names no offerings. That is a valid, permanent state — the
+      association is optional and nothing is blocked by its absence.
+    </p>
+    {% endif %}
+
+    {% if selectable_offerings %}
+    <form method="post" action="/campaigns/{{ overview.campaign.id }}/offerings" class="toolbar" style="margin-top:12px">
+      <label class="sr-only" for="add-offering">Add an offering</label>
+      <select id="add-offering" name="offering_id" required>
+        <option value="">Add an offering…</option>
+        {% for offering in selectable_offerings %}
+        <option value="{{ offering.id }}">{{ offering.name }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn small" type="submit">Add</button>
+    </form>
+    {% else %}
+    <p class="small muted-text" style="margin-top:12px">
+      {% if campaign_offerings %}Every active offering is already on this campaign.
+      {% else %}No active offerings exist yet — <a href="/knowledge-base/offerings">add one in the Knowledge Base</a>.{% endif %}
+    </p>
+    {% endif %}
+
+    {% if campaign_readiness %}
+    <hr class="sep">
+    <table>
+      <thead><tr><th>Context item</th><th>State</th><th>Why</th></tr></thead>
+      <tbody>
+        {% for item in campaign_readiness.items %}
+        <tr>
+          <td class="small"><strong>{{ item.label }}</strong></td>
+          <td>{{ readiness_badge(item.state) }}</td>
+          <td class="small wrap">{{ item.reason }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
 
 <div class="table-wrap">
   <div class="toolbar"><strong class="small">Linked imports</strong></div>

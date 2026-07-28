@@ -37,6 +37,8 @@ from app.models.enums import (
     ImportRowOutcome,
     ImportSourceFormat,
     ResearchState,
+    SellerClaimScope,
+    SellerOfferingType,
     VerificationUsageEventType,
 )
 from app.models.linkedin_company import LinkedInCompanySnapshot
@@ -69,6 +71,11 @@ from app.services.imports.importer import (
 )
 from app.services.imports.preview import preview_import, preview_pending_batch
 from app.services.resolution import service as resolution_service
+from app.services.seller import campaign_offerings as seller_campaign_offerings
+from app.services.seller import profile as seller_profile
+from app.services.seller import readiness as seller_readiness
+from app.services.seller import records as seller_records
+from app.services.seller.common import SellerKnowledgeError, parse_lines
 from app.services.verification import console as verification_console
 from app.services.verification import queue as verification_queue
 from app.services.verification import service as verification_service
@@ -316,6 +323,24 @@ def campaign_detail_page(
             "pages": _pages(total_members),
             "state_filter": state_filter,
             "workflow_states": list(ContactWorkflowState),
+            # Seller context (KB-001). Present only when the Knowledge Base is
+            # switched on; while off the campaign page renders exactly as before.
+            "knowledge_base_on": _knowledge_base_enabled(),
+            "campaign_offerings": (
+                seller_campaign_offerings.offerings_for_campaign(db, overview.campaign.id)
+                if _knowledge_base_enabled()
+                else []
+            ),
+            "selectable_offerings": (
+                seller_campaign_offerings.selectable_offerings(db, overview.campaign.id)
+                if _knowledge_base_enabled()
+                else []
+            ),
+            "campaign_readiness": (
+                seller_readiness.campaign_report(db, overview.campaign)
+                if _knowledge_base_enabled()
+                else None
+            ),
             "active_nav": "campaigns",
             "page_title": overview.campaign.name,
         },
@@ -2455,6 +2480,599 @@ def contact_capture_page(
             "page_title": "Contact capture",
         },
     )
+
+
+# --- Knowledge Base: seller-side context (KB-001) ----------------------------
+#
+# Seller knowledge, not prospect research. Everything on these pages is typed by
+# an operator, and typing it is the authorization for it, so there is no review
+# step, no approval queue and no model in any of these paths.
+
+
+def _knowledge_base_enabled() -> bool:
+    """Whether the Knowledge Base is switched on (FND-007 default-off)."""
+
+    return get_settings().features.seller_knowledge_base
+
+
+def _kb_disabled(request: Request, db: Session) -> HTMLResponse:
+    """The 404 the Knowledge Base shows while its switch is off."""
+
+    return _not_found(
+        request,
+        db,
+        "The Knowledge Base is not enabled. Set FEATURES__SELLER_KNOWLEDGE_BASE=true "
+        "to switch it on for local operation.",
+    )
+
+
+def _kb_context(db: Session, section: str, title: str) -> dict[str, Any]:
+    """Shared context for every Knowledge Base page."""
+
+    return {
+        "active_nav": "knowledge-base",
+        "kb_section": section,
+        "page_title": title,
+        "kb_counts": seller_records.counts(db),
+    }
+
+
+def _offering_type(raw: str | None) -> SellerOfferingType:
+    try:
+        return SellerOfferingType(str(raw))
+    except ValueError:
+        return SellerOfferingType.OTHER
+
+
+def _claim_scope(raw: str | None) -> SellerClaimScope:
+    try:
+        return SellerClaimScope(str(raw))
+    except ValueError:
+        return SellerClaimScope.GLOBAL
+
+
+def _show_archived(request: Request) -> bool:
+    return request.query_params.get("archived") == "1"
+
+
+@router.get("/knowledge-base", response_class=HTMLResponse)
+def knowledge_base_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    """Overview and readiness for the seller-side knowledge base."""
+
+    if not _knowledge_base_enabled():
+        return _kb_disabled(request, db)
+    return _render(
+        request,
+        db,
+        "knowledge_base.html",
+        {
+            **_kb_context(db, "overview", "Knowledge Base"),
+            "report": seller_readiness.seller_report(db),
+            "profile": seller_profile.get_profile(db),
+        },
+    )
+
+
+@router.get("/knowledge-base/company", response_class=HTMLResponse)
+def knowledge_base_company_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    """The seller organisation profile."""
+
+    if not _knowledge_base_enabled():
+        return _kb_disabled(request, db)
+    return _render(
+        request,
+        db,
+        "kb_company.html",
+        {
+            **_kb_context(db, "company", "Company profile"),
+            "profile": seller_profile.get_profile(db),
+        },
+    )
+
+
+@router.post("/knowledge-base/company")
+async def knowledge_base_company_save(request: Request, db: Session = Depends(get_db)) -> Response:
+    if not _knowledge_base_enabled():
+        return _kb_disabled(request, db)
+    form = await request.form()
+    try:
+        seller_profile.save_profile(
+            db,
+            name=str(form.get("name", "")),
+            short_description=str(form.get("short_description", "")),
+            description=str(form.get("description", "")),
+            positioning=str(form.get("positioning", "")),
+            communication_guidance=str(form.get("communication_guidance", "")),
+            notes=str(form.get("notes", "")),
+            industries_served=parse_lines(str(form.get("industries_served", ""))),
+            geographies_served=parse_lines(str(form.get("geographies_served", ""))),
+            capabilities=parse_lines(str(form.get("capabilities", ""))),
+            differentiators=parse_lines(str(form.get("differentiators", ""))),
+        )
+    except SellerKnowledgeError as exc:
+        return _redirect("/knowledge-base/company", err=str(exc))
+    db.commit()
+    return _redirect("/knowledge-base/company", ok="Company profile saved.")
+
+
+@router.get("/knowledge-base/offerings", response_class=HTMLResponse)
+def knowledge_base_offerings_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    if not _knowledge_base_enabled():
+        return _kb_disabled(request, db)
+    archived = _show_archived(request)
+    return _render(
+        request,
+        db,
+        "kb_offerings.html",
+        {
+            **_kb_context(db, "offerings", "Offerings"),
+            "offerings": seller_records.list_offerings(db, include_archived=archived),
+            "show_archived": archived,
+            "offering_types": list(SellerOfferingType),
+        },
+    )
+
+
+@router.post("/knowledge-base/offerings")
+async def knowledge_base_offering_create(
+    request: Request, db: Session = Depends(get_db)
+) -> Response:
+    if not _knowledge_base_enabled():
+        return _kb_disabled(request, db)
+    form = await request.form()
+    try:
+        offering = seller_records.create_offering(
+            db,
+            name=str(form.get("name", "")),
+            offering_type=_offering_type(str(form.get("offering_type", ""))),
+            short_description=str(form.get("short_description", "")),
+            description=str(form.get("description", "")),
+            problems_addressed=parse_lines(str(form.get("problems_addressed", ""))),
+            use_cases=parse_lines(str(form.get("use_cases", ""))),
+            differentiators=parse_lines(str(form.get("differentiators", ""))),
+            notes=str(form.get("notes", "")),
+        )
+    except SellerKnowledgeError as exc:
+        return _redirect("/knowledge-base/offerings", err=str(exc))
+    db.commit()
+    return _redirect(
+        f"/knowledge-base/offerings/{offering.id}", ok=f"Added \u201c{offering.name}\u201d."
+    )
+
+
+@router.get("/knowledge-base/offerings/{offering_id}", response_class=HTMLResponse)
+def knowledge_base_offering_detail_page(
+    request: Request, offering_id: str, db: Session = Depends(get_db)
+) -> HTMLResponse:
+    if not _knowledge_base_enabled():
+        return _kb_disabled(request, db)
+    parsed_id = _parse_uuid(offering_id)
+    offering = seller_records.get_offering(db, parsed_id) if parsed_id else None
+    if offering is None:
+        return _not_found(request, db, "That offering does not exist.")
+    linked_proof_points = seller_records.proof_points_for_offering(db, offering.id)
+    linked_claims = seller_records.restricted_claims_for_offering(db, offering.id)
+    linked_personas = seller_records.personas_for_offering(db, offering.id)
+    linked_ids = {
+        "proof_point": {record.id for record in linked_proof_points},
+        "restricted_claim": {record.id for record in linked_claims},
+        "persona": {record.id for record in linked_personas},
+    }
+    return _render(
+        request,
+        db,
+        "kb_offering_detail.html",
+        {
+            **_kb_context(db, "offerings", offering.name),
+            "offering": offering,
+            "offering_types": list(SellerOfferingType),
+            "linked_proof_points": linked_proof_points,
+            "linked_claims": linked_claims,
+            "linked_personas": linked_personas,
+            "available_proof_points": [
+                record
+                for record in seller_records.list_proof_points(db)
+                if record.id not in linked_ids["proof_point"]
+            ],
+            "available_claims": [
+                record
+                for record in seller_records.list_restricted_claims(db)
+                if record.scope is SellerClaimScope.OFFERING
+                and record.id not in linked_ids["restricted_claim"]
+            ],
+            "available_personas": [
+                record
+                for record in seller_records.list_personas(db)
+                if record.id not in linked_ids["persona"]
+            ],
+            "campaigns": seller_campaign_offerings.campaigns_for_offering(db, offering.id),
+        },
+    )
+
+
+@router.post("/knowledge-base/offerings/{offering_id}")
+async def knowledge_base_offering_update(
+    request: Request, offering_id: str, db: Session = Depends(get_db)
+) -> Response:
+    if not _knowledge_base_enabled():
+        return _kb_disabled(request, db)
+    parsed_id = _parse_uuid(offering_id)
+    offering = seller_records.get_offering(db, parsed_id) if parsed_id else None
+    if offering is None:
+        return _not_found(request, db, "That offering does not exist.")
+    back = f"/knowledge-base/offerings/{offering.id}"
+    form = await request.form()
+    try:
+        seller_records.update_offering(
+            db,
+            offering,
+            name=str(form.get("name", "")),
+            offering_type=_offering_type(str(form.get("offering_type", ""))),
+            short_description=str(form.get("short_description", "")),
+            description=str(form.get("description", "")),
+            problems_addressed=parse_lines(str(form.get("problems_addressed", ""))),
+            use_cases=parse_lines(str(form.get("use_cases", ""))),
+            differentiators=parse_lines(str(form.get("differentiators", ""))),
+            notes=str(form.get("notes", "")),
+        )
+    except SellerKnowledgeError as exc:
+        return _redirect(back, err=str(exc))
+    db.commit()
+    return _redirect(back, ok="Offering saved.")
+
+
+@router.post("/knowledge-base/offerings/{offering_id}/state")
+async def knowledge_base_offering_state(
+    request: Request, offering_id: str, db: Session = Depends(get_db)
+) -> Response:
+    """Archive or restore an offering. Campaigns that name it are unaffected."""
+
+    if not _knowledge_base_enabled():
+        return _kb_disabled(request, db)
+    parsed_id = _parse_uuid(offering_id)
+    offering = seller_records.get_offering(db, parsed_id) if parsed_id else None
+    if offering is None:
+        return _not_found(request, db, "That offering does not exist.")
+    back = f"/knowledge-base/offerings/{offering.id}"
+    form = await request.form()
+    restore = str(form.get("action", "")) == "restore"
+    try:
+        if restore:
+            changed = seller_records.restore_offering(db, offering)
+        else:
+            changed = seller_records.archive_offering(db, offering)
+    except SellerKnowledgeError as exc:
+        return _redirect(back, err=str(exc))
+    db.commit()
+    if not changed:
+        return _redirect(back, ok="No change — it was already in that state.")
+    if restore:
+        return _redirect(back, ok=f"\u201c{offering.name}\u201d is active again.")
+    return _redirect(
+        back,
+        ok=(
+            f"\u201c{offering.name}\u201d is archived. Campaigns that already name it "
+            "still show it."
+        ),
+    )
+
+
+@router.post("/knowledge-base/offerings/{offering_id}/links")
+async def knowledge_base_offering_link(
+    request: Request, offering_id: str, db: Session = Depends(get_db)
+) -> Response:
+    """Add or remove one proof point, restricted claim, or persona association."""
+
+    if not _knowledge_base_enabled():
+        return _kb_disabled(request, db)
+    parsed_id = _parse_uuid(offering_id)
+    offering = seller_records.get_offering(db, parsed_id) if parsed_id else None
+    if offering is None:
+        return _not_found(request, db, "That offering does not exist.")
+    back = f"/knowledge-base/offerings/{offering.id}"
+    form = await request.form()
+    kind = str(form.get("kind", ""))
+    if kind not in ("proof_point", "restricted_claim", "persona"):
+        return _redirect(back, err="Unknown association type.")
+    related_id = _parse_uuid(str(form.get("related_id", "")))
+    if related_id is None:
+        return _redirect(back, err="Select something to associate first.")
+    remove = str(form.get("action", "")) == "remove"
+    label = kind.replace("_", " ")
+    try:
+        if remove:
+            changed = seller_records.unlink_from_offering(
+                db, offering=offering, kind=kind, related_id=related_id
+            )
+        else:
+            changed = seller_records.link_to_offering(
+                db, offering=offering, kind=kind, related_id=related_id
+            )
+    except SellerKnowledgeError as exc:
+        return _redirect(back, err=str(exc))
+    db.commit()
+    if not changed:
+        return _redirect(back, ok=f"No change \u2014 that {label} was already as you asked.")
+    return _redirect(back, ok=f"{'Removed' if remove else 'Added'} the {label} association.")
+
+
+@router.get("/knowledge-base/proof-points", response_class=HTMLResponse)
+def knowledge_base_proof_points_page(
+    request: Request, db: Session = Depends(get_db)
+) -> HTMLResponse:
+    if not _knowledge_base_enabled():
+        return _kb_disabled(request, db)
+    archived = _show_archived(request)
+    proof_points = seller_records.list_proof_points(db, include_archived=archived)
+    return _render(
+        request,
+        db,
+        "kb_proof_points.html",
+        {
+            **_kb_context(db, "proof-points", "Proof points"),
+            "proof_points": proof_points,
+            "offerings_by_record": {
+                record.id: seller_records.offerings_for_proof_point(db, record.id)
+                for record in proof_points
+            },
+            "show_archived": archived,
+        },
+    )
+
+
+@router.post("/knowledge-base/proof-points")
+async def knowledge_base_proof_point_create(
+    request: Request, db: Session = Depends(get_db)
+) -> Response:
+    if not _knowledge_base_enabled():
+        return _kb_disabled(request, db)
+    form = await request.form()
+    try:
+        seller_records.create_proof_point(
+            db,
+            statement=str(form.get("statement", "")),
+            supporting_detail=str(form.get("supporting_detail", "")),
+            source_reference=str(form.get("source_reference", "")),
+        )
+    except SellerKnowledgeError as exc:
+        return _redirect("/knowledge-base/proof-points", err=str(exc))
+    db.commit()
+    return _redirect("/knowledge-base/proof-points", ok="Proof point added.")
+
+
+@router.post("/knowledge-base/proof-points/{proof_point_id}/state")
+async def knowledge_base_proof_point_state(
+    request: Request, proof_point_id: str, db: Session = Depends(get_db)
+) -> Response:
+    if not _knowledge_base_enabled():
+        return _kb_disabled(request, db)
+    parsed_id = _parse_uuid(proof_point_id)
+    proof_point = seller_records.get_proof_point(db, parsed_id) if parsed_id else None
+    if proof_point is None:
+        return _not_found(request, db, "That proof point does not exist.")
+    form = await request.form()
+    restore = str(form.get("action", "")) == "restore"
+    if restore:
+        seller_records.restore_proof_point(db, proof_point)
+    else:
+        seller_records.archive_proof_point(db, proof_point)
+    db.commit()
+    return _redirect(
+        "/knowledge-base/proof-points",
+        ok="Proof point restored." if restore else "Proof point archived.",
+    )
+
+
+@router.get("/knowledge-base/restricted-claims", response_class=HTMLResponse)
+def knowledge_base_restricted_claims_page(
+    request: Request, db: Session = Depends(get_db)
+) -> HTMLResponse:
+    if not _knowledge_base_enabled():
+        return _kb_disabled(request, db)
+    archived = _show_archived(request)
+    claims = seller_records.list_restricted_claims(db, include_archived=archived)
+    return _render(
+        request,
+        db,
+        "kb_restricted_claims.html",
+        {
+            **_kb_context(db, "restricted-claims", "Restricted claims"),
+            "claims": claims,
+            "offerings_by_record": {
+                record.id: seller_records.offerings_for_restricted_claim(db, record.id)
+                for record in claims
+            },
+            "show_archived": archived,
+            "claim_scopes": list(SellerClaimScope),
+        },
+    )
+
+
+@router.post("/knowledge-base/restricted-claims")
+async def knowledge_base_restricted_claim_create(
+    request: Request, db: Session = Depends(get_db)
+) -> Response:
+    if not _knowledge_base_enabled():
+        return _kb_disabled(request, db)
+    form = await request.form()
+    try:
+        claim = seller_records.create_restricted_claim(
+            db,
+            title=str(form.get("title", "")),
+            explanation=str(form.get("explanation", "")),
+            examples=parse_lines(str(form.get("examples", ""))),
+            scope=_claim_scope(str(form.get("scope", ""))),
+        )
+    except SellerKnowledgeError as exc:
+        return _redirect("/knowledge-base/restricted-claims", err=str(exc))
+    db.commit()
+    if claim.scope is SellerClaimScope.OFFERING:
+        return _redirect(
+            "/knowledge-base/restricted-claims",
+            ok=(
+                "Restriction added. It is scoped to offerings, so link it to each "
+                "offering it applies to from that offering's page."
+            ),
+        )
+    return _redirect(
+        "/knowledge-base/restricted-claims",
+        ok="Restriction added. It applies to everything.",
+    )
+
+
+@router.post("/knowledge-base/restricted-claims/{claim_id}/state")
+async def knowledge_base_restricted_claim_state(
+    request: Request, claim_id: str, db: Session = Depends(get_db)
+) -> Response:
+    if not _knowledge_base_enabled():
+        return _kb_disabled(request, db)
+    parsed_id = _parse_uuid(claim_id)
+    claim = seller_records.get_restricted_claim(db, parsed_id) if parsed_id else None
+    if claim is None:
+        return _not_found(request, db, "That restriction does not exist.")
+    form = await request.form()
+    restore = str(form.get("action", "")) == "restore"
+    if restore:
+        seller_records.restore_restricted_claim(db, claim)
+    else:
+        seller_records.archive_restricted_claim(db, claim)
+    db.commit()
+    return _redirect(
+        "/knowledge-base/restricted-claims",
+        ok="Restriction restored." if restore else "Restriction archived.",
+    )
+
+
+@router.get("/knowledge-base/personas", response_class=HTMLResponse)
+def knowledge_base_personas_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    if not _knowledge_base_enabled():
+        return _kb_disabled(request, db)
+    archived = _show_archived(request)
+    personas = seller_records.list_personas(db, include_archived=archived)
+    return _render(
+        request,
+        db,
+        "kb_personas.html",
+        {
+            **_kb_context(db, "personas", "Personas"),
+            "personas": personas,
+            "offerings_by_record": {
+                record.id: seller_records.offerings_for_persona(db, record.id)
+                for record in personas
+            },
+            "show_archived": archived,
+        },
+    )
+
+
+@router.post("/knowledge-base/personas")
+async def knowledge_base_persona_create(
+    request: Request, db: Session = Depends(get_db)
+) -> Response:
+    if not _knowledge_base_enabled():
+        return _kb_disabled(request, db)
+    form = await request.form()
+    try:
+        seller_records.create_persona(
+            db,
+            name=str(form.get("name", "")),
+            role_function=str(form.get("role_function", "")),
+            seniority=str(form.get("seniority", "")),
+            responsibilities=parse_lines(str(form.get("responsibilities", ""))),
+            challenges=parse_lines(str(form.get("challenges", ""))),
+            use_cases=parse_lines(str(form.get("use_cases", ""))),
+            messaging_notes=str(form.get("messaging_notes", "")),
+        )
+    except SellerKnowledgeError as exc:
+        return _redirect("/knowledge-base/personas", err=str(exc))
+    db.commit()
+    return _redirect("/knowledge-base/personas", ok="Persona added.")
+
+
+@router.post("/knowledge-base/personas/{persona_id}/state")
+async def knowledge_base_persona_state(
+    request: Request, persona_id: str, db: Session = Depends(get_db)
+) -> Response:
+    if not _knowledge_base_enabled():
+        return _kb_disabled(request, db)
+    parsed_id = _parse_uuid(persona_id)
+    persona = seller_records.get_persona(db, parsed_id) if parsed_id else None
+    if persona is None:
+        return _not_found(request, db, "That persona does not exist.")
+    form = await request.form()
+    restore = str(form.get("action", "")) == "restore"
+    try:
+        if restore:
+            seller_records.restore_persona(db, persona)
+        else:
+            seller_records.archive_persona(db, persona)
+    except SellerKnowledgeError as exc:
+        return _redirect("/knowledge-base/personas", err=str(exc))
+    db.commit()
+    return _redirect(
+        "/knowledge-base/personas",
+        ok="Persona restored." if restore else "Persona archived.",
+    )
+
+
+# --- Campaign-to-offering association (KB-001) -------------------------------
+
+
+@router.post("/campaigns/{campaign_id}/offerings")
+async def campaign_offering_add(
+    request: Request, campaign_id: str, db: Session = Depends(get_db)
+) -> Response:
+    """Record that a campaign concerns an offering.
+
+    Association only. It never writes the campaign's copy or call to action.
+    """
+
+    if not _knowledge_base_enabled():
+        return _kb_disabled(request, db)
+    parsed_id = _parse_uuid(campaign_id)
+    overview = get_campaign_overview(db, parsed_id) if parsed_id else None
+    if overview is None:
+        return _not_found(request, db, "That campaign does not exist.")
+    back = f"/campaigns/{overview.campaign.id}"
+    form = await request.form()
+    offering_id = _parse_uuid(str(form.get("offering_id", "")))
+    if offering_id is None:
+        return _redirect(back, err="Choose an offering first.")
+    try:
+        offering, created = seller_campaign_offerings.associate(
+            db, campaign=overview.campaign, offering_id=offering_id
+        )
+    except SellerKnowledgeError as exc:
+        return _redirect(back, err=str(exc))
+    db.commit()
+    if not created:
+        return _redirect(back, ok=f"\u201c{offering.name}\u201d was already on this campaign.")
+    return _redirect(back, ok=f"This campaign now concerns \u201c{offering.name}\u201d.")
+
+
+@router.post("/campaigns/{campaign_id}/offerings/{offering_id}/remove")
+async def campaign_offering_remove(
+    request: Request, campaign_id: str, offering_id: str, db: Session = Depends(get_db)
+) -> Response:
+    """Remove an offering association. Nothing else about the campaign changes."""
+
+    if not _knowledge_base_enabled():
+        return _kb_disabled(request, db)
+    parsed_id = _parse_uuid(campaign_id)
+    overview = get_campaign_overview(db, parsed_id) if parsed_id else None
+    if overview is None:
+        return _not_found(request, db, "That campaign does not exist.")
+    back = f"/campaigns/{overview.campaign.id}"
+    parsed_offering_id = _parse_uuid(offering_id)
+    if parsed_offering_id is None:
+        return _redirect(back, err="That offering association does not exist.")
+    removed = seller_campaign_offerings.dissociate(
+        db, campaign=overview.campaign, offering_id=parsed_offering_id
+    )
+    db.commit()
+    if not removed:
+        return _redirect(back, ok="No change \u2014 that offering was not on this campaign.")
+    return _redirect(back, ok="Offering association removed.")
 
 
 # --- Later-phase sections: one clean unavailable state -----------------------
