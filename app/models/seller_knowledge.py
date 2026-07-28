@@ -17,10 +17,16 @@ operator corrects a proof point precisely because the corrected version is the
 one they want everywhere. Copying would have made a correction a hunt.
 
 **Archiving, not deleting.** Every record carries
-:class:`~app.models.enums.SellerRecordState`. Nothing in this module has a
-delete path, so an offering a campaign already references cannot disappear
+:class:`~app.models.enums.SellerRecordState`, and no service offers a way to
+delete one, so an offering a campaign already references cannot disappear
 underneath it. Archiving withdraws a record from readiness counts and from the
 pickers used to build new context; it changes nothing that already points at it.
+
+Association rows are the deliberate exception: unlinking a proof point from an
+offering, or an offering from a campaign, really does delete that join row. A
+link is a statement an operator can simply retract, and it is re-creatable from
+the two records it joined, so there is nothing unrecoverable to preserve. The
+records themselves are never touched by an unlink.
 
 **Associations are explicit models, not ``relationship(secondary=...)``.**
 That matches ``CampaignContact`` and ``ContactLabelAssignment``: each link is a

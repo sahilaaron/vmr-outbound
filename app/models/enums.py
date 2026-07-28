@@ -802,14 +802,19 @@ class SellerClaimScope(enum.StrEnum):
     """How widely a restricted claim applies (KB-001).
 
     * ``GLOBAL`` — the restriction holds for everything the system may write,
-      whatever a campaign is selling. It carries no offering associations.
-    * ``OFFERING`` — the restriction is specific to named offerings and is
-      meaningless without them, so the service refuses to store one with an
-      empty association set.
+      whatever a campaign is selling. It carries no offering associations, and
+      the service refuses to create one.
+    * ``OFFERING`` — the restriction applies only to the offerings it is linked
+      to. It is created before those links exist and may legitimately sit
+      unlinked, in which case it restricts nothing; the Knowledge Base says so
+      on the page rather than pretending otherwise. Nothing forces a link,
+      because an operator who has written the rule but not yet decided where it
+      applies has done something useful and should not lose it.
 
     The distinction is kept explicit rather than inferred from "does this row
-    have links", because a scoping mistake would silently narrow a rule that
-    was meant to apply everywhere.
+    have links", precisely because an unlinked offering-scoped claim is a real
+    state: inferring the scope would make it indistinguishable from a global
+    rule and silently widen it.
     """
 
     GLOBAL = "global"

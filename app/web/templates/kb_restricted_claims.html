@@ -39,6 +39,40 @@
               {{ entry_list(claim.examples) }}
             </details>
             {% endif %}
+            <details style="margin-top:8px">
+              <summary class="small">Edit</summary>
+              <form method="post" action="/knowledge-base/restricted-claims/{{ claim.id }}" style="margin-top:8px">
+                <div class="field">
+                  <label class="sr-only" for="e-title-{{ claim.id }}">Title</label>
+                  <input type="text" id="e-title-{{ claim.id }}" name="title" required maxlength="255" value="{{ claim.title }}">
+                </div>
+                <div class="field">
+                  <label class="sr-only" for="e-exp-{{ claim.id }}">Explanation</label>
+                  <textarea id="e-exp-{{ claim.id }}" name="explanation" rows="3" required>{{ claim.explanation }}</textarea>
+                </div>
+                <div class="field">
+                  <label class="sr-only" for="e-ex-{{ claim.id }}">Examples, one per line</label>
+                  <textarea id="e-ex-{{ claim.id }}" name="examples" rows="2" placeholder="Examples, one per line">{{ (claim.examples or []) | join("\n") }}</textarea>
+                </div>
+                <div class="field">
+                  <label for="e-scope-{{ claim.id }}">Applies to</label>
+                  <select id="e-scope-{{ claim.id }}" name="scope">
+                    {% for scope in claim_scopes %}
+                    <option value="{{ scope.value }}" {{ "selected" if scope == claim.scope }}>
+                      {{ "Everything (global)" if scope.value == "global" else "Named offerings only" }}
+                    </option>
+                    {% endfor %}
+                  </select>
+                  {% if claim.scope.value == 'offering' %}
+                  <div class="help">
+                    Changing this to global removes its offering associations, because
+                    a link implying a narrowing must not outlive the narrowing.
+                  </div>
+                  {% endif %}
+                </div>
+                <button class="btn small" type="submit">Save</button>
+              </form>
+            </details>
           </td>
           <td class="small">
             {{ claim_scope_badge(claim.scope) }}

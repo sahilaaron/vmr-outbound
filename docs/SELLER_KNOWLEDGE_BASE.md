@@ -64,8 +64,18 @@ labels, one per line in the form.
 
 `NULL` and `[]` are different answers and readiness reports them differently:
 `NULL` means nobody filled it in, `[]` means an operator considered it and said
-nothing applies. A second profile is impossible — a partial unique index on
-`is_current` enforces it in the database.
+nothing applies.
+
+**Known limitation.** The form cannot currently produce `[]`. An empty textarea
+means "not entered", and there is no way to say "I considered this and nothing
+applies" without typing something. The distinction is real in the schema, in the
+services and in readiness, and an API or a future control can set `[]` — but
+through today's UI the three list fields are effectively "entered or not". A
+checkbox per field would fix it; it was left out because nothing in the pilot
+turns on it yet.
+
+A second profile is impossible — a partial unique index on `is_current` enforces
+it in the database.
 
 ### Offerings
 
@@ -73,6 +83,10 @@ Any commercial item: product, service, solution, subscription, research report,
 research engagement, or other. Active names are unique; archiving frees the name.
 
 ### Proof points
+
+Editable in place from the list, under **Edit** on each row — as are restrictions
+and personas. Editing never touches associations, which is the point of storing
+them by reference.
 
 First-party statements — scale of coverage, years of experience, validated
 statistics, approved case-study facts.
@@ -86,10 +100,17 @@ operator's entry is the authority.
 
 Two scopes. `global` applies whatever a campaign is selling. `offering` applies
 only to the offerings it is linked to — and until it is linked to at least one,
-it restricts nothing, which the page says out loud.
+it restricts nothing, which the page says out loud. Nothing forces a link: an
+operator who has written the rule but not yet decided where it applies has done
+something useful and should not lose it.
+
+A `global` claim cannot be linked to an offering. Linking one would imply it had
+been narrowed, and `context.assemble` would then return it twice. The service
+refuses it, not just the picker.
 
 Widening an offering-scoped claim to global drops its links, because links that
-imply a narrowing must not outlive the narrowing.
+imply a narrowing must not outlive the narrowing. The audit event records which
+offerings were dropped, since nothing else can reconstruct that afterwards.
 
 **These enforce nothing today.** Nothing in the system generates text yet, so a
 restriction is a record waiting for DRF-*. It is not a control, and the page
@@ -104,8 +125,14 @@ area creates, matches or modifies a contact.
 
 ## Archiving
 
-`SellerRecordState` is `ACTIVE` or `ARCHIVED`. There is no delete path anywhere
-in the package.
+`SellerRecordState` is `ACTIVE` or `ARCHIVED`. **No service can delete a
+record** — not an offering, proof point, restriction or persona.
+
+Association rows are the deliberate exception: unlinking a proof point from an
+offering, or an offering from a campaign, really does delete that join row. A
+link is a statement an operator can retract, and it is re-creatable from the two
+records it joined, so there is nothing unrecoverable to preserve. The records
+themselves are never touched by an unlink.
 
 Archiving a record:
 
