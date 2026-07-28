@@ -75,6 +75,20 @@ class FeatureFlags(BaseModel):
     # Operator workbench UI (server-rendered pages). Off by default so the UI
     # stays disabled until it is deliberately enabled for local operation.
     workbench: bool = False
+    # Seller-side Knowledge Base (KB-001): the operator-maintained company
+    # profile, offerings, proof points, restricted claims, personas, and the
+    # campaign-to-offering association. Off by default; while off the pages
+    # return 404 and the campaign editor shows no offerings section, exactly as
+    # if the area did not exist. It also requires ``workbench``, because it is
+    # part of that UI and inherits its local-only gate.
+    #
+    # Turning it on lets an operator record and read their own commercial
+    # knowledge. It does not draft anything, does not call a model, does not
+    # change how any prospect is researched, scored, verified, or suppressed,
+    # and does not make any contact outreach-eligible. Associating an offering
+    # with a campaign is a statement about what that campaign concerns; it never
+    # writes email copy or selects a call to action.
+    seller_knowledge_base: bool = False
     # Operator-driven Sales Navigator company-domain enrichment via the official
     # logo.dev Search Brands API (DAT-010). Off by default so the lookup UI and
     # any outbound call stay fully disabled until deliberately enabled for local
