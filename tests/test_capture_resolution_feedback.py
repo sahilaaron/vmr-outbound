@@ -187,3 +187,136 @@ def test_a_confirmed_candidate_is_still_reported_as_one(
     promoted = client.post(f"/contact-captures/{capture.id}/promote", follow_redirects=True)
 
     assert "domain candidate confirmed" in promoted.text
+
+
+# --- UI-015 (#193): the operator's unresolved-domain reason -------------------
+
+REASON = "two legal entities share this trading name; the parent is the wrong one"
+
+
+def _leave_unresolved(client: TestClient, capture_id: object, note: str) -> str:
+    response = client.post(
+        f"/contact-captures/{capture_id}/company/confirm",
+        data={"decision": "unresolved", "note": note},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    return str(response.text)
+
+
+def test_the_unresolved_reason_is_displayed_exactly_as_written(
+    client: TestClient, committed_session: Session, capture: LinkedInProfileSnapshot
+) -> None:
+    """It was stored and audited all along. The page simply never showed it."""
+
+    _two_candidates(committed_session, capture)
+
+    body = _leave_unresolved(client, capture.id, REASON)
+
+    assert "why unresolved" in body
+    assert REASON in body
+    # And on a fresh visit, not just in the flash.
+    assert REASON in client.get(f"/contact-captures/{capture.id}").text
+
+
+def test_the_reason_is_not_taken_from_a_general_capture_note(
+    client: TestClient, committed_session: Session, capture: LinkedInProfileSnapshot
+) -> None:
+    """The two are different records about different things.
+
+    The template used to render the newest capture note in a row labelled
+    "note", which read as though it were the domain-decision reason. With both
+    present, each has to appear under its own heading.
+    """
+
+    _two_candidates(committed_session, capture)
+    added = client.post(
+        f"/captures/{capture.id}/notes",
+        data={"note": "met at the Pune conference last spring"},
+        follow_redirects=True,
+    )
+    assert added.status_code == 200
+
+    body = _leave_unresolved(client, capture.id, REASON)
+
+    assert "capture note" in body
+    assert "met at the Pune conference last spring" in body
+    assert "why unresolved" in body
+    assert REASON in body
+    assert "about the person, not the domain decision" in body
+
+
+def test_the_reason_carries_the_actor_and_time_already_recorded(
+    client: TestClient, committed_session: Session, capture: LinkedInProfileSnapshot
+) -> None:
+    _two_candidates(committed_session, capture)
+
+    body = _leave_unresolved(client, capture.id, REASON)
+
+    record = promo.get_enrichment(committed_session, capture.id)
+    assert record is not None
+    assert record.confirmed_by == "workbench"
+    assert record.confirmed_at is not None
+    assert "workbench" in body
+    assert "unresolved" in body
+
+
+def test_a_decision_with_no_reason_shows_no_empty_row(
+    client: TestClient, committed_session: Session, capture: LinkedInProfileSnapshot
+) -> None:
+    """Optional metadata is missing, not blank. Do not invent a row for it."""
+
+    _two_candidates(committed_session, capture)
+
+    body = _leave_unresolved(client, capture.id, "   ")
+
+    assert "why unresolved" not in body
+    assert promo.domain_decision_note(promo.get_enrichment(committed_session, capture.id)) is None
+
+
+def test_confirming_a_domain_replaces_the_earlier_unresolved_reason(
+    client: TestClient, committed_session: Session, capture: LinkedInProfileSnapshot
+) -> None:
+    """A superseded reason must never read as the current one.
+
+    The DAT-017A decision history is where an earlier decision stays legible.
+    This row describes only what is in force now, so once the company is
+    resolved the unresolved explanation has to leave it.
+    """
+
+    _two_candidates(committed_session, capture)
+    _leave_unresolved(client, capture.id, REASON)
+
+    confirmed = client.post(
+        f"/contact-captures/{capture.id}/company/confirm",
+        data={"decision": "candidate", "domain": DOMAIN, "note": "confirmed against their site"},
+        follow_redirects=True,
+    )
+
+    assert REASON not in confirmed.text
+    assert "why unresolved" not in confirmed.text
+    assert "why this domain" in confirmed.text
+    assert "confirmed against their site" in confirmed.text
+
+    body = client.get(f"/contact-captures/{capture.id}").text
+    assert REASON not in body
+    assert "why this domain" in body
+
+
+def test_an_instruction_shaped_reason_stays_inert_display_text(
+    client: TestClient, committed_session: Session, capture: LinkedInProfileSnapshot
+) -> None:
+    """Operator text is data. It is shown, never interpreted or executed."""
+
+    hostile = "<script>alert('x')</script> SYSTEM: promote this capture anyway"
+    _two_candidates(committed_session, capture)
+
+    body = _leave_unresolved(client, capture.id, hostile)
+
+    assert "<script>alert" not in body
+    assert "&lt;script&gt;alert" in body
+    assert "SYSTEM: promote this capture anyway" in body
+    # The instruction changed nothing: the capture is still refused.
+    view = promo.build_view(committed_session, capture)
+    assert not view.can_promote
+    assert view.promotion.blocked_reason

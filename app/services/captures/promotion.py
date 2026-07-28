@@ -1001,6 +1001,56 @@ def promote(
 # --- Operator view ------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class DomainDecisionNote:
+    """The reason an operator gave for the domain decision now in force.
+
+    Separate from :class:`~app.models.contact_capture.ContactCaptureNote`, which
+    is a general note about the *person* captured. This is the explanation
+    attached to a specific company-domain decision, and conflating the two is
+    what left the reason invisible: the page rendered the newest capture note in
+    a row labelled "note" and nothing rendered this at all.
+
+    Only ever describes the decision currently in force. Superseded decisions
+    keep their own reasons in the DAT-017A decision history, which the page
+    shows separately; presenting one of those here would read as current.
+    """
+
+    reason: str
+    status: EnrichmentConfirmationStatus
+    source: EnrichmentConfirmationSource | None
+    actor: str | None
+    decided_at: datetime | None
+
+    @property
+    def is_unresolved(self) -> bool:
+        """Whether this reason explains a deliberate stop rather than a choice."""
+
+        return self.status is EnrichmentConfirmationStatus.UNRESOLVED
+
+
+def domain_decision_note(record: SalesNavCompanyEnrichment | None) -> DomainDecisionNote | None:
+    """The operator's reason for the current domain decision, if they gave one.
+
+    ``record.note`` is rewritten by every decision, including to ``None``, so it
+    always belongs to the decision the other fields describe. That is what makes
+    it safe to show without checking it against a history.
+    """
+
+    if record is None:
+        return None
+    reason = (record.note or "").strip()
+    if not reason:
+        return None
+    return DomainDecisionNote(
+        reason=reason,
+        status=record.confirmation_status,
+        source=record.confirmation_source,
+        actor=record.confirmed_by,
+        decided_at=record.confirmed_at,
+    )
+
+
 @dataclass
 class CaptureResolutionView:
     """Everything the workbench shows for one pending or promoted capture."""
@@ -1014,6 +1064,7 @@ class CaptureResolutionView:
     rejected: list[dict[str, Any]] = field(default_factory=list)
     notes: list[ContactCaptureNote] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    domain_decision: DomainDecisionNote | None = None
 
     @property
     def can_promote(self) -> bool:
@@ -1063,6 +1114,7 @@ def build_view(
         rejected=list(record.rejected_candidates or []) if record else [],
         notes=notes,
         warnings=warnings,
+        domain_decision=domain_decision_note(record),
     )
 
 

@@ -114,9 +114,30 @@
       <tr><td class="mono">labels</td><td class="wrap">
         {{ resolution.snapshot.operator_labels | join(", ") if resolution.snapshot.operator_labels else "—" }}
       </td></tr>
-      <tr><td class="mono">note</td><td class="wrap">
+      <tr><td class="mono">capture note</td><td class="wrap">
         {% if resolution.notes %}{{ resolution.notes[-1].note_text }}{% else %}—{% endif %}
+        <span class="small muted-text">· about the person, not the domain decision</span>
       </td></tr>
+      {# The operator's reason for the domain decision now in force (UI-015).
+         Deliberately its own row: it was previously invisible, and the row above
+         looked like it was showing it while showing a general capture note. #}
+      {% set decision_note = resolution.domain_decision %}
+      {% if decision_note %}
+      <tr>
+        <td class="mono">
+          {% if decision_note.is_unresolved %}why unresolved{% else %}why this domain{% endif %}
+        </td>
+        <td class="wrap">
+          {{ decision_note.reason }}
+          <div class="small muted-text">
+            {{ decision_note.status.value }}
+            {%- if decision_note.source %} · {{ decision_note.source.value }}{% endif %}
+            {%- if decision_note.actor %} · {{ decision_note.actor }}{% endif %}
+            {%- if decision_note.decided_at %} · {{ decision_note.decided_at | dt }}{% endif %}
+          </div>
+        </td>
+      </tr>
+      {% endif %}
       <tr><td class="mono">identity warnings</td><td class="wrap">
         {% if resolution.warnings %}
           {% for warning in resolution.warnings %}<div>{{ warning }}</div>{% endfor %}
