@@ -402,6 +402,114 @@ def test_widening_an_offering_scoped_restriction_drops_its_now_misleading_links(
     assert records.restricted_claims_for_offering(db_session, offering.id) == []
 
 
+def test_a_global_restriction_cannot_be_narrowed_to_one_offering(db_session: Session) -> None:
+    """It already applies everywhere; a link would imply a narrowing it never had."""
+
+    offering = make_offering(db_session)
+    claim = records.create_restricted_claim(
+        db_session, title="No guarantees", explanation="Never promise an outcome."
+    )
+    with pytest.raises(SellerKnowledgeError, match="applies to everything already"):
+        records.link_to_offering(
+            db_session, offering=offering, kind="restricted_claim", related_id=claim.id
+        )
+
+
+def test_widening_a_restriction_records_which_offerings_it_used_to_name(
+    db_session: Session,
+) -> None:
+    """The dropped links are the one fact nothing else can reconstruct afterwards."""
+
+    offering = make_offering(db_session)
+    claim = records.create_restricted_claim(
+        db_session,
+        title="No named clients",
+        explanation="Never name a client.",
+        scope=SellerClaimScope.OFFERING,
+    )
+    records.link_to_offering(
+        db_session, offering=offering, kind="restricted_claim", related_id=claim.id
+    )
+    records.update_restricted_claim(
+        db_session,
+        claim,
+        title="No named clients",
+        explanation="Never name a client.",
+        scope=SellerClaimScope.GLOBAL,
+    )
+    event = db_session.scalars(
+        select(AuditEvent)
+        .where(AuditEvent.action == "seller_restricted_claim.updated")
+        .order_by(AuditEvent.created_at.desc())
+    ).first()
+    assert event is not None
+    assert event.context is not None
+    assert event.context["dropped_offering_ids"] == [str(offering.id)]
+
+
+def test_editing_a_restriction_without_changing_scope_records_no_transition(
+    db_session: Session,
+) -> None:
+    claim = records.create_restricted_claim(
+        db_session, title="No guarantees", explanation="Never promise an outcome."
+    )
+    records.update_restricted_claim(
+        db_session,
+        claim,
+        title="No guarantees at all",
+        explanation="Never promise an outcome.",
+        scope=SellerClaimScope.GLOBAL,
+    )
+    event = db_session.scalars(
+        select(AuditEvent).where(AuditEvent.action == "seller_restricted_claim.updated")
+    ).first()
+    assert event is not None
+    assert event.previous_state is None
+    assert event.new_state is None
+
+
+def test_editing_a_proof_point_or_persona_keeps_their_associations(
+    db_session: Session,
+) -> None:
+    """The three record types that are edited from a list, not a detail page."""
+
+    offering = make_offering(db_session)
+    proof_point = records.create_proof_point(db_session, statement="Since 2010.")
+    persona = records.create_persona(db_session, name="Head of Strategy")
+    records.link_to_offering(
+        db_session, offering=offering, kind="proof_point", related_id=proof_point.id
+    )
+    records.link_to_offering(db_session, offering=offering, kind="persona", related_id=persona.id)
+    records.update_proof_point(db_session, proof_point, statement="Since 2009.")
+    records.update_persona(db_session, persona, name="Head of Corporate Strategy")
+    assert records.proof_points_for_offering(db_session, offering.id) == [proof_point]
+    assert records.personas_for_offering(db_session, offering.id) == [persona]
+
+
+def test_the_batched_used_by_lookup_matches_the_per_record_one(
+    db_session: Session,
+) -> None:
+    """The list pages use the batched query; it must not answer differently."""
+
+    first = make_offering(db_session, name="Cement outlook")
+    second = make_offering(db_session, name="Chemicals outlook")
+    shared = records.create_proof_point(db_session, statement="Since 2009.")
+    lonely = records.create_proof_point(db_session, statement="Unlinked.")
+    for offering in (first, second):
+        records.link_to_offering(
+            db_session, offering=offering, kind="proof_point", related_id=shared.id
+        )
+
+    batched = records.offerings_by_record(
+        db_session, kind="proof_point", record_ids=[shared.id, lonely.id]
+    )
+    assert batched[shared.id] == records.offerings_for_proof_point(db_session, shared.id)
+    # A record with no associations still gets an entry, so the template can
+    # index it without a guard.
+    assert batched[lonely.id] == []
+    assert records.offerings_by_record(db_session, kind="persona", record_ids=[]) == {}
+
+
 def test_a_restriction_requires_both_a_title_and_an_explanation(db_session: Session) -> None:
     with pytest.raises(SellerKnowledgeError, match="Explanation is required"):
         records.create_restricted_claim(db_session, title="No guarantees", explanation="  ")
@@ -630,6 +738,41 @@ def test_readiness_blocks_nothing(db_session: Session) -> None:
         db_session, campaign=campaign, offering_id=offering.id
     )
     assert created is True
+
+
+def test_nothing_outside_the_knowledge_base_consults_readiness() -> None:
+    """ "Not a gate" is a structural claim, so assert it structurally.
+
+    The behavioural test above would still pass if some unrelated module —
+    eligibility, verification, scheduling — imported readiness and consulted it.
+    This asserts what the ADR actually promises: nothing outside this feature
+    imports it at all.
+    """
+
+    import pathlib
+    import re
+
+    # Real imports only. A docstring that names the module — as the enum's does
+    # — is a cross-reference, not a dependency.
+    imports_readiness = re.compile(
+        r"^\s*(from\s+app\.services\.seller\s+import\s+[^\n]*\breadiness\b"
+        r"|from\s+app\.services\.seller\.readiness\s+import"
+        r"|import\s+app\.services\.seller\.readiness)",
+        re.MULTILINE,
+    )
+    root = pathlib.Path(__file__).resolve().parents[1] / "app"
+    seller_package = root / "services" / "seller"
+    # The Knowledge Base may read its own readiness, and the workbench renders
+    # it. Anything else consulting it would make it a gate.
+    allowed = {root / "web" / "routes.py"}
+    importers = sorted(
+        str(path.relative_to(root))
+        for path in root.rglob("*.py")
+        if seller_package not in path.parents
+        and path not in allowed
+        and imports_readiness.search(path.read_text(encoding="utf-8")) is not None
+    )
+    assert importers == [], f"readiness must not be consulted from {importers}"
 
 
 # --- 9. The context retrieval boundary ---------------------------------------

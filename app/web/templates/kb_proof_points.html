@@ -37,6 +37,26 @@
             {% if record.source_reference %}
             <div class="small muted-text">Reference: <span class="mono">{{ record.source_reference | truncate(80) }}</span></div>
             {% endif %}
+            <details style="margin-top:8px">
+              <summary class="small">Edit</summary>
+              <form method="post" action="/knowledge-base/proof-points/{{ record.id }}" style="margin-top:8px">
+                <div class="field">
+                  <label class="sr-only" for="e-stmt-{{ record.id }}">Statement</label>
+                  <textarea id="e-stmt-{{ record.id }}" name="statement" rows="3" required maxlength="4000">{{ record.statement }}</textarea>
+                </div>
+                <div class="field">
+                  <label class="sr-only" for="e-det-{{ record.id }}">Supporting detail</label>
+                  <textarea id="e-det-{{ record.id }}" name="supporting_detail" rows="2" placeholder="Supporting detail">{{ record.supporting_detail or '' }}</textarea>
+                </div>
+                <div class="field">
+                  <label class="sr-only" for="e-src-{{ record.id }}">Source or internal reference</label>
+                  <input type="text" id="e-src-{{ record.id }}" name="source_reference" maxlength="1024"
+                         placeholder="Source or internal reference" value="{{ record.source_reference or '' }}">
+                </div>
+                <button class="btn small" type="submit">Save</button>
+                <span class="help">Editing keeps every offering association.</span>
+              </form>
+            </details>
           </td>
           <td class="small">
             {% set used = offerings_by_record[record.id] %}

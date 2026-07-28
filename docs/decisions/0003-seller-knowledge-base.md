@@ -54,15 +54,21 @@ Consequence: **the AI never writes to these tables.** No model generates,
 enriches, rewrites, approves, scores or summarises seller knowledge. There is no
 code path from a model to a seller record.
 
-### D3 — Archive, never delete
+### D3 — Archive, never delete a record
 
-Every record carries `SellerRecordState`. No service in the package has a delete
-path.
+Every record carries `SellerRecordState`, and no service offers a way to delete
+one.
 
 This is what makes the campaign association safe. A campaign that named an
 offering must keep resolving to the same row afterwards; deletion would leave a
 historical campaign pointing at nothing, and a snapshot copy would mean a
 correction had to be hunted down across every campaign that ever used it.
+
+Association rows are the exception and are genuinely deleted on unlink. A link
+is a statement an operator can retract, and it is re-creatable from the two
+records it joined; there is nothing unrecoverable in it. Every unlink is
+audited, including the bulk removal that happens when an offering-scoped
+restriction is widened to global.
 
 ### D4 — Proof points, claims and personas are shared rows, referenced
 

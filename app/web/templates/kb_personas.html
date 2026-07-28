@@ -33,6 +33,42 @@
             <strong>{{ persona.name }}</strong>
             {% if persona.role_function %}<div class="small muted-text">{{ persona.role_function }}</div>{% endif %}
             {% if persona.seniority %}<div class="small muted-text">{{ persona.seniority }}</div>{% endif %}
+            <details style="margin-top:8px">
+              <summary class="small">Edit</summary>
+              <form method="post" action="/knowledge-base/personas/{{ persona.id }}" style="margin-top:8px">
+                <div class="field">
+                  <label class="sr-only" for="e-name-{{ persona.id }}">Name</label>
+                  <input type="text" id="e-name-{{ persona.id }}" name="name" required maxlength="255" value="{{ persona.name }}">
+                </div>
+                <div class="field">
+                  <label class="sr-only" for="e-role-{{ persona.id }}">Role or function</label>
+                  <input type="text" id="e-role-{{ persona.id }}" name="role_function" maxlength="255"
+                         placeholder="Role or function" value="{{ persona.role_function or '' }}">
+                </div>
+                <div class="field">
+                  <label class="sr-only" for="e-sen-{{ persona.id }}">Seniority</label>
+                  <input type="text" id="e-sen-{{ persona.id }}" name="seniority" maxlength="120"
+                         placeholder="Seniority" value="{{ persona.seniority or '' }}">
+                </div>
+                <div class="field">
+                  <label class="sr-only" for="e-resp-{{ persona.id }}">Responsibilities, one per line</label>
+                  <textarea id="e-resp-{{ persona.id }}" name="responsibilities" rows="2" placeholder="Responsibilities, one per line">{{ (persona.responsibilities or []) | join("\n") }}</textarea>
+                </div>
+                <div class="field">
+                  <label class="sr-only" for="e-chal-{{ persona.id }}">Typical challenges, one per line</label>
+                  <textarea id="e-chal-{{ persona.id }}" name="challenges" rows="2" placeholder="Typical challenges, one per line">{{ (persona.challenges or []) | join("\n") }}</textarea>
+                </div>
+                <div class="field">
+                  <label class="sr-only" for="e-uses-{{ persona.id }}">Relevant use cases, one per line</label>
+                  <textarea id="e-uses-{{ persona.id }}" name="use_cases" rows="2" placeholder="Relevant use cases, one per line">{{ (persona.use_cases or []) | join("\n") }}</textarea>
+                </div>
+                <div class="field">
+                  <label class="sr-only" for="e-mnotes-{{ persona.id }}">Messaging notes</label>
+                  <textarea id="e-mnotes-{{ persona.id }}" name="messaging_notes" rows="2" placeholder="Messaging notes">{{ persona.messaging_notes or '' }}</textarea>
+                </div>
+                <button class="btn small" type="submit">Save</button>
+              </form>
+            </details>
           </td>
           <td class="wrap small">
             {% if persona.challenges %}
