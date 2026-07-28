@@ -112,7 +112,7 @@ def _archive_transition(
 
 
 def list_offerings(session: Session, *, include_archived: bool = False) -> list[SellerOffering]:
-    """Return offerings, active first, newest first within each state."""
+    """Return offerings, active first and alphabetical within each state."""
 
     statement = select(SellerOffering)
     if not include_archived:
@@ -254,9 +254,11 @@ def _refuse_duplicate_active_name(
 ) -> None:
     """Refuse a name already held by an active record, in the operator's words.
 
-    The partial unique index would refuse it too, but as an IntegrityError that
-    aborts the transaction and reads like a database problem. Checking first
-    means the operator gets a sentence and keeps everything else they typed.
+    This is the only check: the partial unique index is on the raw ``name``, so
+    the database would still accept "Acme" alongside "acme". Even for an exact
+    repeat, letting the index refuse it would raise an IntegrityError that
+    aborts the transaction and reads like a database fault; checking first means
+    the operator gets a sentence and keeps everything else they typed.
     """
 
     # Two unrelated models share this guard and their only common ancestor is
@@ -470,23 +472,40 @@ def update_restricted_claim(
     claim.examples = clean_list(examples, label="Examples")
     previous_scope = claim.scope
     claim.scope = scope
+    dropped: list[str] = []
     if previous_scope is SellerClaimScope.OFFERING and scope is SellerClaimScope.GLOBAL:
         for link in session.scalars(
             select(SellerOfferingRestrictedClaim).where(
                 SellerOfferingRestrictedClaim.restricted_claim_id == claim.id
             )
         ).all():
+            # Recorded before the delete: without this the audit trail would say
+            # the scope widened but never which offerings the rule used to name,
+            # and that is the one fact nothing else can reconstruct afterwards.
+            dropped.append(str(link.offering_id))
             session.delete(link)
     session.flush()
+    context: dict[str, Any] = {"title": claim.title}
+    if dropped:
+        context["dropped_offering_ids"] = dropped
+    scope_changed = previous_scope is not claim.scope
     record_audit_event(
         session,
         actor=actor or OPERATOR_ACTOR,
         action="seller_restricted_claim.updated",
         entity_type="seller_restricted_claim",
+        # Only a real scope change is a state transition. Stamping these on
+        # every edit would make an unchanged scope look like one.
+        previous_state=previous_scope.value if scope_changed else None,
+        new_state=claim.scope.value if scope_changed else None,
         entity_id=str(claim.id),
-        previous_state=previous_scope.value,
-        new_state=claim.scope.value,
-        reason="Operator edited a restricted claim.",
+        reason=(
+            "Operator widened a restricted claim to apply everywhere, so its "
+            f"{len(dropped)} offering association(s) were removed."
+            if dropped
+            else "Operator edited a restricted claim."
+        ),
+        context=context,
     )
     return claim
 
@@ -663,6 +682,16 @@ def link_to_offering(
         raise SellerKnowledgeError(
             f"That {kind.replace('_', ' ')} is archived. Restore it before linking it."
         )
+    # A global restriction already applies to everything. Linking one to an
+    # offering would imply it had been narrowed to that offering, and
+    # ``context.assemble`` would then return it twice. Enforced here rather
+    # than by leaving it out of the page's picker, because a business rule that
+    # lives only in a route is a rule the next caller does not get.
+    if kind == "restricted_claim" and related.scope is SellerClaimScope.GLOBAL:
+        raise SellerKnowledgeError(
+            f"“{related.title}” applies to everything already, so it cannot be "
+            "narrowed to one offering. Change its scope first if that is what you meant."
+        )
     existing = session.scalars(
         select(link_model).where(
             link_model.offering_id == offering.id,
@@ -685,8 +714,8 @@ def link_to_offering(
         action=f"seller_offering.{kind}_linked",
         entity_type="seller_offering",
         entity_id=str(offering.id),
-        new_state=str(related_id),
         reason=f"Operator associated a {kind.replace('_', ' ')} with an offering.",
+        context={"kind": kind, "related_id": str(related_id)},
     )
     return True
 
@@ -718,8 +747,8 @@ def unlink_from_offering(
         action=f"seller_offering.{kind}_unlinked",
         entity_type="seller_offering",
         entity_id=str(offering.id),
-        previous_state=str(related_id),
         reason=f"Operator removed a {kind.replace('_', ' ')} association from an offering.",
+        context={"kind": kind, "related_id": str(related_id)},
     )
     return True
 
@@ -780,6 +809,32 @@ def personas_for_offering(
     if active_only:
         statement = statement.where(SellerPersona.state == SellerRecordState.ACTIVE)
     return list(session.scalars(statement.order_by(SellerPersona.name)).all())
+
+
+def offerings_by_record(
+    session: Session, *, kind: str, record_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, list[SellerOffering]]:
+    """Return, for each record id, the offerings it is associated with.
+
+    One query for the whole page rather than one per row. The list screens show
+    "used by" for every record they render, and doing that with a query each
+    turned a page of two hundred proof points into two hundred round trips.
+    """
+
+    if not record_ids:
+        return {}
+    link_model, _related_model, column = _resolve_link(kind)
+    link_column = getattr(link_model, column)
+    rows = session.execute(
+        select(link_column, SellerOffering)
+        .join(SellerOffering, SellerOffering.id == link_model.offering_id)
+        .where(link_column.in_(record_ids))
+        .order_by(SellerOffering.name)
+    ).all()
+    grouped: dict[uuid.UUID, list[SellerOffering]] = {record_id: [] for record_id in record_ids}
+    for record_id, offering in rows:
+        grouped[record_id].append(offering)
+    return grouped
 
 
 def offerings_for_proof_point(session: Session, proof_point_id: uuid.UUID) -> list[SellerOffering]:

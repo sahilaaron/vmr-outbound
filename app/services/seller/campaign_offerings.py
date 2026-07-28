@@ -115,9 +115,8 @@ def associate(
         action="campaign.offering_linked",
         entity_type="campaign",
         entity_id=str(campaign.id),
-        new_state=str(offering.id),
         reason="Operator recorded that this campaign concerns an offering.",
-        context={"offering_name": offering.name},
+        context={"offering_id": str(offering.id), "offering_name": offering.name},
     )
     return offering, True
 
@@ -152,8 +151,8 @@ def dissociate(
         action="campaign.offering_unlinked",
         entity_type="campaign",
         entity_id=str(campaign.id),
-        previous_state=str(offering_id),
         reason="Operator removed an offering association from this campaign.",
+        context={"offering_id": str(offering_id)},
     )
     return True
 

@@ -83,13 +83,42 @@ def test_every_page_is_absent_while_the_switch_is_off(
     assert workbench_only.get(path).status_code == 404
 
 
-def test_the_writes_are_absent_while_the_switch_is_off(workbench_only: TestClient) -> None:
-    assert workbench_only.post("/knowledge-base/company", data={"name": "X"}).status_code == 404
-    assert workbench_only.post("/knowledge-base/offerings", data={"name": "X"}).status_code == 404
-    assert (
-        workbench_only.post("/knowledge-base/proof-points", data={"statement": "X"}).status_code
-        == 404
-    )
+# Every gated write, so "the whole area 404s while the switch is off" is
+# evidenced rather than asserted about a sample. {id} is a syntactically valid
+# UUID that does not exist: a route that answered 404 only because the record
+# was missing would still be indistinguishable from one that is switched off,
+# so each of these is also exercised with the switch ON elsewhere in this file.
+_DEAD_ID = "00000000-0000-4000-8000-000000000000"
+GATED_WRITES = (
+    "/knowledge-base/company",
+    "/knowledge-base/offerings",
+    f"/knowledge-base/offerings/{_DEAD_ID}",
+    f"/knowledge-base/offerings/{_DEAD_ID}/state",
+    f"/knowledge-base/offerings/{_DEAD_ID}/links",
+    "/knowledge-base/proof-points",
+    f"/knowledge-base/proof-points/{_DEAD_ID}",
+    f"/knowledge-base/proof-points/{_DEAD_ID}/state",
+    "/knowledge-base/restricted-claims",
+    f"/knowledge-base/restricted-claims/{_DEAD_ID}",
+    f"/knowledge-base/restricted-claims/{_DEAD_ID}/state",
+    "/knowledge-base/personas",
+    f"/knowledge-base/personas/{_DEAD_ID}",
+    f"/knowledge-base/personas/{_DEAD_ID}/state",
+)
+
+
+@pytest.mark.parametrize("path", GATED_WRITES)
+def test_every_write_is_absent_while_the_switch_is_off(
+    workbench_only: TestClient, path: str
+) -> None:
+    assert workbench_only.post(path, data={}).status_code == 404
+
+
+@pytest.mark.parametrize("path", [f"/knowledge-base/offerings/{_DEAD_ID}"])
+def test_the_offering_detail_page_is_absent_while_the_switch_is_off(
+    workbench_only: TestClient, path: str
+) -> None:
+    assert workbench_only.get(path).status_code == 404
 
 
 def test_the_nav_entry_appears_when_the_switch_is_on(client: TestClient) -> None:
@@ -342,12 +371,19 @@ def test_an_offering_scoped_restriction_says_it_restricts_nothing_yet(
 
 
 def test_a_global_restriction_reads_as_applying_everywhere(client: TestClient) -> None:
+    # Asserted against the stored record and its badge, not the word "global",
+    # which the scope <select> renders on an empty page anyway.
+    empty = client.get("/knowledge-base/restricted-claims").text
+    assert "No guarantees" not in empty
     client.post(
         "/knowledge-base/restricted-claims",
         data={"title": "No guarantees", "explanation": "Never promise an outcome."},
         follow_redirects=False,
     )
-    assert "global" in client.get("/knowledge-base/restricted-claims").text
+    page = client.get("/knowledge-base/restricted-claims").text
+    assert "No guarantees" in page
+    assert "Applies to everything, whatever a campaign is selling." in page
+    assert "not linked yet" not in page
 
 
 def test_a_persona_page_says_it_is_not_a_contact(client: TestClient) -> None:
@@ -359,6 +395,119 @@ def test_a_persona_page_says_it_is_not_a_contact(client: TestClient) -> None:
     page = client.get("/knowledge-base/personas")
     assert "Head of Strategy" in page.text
     assert "not a person" in page.text
+
+
+def test_a_proof_point_can_be_edited_from_the_list(
+    client: TestClient, committed_session: Session
+) -> None:
+    from app.models.seller_knowledge import SellerProofPoint
+
+    client.post(
+        "/knowledge-base/proof-points",
+        data={"statement": "Since 2010."},
+        follow_redirects=False,
+    )
+    record = committed_session.scalar(select(SellerProofPoint))
+    assert record is not None
+    response = client.post(
+        f"/knowledge-base/proof-points/{record.id}",
+        data={"statement": "Since 2009.", "source_reference": "Publication register"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    page = client.get("/knowledge-base/proof-points").text
+    assert "Since 2009." in page
+    assert "Since 2010." not in page
+
+
+def test_a_persona_can_be_edited_from_the_list(
+    client: TestClient, committed_session: Session
+) -> None:
+    from app.models.seller_knowledge import SellerPersona
+
+    client.post(
+        "/knowledge-base/personas", data={"name": "Head of Stategy"}, follow_redirects=False
+    )
+    persona = committed_session.scalar(select(SellerPersona))
+    assert persona is not None
+    client.post(
+        f"/knowledge-base/personas/{persona.id}",
+        data={"name": "Head of Strategy", "seniority": "Director and above"},
+        follow_redirects=False,
+    )
+    page = client.get("/knowledge-base/personas").text
+    assert "Head of Strategy" in page
+    assert "Head of Stategy" not in page
+
+
+def test_widening_a_restriction_from_the_page_drops_its_links_and_says_so(
+    client: TestClient, committed_session: Session
+) -> None:
+    from app.models.seller_knowledge import SellerRestrictedClaim
+
+    offering_id = _create_offering(client)
+    client.post(
+        "/knowledge-base/restricted-claims",
+        data={"title": "No named clients", "explanation": "Never name one.", "scope": "offering"},
+        follow_redirects=False,
+    )
+    claim = committed_session.scalar(select(SellerRestrictedClaim))
+    assert claim is not None
+    client.post(
+        f"/knowledge-base/offerings/{offering_id}/links",
+        data={"kind": "restricted_claim", "related_id": str(claim.id)},
+        follow_redirects=False,
+    )
+    assert "No named clients" in client.get(f"/knowledge-base/offerings/{offering_id}").text
+
+    response = client.post(
+        f"/knowledge-base/restricted-claims/{claim.id}",
+        data={"title": "No named clients", "explanation": "Never name one.", "scope": "global"},
+        follow_redirects=False,
+    )
+    assert "associations+were+removed" in response.headers["location"]
+    detail = client.get(f"/knowledge-base/offerings/{offering_id}").text
+    assert "No offering-scoped restrictions are associated" in detail
+
+
+def test_a_global_restriction_is_not_offered_for_an_offering(
+    client: TestClient, committed_session: Session
+) -> None:
+    """The picker excludes it, and the service refuses it if the form is forged."""
+
+    from app.models.seller_knowledge import SellerRestrictedClaim
+
+    offering_id = _create_offering(client)
+    client.post(
+        "/knowledge-base/restricted-claims",
+        data={"title": "No guarantees", "explanation": "Never promise an outcome."},
+        follow_redirects=False,
+    )
+    claim = committed_session.scalar(select(SellerRestrictedClaim))
+    assert claim is not None
+    detail = client.get(f"/knowledge-base/offerings/{offering_id}").text
+    assert f'value="{claim.id}"' not in detail
+    response = client.post(
+        f"/knowledge-base/offerings/{offering_id}/links",
+        data={"kind": "restricted_claim", "related_id": str(claim.id)},
+        follow_redirects=False,
+    )
+    assert "applies+to+everything+already" in response.headers["location"]
+
+
+def test_every_seller_write_records_an_operator(
+    client: TestClient, committed_session: Session
+) -> None:
+    """The author columns are populated, not left permanently NULL."""
+
+    from app.models.seller_knowledge import SellerOffering as Offering
+
+    client.post("/knowledge-base/company", data={"name": "VMR"}, follow_redirects=False)
+    _create_offering(client)
+    profile = committed_session.scalar(select(SellerProfile))
+    offering = committed_session.scalar(select(Offering))
+    assert profile is not None and profile.updated_by == "operator"
+    assert offering is not None and offering.created_by == "operator"
 
 
 # --- 6. The campaign association ---------------------------------------------
