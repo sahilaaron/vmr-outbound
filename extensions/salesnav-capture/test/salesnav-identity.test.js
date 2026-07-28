@@ -32,17 +32,16 @@ function capture(name) {
 
 // --- A. member id parsing ------------------------------------------------------
 
-test("ordinary lead URL yields the member id and canonical profile URL", () => {
-  const r = normalize.profileUrlFromSalesNavLead(
-    "https://www.linkedin.com/sales/lead/ACwAAAB1x9k"
-  );
-  assert.equal(r.memberId, "ACwAAAB1x9k");
-  assert.equal(r.url, "https://www.linkedin.com/in/ACwAAAB1x9k");
+test("ordinary lead URL yields the member id, and no URL is built from it", () => {
+  const r = normalize.salesNavMemberId("https://www.linkedin.com/sales/lead/ACwAAAB1x9k");
+  assert.equal(r.id, "ACwAAAB1x9k");
   assert.equal(r.reason, null);
+  // DAT-019: the helper that turned this into `/in/<member-id>` is gone.
+  assert.equal(normalize.profileUrlFromSalesNavLead, undefined);
 });
 
 test("query strings, fragments and search-context suffixes are stripped first", () => {
-  const expected = "https://www.linkedin.com/in/ACwAAAB1x9k";
+  const expected = "ACwAAAB1x9k";
   const variants = [
     "https://www.linkedin.com/sales/lead/ACwAAAB1x9k,NAME_SEARCH,3f2a",
     "https://www.linkedin.com/sales/lead/ACwAAAB1x9k?trk=results&sessionId=xyz",
@@ -54,15 +53,15 @@ test("query strings, fragments and search-context suffixes are stripped first", 
     "HTTPS://WWW.LINKEDIN.COM/sales/lead/ACwAAAB1x9k",
   ];
   for (const v of variants) {
-    assert.equal(normalize.profileUrlFromSalesNavLead(v).url, expected, v);
+    assert.equal(normalize.salesNavMemberId(v).id, expected, v);
   }
 });
 
 test("extra route material after the identifier is ignored, not absorbed", () => {
-  const r = normalize.profileUrlFromSalesNavLead(
+  const r = normalize.salesNavMemberId(
     "https://www.linkedin.com/sales/lead/ACwAAAB1x9k/detail/activity"
   );
-  assert.equal(r.url, "https://www.linkedin.com/in/ACwAAAB1x9k");
+  assert.equal(r.id, "ACwAAAB1x9k");
 });
 
 test("malformed or missing identifiers are refused, never fabricated", () => {
@@ -82,43 +81,43 @@ test("malformed or missing identifiers are refused, never fabricated", () => {
     [null, "empty"],
   ];
   for (const [input, reason] of refused) {
-    const r = normalize.profileUrlFromSalesNavLead(input);
-    assert.equal(r.url, null, `must not derive from ${String(input)}`);
-    assert.equal(r.memberId, null);
+    const r = normalize.salesNavMemberId(input);
+    assert.equal(r.id, null, `must not read an identifier out of ${String(input)}`);
     assert.equal(r.reason, reason, String(input));
   }
 });
 
-test("a subdomain LinkedIn host is accepted but the canonical URL is www", () => {
-  const r = normalize.profileUrlFromSalesNavLead(
-    "https://in.linkedin.com/sales/lead/ACwAAAB1x9k"
-  );
-  assert.equal(r.url, "https://www.linkedin.com/in/ACwAAAB1x9k");
+test("a subdomain LinkedIn host still yields the same member id", () => {
+  const r = normalize.salesNavMemberId("https://in.linkedin.com/sales/lead/ACwAAAB1x9k");
+  assert.equal(r.id, "ACwAAAB1x9k");
 });
 
-// --- A. derivation inside extraction ------------------------------------------
+// --- A. identifiers inside extraction -----------------------------------------
 
-test("a visible /in/ link always wins over derivation", () => {
+test("a visible /in/ link is recorded as observed, alongside the member id", () => {
   const r = capture("results-observed-profile-url.html");
   const rec = r.records[0];
   assert.equal(rec.linkedinProfileUrl, "https://www.linkedin.com/in/dana-observed");
   assert.equal(rec.linkedinProfileUrlSource, "observed");
-  assert.equal(rec.linkedinMemberId, null);
-  // The lead URL survives as separate source evidence.
+  // DAT-019 keeps BOTH identifier forms when the row shows both. Observed
+  // together on one row, they relate the member id to the handle without
+  // anything being inferred.
+  assert.equal(rec.linkedinMemberId, "ACwAAAQ2zzz");
   assert.equal(rec.salesNavLeadUrl, "https://www.linkedin.com/sales/lead/ACwAAAQ2zzz");
   assert.ok(!rec.warnings.some((w) => w.code === WARNINGS.DERIVED_VALUE));
 });
 
-test("derivation is marked, and never overwrites the lead URL", () => {
+test("with no visible link there is no profile URL, only the member id", () => {
   const r = capture("results-normal.html");
   const rec = r.records[0];
-  assert.equal(rec.linkedinProfileUrlSource, "derived_from_sales_lead");
-  assert.equal(rec.linkedinProfileUrl, "https://www.linkedin.com/in/" + rec.linkedinMemberId);
+  assert.equal(rec.linkedinProfileUrl, null);
+  assert.equal(rec.linkedinProfileUrlSource, null);
+  assert.match(rec.linkedinMemberId, /^[A-Za-z0-9_-]{3,128}$/);
   assert.ok(rec.salesNavLeadUrl.includes("/sales/lead/"));
-  const derived = rec.warnings.find((w) => w.code === WARNINGS.DERIVED_VALUE);
-  assert.ok(derived, "a derived value must be reported as derived");
-  assert.equal(derived.field, "linkedinProfileUrl");
-  assert.equal(derived.from, "salesNavLeadUrl");
+  assert.ok(
+    !rec.warnings.some((w) => w.code === WARNINGS.DERIVED_VALUE),
+    "nothing was derived, so nothing may be reported as derived"
+  );
 });
 
 // --- B. company-name eligibility ----------------------------------------------
@@ -157,8 +156,10 @@ test("skipping unusable rows does not abort the rest of the page", () => {
   assert.equal(kept.rawFullName, "Valid Person");
   assert.equal(kept.companyName, "Northwind Freight");
   assert.equal(kept.title, "Head of Operations");
-  // The surviving row is fully formed, including its derived profile URL.
-  assert.equal(kept.linkedinProfileUrl, "https://www.linkedin.com/in/ACwAAAV4ddd");
+  // The surviving row is fully formed. Its identity is the member id; no
+  // profile URL was visible, so none is claimed (DAT-019).
+  assert.equal(kept.linkedinProfileUrl, null);
+  assert.equal(kept.linkedinMemberId, "ACwAAAV4ddd");
 });
 
 test("a skipped row is never turned into a record by inference", () => {

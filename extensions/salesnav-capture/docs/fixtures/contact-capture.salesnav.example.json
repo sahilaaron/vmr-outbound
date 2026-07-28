@@ -6,7 +6,9 @@
   "source": "chrome-extension:linkedin-contact-capture",
   "extension_version": "2.0.0",
   "operator_metadata": {
-    "labels": ["Conference Lead"],
+    "labels": [
+      "Conference Lead"
+    ],
     "note": "Second page of the operations search — follow up after September."
   },
   "contacts": [
@@ -23,6 +25,7 @@
         "linkedin_profile_url": null,
         "linkedin_public_identifier": null,
         "salesnav_lead_url": "https://www.linkedin.com/sales/lead/ACwAAAB1x9k",
+        "salesnav_member_id": "ACwAAAB1x9k",
         "full_name": "Dana Whitfield",
         "first_name": "Dana",
         "last_name": "Whitfield",
@@ -33,7 +36,12 @@
         "open_to_work_visible": null,
         "about_text": null,
         "raw_lines": [],
-        "warnings": [{ "code": "missing_field", "field": "linkedinProfileUrl" }]
+        "warnings": [
+          {
+            "code": "missing_field",
+            "field": "linkedinProfileUrl"
+          }
+        ]
       },
       "current_employment_hint": {
         "company_name": "Northwind Logistics",
@@ -53,7 +61,10 @@
         "excluded_sections": [],
         "page_warnings": []
       },
-      "operator_metadata": { "labels": [], "note": null },
+      "operator_metadata": {
+        "labels": [],
+        "note": null
+      },
       "raw_snapshot": {
         "rawFullName": "Dana Whitfield",
         "title": "Head of Operations",
@@ -62,12 +73,19 @@
         "linkedinProfileUrl": null,
         "salesNavLeadUrl": "https://www.linkedin.com/sales/lead/ACwAAAB1x9k",
         "salesNavCompanyUrl": "https://www.linkedin.com/sales/company/1234567",
-        "visibleCompanyMetadata": ["Logistics & Supply Chain"],
+        "visibleCompanyMetadata": [
+          "Logistics & Supply Chain"
+        ],
         "sourceSearchUrl": "https://www.linkedin.com/sales/search/people?keywords=head%20of%20operations&page=2",
         "sourcePageNumber": 2,
         "sourcePosition": 1,
         "capturedAt": "2026-07-26T09:15:04.000Z",
-        "warnings": [{ "code": "missing_field", "field": "linkedinProfileUrl" }]
+        "warnings": [
+          {
+            "code": "missing_field",
+            "field": "linkedinProfileUrl"
+          }
+        ]
       }
     },
     {
@@ -83,6 +101,7 @@
         "linkedin_profile_url": "https://www.linkedin.com/in/tomoya-okaku",
         "linkedin_public_identifier": "tomoya-okaku",
         "salesnav_lead_url": "https://www.linkedin.com/sales/lead/ACwAAAC9zzz",
+        "salesnav_member_id": "ACwAAAC9zzz",
         "full_name": "大角 知也",
         "first_name": "大角",
         "last_name": "知也",
@@ -113,7 +132,12 @@
         "excluded_sections": [],
         "page_warnings": []
       },
-      "operator_metadata": { "labels": ["High Priority"], "note": null },
+      "operator_metadata": {
+        "labels": [
+          "High Priority"
+        ],
+        "note": null
+      },
       "raw_snapshot": {
         "rawFullName": "大角 知也",
         "title": "事業開発マネージャー",
