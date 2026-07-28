@@ -259,7 +259,7 @@ Mapping of target concepts to what already exists:
 | Capture | `linkedin_profile_snapshots` + `contact_capture_submissions` + `import_rows` | **Keep** |
 | Evidence / Field Observation | `contact_field_values` (DAT-005) | **Keep** — already exactly this |
 | Research Job | — | **Defer to APP-004** |
-| Dossier | `insights` + `insight_evidence` (partial) | **Adapt in APP-003/004** |
+| Dossier | `company_research_submissions` + `company_dossier_versions` | **Keep** — APP-003 owns raw submissions and immutable dossier readings; INS-001 keeps `insights` as the individual claims derived from evidence. |
 | Qualification Assessment | `contact_qa_evaluations` (employment QA only) | **Adapt in APP-006** |
 | Label | `contact_labels` + `contact_label_assignments` | **Adapt** (gap G1) |
 | Saved Audience | — | **Defer to APP-005** |
@@ -487,7 +487,7 @@ accepted limitation, not an omission.
 | `AuditEvent` | **Keep** | — |
 | `EmailCandidate`, `ExactEmailVerification`, `DomainPatternObservation`, `MailDomainObservation`, `VerificationJob` | **Keep** | — |
 | `SalesNavCompanyEnrichment` | **Adapt in DAT-014** | Batch-scoped (D4). |
-| `Insight`, `InsightEvidence` | **Adapt in APP-003/004** | Becomes the Dossier. |
+| `Insight`, `InsightEvidence` | **Adapt in INS-001** | Reusable Company/Contact claims and traceable observations; dossiers remain the APP-003 submission/version boundary. |
 | `Score`, `ScoreComponent`, `ScoreEvidence` | **Keep** | `campaign_id` already nullable. |
 | `Campaign`, `CampaignContact` | **Keep** | Correct as execution objects. |
 | `DraftVersion`, `DraftApproval` | **Keep** | Campaign-scoped by definition. |

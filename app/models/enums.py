@@ -487,6 +487,21 @@ class InsightSubject(enum.StrEnum):
     CONTACT = "contact"
 
 
+class InsightKind(enum.StrEnum):
+    """Whether a claim reports evidence directly or interprets that evidence."""
+
+    FACT = "fact"
+    INTERPRETATION = "interpretation"
+
+
+class InsightState(enum.StrEnum):
+    """What the stored evidence currently says about an insight."""
+
+    SUPPORTED = "supported"
+    CONFLICTING = "conflicting"
+    UNKNOWN = "unknown"
+
+
 class ScoreType(enum.StrEnum):
     """The two launch scores: computed before and after deep research."""
 
