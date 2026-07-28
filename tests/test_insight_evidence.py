@@ -740,3 +740,213 @@ def test_instruction_shaped_source_text_is_stored_as_evidence_not_obeyed(
     assert reloaded.kind is InsightKind.INTERPRETATION
     assert reloaded.state is InsightState.CONFLICTING
     assert not insight_service.is_personalization_eligible(db_session, insight=reloaded)
+
+
+@pytest.mark.parametrize(
+    ("field", "column_width"),
+    [
+        ("source_title", 1024),
+        ("extraction_method", 255),
+        ("source_record_type", 100),
+    ],
+)
+def test_every_bounded_evidence_field_is_refused_at_the_boundary(
+    db_session: Session,
+    field: str,
+    column_width: int,
+) -> None:
+    """Not just ``source_url``.
+
+    Each of these is a bounded column, and a value wider than the column reaches
+    the driver as a string-truncation error that aborts the caller's whole
+    transaction — the same failure the URL guard was added to prevent.
+    """
+
+    assert insight_service.MAX_LENGTHS[field] == column_width
+    company = _company(db_session)
+    overrides: dict[str, object] = {field: "x" * (column_width + 1)}
+    if field == "source_record_type":
+        overrides["source_record_id"] = uuid.uuid4()
+
+    with pytest.raises(insight_service.InsightError, match=f"{field} must be at most"):
+        insight_service.create_insight(
+            db_session,
+            company_id=company.id,
+            claim="Acme announced a Pune office.",
+            kind=InsightKind.FACT,
+            state=InsightState.SUPPORTED,
+            evidence=[_evidence(**overrides)],
+        )
+
+    # Still usable: nothing was written before the refusal.
+    assert db_session.scalar(select(Company).where(Company.id == company.id)) is not None
+
+
+@pytest.mark.parametrize("field", ["idempotency_key", "actor"])
+def test_oversized_claim_level_fields_are_refused_at_the_boundary(
+    db_session: Session,
+    field: str,
+) -> None:
+    """The same guard for the two bounded columns that are not evidence."""
+
+    company = _company(db_session)
+    overrides = {field: "x" * (insight_service.MAX_LENGTHS[field] + 1)}
+
+    with pytest.raises(insight_service.InsightError, match=f"{field} must be at most"):
+        insight_service.create_insight(
+            db_session,
+            company_id=company.id,
+            claim="Acme announced a Pune office.",
+            kind=InsightKind.FACT,
+            state=InsightState.SUPPORTED,
+            evidence=[_evidence()],
+            **overrides,  # type: ignore[arg-type]
+        )
+
+    assert db_session.scalar(select(Company).where(Company.id == company.id)) is not None
+
+
+def _blind_first_lookup(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+    """Make the first key lookup miss, as it would if a writer raced us to it.
+
+    The row really is present, so the insert that follows really does violate
+    ``uq_insights_company_idempotency``. That is the state the service finds
+    itself in when another writer commits between its lookup and its insert,
+    reproduced without depending on thread timing.
+    """
+
+    calls = {"n": 0}
+    real = insight_service._find_by_key
+
+    def blind(*args: object, **kwargs: object) -> Insight | None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(insight_service, "_find_by_key", blind)
+    return calls
+
+
+def test_losing_an_idempotency_race_returns_the_winning_record(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The retry contract has to hold when two writers arrive at once.
+
+    The lookup is only the fast path; the unique constraint is what actually
+    makes one key mean one record. Hitting it must return the record that won,
+    not a driver error the caller cannot act on.
+    """
+
+    company = _company(db_session)
+    kwargs = {
+        "company_id": company.id,
+        "claim": "Acme announced a Pune office.",
+        "kind": InsightKind.FACT,
+        "state": InsightState.SUPPORTED,
+        "evidence": [_evidence()],
+        "idempotency_key": "research-job-31:claim-1",
+    }
+    winner = insight_service.create_insight(db_session, **kwargs)  # type: ignore[arg-type]
+
+    calls = _blind_first_lookup(monkeypatch)
+    loser = insight_service.create_insight(db_session, **kwargs)  # type: ignore[arg-type]
+
+    assert loser.id == winner.id
+    assert calls["n"] == 2, "the lookup must be retried after the constraint fires"
+
+    stored = list(
+        db_session.scalars(
+            select(Insight).where(
+                Insight.company_id == company.id,
+                Insight.idempotency_key == "research-job-31:claim-1",
+            )
+        )
+    )
+    assert len(stored) == 1
+    # One claim, one evidence row — the loser wrote nothing.
+    assert (
+        len(
+            list(
+                db_session.scalars(
+                    select(InsightEvidence).where(InsightEvidence.insight_id == winner.id)
+                )
+            )
+        )
+        == 1
+    )
+
+
+def test_losing_a_race_with_different_content_still_fails_visibly(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Losing the race must not quietly adopt somebody else's claim either."""
+
+    company = _company(db_session)
+    base = {
+        "company_id": company.id,
+        "kind": InsightKind.FACT,
+        "state": InsightState.SUPPORTED,
+        "evidence": [_evidence()],
+        "idempotency_key": "research-job-32:claim-1",
+    }
+    winner = insight_service.create_insight(
+        db_session,
+        claim="Acme employs about 400 people.",
+        **base,  # type: ignore[arg-type]
+    )
+
+    _blind_first_lookup(monkeypatch)
+    with pytest.raises(insight_service.InsightError, match="already used for different content"):
+        insight_service.create_insight(
+            db_session,
+            claim="Acme employs about 250 people.",
+            **base,  # type: ignore[arg-type]
+        )
+
+    # The winner is untouched and the session still works.
+    db_session.expire_all()
+    reloaded = db_session.get(Insight, winner.id)
+    assert reloaded is not None
+    assert reloaded.claim == "Acme employs about 400 people."
+    assert db_session.scalar(select(Company).where(Company.id == company.id)) is not None
+
+
+def test_one_untraceable_observation_disqualifies_the_whole_claim(
+    db_session: Session,
+) -> None:
+    """A claim resting partly on an uncited source is not partly traceable.
+
+    Unreachable through the service, which requires every field. It is the
+    legacy DAT-001 rows and any future direct write that this holds the line
+    against, and there the weaker "at least one good source" rule would let an
+    uncited observation ride along beside a cited one.
+    """
+
+    company = _company(db_session)
+    insight = insight_service.create_insight(
+        db_session,
+        company_id=company.id,
+        claim="Acme announced a Pune office.",
+        kind=InsightKind.FACT,
+        state=InsightState.SUPPORTED,
+        evidence=[_evidence()],
+    )
+    assert insight_service.is_personalization_eligible(db_session, insight=insight)
+
+    db_session.add(
+        InsightEvidence(
+            insight_id=insight.id,
+            source_url="https://acme.example/uncited",
+            retrieved_at=None,
+            evidence_summary=None,
+            confidence=None,
+            extraction_method=None,
+            version=1,
+        )
+    )
+    db_session.flush()
+
+    assert not insight_service.is_personalization_eligible(db_session, insight=insight)

@@ -62,12 +62,37 @@ would otherwise surface as driver-level errors that abort the transaction:
 Re-observing one URL as a *different* evidence version is legitimate and
 accepted; it is a new observation of the same page, not a duplicate.
 
+Every bounded string column this service writes is length-checked at the
+boundary against the width the column declares — `source_url`, `source_title`,
+`extraction_method`, `source_record_type`, `idempotency_key` and the actor. The
+list lives in one place, `MAX_LENGTHS`, so a column and its guard cannot drift
+apart silently.
+
+## Concurrency
+
+The retry contract holds when two writers submit the same key at once, not only
+when they take turns. The lookup-then-insert is not atomic, so the insert runs
+inside a SAVEPOINT: if the unique constraint fires because another writer
+committed first, that savepoint alone rolls back, the winning record is read
+back, and the losing writer is returned it — or refused with `InsightError` if
+its content differs. The caller's surrounding transaction survives either way,
+and exactly one row exists per key.
+
+The database constraint, not the lookup, is what makes this true. The lookup is
+the fast path.
+
 ## Safety rule
 
 `is_personalization_eligible()` is deliberately narrower than campaign
-eligibility or approval. It returns true only when a claim is supported and has
-at least one traceable source observation with a URL, retrieval time, summary,
-confidence, and extraction method.
+eligibility or approval. It returns true only when a claim is supported, has at
+least one source observation, and **every** observation behind it carries a URL,
+retrieval time, summary, confidence and extraction method.
+
+Every, not any: a claim resting partly on an untraceable observation is not
+partly traceable. Through the service this is unreachable, because those fields
+are all required at the boundary — it bites the legacy DAT-001 rows and any
+future direct write, which is exactly where the weaker rule would have let an
+uncited source in alongside a cited one.
 
 Conflicting, unknown, source-less, or incomplete claims remain visible but
 cannot be represented downstream as approved personalization evidence.

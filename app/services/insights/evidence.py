@@ -24,6 +24,7 @@ from datetime import datetime
 from urllib.parse import urlsplit
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.enums import InsightKind, InsightState, InsightSubject
@@ -32,10 +33,21 @@ from app.services.audit import record_audit_event
 
 INSIGHT_ACTOR = "system:insight-evidence"
 
-#: Mirrors ``insight_evidence.source_url``. Enforced here so an over-long URL is
-#: refused at the boundary instead of aborting the caller's transaction with a
-#: driver-level string-truncation error.
-SOURCE_URL_MAX_LENGTH = 1024
+#: Every bounded string column this service writes, and the width it declares.
+#: Enforced here so an over-long value is refused as an :class:`InsightError`
+#: at the boundary instead of reaching the driver, where a string-truncation
+#: error aborts the caller's whole transaction.
+MAX_LENGTHS = {
+    "source_url": 1024,
+    "source_title": 1024,
+    "extraction_method": 255,
+    "source_record_type": 100,
+    "idempotency_key": 255,
+    "actor": 255,
+}
+
+#: Kept as a name because callers and tests refer to the URL limit directly.
+SOURCE_URL_MAX_LENGTH = MAX_LENGTHS["source_url"]
 
 
 class InsightError(ValueError):
@@ -60,11 +72,20 @@ class EvidenceInput:
     version: int = 1
 
 
+def _bounded(value: str, *, field: str) -> str:
+    """Refuse a value the column cannot hold, naming the field that overflowed."""
+
+    limit = MAX_LENGTHS.get(field)
+    if limit is not None and len(value) > limit:
+        raise InsightError(f"{field} must be at most {limit} characters")
+    return value
+
+
 def _required_text(value: str, *, field: str) -> str:
     cleaned = value.strip()
     if not cleaned:
         raise InsightError(f"{field} must not be blank")
-    return cleaned
+    return _bounded(cleaned, field=field)
 
 
 def _aware(value: datetime, *, field: str) -> datetime:
@@ -78,8 +99,6 @@ def _source_url(value: str) -> str:
     parsed = urlsplit(cleaned)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise InsightError("source_url must be an absolute http or https URL")
-    if len(cleaned) > SOURCE_URL_MAX_LENGTH:
-        raise InsightError(f"source_url must be at most {SOURCE_URL_MAX_LENGTH} characters")
     return cleaned
 
 
@@ -100,6 +119,8 @@ def _validate_evidence(item: EvidenceInput) -> None:
         raise InsightError("source_record_type and source_record_id must be supplied together")
     if item.source_record_type is not None:
         _required_text(item.source_record_type, field="source_record_type")
+    if item.source_title is not None:
+        _bounded(item.source_title.strip(), field="source_title")
 
 
 def _evidence_identity(item: EvidenceInput) -> tuple[str, int]:
@@ -172,6 +193,33 @@ def _content_hash(
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _find_by_key(
+    session: Session,
+    *,
+    company_id: uuid.UUID | None,
+    contact_id: uuid.UUID | None,
+    key: str,
+) -> Insight | None:
+    """The insight already stored under this key for this owner, if any."""
+
+    owner_clause = (
+        Insight.company_id == company_id
+        if company_id is not None
+        else Insight.contact_id == contact_id
+    )
+    return session.scalars(
+        select(Insight).where(owner_clause, Insight.idempotency_key == key)
+    ).first()
+
+
+def _reuse_or_reject(existing: Insight, *, digest: str) -> Insight:
+    """Return the original submission, or refuse to overwrite a different one."""
+
+    if existing.content_hash != digest:
+        raise InsightError("idempotency_key was already used for different content")
+    return existing
+
+
 def create_insight(
     session: Session,
     *,
@@ -193,7 +241,9 @@ def create_insight(
 
     The whole packet is validated before anything is written, so a rejected
     packet raises :class:`InsightError` and leaves the caller's transaction
-    usable.
+    usable. Two writers submitting the same key at once resolve to one stored
+    record, and the writer that loses the race is returned that record rather
+    than a driver error.
     """
 
     if (company_id is None) == (contact_id is None):
@@ -223,19 +273,13 @@ def create_insight(
         if idempotency_key is not None
         else None
     )
+    _required_text(actor, field="actor")
     if cleaned_key is not None:
-        owner_clause = (
-            Insight.company_id == company_id
-            if company_id is not None
-            else Insight.contact_id == contact_id
+        existing = _find_by_key(
+            session, company_id=company_id, contact_id=contact_id, key=cleaned_key
         )
-        existing = session.scalars(
-            select(Insight).where(owner_clause, Insight.idempotency_key == cleaned_key)
-        ).first()
         if existing is not None:
-            if existing.content_hash != digest:
-                raise InsightError("idempotency_key was already used for different content")
-            return existing
+            return _reuse_or_reject(existing, digest=digest)
 
     insight = Insight(
         subject=subject,
@@ -249,8 +293,26 @@ def create_insight(
         idempotency_key=cleaned_key,
         content_hash=digest,
     )
-    session.add(insight)
-    session.flush()
+    try:
+        # A SAVEPOINT, so losing the race below rolls back this INSERT alone and
+        # leaves the caller's transaction intact.
+        with session.begin_nested():
+            session.add(insight)
+            session.flush()
+    except IntegrityError:
+        if cleaned_key is None:
+            raise
+        # Another writer committed the same key between the lookup above and
+        # this insert. The unique constraint is what makes the retry contract
+        # true under concurrency; reaching it means the other writer won, so
+        # honour its record exactly as the non-racing path would have. The
+        # SAVEPOINT rollback has already detached the losing row.
+        existing = _find_by_key(
+            session, company_id=company_id, contact_id=contact_id, key=cleaned_key
+        )
+        if existing is None:  # pragma: no cover - the constraint implies a row
+            raise
+        return _reuse_or_reject(existing, digest=digest)
 
     for item, (normalized_url, _) in zip(items, identities, strict=True):
         session.add(
