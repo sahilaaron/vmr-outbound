@@ -205,10 +205,10 @@ returned, with counts and states only.
 | A1 | Press *Capture visible contacts*; watch | Progress card appears with a live row count; scrolling is incremental, not jumpy | **PASS** [operator] — live count observed at 15 → 21 → 24; pass ended on its own; *Stop reading this page* offered throughout |
 | A2 | Press *Stop reading this page* once, mid-pass | Pass stops promptly; view returns to top; rows already loaded remain reviewable; nothing submitted; feedback reads *Stopped* | **PASS** [operator] — stopped on request, view returned to the top, and only the rows read up to that point were merged into the existing batch |
 | A3 | Press *Read this page again*; let it finish | Pass ends by itself; **no** page-2 advance, no new tab, no URL change | **PASS** [operator] — observed during A1: terminated on its own with no page advance, new tab or URL change |
-| A4 | Review the list | ≥2 distinct companies among eligible rows; any no-company rows appear under *N skipped — no company name* and are absent from the list | **PASS on S1** [operator] — ≥2 distinct companies across the reviewed rows. **S3b not exercised**: no row on either page lacked a company, so no skipped block appeared |
+| A4 | Review the list | ≥2 distinct companies among eligible rows; any no-company rows appear under *N skipped — no company name* and are absent from the list | **PASS — in full, 2026-07-28 re-run** [operator, machine-verified] — 12 distinct companies in a 12-row sample, and **S3b exercised for the first time**: 1 row skipped with `missing_company_name`, reported and absent from the list. See §6 |
 | A5 | Deselect at least one row | *Review selected (N)* and the Save label follow the selection | **PASS** [operator] — one row deselected: tiles moved to 30 selected / 1 deselected, the badge to *30 need review*, and the primary action to *Capture 30 prospects*. **S2 satisfied** |
-| A6 | Confirm a flagged row is retained (S3a) | A row with a warning is still selectable and still submitted with its gap visible | |
-| A7 | Confirm nothing was invented for a skipped row (S3b) | No company borrowed from headline, school, location or an adjacent row | |
+| A6 | Confirm a flagged row is retained (S3a) | A row with a warning is still selectable and still submitted with its gap visible | **PASS for the provenance case; fault case NOT EXERCISED** [operator] — 63 rows across 3 pages, none carrying a review fault. See §6 |
+| A7 | Confirm nothing was invented for a skipped row (S3b) | No company borrowed from headline, school, location or an adjacent row | **PASS — 2026-07-28 re-run** [operator, code-verified] — a company name was **visible as plain text** on the skipped row and was still not taken. See §6 |
 | A8 | Save the reviewed set | Submitted count == selected count; outcome counts render; `created` is 0 | **PASS** [operator] — *30 of 30 prospects saved*; sole outcome `staged_unmatched` = 30; **`created` absent, i.e. 0**. **S9 and S10 satisfied** |
 | A9 | Close and reopen the panel | Last result and/or draft restored without recapturing or resaving | **PARTIAL** [operator] — the **draft** restores intact (selection and all); the **last result does not**. Reproduced deterministically after a fresh save. Cause found and demonstrated: **D-8** |
 | A10 | Open the returned record via the panel's own link | The exact submission/capture record opens in the workbench | **PASS** [operator, machine-verified] — *Open captured contacts* opened `/contact-captures/submissions/01366e2e…`, the exact submission, with `client_submission_id 77ae7ae0…`, `contacts 30`, `created 0`. Reachable only straight after a save — see D-8 |
@@ -1753,3 +1753,224 @@ No fix for any defect above was implemented inside DAT-011.
 **Owed next, for whoever picks this up:** file D-4, D-8, D-9 and D-10; then re-run
 A4–A7 and S3a once #191 is merged, which is the only outstanding acceptance work
 this trial identified.
+
+---
+
+## 6. A4–A7 and S3a — the deferred subset, re-run on the merged product
+
+**Run date:** 2026-07-28, Asia/Kolkata (IST, UTC+05:30).
+
+These five checks were the only DAT-011 work left outstanding. They were held
+back deliberately: D-2 (#191) made the *Needs review* signal unreadable on Sales
+Navigator rows, so running the selection-quality steps earlier would have
+measured the defect instead of the product.
+
+### 6.1 Environment under test
+
+| Item | Value |
+| --- | --- |
+| Backend commit | **`e943fe6`** — "UI-014 + UI-015: make domain-decision feedback truthful (#203)" |
+| Lineage | `aafb6df` INS-001 (#187) · `e05feac` UI-013 (#196) · `f11b9fd` DAT-017A (#190) |
+| Working tree | clean (`git status --porcelain` empty) |
+| Server | `uvicorn app.main:app --port 8000` — **no `--reload`**, verified from the console output |
+| Readiness | `/ready` → `{"status":"ready","database":"ok"}` |
+| Database | local Postgres, environment `local`, dry-run on. No credentials recorded. |
+| Extension | manifest **2.1.0**, reloaded from disk after the UI-013 merge |
+| Feature flags enabled for the run | `contact_capture_intake`, `contact_capture_promotion` (both were off at preflight and had to be turned on), plus the pre-existing `csv_import`, `salesnav_intake`, `linkedin_profile_intake`, `linkedin_profile_refresh`, `linkedin_company_intake`, `workbench`, `salesnav_domain_enrichment` |
+| Deliberately left OFF | `automatic_company_domain_resolution` (DAT-017A) — the S3a contract is written against DAT-014's explicit operator decision, and enabling the policy would have changed the behaviour under test. DAT-017A acceptance is a separate task. |
+
+**Build fingerprint.** The manifest version was 2.1.0 before UI-013 and still is,
+so it cannot prove the shipped build is current. The behavioural fingerprint used
+instead: the listings filter label, which UI-013 renamed from *"Only prospects
+with warnings"* to **"Only prospects needing review"**. The running panel showed
+the new label, so the build under test contains #191.
+
+**Baseline before any capture:** pending **78** · contacts **1044** · companies **2**.
+
+### 6.2 Exact definitions used
+
+Quoted from this document's own matrix, not restated from memory:
+
+| Step | Definition |
+| --- | --- |
+| A4 | Review the list — ≥2 distinct companies among eligible rows; any no-company rows appear under *N skipped — no company name* and are absent from the list |
+| A5 | Deselect at least one row — *Review selected (N)* and the Save label follow the selection |
+| A6 | Confirm a flagged row is retained (S3a) — a row with a warning is still selectable and still submitted with its gap visible |
+| A7 | Confirm nothing was invented for a skipped row (S3b) — no company borrowed from headline, school, location or an adjacent row |
+| S3a | Retained-and-flagged: missing location, uncertain identity, no stable link — kept, badged, submitted with the gap visible |
+
+### 6.3 Capture and selection
+
+Three pages of one Sales Navigator people search, captured page by page by the
+operator; the panel never turned a page.
+
+| Page | Visible | Added | Skipped |
+| --- | --- | --- | --- |
+| 1 | 25 | 24 | **1** — `missing_company_name` |
+| 2 | 14 | 14 | 0 |
+| 3 | 25 | 25 | 0 |
+| **Batch** | | **63** | 1 |
+
+**A4 — PASS.** Twelve distinct companies in a twelve-row sample of the persisted
+captures, against a threshold of two. The skipped row was reported in the panel
+as *"1 visible row skipped: no Company Name on the page. Nothing was guessed and
+nothing was submitted for them"*, named by row position, and absent from the
+capturable list. 25 visible − 1 skipped = 24 added reconciles exactly.
+
+**This is the first time S3b has been exercised.** The earlier run recorded that
+no row on either page lacked a company, so the skipped block never appeared.
+
+**A5 — PASS.** One row deselected: *Select all* went indeterminate, the primary
+action moved from *Review selected (63)* to *Review selected (62)*, the review
+tiles read **62 selected / 1 deselected**, and the Save label read **Capture 62
+prospects**. The count follows the operator's decision, not the capture size.
+
+### 6.4 A7 — the skipped row, tested against the tempting case
+
+The skipped row **visibly displayed a company name as plain text** in its
+subtitle. It was still not taken.
+
+Cause, confirmed against the shipped selectors: every company selector targets a
+LinkedIn company *entity* — `a[data-anonymize="company-name"]`,
+`[data-anonymize="company-name"]`, `.artdeco-entity-lockup__subtitle a`. The
+company on that row is not a LinkedIn Page (or was not linked in the person's
+experience entry), so it renders as unlinked text with no entity. The three rows
+above it rendered their companies in the heavier weight of a linked entity; this
+one did not.
+
+**A7 — PASS**, and on the case that actually matters. A blank row would have
+proved only that nothing can be invented from nothing. Here a plausible company
+string was on screen, one DOM level away from the field that wanted it, and the
+extractor left it alone.
+
+**Observation recorded, not filed as a defect:** an unlinked company is still a
+real company, so rows like this are lost to acquisition entirely. Reading the
+subtitle's company text when unlinked would be defensible and is arguably not
+"inferring from the headline". Changing selectors is out of scope for an
+acceptance run; see §7.
+
+### 6.5 A6 and S3a's fault case — what could not be tested
+
+The batch was swept for a genuinely flagged row using the panel's own
+*"Only prospects needing review"* filter after each page:
+
+| After page | Batch size | Rows with a review fault |
+| --- | --- | --- |
+| 1 | 24 | **0** |
+| 2 | 38 | **0** |
+| 3 | 63 | **0** |
+
+Three independent counters agreed: the filter returned nothing, the review tiles
+read `0 missing fields · 0 uncertain id · 0 selector fails`, and the review badge
+read **62 ready** with no *need review* badge present at all.
+
+**A6 — PASS for the provenance case.** A6's text is *"a row with a warning is
+still selectable and still submitted with its gap visible"*. Every row in the
+batch carries a `derived_value` warning; all stayed selectable, all were
+submitted, and each shows its note on the row and again on the review card.
+
+**S3a's fault case — NOT EXERCISED.** S3a names missing location, uncertain
+identity and no stable link. None occurred in 63 rows across three pages. This is
+recorded as untested rather than passed by association with A4, A5 and A7.
+
+The sweep is the evidence. Sales Navigator renders a location on essentially
+every row, so the case S3a describes is genuinely uncommon on this surface; it
+will need either a search that happens to contain one or a deliberate fixture,
+and a fixture would not be live authenticated evidence.
+
+### 6.6 UI-013 (#191) confirmed in the live product
+
+The fix this subset was waiting for, verified at five distinct surfaces:
+
+| Surface | Before #191 | Observed now |
+| --- | --- | --- |
+| Row badge | *Needs review* on ~100% of rows | neutral **Derived** |
+| Review tally | *N need review* counting every row | absent |
+| Filter | matched every row | returns nothing |
+| Review badge | *62 need review · 0 ready* | **62 ready** |
+| Review card | *"Will be saved and flagged for review"* | *"Complete. The note above records where a value came from — nothing needs correcting."* |
+
+All 12 sampled captures carry a derived profile URL and none an observed one,
+which is the base rate that made the old behaviour so damaging.
+
+### 6.7 S3a — the contact-first flow, proven independently
+
+Run on the trial's own submission, workbench steps [machine, supervised].
+
+| Element | Result |
+| --- | --- |
+| Submission | `e47a487a…` · client id `3288f17b…` · schema `linkedin-contact-capture/2.0.0` · extension 2.1.0 |
+| Captures persisted | **62** |
+| Outcome counts | `submitted 62 · staged_unmatched 62 · created 0 · duplicate_in_submission 0 · suppressed 0` |
+| Pending queue | 78 → **140**, exactly **+62** |
+| Label carry-over | submission carries `dat011-a4a7-rerun`; capture reads *"(requested; applied to a contact only once this capture is matched)"* |
+| Note carry-over | `notes_recorded 62`; capture shows **Operator notes (1) — append-only** with timestamp and scope `submission` |
+| Returned identifier / deep link | the panel's own link opened `/contact-captures/submissions/e47a487a-…` — the exact record, identifiers matching what had been read from the backend beforehand |
+| Pre-decision state | `pending_lookup`, *"run the company-domain lookup first"*, **promote control disabled** |
+| Lookup | `ok · 1 attempt · logo.dev`, 1 candidate, confidence **"not provided by this provider"** |
+| Preview non-committing | after the lookup: `candidate_review_required`, promote **still disabled**, nothing created |
+| Explicit confirmation | *"Confirmed the candidate investible.com. You can promote this capture now."* → `domain_candidate_confirmed`, promote **enabled**, still `not promoted` |
+| Promotion | contacts **1044 → 1045** · companies **2 → 3** · pending **140 → 139** · scoped company contacts **0 → 1** |
+| Label applied on promotion | promotion row reads `1 note(s) linked · labels dat011-a4a7-rerun`, and the capture's qualifier disappears — **requested → applied**, the loop closed |
+| Retry | re-issued promote → *"already promoted"*, same contact id, **all four counts unchanged** |
+| Immutability | capture re-read after promotion: `schema_version`, `capture_mode`, `extraction_status: partial` and the status pill all unchanged; only the reconciliation link differs |
+
+**The negative case, on a second capture from the same submission.** *Leave
+unresolved* with an operator reason produced `left_unresolved`, the banner
+*"Recorded as deliberately unresolved. Nothing was promoted."*, the promote
+control disabled, and `why not promoted: the operator left this company
+deliberately unresolved`. A direct promote POST bypassing the disabled control
+was **refused** with the same reason, and no count moved. The gate is enforced in
+the service, not only in the page.
+
+### 6.8 UI-014 (#192) and UI-015 (#193) confirmed
+
+Both defects this trial raised are fixed in the running product:
+
+* **#192 / D-6** — after confirmation `why not promoted` is **gone**, where it
+  previously survived and told the operator to do something already done. The
+  pre-confirmation wording is also count-aware: with one candidate it read
+  *"1 domain candidate is waiting for your confirmation"*, not *"several"*.
+* **#192 / D-OBS-4** — the success message now names the decision source:
+  *"Confirmed **the candidate** investible.com."*
+* **#193 / D-7** — the capture page now carries a **`why unresolved`** row
+  displaying the operator's typed reason, and distinguishes it from the
+  submission note (*"about the person, not the domain decision"*), which is
+  exactly the confusion the original defect created.
+
+### 6.9 Privacy and conduct
+
+No real names, complete LinkedIn URLs, email addresses, raw profile text,
+credentials, cookies, auth headers or browser storage appear in this record.
+Identifiers are truncated; people are referred to by row position or not at all.
+
+No unattended navigation, pagination, stealth behaviour, CAPTCHA handling or
+anti-bot technique was used at any point. Every page was opened and paged by the
+operator; the panel read only what was already on screen and states so in its own
+copy. All workbench actions were performed against the local loopback backend.
+
+### 6.10 Result
+
+| Step | Result |
+| --- | --- |
+| A4 | **PASS** — in full, including S3b for the first time |
+| A5 | **PASS** |
+| A6 | **PASS** for the provenance case |
+| A7 | **PASS** |
+| S3a | **PASS** for the full contact-first flow; **fault case NOT EXERCISED** |
+
+## 7. Findings from this run
+
+| Ref | Summary | Severity | Blocker | State |
+| --- | --- | --- | --- | --- |
+| O-1 | The pages tile under-reports by one whenever page 1 is in the batch: Sales Navigator's page 1 carries no `page` query parameter, `pageNumberFromUrl` returns null, and the worker records only non-null page numbers. Page-1 rows also carry `sourcePageNumber: null` in their capture evidence. | provenance / cosmetic | no | to file — no existing issue found |
+| O-2 | A row whose company is not a linked LinkedIn entity is skipped entirely, even when the company name is visible as plain text. Truthful and exactly as DAT-018 B specifies, but acquirable rows are lost. | coverage | no | to file as a follow-up to #185 — no existing issue found |
+
+Neither changes any result above. The source search URL is stored on every
+capture, so O-1 loses no evidence — page 1 is implicit rather than recorded.
+
+**Carried forward from the earlier run, still unfiled:** D-8 (panel restore
+overwritten by the first detection), D-9 (`contact.company_id` never written by
+application code), D-10 (companies list contradicts the company detail page), and
+D-4 as rewritten. D-9 was re-observed incidentally during this run: both existing
+companies still show `Contacts 0` on the list while carrying promoted contacts.
