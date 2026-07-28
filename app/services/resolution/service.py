@@ -80,6 +80,22 @@ class ResolutionOutcome:
     company: Company | None = None
     contact_linked: bool = False
     provider_call_made: bool = False
+    #: DAT-017A automatic promotion. Present whenever a resolved decision tried
+    #: to create or reuse the Contact itself, whether or not it succeeded — a
+    #: blocked promotion is an outcome to report, not an error to swallow.
+    promotion_result: capture_promotion.PromotionResult | None = None
+
+    @property
+    def contact(self) -> Contact | None:
+        """The Contact this resolution created or reused, if any."""
+
+        return self.promotion_result.contact if self.promotion_result else None
+
+    @property
+    def auto_promoted(self) -> bool:
+        """True when this resolution produced a Contact without an operator click."""
+
+        return self.contact is not None
 
     @property
     def state(self) -> DomainResolutionState:
@@ -341,6 +357,10 @@ def resolve(
         actor=actor,
         provider_call_made=provider_call_made,
         audit_action=RESOLVE_AUDIT_ACTION,
+        # The automatic path, and only it. An operator correction is a
+        # deliberate act on a decision the operator is already looking at, so it
+        # keeps its explicit Promote step rather than acquiring a side effect.
+        auto_promote=True,
     )
 
 
@@ -441,6 +461,7 @@ def _apply(
     provider_call_made: bool,
     audit_action: str,
     correction_note: str | None = None,
+    auto_promote: bool = False,
 ) -> ResolutionOutcome:
     """Persist a decision and make the world match it."""
 
@@ -479,12 +500,34 @@ def _apply(
 
     contact_linked = _link_promoted_contact(session, promotion=promotion, company=company)
 
+    # --- DAT-017A: a resolved decision finishes the job ------------------------
+    #
+    # The policy has already decided, on evidence, and that decision is now
+    # persisted. Asking the operator to press Confirm and then Promote at this
+    # point asks them to re-affirm a conclusion they did not reach and cannot
+    # improve on — the two clicks carried no judgement, only friction.
+    #
+    # Both resolved states promote, and the difference between them is preserved
+    # rather than erased: a PROVISIONAL decision stays provisional on the
+    # promotion row, in the decision row and on the page. Creating the Contact is
+    # not a promise about the domain. What a provisional domain may go on to
+    # authorize is decided by ``app.services.resolution.gates``, in the services
+    # that would otherwise act, and none of that changes here.
+    #
+    # UNRESOLVED never reaches this line: ambiguity, conflict, provider failure
+    # and missing evidence are exactly the cases where an operator's judgement is
+    # the thing that was missing, so they keep their manual controls.
+    promotion_result: capture_promotion.PromotionResult | None = None
+    if auto_promote and decision.is_resolved:
+        promotion_result = _auto_promote(session, snapshot=snapshot, actor=actor)
+
     outcome = ResolutionOutcome(
         decision=row,
         created=created,
         company=company,
         contact_linked=contact_linked,
         provider_call_made=provider_call_made,
+        promotion_result=promotion_result,
     )
 
     if created:
@@ -578,6 +621,35 @@ def _apply_to_promotion(
     if company is not None:
         promotion.resolved_company_id = company.id
         session.flush()
+
+
+def _auto_promote(
+    session: Session,
+    *,
+    snapshot: LinkedInProfileSnapshot,
+    actor: str,
+) -> capture_promotion.PromotionResult:
+    """Create or reuse the Contact for a capture whose domain is resolved.
+
+    Delegates wholly to DAT-014's :func:`promote`. That is deliberate: promotion
+    already knows how to reuse an existing person, refuse an ambiguous or
+    suppressed identity, refuse a capture with no usable name, attach identity
+    claims and keep a retry idempotent. Re-implementing any of that here would
+    create a second, weaker definition of who a contact is.
+
+    A blocked promotion is returned, not raised. "The domain is settled but this
+    person cannot be created yet" is a truthful and fairly common outcome — an
+    unnameable row, a suppressed address, an identity two contacts already claim
+    — and the reason is recorded on the promotion row for the page to show. It
+    is not a failure of the resolution that just succeeded.
+
+    Transactionality is inherited rather than invented. Everything here runs in
+    the caller's transaction, so a failure anywhere rolls back the decision, the
+    Company, the Contact and the identity links together; there is no point at
+    which a Company exists for a Contact that does not.
+    """
+
+    return capture_promotion.promote(session, snapshot=snapshot, actor=actor)
 
 
 def _link_promoted_contact(
