@@ -14,6 +14,7 @@ from app.models.enums import (
     AgentIdentifier,
     AgentJobStatus,
     CampaignStatus,
+    PipelineEventType,
     PipelineStageStatus,
     SuppressionReason,
     SuppressionType,
@@ -391,9 +392,23 @@ def test_missing_company_evidence_blocks_then_resumes_when_evidence_arrives(
     assert enrolled.membership.pipeline_status.value == PipelineStageStatus.COMPLETED.value
 
 
-def test_deliberately_skipped_disabled_stage_is_historical_and_explainable(
+def test_a_disabled_skippable_stage_is_stepped_over_automatically(
     db_session: Session,
 ) -> None:
+    """A disabled skippable Agent must not park the Contact waiting for a human.
+
+    This replaces an earlier test that asserted the opposite — that a disabled
+    Research stage left ``next_stage`` pointing at Research so an operator could
+    skip it by hand. That behaviour is correct for one Contact and unusable for a
+    Campaign: two thousand Contacts meant two thousand identical skips before any
+    downstream Agent could run, which made "disabled" indistinguishable from
+    "broken" at the only scale that matters here.
+
+    The guarantee is now: stepped over automatically, and the history says by
+    what. ``reason_code`` distinguishes it from an operator's decision, so the
+    audit trail never attributes a control's effect to a person.
+    """
+
     campaign, _, contact = _records(db_session)
     enrolled = campaign_contacts.enrol_contact(
         db_session,
@@ -405,6 +420,62 @@ def test_deliberately_skipped_disabled_stage_is_historical_and_explainable(
     )
     run_next(db_session, worker_id="phase2-test")
     run_next(db_session, worker_id="phase2-test")
+
+    research = pipeline.agent_state(
+        db_session,
+        campaign_contact_id=enrolled.membership.id,
+        agent_id=AgentIdentifier.RESEARCH,
+    )
+    assert research is not None
+    assert _pipeline_status(research) is PipelineStageStatus.SKIPPED
+    assert research.reason_code == "control_disabled_autoskip"
+    assert enrolled.membership.next_stage is None
+    assert enrolled.membership.pipeline_status is PipelineStageStatus.COMPLETED
+
+    # The skip is a committed event, not merely a column value.
+    snapshot = pipeline.pipeline_snapshot(
+        db_session, campaign_contact_id=enrolled.membership.id
+    )
+    skips = [
+        event
+        for event in snapshot.events
+        if event.event_type is PipelineEventType.STAGE_SKIPPED
+        and event.agent_id is AgentIdentifier.RESEARCH
+    ]
+    assert len(skips) == 1
+    assert skips[0].detail.get("auto_skipped") is True
+
+
+def test_a_paused_stage_still_waits_for_an_operator_to_skip_it(
+    db_session: Session,
+) -> None:
+    """Pausing is a human saying "hold"; it must not be stepped over.
+
+    Disabled and paused are different intentions. Disabled means "this Campaign
+    does not use this stage"; paused means "stop here, I am dealing with it".
+    Auto-skipping a pause would discard the instruction that was just given, so
+    the manual skip — and its ``operator_skip`` attribution — stays the only way
+    past it.
+    """
+
+    campaign, _, contact = _records(db_session)
+    controls.set_global_control(
+        db_session,
+        agent_id=AgentIdentifier.RESEARCH,
+        status=AgentControlStatus.PAUSED,
+        reason="held while the operator reviews the research prompt",
+    )
+    enrolled = campaign_contacts.enrol_contact(
+        db_session,
+        campaign_id=campaign.id,
+        contact_id=contact.id,
+        source_type="manual",
+        enqueue=True,
+        desired_stage=AgentIdentifier.RESEARCH,
+    )
+    run_next(db_session, worker_id="phase2-test")
+    run_next(db_session, worker_id="phase2-test")
+
     assert enrolled.membership.next_stage is AgentIdentifier.RESEARCH
     research = pipeline.agent_state(
         db_session,
@@ -412,7 +483,7 @@ def test_deliberately_skipped_disabled_stage_is_historical_and_explainable(
         agent_id=AgentIdentifier.RESEARCH,
     )
     assert research is not None
-    assert _pipeline_status(research) is PipelineStageStatus.DISABLED
+    assert _pipeline_status(research) is PipelineStageStatus.PAUSED
 
     skipped = pipeline.skip_current_stage(
         db_session,
@@ -440,12 +511,8 @@ def test_safety_critical_agent_cannot_be_deliberately_skipped(
     )
     run_next(db_session, worker_id="phase2-test")
     run_next(db_session, worker_id="phase2-test")
-    pipeline.skip_current_stage(
-        db_session,
-        membership=enrolled.membership,
-        agent_id=AgentIdentifier.RESEARCH,
-        reason="Research is deliberately omitted for this non-sending test.",
-    )
+    # Research is disabled and skippable, so the pipeline steps over it without
+    # help and arrives at Email on its own.
     assert enrolled.membership.next_stage is AgentIdentifier.EMAIL
 
     with pytest.raises(pipeline.PipelineStateError, match="safety-critical"):

@@ -267,6 +267,50 @@ def schedule_next(
 
     control = effective_control(session, campaign=campaign, agent_id=agent_id)
     if control.status is AgentControlStatus.DISABLED:
+        spec = get_agent_spec(agent_id)
+        # A disabled Agent used to stop the Contact here and wait for a human to
+        # skip it, one Contact at a time. At the scale this pipeline exists for
+        # that is not a pause, it is a wall: a Campaign of two thousand Contacts
+        # with Research switched off needed two thousand identical clicks before
+        # anything downstream could run.
+        #
+        # So a disabled Agent the registry marks *skippable* is now stepped over
+        # automatically, with a durable SKIPPED event recording that it was the
+        # control — not an operator, and not a domain refusal — that caused it.
+        # "Skippable" already means "the pipeline is sound without this stage";
+        # honouring that is the whole point of declaring it.
+        #
+        # A disabled Agent that is NOT skippable still stops dead. Sending is the
+        # case that matters: switching it off must mean nothing is sent, never
+        # "silently proceed as though sending had happened".
+        if spec.skippable and agent_id is not AgentIdentifier.CAPTURE:
+            transition_stage(
+                session,
+                membership=membership,
+                agent_id=agent_id,
+                target=PipelineStageStatus.SKIPPED,
+                event_type=PipelineEventType.STAGE_SKIPPED,
+                actor=actor,
+                reason_code="control_disabled_autoskip",
+                reason_detail=(
+                    control.reason
+                    or f"{spec.display_name} is disabled and skippable; stepped over "
+                    "automatically so the Contact could continue."
+                ),
+                detail={"control_source": control.source, "auto_skipped": True},
+            )
+            # Recursion, not a loop, because the checks at the top of this
+            # function apply again to the stage we just advanced to. It is
+            # bounded by the length of the pipeline: every SKIPPED transition
+            # either moves next_stage forward or ends the pipeline.
+            return schedule_next(
+                session,
+                membership=membership,
+                actor=actor,
+                parent_job=parent_job,
+                priority=priority,
+                allow_enqueue=allow_enqueue,
+            )
         if state.status is not PipelineStageStatus.DISABLED:
             transition_stage(
                 session,
