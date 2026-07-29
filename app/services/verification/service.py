@@ -46,6 +46,7 @@ from app.services.verification import queue as jobs
 from app.services.verification import usage
 from app.services.verification.policy import MappedOutcome, VerificationPolicy, get_policy
 from app.services.verification.provider import (
+    LIVE_PROVIDER_LABEL,
     SIMULATOR_PROVIDER_LABEL,
     ProviderResponse,
     ProviderTransientError,
@@ -79,24 +80,60 @@ def get_provider(settings: Settings, *, live: bool = False) -> VerificationProvi
     )
 
 
+def _provider_provenance_satisfies(stored: str, required: str | None) -> bool:
+    """Whether *stored* evidence is at least as authoritative as requested.
+
+    Live provider evidence may safely answer a simulator caller, but simulated
+    evidence must never satisfy a live execution. Unknown provider labels are
+    reusable only for an exact match so a future adapter cannot accidentally
+    upgrade provenance by name alone.
+    """
+
+    if required is None:
+        return True
+    strengths = {
+        SIMULATOR_PROVIDER_LABEL: 0,
+        LIVE_PROVIDER_LABEL: 1,
+    }
+    stored_strength = strengths.get(stored)
+    required_strength = strengths.get(required)
+    if stored_strength is None or required_strength is None:
+        return stored == required
+    return stored_strength >= required_strength
+
+
 def find_fresh_evidence(
-    session: Session, email: str, policy: VerificationPolicy, now: datetime
+    session: Session,
+    email: str,
+    policy: VerificationPolicy,
+    now: datetime,
+    *,
+    required_provider_label: str | None = None,
 ) -> ExactEmailVerification | None:
-    """Return fresh cached evidence for the *same exact address*, else None."""
+    """Return the newest reusable evidence for the exact address.
+
+    Reuse is allowed only when the evidence is fresh under the active policy,
+    was produced under that same policy version, and has provenance at least as
+    strong as the caller requires. This prevents a live Agent execution from
+    upgrading simulator evidence into a production-eligible result.
+    """
 
     norm = normalize_email(email)
     if not norm:
         return None
-    latest = session.scalars(
+    candidates = session.scalars(
         select(ExactEmailVerification)
-        .where(ExactEmailVerification.email == norm)
+        .where(
+            ExactEmailVerification.email == norm,
+            ExactEmailVerification.policy_version == policy.version,
+        )
         .order_by(ExactEmailVerification.checked_at.desc())
-        .limit(1)
-    ).first()
-    if latest is None:
-        return None
-    if policy.is_fresh(latest.result, latest.checked_at, now):
-        return latest
+    ).all()
+    for candidate in candidates:
+        if not _provider_provenance_satisfies(candidate.provider, required_provider_label):
+            continue
+        if policy.is_fresh(candidate.result, candidate.checked_at, now):
+            return candidate
     return None
 
 
@@ -333,13 +370,15 @@ def verify_exact_address(
         reused: bool = False,
         reason: str | None = None,
         evidence: ExactEmailVerification | None = None,
+        evidence_provider: str | None = None,
     ) -> VerificationOutcome:
+        effective_provider_label = evidence_provider or provider_label
         record = job_attempts.record_attempt(
             session,
             job,
             started_at=now,
             finished_at=_now(),
-            provider=provider_label,
+            provider=effective_provider_label,
             provider_called=provider_called,
             reused_evidence=reused,
             failure_class=failure_class,
@@ -356,7 +395,7 @@ def verify_exact_address(
             evidence=evidence,
             reused=reused,
             provider_called=provider_called,
-            provider_label=provider_label,
+            provider_label=effective_provider_label,
             failure_class=failure_class,
             policy_version=policy.version,
             reason=reason,
@@ -396,7 +435,17 @@ def verify_exact_address(
 
     # Cache reuse safety net: fresh evidence may have appeared since enqueue.
     may_reuse = reuse_fresh and not _force_refresh_requested(job)
-    fresh = find_fresh_evidence(session, email, policy, now) if may_reuse else None
+    fresh = (
+        find_fresh_evidence(
+            session,
+            email,
+            policy,
+            now,
+            required_provider_label=provider_label,
+        )
+        if may_reuse
+        else None
+    )
     if fresh is not None:
         usage.record_usage(
             session,
@@ -426,6 +475,7 @@ def verify_exact_address(
             result=fresh.result,
             reused=True,
             evidence=fresh,
+            evidence_provider=fresh.provider,
         )
 
     # One provider call.

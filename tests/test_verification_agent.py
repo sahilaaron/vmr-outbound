@@ -47,7 +47,9 @@ from app.services.agents.adapters import DEFAULT_ADAPTERS, VerificationAgentAdap
 from app.services.agents.orchestrator import run_next
 from app.services.suppressions import add_suppression
 from app.services.verification import attempts as job_attempts
+from app.services.verification import service as verification_service
 from app.services.verification.decisions import VerificationDecision, decide
+from app.services.verification.policy import get_policy
 from app.services.verification.provider import (
     LIVE_PROVIDER_LABEL,
     SIMULATOR_PROVIDER_LABEL,
@@ -282,12 +284,13 @@ def _seed_evidence(
     age_days: int = 0,
     is_role: bool = False,
     provider: str = LIVE_PROVIDER_LABEL,
+    policy_version: str = POLICY,
 ) -> ExactEmailVerification:
     row = ExactEmailVerification(
         email=email,
         result=result,
         provider=provider,
-        policy_version=POLICY,
+        policy_version=policy_version,
         is_role=is_role,
         checked_at=datetime.now(UTC) - timedelta(days=age_days),
         raw_response={"result": result.value, "email": email},
@@ -607,6 +610,108 @@ def test_conflicting_fresh_evidence_is_not_accepted(db_session: Session) -> None
     )
     assert detail["decision"] != VerificationDecision.ACCEPT.value
     assert detail["precise_status"] == EmailPreciseStatus.CONFLICTING_EVIDENCE.value
+
+
+def test_a_live_run_never_reuses_simulator_evidence(db_session: Session) -> None:
+    """Simulator evidence cannot be upgraded into a live acceptance."""
+
+    email = "ada.lovelace@engines.example"
+    membership, _ = _setup(db_session, email)
+    simulated = _seed_evidence(
+        db_session,
+        email,
+        EmailVerificationResult.VALID,
+        provider=SIMULATOR_PROVIDER_LABEL,
+    )
+    provider = LiveProvider([_ok(email)])
+
+    _run(db_session, provider)
+
+    assert provider.calls == 1
+    state = _stage(db_session, membership)
+    assert state.status is PipelineStageStatus.COMPLETED
+    assert state.output_reference is not None
+    assert state.output_reference["verification_id"] != str(simulated.id)
+    evidence = db_session.scalars(
+        select(ExactEmailVerification)
+        .where(ExactEmailVerification.email == email)
+        .order_by(ExactEmailVerification.checked_at.asc())
+    ).all()
+    assert len(evidence) == 2
+    assert evidence[0].id == simulated.id
+    assert evidence[-1].id != simulated.id
+    assert evidence[-1].provider == LIVE_PROVIDER_LABEL
+    assert evidence[-1].result is EmailVerificationResult.VALID
+
+
+def test_evidence_from_an_older_policy_is_not_reused(db_session: Session) -> None:
+    email = "ada.lovelace@engines.example"
+    membership, _ = _setup(db_session, email)
+    old = _seed_evidence(
+        db_session,
+        email,
+        EmailVerificationResult.VALID,
+        policy_version="ver-0",
+    )
+    provider = LiveProvider([_ok(email)])
+
+    _run(db_session, provider)
+
+    assert provider.calls == 1
+    state = _stage(db_session, membership)
+    assert state.status is PipelineStageStatus.COMPLETED
+    assert state.output_reference is not None
+    assert state.output_reference["verification_id"] != str(old.id)
+
+
+def test_live_lookup_rejects_simulator_evidence(
+    db_session: Session, settings: Settings
+) -> None:
+    email = "ada.lovelace@engines.example"
+    _seed_evidence(
+        db_session,
+        email,
+        EmailVerificationResult.VALID,
+        provider=SIMULATOR_PROVIDER_LABEL,
+    )
+
+    found = verification_service.find_fresh_evidence(
+        db_session,
+        email,
+        get_policy(settings),
+        datetime.now(UTC),
+        required_provider_label=LIVE_PROVIDER_LABEL,
+    )
+
+    assert found is None
+
+
+def test_reused_outcome_reports_the_evidence_rows_provider(
+    db_session: Session,
+) -> None:
+    email = "ada.lovelace@engines.example"
+    _, job = _setup(db_session, email)
+    evidence = _seed_evidence(
+        db_session,
+        email,
+        EmailVerificationResult.VALID,
+        provider=LIVE_PROVIDER_LABEL,
+    )
+    provider = SimulatedProvider()
+
+    outcome = verification_service.verify_exact_address(
+        db_session,
+        job,
+        provider=provider,
+    )
+
+    assert provider.calls == 0
+    assert outcome.reused is True
+    assert outcome.evidence is not None and outcome.evidence.id == evidence.id
+    assert outcome.provider_label == LIVE_PROVIDER_LABEL
+    assert outcome.simulated is False
+    assert outcome.attempt is not None
+    assert outcome.attempt.provider == LIVE_PROVIDER_LABEL
 
 
 def test_force_refresh_bypasses_fresh_evidence_and_survives_the_queue(
