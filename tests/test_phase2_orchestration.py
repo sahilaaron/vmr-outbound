@@ -433,9 +433,7 @@ def test_a_disabled_skippable_stage_is_stepped_over_automatically(
     assert enrolled.membership.pipeline_status is PipelineStageStatus.COMPLETED
 
     # The skip is a committed event, not merely a column value.
-    snapshot = pipeline.pipeline_snapshot(
-        db_session, campaign_contact_id=enrolled.membership.id
-    )
+    snapshot = pipeline.pipeline_snapshot(db_session, campaign_contact_id=enrolled.membership.id)
     skips = [
         event
         for event in snapshot.events

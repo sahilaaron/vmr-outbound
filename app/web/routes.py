@@ -45,8 +45,9 @@ from app.models.enums import (
 )
 from app.models.linkedin_company import LinkedInCompanySnapshot
 from app.models.linkedin_profile import LinkedInProfileSnapshot
-from app.services import devtools, identity, workbench, workbench_agents
+from app.services import campaign_contacts, devtools, identity, workbench, workbench_agents
 from app.services.agents.registry import AGENT_SPECS
+from app.services.campaign_contacts import CampaignContactError
 from app.services.campaigns import (
     CampaignError,
     campaign_imports,
@@ -1500,10 +1501,61 @@ def contacts_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespon
             "views": crm_records.VIEWS,
             "sorts": crm_records.SORTS,
             "labels": crm_annotations.all_labels(db),
+            # Offered so a selection made here can be enrolled without leaving
+            # the page. The list is still not required to view a contact: an
+            # empty list simply hides the enrolment bar.
+            "campaigns": list_campaigns(db),
             "active_nav": "contacts",
             "page_title": "Contacts",
         },
     )
+
+
+@router.post("/contacts/add-to-campaign")
+async def contacts_add_to_campaign(request: Request, db: Session = Depends(get_db)) -> Response:
+    """Enrol the selected permanent Contacts into one Campaign.
+
+    Enrolment is the existing single-contact service in a loop, deliberately: it
+    carries eligibility evaluation, source provenance, pipeline initialisation
+    and the first queued Agent Job, none of which is safe to shortcut for speed.
+
+    The flash reports refusals as well as successes. Silently enrolling 87 of 90
+    and reporting "done" would hide exactly the three contacts that need a
+    decision.
+    """
+
+    form = await request.form()
+    campaign_id = _parse_uuid(str(form.get("campaign_id", "")))
+    if campaign_id is None:
+        return _redirect("/contacts", err="Choose a campaign to add the selected contacts to.")
+
+    selected: list[uuid.UUID] = []
+    for raw in form.getlist("contact_ids"):
+        parsed = _parse_uuid(str(raw))
+        if parsed is not None:
+            selected.append(parsed)
+    if not selected:
+        return _redirect("/contacts", err="Select at least one contact first.")
+
+    back = str(form.get("back") or "/contacts")
+    try:
+        outcome = campaign_contacts.enrol_contacts(
+            db,
+            campaign_id=campaign_id,
+            contact_ids=selected,
+            source_type="manual",
+            source_reference="contacts-page-selection",
+        )
+    except CampaignContactError as exc:
+        db.rollback()
+        return _redirect(back, err=str(exc))
+    db.commit()
+
+    message = outcome.summary
+    if outcome.refused:
+        first_reason = outcome.refused[0][1]
+        message = f"{message} First refusal: {first_reason}"
+    return _redirect(back, ok=message)
 
 
 @router.get("/contacts/{contact_id}", response_class=HTMLResponse)

@@ -608,3 +608,19 @@ td .progress-track { margin: 4px 0 2px; min-width: 120px; }
 .chip-count { font-variant-numeric: tabular-nums; opacity: .75; margin-left: 2px; }
 tr.row-failure { background: var(--err-soft); }
 td.err, td .err { color: var(--err); font-weight: 600; }
+
+/* The drafted email body. Preserves the model's line breaks without inheriting
+   the monospace look of a payload dump — an operator is reviewing prose here,
+   not inspecting a value. */
+.draft-body {
+  white-space: pre-wrap;
+  font-family: var(--font);
+  font-size: 0.95rem;
+  line-height: 1.55;
+  margin: 8px 0 12px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(127, 127, 127, 0.18);
+  overflow-x: auto;
+}
