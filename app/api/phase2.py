@@ -21,6 +21,7 @@ from app.models.agent import AgentControl
 from app.models.campaign import Campaign, CampaignContact
 from app.models.collection import Collection
 from app.models.contact import Contact
+from app.models.email_discovery import EmailCandidateAttempt
 from app.models.enums import (
     AgentControlStatus,
     AgentIdentifier,
@@ -240,6 +241,43 @@ def _job(job: AgentJob) -> dict[str, Any]:
         "started_at": job.started_at,
         "finished_at": job.finished_at,
         "updated_at": job.updated_at,
+    }
+
+
+def _email_attempt(attempt: EmailCandidateAttempt) -> dict[str, Any]:
+    """Provider-neutral Email attempt projection for API and Workbench readers."""
+
+    return {
+        "id": attempt.id,
+        "email_job_id": attempt.email_job_id,
+        "candidate_id": attempt.candidate_id,
+        "contact_id": attempt.contact_id,
+        "company_id": attempt.company_id,
+        "campaign_id": attempt.campaign_id,
+        "campaign_contact_id": attempt.campaign_contact_id,
+        "candidate_index": attempt.candidate_index,
+        "candidate_format": attempt.candidate_format,
+        "normalized_email": attempt.normalized_email,
+        "normalized_domain": attempt.normalized_domain,
+        "policy_identifier": attempt.policy_identifier,
+        "policy_version": attempt.policy_version,
+        "employee_count_class": attempt.employee_count_class,
+        "employee_evidence_id": attempt.employee_evidence_id,
+        "employee_evidence_reference": attempt.employee_evidence_reference,
+        "employee_evidence_at": attempt.employee_evidence_at,
+        "employee_evidence_freshness": attempt.employee_evidence_freshness,
+        "force_refresh": attempt.force_refresh,
+        "refresh_scope": attempt.refresh_scope,
+        "status": attempt.status,
+        "verification_job_id": attempt.verification_job_id,
+        "verification_id": attempt.verification_id,
+        "verification_decision": attempt.verification_decision,
+        "verification_result": attempt.verification_result,
+        "refusal_reason": attempt.refusal_reason,
+        "verification_queued_at": attempt.verification_queued_at,
+        "resolved_at": attempt.resolved_at,
+        "created_at": attempt.created_at,
+        "updated_at": attempt.updated_at,
     }
 
 
@@ -842,6 +880,26 @@ def get_agent_job(job_id: uuid.UUID, db: DbSession) -> dict[str, Any]:
     if job is None:
         raise HTTPException(status_code=404, detail="Agent job does not exist")
     return _job(job)
+
+
+@router.get("/agent-jobs/{job_id}/email-attempts")
+def get_email_agent_attempts(job_id: uuid.UUID, db: DbSession) -> dict[str, Any]:
+    job = db.get(AgentJob, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Agent job does not exist")
+    if job.agent_id is not AgentIdentifier.EMAIL:
+        raise HTTPException(status_code=409, detail="Agent job is not an Email Agent execution")
+    rows = list(
+        db.scalars(
+            select(EmailCandidateAttempt)
+            .where(EmailCandidateAttempt.email_job_id == job.id)
+            .order_by(EmailCandidateAttempt.candidate_index)
+        ).all()
+    )
+    return {
+        "job": _job(job),
+        "attempts": [_email_attempt(row) for row in rows],
+    }
 
 
 @router.post("/agent-jobs/{job_id}/retry")
