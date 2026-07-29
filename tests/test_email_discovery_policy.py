@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import pytest
 from app.services.email.discovery_policy import (
-    EMPLOYEE_COUNT_EVIDENCE_TTL,
     EmailDiscoveryPolicyDecision,
     EmailPolicyOutcome,
     EmployeeCountClass,
@@ -122,26 +121,30 @@ def test_unknown_employee_count_is_explicit(raw_value: str | None) -> None:
     assert result.ordered_formats == ()
 
 
-@pytest.mark.parametrize(
-    "employee_evidence",
-    [
-        evidence("51", observed_at=NOW - EMPLOYEE_COUNT_EVIDENCE_TTL - timedelta(seconds=1)),
-        evidence("51", marked_stale=True),
-    ],
-)
-def test_stale_employee_count_evidence_is_blocked(
-    employee_evidence: EmployeeCountEvidence,
-) -> None:
+def test_stale_employee_count_evidence_is_blocked() -> None:
     result = evaluate(
         first_name="Ada",
         last_name="Lovelace",
         domain="analytical.example",
-        employee_evidence=employee_evidence,
+        employee_evidence=evidence("51", marked_stale=True),
         now=NOW,
     )
     assert result.outcome is EmailPolicyOutcome.EMPLOYEE_COUNT_STALE
     assert result.evidence_freshness is EmployeeEvidenceFreshness.STALE
     assert result.candidates == ()
+
+
+def test_current_winner_is_not_expired_by_an_email_specific_age_rule() -> None:
+    old_observation = datetime(2020, 1, 1, tzinfo=UTC)
+    result = evaluate(
+        first_name="Ada",
+        last_name="Lovelace",
+        domain="analytical.example",
+        employee_evidence=evidence("51", observed_at=old_observation),
+        now=NOW,
+    )
+    assert result.outcome is EmailPolicyOutcome.READY
+    assert result.evidence_freshness is EmployeeEvidenceFreshness.FRESH
 
 
 def test_candidate_normalization_is_deterministic() -> None:

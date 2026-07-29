@@ -22,10 +22,10 @@ There are no fallback permutations.
 
 The stored execution records the policy identifier/version, classification,
 Company field-evidence row and source reference, evidence timestamp/freshness,
-domain, ordered formats, and normalized candidates. `email-discovery-v1`
-considers employee evidence stale after 180 days or whenever the Company's
-existing research state is `stale`; changing that rule requires a new policy
-version.
+domain, ordered formats, and normalized candidates. The shared
+`freshness-v1` policy chooses the current Company field observation and defines
+no age TTL; Email does not invent one. An explicit Company research state of
+`stale` blocks discovery.
 
 ## Durable orchestration
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 import enum
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 
 from app.services.email.normalization import ENGINE_VERSION, build_identity
 from app.services.imports.normalization import (
@@ -26,11 +26,6 @@ from app.services.imports.normalization import (
 
 POLICY_IDENTIFIER = "policy-bounded-work-email"
 POLICY_VERSION = "email-discovery-v1"
-
-# Employee counts are a quickly changing operational fact.  The age boundary is
-# part of POLICY_VERSION rather than an operator setting: changing it requires a
-# policy-version bump so a stored execution remains reproducible.
-EMPLOYEE_COUNT_EVIDENCE_TTL = timedelta(days=180)
 
 
 class EmployeeCountClass(enum.StrEnum):
@@ -209,7 +204,13 @@ def evidence_freshness(
     *,
     now: datetime,
 ) -> EmployeeEvidenceFreshness:
-    """Apply the policy's versioned age boundary to the current winner."""
+    """Honor the shared winner plus its explicit Company freshness state.
+
+    ``freshness-v1`` determines which Company field observation is current; it
+    intentionally defines no age TTL. Email must not invent one. The separate
+    Company research lifecycle owns an explicit ``stale`` state, supplied here
+    as ``source_marked_stale``.
+    """
 
     if evidence.evidence_id is None or evidence.raw_value is None:
         return EmployeeEvidenceFreshness.UNKNOWN
@@ -219,8 +220,6 @@ def evidence_freshness(
     if effective_at.tzinfo is None or now.tzinfo is None:
         return EmployeeEvidenceFreshness.UNKNOWN
     if evidence.source_marked_stale:
-        return EmployeeEvidenceFreshness.STALE
-    if now.astimezone(UTC) - effective_at.astimezone(UTC) > EMPLOYEE_COUNT_EVIDENCE_TTL:
         return EmployeeEvidenceFreshness.STALE
     return EmployeeEvidenceFreshness.FRESH
 
