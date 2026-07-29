@@ -164,6 +164,8 @@ Update the relevant phase tab when:
 * A decision from Sahil, IT, or a vendor becomes necessary.
 * A phase exit condition is demonstrated.
 * A dry run, test batch, or live pilot changes launch readiness.
+* A stacked pull-request chain is assembled, or merged in part, so that the
+  remaining merge order and its owner stay visible.
 
 Do not update the workbook after every commit, minor refactor, formatting
 change, or internal implementation detail.
@@ -344,6 +346,11 @@ After a meaningful build:
    correct.
 
 If nothing operationally changed, do not manufacture a spreadsheet update.
+
+For a stacked chain built by parallel threads, treat the chain as one unit of
+work. Do not log each thread's branch separately. Record the merge order, which
+parent is currently blocking its children, and who must act next. Intermediate
+restacks and corrective pushes are engineering detail and belong in GitHub.
 
 ## Access or Tool Failure
 

@@ -12,9 +12,15 @@ human-approved 100-contact pilot campaign — not a platform.
 5. `docs/SELLER_KNOWLEDGE_BASE.md` — the seller-side knowledge base (KB-001),
    when the work touches offerings, proof points, restricted claims, personas,
    campaign-to-offering associations, or context readiness.
+6. `docs/PARALLEL_INTEGRATION.md` — integration authority, frozen base SHAs,
+   ownership blocks, the gate sequence, and stacked-chain merge order, whenever
+   another thread is building concurrently or a branch is stacked. It is the
+   single definition of the gate sequence; the documents above defer to it
+   there.
 
 When instructions conflict: Sahil's latest explicit instruction > GOAL >
-AGENTS > CLAUDE > PROJECT_TRACKING > existing conventions.
+AGENTS > CLAUDE > PROJECT_TRACKING > PARALLEL_INTEGRATION > existing
+conventions.
 
 ## Operating model
 
@@ -58,6 +64,13 @@ represents an unpushed local commit as present on GitHub.
 - Deterministic rules live in backend services; AI output is advisory until
   validated. Features default off; dry-run defaults on.
 - Schema changes only via reversible Alembic migrations proven locally.
-- Checks before handoff: `ruff check`, `ruff format --check`, `mypy` (strict),
-  `pytest` against local Postgres (UTF-8), `alembic upgrade/check` + round trip.
+- Checks before handoff: the gate sequence — commands in `docs/DEVELOPMENT.md`
+  §6, rule in `docs/PARALLEL_INTEGRATION.md`. On a stacked or parallel-built
+  branch, run them on the final assembled head. If they cannot be run, say
+  `Integration incomplete; do not publish yet`.
+- Many threads build; one thread integrates; one exact tree is validated. Work
+  only inside the declared ownership block, against the exact frozen base SHA —
+  never "the latest branch". Fixing one failing CI gate is not a correction.
+- Every handoff survives as a pushed branch or a verified bundle, with base and
+  head SHAs, bundle SHA-256, `git bundle verify` and `git merge-base` proof.
 - Out-of-scope ideas go to `docs/POST_LAUNCH_BACKLOG.md`, not into code.
