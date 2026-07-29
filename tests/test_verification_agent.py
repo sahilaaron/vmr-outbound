@@ -42,7 +42,7 @@ from app.models.pipeline import CampaignContactAgentState, PipelineEvent
 from app.models.verification_attempt import VerificationAttempt
 from app.models.verification_job import AgentJob
 from app.services import campaign_contacts, pipeline
-from app.services.agents import controls
+from app.services.agents import controls, jobs as agent_jobs
 from app.services.agents.adapters import DEFAULT_ADAPTERS, VerificationAgentAdapter
 from app.services.agents.orchestrator import run_next
 from app.services.suppressions import add_suppression
@@ -696,6 +696,17 @@ def test_reused_outcome_reports_the_evidence_rows_provider(
         provider=LIVE_PROVIDER_LABEL,
     )
     provider = SimulatedProvider()
+    claimed = agent_jobs.claim_job(
+        db_session,
+        job_id=job.id,
+        worker_id=WORKER,
+        lease_seconds=60,
+    )
+    assert claimed is job
+    agent_jobs.start_job(db_session, job, worker_id=WORKER)
+    job.email = email
+    job.policy_version = POLICY
+    db_session.flush()
 
     outcome = verification_service.verify_exact_address(
         db_session,
