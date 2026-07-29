@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+{% from "_agent_macros.html" import pipeline_strip, control_badge, control_source, stage_status_badge, eligibility_badge, membership_badge, activity_stream, pager %}
+{% block content %}
+<div class="page-head">
+  <div class="crumbs"><a href="/workbench">Workbench</a><span>/</span>{{ execution.name }}</div>
+  <div class="head-row">
+    <div>
+      <h1>{{ execution.name }}
+        {% if execution.execution_enabled %}<span class="badge ok">execution enabled</span>
+        {% else %}<span class="badge err">execution off</span>{% endif %}
+      </h1>
+      <div class="sub">
+        Campaign status {{ execution.status }} · settings version {{ execution.settings_version }}
+        {% if execution.disabled_reason %} · {{ execution.disabled_reason }}{% endif %}
+      </div>
+    </div>
+    <div class="progress-figure">
+      <div class="progress-value">{{ execution.progress_percent }}%</div>
+      <div class="small muted-text">{{ execution.completed_contacts }} of {{ execution.enrolled_contacts }} complete</div>
+    </div>
+  </div>
+</div>
+
+{% if not execution.execution_enabled %}
+<div class="notice warn" role="status">
+  <div>
+    <strong>Campaign execution is switched off.</strong> Every Agent except Capture is disabled for
+    this Campaign regardless of its own control, so nothing here will be claimed.
+  </div>
+</div>
+{% endif %}
+
+{% if execution.sending_control.status.value != "enabled" %}
+<div class="notice info" role="status">
+  <div>
+    Sending is <strong>{{ execution.sending_control.status.value }}</strong> for this Campaign
+    ({{ execution.sending_control.source.replace("_", " ") }}).
+    {% if execution.sending_control.reason %}{{ execution.sending_control.reason }}{% endif %}
+  </div>
+</div>
+{% endif %}
+
+<div class="progress-track" role="img" aria-label="{{ execution.progress_percent }} percent complete">
+  <div class="progress-fill" style="width: {{ execution.progress_percent }}%"></div>
+</div>
+
+<div class="stat-grid">
+  <div class="stat accent"><div class="label">Enrolled</div><div class="value">{{ execution.enrolled_contacts }}</div></div>
+  <div class="stat"><div class="label">Blocked</div><div class="value err">{{ execution.blocked_contacts }}</div></div>
+  <div class="stat"><div class="label">Suppressed</div><div class="value err">{{ execution.suppressed_contacts }}</div></div>
+  <div class="stat"><div class="label">Active jobs</div><div class="value info">{{ execution.queue.running + execution.queue.queued }}</div></div>
+  <div class="stat"><div class="label">Retry backlog</div><div class="value warn">{{ execution.queue.retrying }}</div></div>
+  <div class="stat"><div class="label">Failed jobs</div><div class="value err">{{ execution.queue.failed }}</div><div class="small muted-text"><a href="/workbench/jobs?campaign={{ execution.campaign_id }}&status=failed">Inspect</a></div></div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Pipeline distribution</h2>
+    <span class="hint">Campaign Contacts by the Agent stage they are currently on. Select a stage to filter the list below.</span>
+  </div>
+  <div class="card-body tight">
+    {{ pipeline_strip(agent_specs, execution.stage_counts, execution.campaign_id) }}
+    <div class="agent-counts">
+      {% for status, count in execution.pipeline_status_counts.items() %}
+      <span>{{ stage_status_badge(status) }} {{ count }}</span>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+{# --- Agent controls for this Campaign ----------------------------------- #}
+<div class="card">
+  <div class="card-head">
+    <h2>Agents in this Campaign</h2>
+    <span class="hint">An override changes this Campaign only. No other Campaign is affected.</span>
+  </div>
+  <div class="card-body tight">
+    <table>
+      <thead>
+        <tr><th scope="col">Agent</th><th scope="col">Effective here</th><th scope="col">Where it comes from</th><th scope="col">Change for this Campaign</th></tr>
+      </thead>
+      <tbody>
+        {% for control in execution.controls %}
+        <tr>
+          <td>
+            <a href="/workbench/agents/{{ control.agent_id.value }}?campaign={{ execution.campaign_id }}">{{ control.display_name }}</a>
+            {% if not control.implemented %}<div class="small muted-text">no adapter registered</div>{% endif %}
+          </td>
+          <td>{{ control_badge(control.status) }}</td>
+          <td class="small">
+            {{ control_source(control) }}
+            {% if control.reason %}<div class="small wrap muted-text">{{ control.reason }}</div>{% endif %}
+          </td>
+          <td>
+            <form method="post" action="/workbench/campaigns/{{ execution.campaign_id }}/agents/{{ control.agent_id.value }}/override" class="action-row">
+              <input type="hidden" name="expected_version" value="{{ control.campaign_version if control.campaign_version is not none else '' }}">
+              <label class="sr-only" for="ovr-{{ control.agent_id.value }}">Status for {{ control.display_name }} in this Campaign</label>
+              <select id="ovr-{{ control.agent_id.value }}" name="status" required>
+                <option value="enabled">enabled</option>
+                <option value="paused">paused</option>
+                <option value="disabled">disabled</option>
+              </select>
+              <label class="sr-only" for="ovr-reason-{{ control.agent_id.value }}">Reason</label>
+              <input id="ovr-reason-{{ control.agent_id.value }}" name="reason" type="text" placeholder="Why (recorded)" maxlength="500">
+              <button class="btn small secondary" type="submit">Override</button>
+            </form>
+            {% if control.campaign_scoped %}
+            <form method="post" action="/workbench/campaigns/{{ execution.campaign_id }}/agents/{{ control.agent_id.value }}/override/clear" class="action-row">
+              <input type="hidden" name="expected_version" value="{{ control.campaign_version if control.campaign_version is not none else '' }}">
+              <button class="btn small secondary" type="submit">Clear</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{# --- Campaign Contacts --------------------------------------------------- #}
+<div class="table-wrap">
+  <div class="toolbar">
+    <strong class="small">Campaign Contacts</strong>
+    <div class="filter-chips" role="group" aria-label="Filter by current stage">
+      <a class="chip {{ 'on' if not stage_filter }}" href="/workbench/campaigns/{{ execution.campaign_id }}">All stages</a>
+      {% for spec in agent_specs %}
+      <a class="chip {{ 'on' if stage_filter == spec.identifier.value }}" href="/workbench/campaigns/{{ execution.campaign_id }}?stage={{ spec.identifier.value }}">{{ spec.display_name.replace(" Agent", "") }}</a>
+      {% endfor %}
+    </div>
+  </div>
+  {% if execution.contacts %}
+  <table>
+    <thead>
+      <tr>
+        <th scope="col">Contact</th><th scope="col">Membership</th><th scope="col">Eligibility</th>
+        <th scope="col">Current stage</th><th scope="col">Pipeline</th><th scope="col">Completed through</th>
+        <th scope="col">Why held</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in execution.contacts %}
+      <tr class="{{ 'row-failure' if row.suppressed or row.eligibility.value == 'blocked' else '' }}">
+        <td>
+          <a href="/workbench/campaigns/{{ execution.campaign_id }}/contacts/{{ row.campaign_contact_id }}">{{ row.contact_label }}</a>
+          <div class="small muted-text mono">{{ row.email or "no address" }}</div>
+        </td>
+        <td>{{ membership_badge(row.membership_status) }}</td>
+        <td>{{ eligibility_badge(row.eligibility) }}{% if row.suppressed %} <span class="badge err" title="The suppression ledger blocks this identity. No Agent control releases it.">suppressed</span>{% endif %}</td>
+        <td class="small">{{ agent_labels[row.current_stage.value] if row.current_stage else "—" }}</td>
+        <td>{{ stage_status_badge(row.pipeline_status) }}</td>
+        <td class="small">{{ agent_labels[row.latest_completed_stage.value] if row.latest_completed_stage else "—" }}</td>
+        <td class="small wrap">{{ row.blocking_detail or "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {{ pager(page, pages, execution.contact_total, "/workbench/campaigns/" ~ execution.campaign_id ~ ("?stage=" ~ stage_filter if stage_filter else ""), "Campaign Contacts") }}
+  {% else %}
+  <div class="empty">
+    <div class="empty-title">No Campaign Contacts{{ " at this stage" if stage_filter else "" }}</div>
+    <p>{% if stage_filter %}Try a different stage.{% else %}Enrol Contacts before the pipeline has work to do.{% endif %}</p>
+  </div>
+  {% endif %}
+</div>
+
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Latest pipeline events in this Campaign</strong></div>
+  {{ activity_stream(execution.recent_events, "No pipeline event has been committed for this Campaign.") }}
+</div>
+{% endblock %}

@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% from "_agent_macros.html" import job_status_badge, failure_badge, payload_table %}
+{% block content %}
+<div class="page-head">
+  <div class="crumbs"><a href="/workbench">Workbench</a><span>/</span><a href="/workbench/jobs">Jobs</a><span>/</span>{{ job.job_id }}</div>
+  <h1>{{ job.agent_name }} job {{ job_status_badge(job.public_status) }} {{ failure_badge(job) }}</h1>
+  <div class="sub mono">{{ job.job_id }}</div>
+</div>
+
+{% if job.error_message %}
+<div class="notice {{ 'err' if job.stored_status.value == 'failed' else 'warn' }}" role="alert">
+  <div>
+    <strong>{{ job.error_class or "Failure" }}.</strong> {{ job.error_message }}
+    {% if job.stored_status.value == "failed" %}
+      {% if job.retryable_failure %}Phase 2 marked it retryable.{% else %}Phase 2 marked it terminal; it will not be requeued.{% endif %}
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-head"><h2>What this job is</h2></div>
+  <div class="card-body">
+    <dl class="kv">
+      <dt>Agent</dt><dd><a href="/workbench/agents/{{ job.agent_id.value }}">{{ job.agent_name }}</a></dd>
+      <dt>Task</dt><dd class="mono small">{{ job.task_kind }}</dd>
+      <dt>Status</dt>
+      <dd>{{ job_status_badge(job.public_status) }}
+        <span class="small muted-text">stored as <code>{{ job.stored_status.value }}</code></span>
+        {% if job.completed_without_result %}<span class="badge warn" title="Phase 2 committed an outcome, and it carried no usable result.">no usable result</span>{% endif %}
+      </dd>
+      <dt>Durable identity</dt>
+      <dd class="mono small">{{ job.idempotency_key }}
+        <div class="small muted-text">
+          The key Phase 2 deduplicates on. A retry reuses it, so completed work cannot be duplicated.
+        </div>
+      </dd>
+      <dt>Attempts</dt>
+      <dd>{{ job.attempt_count }} of {{ job.max_attempts }}
+        {% if job.attempts_exhausted %}<span class="badge warn">attempts exhausted</span>{% endif %}</dd>
+      <dt>Priority</dt><dd>{{ job.priority }}</dd>
+      <dt>Campaign</dt>
+      <dd>{% if job.campaign_id %}<a href="/workbench/campaigns/{{ job.campaign_id }}">{{ job.campaign_name }}</a>{% else %}<span class="muted-text">Not scoped to a Campaign.</span>{% endif %}</dd>
+      <dt>Campaign Contact</dt>
+      <dd>
+        {% if job.campaign_id and job.campaign_contact_id %}
+        <a href="/workbench/campaigns/{{ job.campaign_id }}/contacts/{{ job.campaign_contact_id }}">{{ job.contact_label or job.campaign_contact_id }}</a>
+        <div class="small muted-text mono">{{ job.campaign_contact_id }}</div>
+        {% else %}<span class="muted-text">—</span>{% endif %}
+      </dd>
+      <dt>Contact record</dt><dd class="mono small">{{ job.contact_id or "—" }}</dd>
+      <dt>Lease</dt>
+      <dd class="small">
+        {% if job.lease_held %}
+          held by <span class="mono">{{ job.lease_owner }}</span> · expires {{ job.lease_expires_at | dt }}
+        {% else %}
+          <span class="muted-text">No worker holds this job.</span>
+        {% endif %}
+      </dd>
+      <dt>Next run</dt><dd class="small">{{ job.next_run_at | dt }}</dd>
+      <dt>Created / updated</dt><dd class="small">{{ job.created_at | dt }} · {{ job.updated_at | dt }}</dd>
+      <dt>Started / finished</dt><dd class="small">{{ job.started_at | dt }} · {{ job.finished_at | dt }}</dd>
+      {% if job.parent_job_id %}
+      <dt>Parent job</dt><dd class="mono small"><a href="/workbench/jobs/{{ job.parent_job_id }}">{{ job.parent_job_id }}</a></dd>
+      {% endif %}
+      {% if job.outcome_status %}
+      <dt>Outcome status</dt><dd class="mono small">{{ job.outcome_status }}</dd>
+      {% endif %}
+    </dl>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Retry</h2>
+    <span class="hint">Phase 2 decides eligibility; this page only explains the decision.</span>
+  </div>
+  <div class="card-body">
+    {% if job.retry_eligible %}
+    <form method="post" action="/workbench/jobs/{{ job.job_id }}/retry" class="action-row">
+      <label class="sr-only" for="retry-reason">Reason</label>
+      <input id="retry-reason" name="reason" type="text" placeholder="Why you are retrying (recorded)" maxlength="500">
+      <button class="btn small" type="submit">Retry this job</button>
+    </form>
+    <p class="small muted-text">
+      The retry requeues this same durable job. It cannot bypass a suppression, a disabled Agent,
+      or a Campaign override — the worker re-checks all of those before it claims anything.
+    </p>
+    {% else %}
+    <p class="small mt-0 muted-text">
+      This job is not retryable. {{ job.retry_refusal }}
+    </p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="grid-2">
+  <div class="card">
+    <div class="card-head"><h2>Structured input</h2></div>
+    <div class="card-body tight">
+      {{ payload_table(job.input_reference, "No input was recorded for this job.") }}
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head"><h2>Result</h2></div>
+    <div class="card-body tight">
+      {{ payload_table(job.result, "This job has not committed a result. That is not the same as committing an empty one.") }}
+    </div>
+  </div>
+</div>
+
+{% if job.error_detail %}
+<div class="card">
+  <div class="card-head">
+    <h2>Failure detail</h2>
+    <span class="hint">Sanitized: credential-shaped values are redacted before rendering.</span>
+  </div>
+  <div class="card-body tight">{{ payload_table(job.error_detail, "No structured detail was recorded.") }}</div>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-head"><h2>Attempt history</h2></div>
+  <div class="card-body">
+    <p class="small mt-0">
+      Phase 2 keeps attempt history as append-only pipeline events rather than as rows on the job,
+      so the full ordered record for this work lives on its Campaign Contact.
+      {% if job.campaign_id and job.campaign_contact_id %}
+      <a href="/workbench/campaigns/{{ job.campaign_id }}/contacts/{{ job.campaign_contact_id }}">Open the pipeline history</a>.
+      {% endif %}
+    </p>
+    <p class="small muted-text">
+      This job records attempt {{ job.attempt_count }} of {{ job.max_attempts }}
+      {%- if job.started_at %}, first started {{ job.started_at | dt }}{% endif %}
+      {%- if job.finished_at %}, last finished {{ job.finished_at | dt }}{% endif %}.
+    </p>
+  </div>
+</div>
+{% endblock %}

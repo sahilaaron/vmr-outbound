@@ -1,0 +1,256 @@
+{# Workbench Agent display macros (MVP-01B, Phase 2 vocabulary).
+
+   Every label here is a Phase 2 value. The macros choose a colour and a
+   tooltip; they never derive a state, never merge two states into one word, and
+   never soften one. The distinctions an operator has to be able to read at a
+   glance — queued vs leased vs running, retry-scheduled vs blocked vs refused,
+   completed-with-outcome vs completed-without-usable-result, terminal vs
+   retryable failure, disabled globally vs disabled for this Campaign — each get
+   their own treatment, because each implies a different next action. #}
+
+{% macro control_badge(status) -%}
+  {%- set v = status.value if status.value is defined else status -%}
+  {%- if v == "enabled" -%}<span class="badge ok" title="This Agent may claim new work.">enabled</span>
+  {%- elif v == "paused" -%}<span class="badge warn" title="Held. Claimable and leased work waits; nothing was discarded.">paused</span>
+  {%- else -%}<span class="badge err" title="Withdrawn. No new work is claimed.">disabled</span>{%- endif -%}
+{%- endmacro %}
+
+{# Where an effective control came from. Phase 2's own precedence word, spelled
+   out, because "paused" means something different depending on who paused it. #}
+{% macro control_source(control) -%}
+  {%- set s = control.source -%}
+  {%- if s == "campaign_override" -%}
+  <span class="badge info" title="This Campaign overrides the inherited control. No other Campaign is affected.">Campaign override</span>
+  {%- elif s == "campaign_execution" -%}
+  <span class="badge err" title="Campaign execution is switched off, which disables every Agent but Capture regardless of any other control.">Campaign execution off</span>
+  {%- elif s == "registry" -%}
+  <span class="badge muted" title="No executable adapter is registered for this Agent, so it cannot run whatever the control says.">no adapter</span>
+  {%- elif s == "global" -%}
+  <span class="badge muted" title="A stored global control, inherited by every Campaign that does not override it.">global</span>
+  {%- else -%}
+  <span class="badge muted" title="No control has been stored; the registry default applies.">registry default</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{# Public job vocabulary, exactly as Phase 2 serializes it. `leased` and
+   `running` stay apart: a leased job has a worker holding it but has not
+   checkpointed execution, and an operator chasing a stuck queue needs that. #}
+{% macro job_status_badge(status) -%}
+  {%- if status == "completed" -%}<span class="badge ok">completed</span>
+  {%- elif status == "running" -%}<span class="badge info">running</span>
+  {%- elif status == "leased" -%}<span class="badge info" title="A worker holds the lease but has not checkpointed execution yet.">leased</span>
+  {%- elif status == "queued" -%}<span class="badge info" title="Claimable now.">queued</span>
+  {%- elif status == "retrying" -%}<span class="badge warn" title="Failed and scheduled to run again.">retry scheduled</span>
+  {%- elif status == "paused" -%}<span class="badge warn" title="Held by a control or a domain block. Not lost.">paused</span>
+  {%- elif status == "failed" -%}<span class="badge err">failed</span>
+  {%- elif status == "cancelled" -%}<span class="badge muted" title="Deliberately ended. It will not run again.">cancelled</span>
+  {%- else -%}<span class="badge muted">{{ status }}</span>{%- endif -%}
+{%- endmacro %}
+
+{% macro stage_status_badge(status) -%}
+  {%- set v = status.value if status.value is defined else status -%}
+  {%- if v == "completed" -%}<span class="badge ok">completed</span>
+  {%- elif v == "running" -%}<span class="badge info">running</span>
+  {%- elif v == "waiting" -%}<span class="badge muted" title="Not yet eligible — a dependency is unmet.">waiting</span>
+  {%- elif v == "retrying" -%}<span class="badge warn" title="Failed and scheduled to try again.">retrying</span>
+  {%- elif v == "paused" -%}<span class="badge warn" title="Held by an Agent control or by the membership.">paused</span>
+  {%- elif v == "skipped" -%}<span class="badge muted" title="A policy or an operator deliberately passed over this stage. It did not fail.">skipped</span>
+  {%- elif v == "blocked" -%}<span class="badge err" title="Something authoritative forbids it — suppression, eligibility, or a missing prerequisite. No Agent control releases it.">blocked</span>
+  {%- elif v == "disabled" -%}<span class="badge err" title="The Agent is not permitted to run.">disabled</span>
+  {%- else -%}<span class="badge err">{{ v }}</span>{%- endif -%}
+{%- endmacro %}
+
+{% macro eligibility_badge(status) -%}
+  {%- set v = status.value if status.value is defined else status -%}
+  {%- if v == "eligible" -%}<span class="badge ok">eligible</span>
+  {%- elif v == "blocked" -%}<span class="badge err" title="Held by an authoritative gate. Agent controls cannot release it.">blocked</span>
+  {%- elif v == "review_required" -%}<span class="badge warn">review required</span>
+  {%- else -%}<span class="badge muted" title="Not assessed yet. This is not the same as eligible.">unknown</span>{%- endif -%}
+{%- endmacro %}
+
+{% macro membership_badge(status) -%}
+  {%- set v = status.value if status.value is defined else status -%}
+  {%- if v == "active" -%}<span class="badge ok">active</span>
+  {%- elif v == "paused" -%}<span class="badge warn">paused</span>
+  {%- else -%}<span class="badge muted">archived</span>{%- endif -%}
+{%- endmacro %}
+
+{# A failure that will never be retried is a different problem from one that
+   will. Saying only "failed" hides which. #}
+{% macro failure_badge(job) -%}
+  {%- if job.stored_status.value == "failed" -%}
+    {%- if job.retryable_failure -%}<span class="badge warn" title="Phase 2 marked this failure retryable.">retryable failure</span>
+    {%- else -%}<span class="badge err" title="Phase 2 marked this failure terminal. It will not be requeued.">terminal failure</span>{%- endif -%}
+  {%- endif -%}
+{%- endmacro %}
+
+{# The MVP-01E decision vocabulary. Five outcomes, five different operator
+   consequences — and only one of them means the address may be used. A finished
+   Verification job is never enough on its own to reach "verified".
+
+   A held stage that carries no committed decision at all is a different fact
+   from a committed "refused", so it keeps its own state rather than being
+   folded into one by guesswork. #}
+{% macro decision_badge(decision, refused_before_provider=false) -%}
+  {%- if not decision and refused_before_provider -%}
+  <span class="badge err" title="The stage is held before any provider work and Verification committed no decision: nothing reached a provider and no credit was spent.">held before provider work</span>
+  {%- elif decision == "accept" -%}<span class="badge ok" title="Fresh live evidence confirms this mailbox. The Contact may advance.">accepted</span>
+  {%- elif decision == "try_next_candidate" -%}<span class="badge warn" title="A real verdict that is not a usable address — invalid, disposable, catch-all, unknown or role-based. Retrying it would only spend credit.">try next candidate</span>
+  {%- elif decision == "retry_later" -%}<span class="badge info" title="No answer yet and another attempt is permitted. Phase 2 owns whether and when it runs.">retry later</span>
+  {%- elif decision == "stop_no_result" -%}<span class="badge err" title="No answer, and no further attempt will help. Finish honestly with no verified address.">stop — no result</span>
+  {%- elif decision == "refused" -%}<span class="badge err" title="Declined before any provider work. No credit was spent and none will be until the cause is fixed.">refused</span>
+  {%- else -%}<span class="badge muted" title="Verification has not committed a decision for this Campaign Contact.">no decision yet</span>{%- endif -%}
+{%- endmacro %}
+
+{# The one claim the Workbench must never make loosely. "Verified" requires a
+   committed accept decision on live evidence — not a succeeded queue job. #}
+{% macro verified_badge(verification) -%}
+  {%- if verification.accepted -%}
+  <span class="badge ok" title="Committed accept decision on live evidence. This address is verified and pipeline-ready.">verified · pipeline-ready</span>
+  {%- elif verification.decision == "accept" and not verification.outcome_committed -%}
+  <span class="badge warn" title="An accept decision exists but no pipeline event committed the stage outcome, so it is not pipeline-ready.">accept not committed</span>
+  {%- elif verification.decision == "accept" and verification.simulated -%}
+  <span class="badge warn" title="Simulated evidence cannot advance a Campaign Contact, whatever the decision says.">simulated — not usable</span>
+  {%- else -%}
+  <span class="badge muted" title="No verified address. This is a real answer, not a missing one.">not verified</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro failure_class_badge(failure_class, retryable) -%}
+  {%- if failure_class == "none" -%}<span class="badge muted" title="The attempt reached a verdict. A verdict is not an acceptance.">verdict reached</span>
+  {%- elif retryable -%}<span class="badge warn" title="A transient provider condition. Another attempt could help.">{{ failure_class.replace("_", " ") }} · retryable</span>
+  {%- else -%}<span class="badge err" title="Final. Retrying spends credit for nothing.">{{ failure_class.replace("_", " ") }} · terminal</span>{%- endif -%}
+{%- endmacro %}
+
+{% macro simulated_badge(evidence) -%}
+  {%- if evidence.simulated -%}
+  <span class="badge warn" title="This result came from the deterministic simulator, not an external provider. It can never make an address production-ready.">simulated</span>
+  {%- else -%}
+  <span class="badge ok" title="An external provider produced this result.">live</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro pager(page, pages, total, base_url, label="records") -%}
+<div class="pager">
+  <span>{{ total }} {{ label }} · page {{ page }} of {{ pages if pages else 1 }}</span>
+  <span class="links">
+    {% if page > 1 %}<a class="chip" href="{{ base_url }}{{ '&' if '?' in base_url else '?' }}page={{ page - 1 }}">&larr; Previous</a>{% endif %}
+    {% if page < pages %}<a class="chip" href="{{ base_url }}{{ '&' if '?' in base_url else '?' }}page={{ page + 1 }}">Next &rarr;</a>{% endif %}
+  </span>
+</div>
+{%- endmacro %}
+
+{# The pipeline as a row of stages. The order and the membership come from the
+   Phase 2 registry, passed in — this macro has no idea what the sequence is and
+   must not acquire one. #}
+{% macro pipeline_strip(specs, stage_counts, campaign_id) %}
+<ol class="pipeline" aria-label="Agent pipeline">
+  {% for spec in specs %}
+  {% set count = stage_counts.get(spec.identifier.value, 0) %}
+  <li class="pipeline-stage{{ ' has-work' if count else '' }}">
+    <a href="/workbench/campaigns/{{ campaign_id }}?stage={{ spec.identifier.value }}">
+      <span class="pipeline-index">{{ spec.position + 1 }}</span>
+      <span class="pipeline-label">{{ spec.display_name.replace(" Agent", "") }}</span>
+      <span class="pipeline-count">{{ count }}</span>
+    </a>
+  </li>
+  {% endfor %}
+</ol>
+{% endmacro %}
+
+{% macro agent_card(card) %}
+<div class="agent-card{{ ' agent-stopped' if card.globally_stopped and card.agent_id.value == 'sending' else '' }}">
+  <div class="agent-card-head">
+    <a class="agent-name" href="/workbench/agents/{{ card.agent_id.value }}">{{ card.display_name }}</a>
+    <span class="agent-badges">
+      {{ control_badge(card.control.status) }}
+      {% if not card.control.implemented %}<span class="badge muted" title="No executable Phase 2 adapter is registered, so this Agent cannot be enabled.">no adapter</span>{% endif %}
+    </span>
+  </div>
+  <div class="agent-counts">
+    <span title="Claimable now">queued {{ card.queue.queued }}</span>
+    <span class="{{ 'info' if card.queue.running }}" title="Leased or executing">running {{ card.queue.running }}</span>
+    <span class="{{ 'warn' if card.queue.retrying }}" title="Failed and scheduled to run again">retrying {{ card.queue.retrying }}</span>
+    <span class="{{ 'err' if card.queue.terminal_failures }}" title="Failures Phase 2 will not requeue">terminal {{ card.queue.terminal_failures }}</span>
+    <span class="ok" title="Completed with a committed domain outcome">completed {{ card.queue.count("completed") }}</span>
+  </div>
+  <div class="small muted-text">
+    {{ control_source(card.control) }}
+    {% if card.overriding_campaigns %}
+    <span class="badge warn" title="Campaigns whose override changes this Agent's behaviour.">{{ card.overriding_campaigns | length }} Campaign override(s)</span>
+    {% endif %}
+  </div>
+  <div class="small muted-text">
+    {% if card.latest_activity_at %}
+      Latest activity {{ card.latest_activity_at | dt }} · {{ card.latest_activity_summary }}
+    {% else %}
+      No pipeline event has been recorded for this Agent yet.
+    {% endif %}
+  </div>
+</div>
+{% endmacro %}
+
+{% macro payload_table(payload, empty_note) %}
+{% if payload is none %}
+<p class="small muted-text mt-0">{{ empty_note }}</p>
+{% elif payload %}
+<table>
+  <tbody>
+    {% for key, value in payload.items() %}
+    <tr><th scope="row">{{ key }}</th><td class="mono wrap">{{ value }}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="small muted-text mt-0">Recorded, and deliberately empty. That is different from absent.</p>
+{% endif %}
+{% endmacro %}
+
+{% macro activity_stream(events, empty_note="No pipeline event has been recorded.") %}
+{% if events %}
+<table>
+  <thead><tr><th scope="col">When</th><th scope="col">Event</th><th scope="col">Campaign Contact</th><th scope="col">Why</th></tr></thead>
+  <tbody>
+    {% for event in events %}
+    <tr class="{{ 'row-failure' if event.is_failure else '' }}">
+      <td class="small muted-text">{{ event.occurred_at | dt }}</td>
+      <td>
+        <strong>{{ event.event_type.value.replace("_", " ") }}</strong>
+        <div class="small muted-text">
+          {% if event.agent_id %}{{ event.agent_id.value }}{% else %}membership{% endif %}
+          {%- if event.from_status or event.to_status %} ·
+          {{ event.from_status.value if event.from_status else "—" }} → {{ event.to_status.value if event.to_status else "—" }}{% endif %}
+          · {{ event.actor }}
+        </div>
+      </td>
+      <td class="small">
+        <a href="/workbench/campaigns/{{ event.campaign_id }}/contacts/{{ event.campaign_contact_id }}">{{ event.contact_label }}</a>
+        <div class="small muted-text">{{ event.campaign_name }}</div>
+      </td>
+      <td class="small wrap">
+        {% if event.reason_code %}<span class="badge muted">{{ event.reason_code }}</span> {% endif %}
+        {{ event.reason_detail or "—" }}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty"><div class="empty-title">{{ empty_note }}</div></div>
+{% endif %}
+{% endmacro %}
+
+{# One control form. The version the page was rendered with travels with the
+   submission, so a decision made against a stale screen is refused rather than
+   silently overwriting a newer one. #}
+{% macro control_form(action, status, label, version, note, back=None, danger=False, disabled=False) %}
+<form method="post" action="{{ action }}" class="control-form">
+  <input type="hidden" name="status" value="{{ status }}">
+  <input type="hidden" name="expected_version" value="{{ version if version is not none else '' }}">
+  {% if back %}<input type="hidden" name="back" value="{{ back }}">{% endif %}
+  <label class="sr-only" for="reason-{{ action | replace('/', '-') }}-{{ status }}">Reason for {{ label }}</label>
+  <input id="reason-{{ action | replace('/', '-') }}-{{ status }}" name="reason" type="text" placeholder="Why (recorded)" maxlength="500">
+  <button class="btn small {{ 'warn' if danger else 'secondary' }}" type="submit" {{ 'disabled' if disabled else '' }}>{{ label }}</button>
+  <div class="small muted-text">{{ note }}</div>
+</form>
+{% endmacro %}

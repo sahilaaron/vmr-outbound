@@ -28,6 +28,8 @@ from app.core.config import get_settings
 from app.models.contact import Contact
 from app.models.contact_capture import ContactCaptureNote, ContactCaptureSubmission
 from app.models.enums import (
+    AgentControlStatus,
+    AgentIdentifier,
     CampaignStatus,
     ContactWorkflowState,
     DossierSection,
@@ -43,7 +45,8 @@ from app.models.enums import (
 )
 from app.models.linkedin_company import LinkedInCompanySnapshot
 from app.models.linkedin_profile import LinkedInProfileSnapshot
-from app.services import devtools, identity, workbench
+from app.services import devtools, identity, workbench, workbench_agents
+from app.services.agents.registry import AGENT_SPECS
 from app.services.campaigns import (
     CampaignError,
     campaign_imports,
@@ -80,6 +83,7 @@ from app.services.verification import console as verification_console
 from app.services.verification import queue as verification_queue
 from app.services.verification import service as verification_service
 from app.services.verification import usage as verification_usage
+from app.services.workbench_agents import views as workbench_views
 
 router = APIRouter(include_in_schema=False)
 
@@ -1926,6 +1930,466 @@ async def verification_bulk(request: Request, db: Session = Depends(get_db)) -> 
             f"{review} routed to review."
         ),
     )
+
+
+# --- Workbench Agent monitor and controls (MVP-01B) --------------------------
+#
+# The operator control room over the Phase 2 execution backbone. These routes are
+# the same thin adapters as everything else on this page router: they resolve the
+# reader or the command surface, hand typed view models to a template, and turn
+# one form post into one Phase 2 service call.
+#
+# No route here writes a row, computes a count, or decides what a state means.
+# The Agent order comes from the Phase 2 registry, the control precedence from
+# ``agents.controls.effective_control``, and every command from a Phase 2
+# service. A page that cannot answer a question truthfully says so instead.
+
+
+def _agent_workbench_available() -> bool:
+    return get_settings().features.agent_workbench
+
+
+def _reader(db: Session) -> workbench_agents.PhaseTwoWorkbenchReader:
+    """The production read model, constructed directly around this request.
+
+    No registry, no environment switch, no transport to register: production has
+    exactly one backend and it is the real Phase 2 one. Tests that want a
+    deterministic read model override this function's caller through the normal
+    FastAPI dependency mechanism.
+    """
+
+    return workbench_agents.PhaseTwoWorkbenchReader(db)
+
+
+def _commands(db: Session) -> workbench_agents.WorkbenchCommands:
+    return workbench_agents.WorkbenchCommands(db, actor=OPERATOR_ACTOR)
+
+
+def _agent_workbench_unavailable(request: Request, db: Session) -> HTMLResponse:
+    return _render(
+        request,
+        db,
+        "unavailable.html",
+        {
+            "section_title": "Workbench",
+            "active_nav": "agent-workbench",
+            "page_title": "Workbench",
+        },
+    )
+
+
+def _agent_labels() -> dict[str, str]:
+    return {spec.identifier.value: spec.display_name for spec in AGENT_SPECS.values()}
+
+
+def _parse_agent_id(raw: str) -> AgentIdentifier | None:
+    try:
+        return AgentIdentifier(raw)
+    except ValueError:
+        return None
+
+
+def _parse_control_status(raw: str | None) -> AgentControlStatus | None:
+    try:
+        return AgentControlStatus((raw or "").strip().lower())
+    except ValueError:
+        return None
+
+
+def _expected_version(form: Any, field: str = "expected_version") -> int | None:
+    """The control version the page was rendered with.
+
+    An absent or blank field means "the page saw no stored control". That is a
+    real claim and is compared as one, so a control created after the page
+    rendered is a conflict rather than a silent overwrite.
+    """
+
+    raw = str(form.get(field, "")).strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _command_redirect(url: str, outcome: workbench_agents.CommandOutcome) -> Response:
+    """Report the outcome Phase 2 returned, never the operator's intention."""
+
+    if outcome.accepted:
+        return _redirect(url, ok=outcome.summary)
+    reason = outcome.refusal_reason
+    return _redirect(url, err=f"{outcome.message}{(' ' + reason) if reason else ''}")
+
+
+@router.get("/workbench", response_class=HTMLResponse)
+def agent_workbench_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    if not _agent_workbench_available():
+        return _agent_workbench_unavailable(request, db)
+    return _render(
+        request,
+        db,
+        "agent_workbench.html",
+        {
+            "overview": _reader(db).overview(),
+            "agent_labels": _agent_labels(),
+            "active_nav": "agent-workbench",
+            "page_title": "Workbench",
+        },
+    )
+
+
+@router.get("/workbench/jobs", response_class=HTMLResponse)
+def agent_jobs_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    if not _agent_workbench_available():
+        return _agent_workbench_unavailable(request, db)
+    agent_raw = request.query_params.get("agent") or None
+    status_raw = request.query_params.get("status") or None
+    campaign_raw = request.query_params.get("campaign") or None
+    agent_id = _parse_agent_id(agent_raw) if agent_raw else None
+    campaign_id = _parse_uuid(campaign_raw) if campaign_raw else None
+    page = _page_number(request)
+    listing = _reader(db).jobs(
+        agent_id=agent_id,
+        campaign_id=campaign_id,
+        status=status_raw,
+        limit=PAGE_SIZE,
+        offset=(page - 1) * PAGE_SIZE,
+    )
+
+    def _query(**overrides: str | None) -> str:
+        params: dict[str, str | None] = {
+            "agent": agent_id.value if agent_id else None,
+            "campaign": str(campaign_id) if campaign_id else None,
+            "status": listing.status_filter,
+        }
+        params.update(overrides)
+        pairs = {key: value for key, value in params.items() if value}
+        return f"/workbench/jobs{'?' + urlencode(pairs) if pairs else ''}"
+
+    return _render(
+        request,
+        db,
+        "agent_jobs.html",
+        {
+            "listing": listing,
+            "agent_specs": list(AGENT_SPECS.values()),
+            "job_states": list(workbench_views.PUBLIC_JOB_STATES),
+            "agent_labels": _agent_labels(),
+            "base_url": _query(),
+            "base_url_without_status": _query(status=None),
+            "base_url_without_agent": _query(agent=None),
+            "page": page,
+            "pages": _pages(listing.total),
+            "active_nav": "agent-workbench",
+            "page_title": "Agent jobs",
+        },
+    )
+
+
+@router.get("/workbench/jobs/{job_id}", response_class=HTMLResponse)
+def agent_job_detail_page(
+    request: Request, job_id: str, db: Session = Depends(get_db)
+) -> HTMLResponse:
+    if not _agent_workbench_available():
+        return _agent_workbench_unavailable(request, db)
+    parsed = _parse_uuid(job_id)
+    job = _reader(db).job(parsed) if parsed else None
+    if job is None:
+        return _not_found(request, db, "That Agent job does not exist.")
+    return _render(
+        request,
+        db,
+        "agent_job_detail.html",
+        {
+            "job": job,
+            "agent_labels": _agent_labels(),
+            "active_nav": "agent-workbench",
+            "page_title": f"Job {job.job_id}",
+        },
+    )
+
+
+@router.post("/workbench/jobs/{job_id}/retry")
+async def agent_job_retry(request: Request, job_id: str, db: Session = Depends(get_db)) -> Response:
+    if not _agent_workbench_available():
+        return _redirect("/", err="The Workbench Agent monitor is disabled.")
+    parsed = _parse_uuid(job_id)
+    if parsed is None:
+        return _redirect("/workbench/jobs", err="That is not a valid job id.")
+    form = await request.form()
+    reason = str(form.get("reason", "")).strip() or None
+    back = str(form.get("back", "")).strip() or f"/workbench/jobs/{job_id}"
+    try:
+        outcome = _commands(db).retry_job(parsed, reason=reason)
+    except workbench_agents.WorkbenchCommandError as exc:
+        db.rollback()
+        return _redirect("/workbench/jobs", err=str(exc))
+    db.commit()
+    return _command_redirect(back, outcome)
+
+
+@router.get("/workbench/agents/{agent_id}", response_class=HTMLResponse)
+def agent_detail_page(
+    request: Request, agent_id: str, db: Session = Depends(get_db)
+) -> HTMLResponse:
+    if not _agent_workbench_available():
+        return _agent_workbench_unavailable(request, db)
+    parsed = _parse_agent_id(agent_id)
+    if parsed is None:
+        return _not_found(request, db, "That Agent is not in the registry.")
+    campaign_id = _parse_uuid(request.query_params.get("campaign"))
+    detail = _reader(db).agent_detail(parsed, campaign_id=campaign_id)
+    if detail is None:
+        return _not_found(request, db, "That Campaign does not exist.")
+    return _render(
+        request,
+        db,
+        "agent_detail.html",
+        {
+            "detail": detail,
+            "agent_labels": _agent_labels(),
+            "active_nav": "agent-workbench",
+            "page_title": detail.display_name,
+        },
+    )
+
+
+@router.post("/workbench/agents/{agent_id}/control")
+async def agent_set_control(
+    request: Request, agent_id: str, db: Session = Depends(get_db)
+) -> Response:
+    if not _agent_workbench_available():
+        return _redirect("/", err="The Workbench Agent monitor is disabled.")
+    parsed = _parse_agent_id(agent_id)
+    if parsed is None:
+        return _redirect("/workbench", err="That Agent is not in the registry.")
+    back = f"/workbench/agents/{parsed.value}"
+    form = await request.form()
+    status = _parse_control_status(str(form.get("status", "")))
+    if status is None:
+        return _redirect(back, err="Choose enabled, paused, or disabled. Nothing changed.")
+    outcome = _commands(db).set_global_agent_status(
+        parsed,
+        status,
+        expected_version=_expected_version(form),
+        reason=str(form.get("reason", "")).strip() or None,
+    )
+    db.commit()
+    return _command_redirect(back, outcome)
+
+
+@router.post("/workbench/agents/sending/stop")
+async def agent_sending_stop(request: Request, db: Session = Depends(get_db)) -> Response:
+    """Stop new Sending work everywhere.
+
+    Typed-confirmation guarded, like the destructive Local Tools actions: it is
+    the one control on these pages that changes what the whole system will do
+    next.
+    """
+
+    back = f"/workbench/agents/{AgentIdentifier.SENDING.value}"
+    if not _agent_workbench_available():
+        return _redirect("/", err="The Workbench Agent monitor is disabled.")
+    form = await request.form()
+    if str(form.get("confirm", "")).strip().upper() != "STOP":
+        return _redirect(back, err="Type STOP to confirm. Nothing changed.")
+    outcome = _commands(db).stop_sending(
+        expected_version=_expected_version(form),
+        reason=str(form.get("reason", "")).strip() or None,
+    )
+    db.commit()
+    return _command_redirect(back, outcome)
+
+
+@router.post("/workbench/agents/sending/resume")
+async def agent_sending_resume(request: Request, db: Session = Depends(get_db)) -> Response:
+    """Ask Phase 2 to allow Sending again, through its own safety checks."""
+
+    back = f"/workbench/agents/{AgentIdentifier.SENDING.value}"
+    if not _agent_workbench_available():
+        return _redirect("/", err="The Workbench Agent monitor is disabled.")
+    form = await request.form()
+    if str(form.get("confirm", "")).strip().upper() != "RESUME SENDING":
+        return _redirect(back, err="Type RESUME SENDING to confirm. Nothing changed.")
+    outcome = _commands(db).resume_sending(
+        expected_version=_expected_version(form),
+        reason=str(form.get("reason", "")).strip() or None,
+    )
+    db.commit()
+    return _command_redirect(back, outcome)
+
+
+@router.get("/workbench/campaigns/{campaign_id}", response_class=HTMLResponse)
+def agent_campaign_page(
+    request: Request, campaign_id: str, db: Session = Depends(get_db)
+) -> HTMLResponse:
+    if not _agent_workbench_available():
+        return _agent_workbench_unavailable(request, db)
+    parsed = _parse_uuid(campaign_id)
+    stage = (
+        _parse_agent_id(request.query_params.get("stage") or "")
+        if request.query_params.get("stage")
+        else None
+    )
+    page = _page_number(request)
+    execution = (
+        _reader(db).campaign_execution(
+            parsed, stage=stage, limit=PAGE_SIZE, offset=(page - 1) * PAGE_SIZE
+        )
+        if parsed
+        else None
+    )
+    if execution is None:
+        return _not_found(request, db, "That Campaign does not exist.")
+    return _render(
+        request,
+        db,
+        "agent_campaign.html",
+        {
+            "execution": execution,
+            "agent_specs": list(AGENT_SPECS.values()),
+            "stage_filter": stage.value if stage else None,
+            "agent_labels": _agent_labels(),
+            "page": page,
+            "pages": _pages(execution.contact_total),
+            "active_nav": "agent-workbench",
+            "page_title": execution.name,
+        },
+    )
+
+
+@router.post("/workbench/campaigns/{campaign_id}/agents/{agent_id}/override")
+async def agent_campaign_override(
+    request: Request, campaign_id: str, agent_id: str, db: Session = Depends(get_db)
+) -> Response:
+    if not _agent_workbench_available():
+        return _redirect("/", err="The Workbench Agent monitor is disabled.")
+    parsed_campaign = _parse_uuid(campaign_id)
+    parsed_agent = _parse_agent_id(agent_id)
+    if parsed_campaign is None or parsed_agent is None:
+        return _redirect("/workbench", err="That Campaign or Agent does not exist.")
+    back_default = f"/workbench/campaigns/{campaign_id}"
+    form = await request.form()
+    back = str(form.get("back", "")).strip() or back_default
+    status = _parse_control_status(str(form.get("status", "")))
+    if status is None:
+        return _redirect(back, err="Choose enabled, paused, or disabled. Nothing changed.")
+    try:
+        outcome = _commands(db).set_campaign_override(
+            parsed_campaign,
+            parsed_agent,
+            status,
+            expected_version=_expected_version(form),
+            reason=str(form.get("reason", "")).strip() or None,
+        )
+    except workbench_agents.WorkbenchCommandError as exc:
+        db.rollback()
+        return _redirect("/workbench", err=str(exc))
+    db.commit()
+    return _command_redirect(back, outcome)
+
+
+@router.post("/workbench/campaigns/{campaign_id}/agents/{agent_id}/override/clear")
+async def agent_campaign_override_clear(
+    request: Request, campaign_id: str, agent_id: str, db: Session = Depends(get_db)
+) -> Response:
+    if not _agent_workbench_available():
+        return _redirect("/", err="The Workbench Agent monitor is disabled.")
+    parsed_campaign = _parse_uuid(campaign_id)
+    parsed_agent = _parse_agent_id(agent_id)
+    if parsed_campaign is None or parsed_agent is None:
+        return _redirect("/workbench", err="That Campaign or Agent does not exist.")
+    back_default = f"/workbench/campaigns/{campaign_id}"
+    form = await request.form()
+    back = str(form.get("back", "")).strip() or back_default
+    try:
+        outcome = _commands(db).clear_campaign_override(
+            parsed_campaign, parsed_agent, expected_version=_expected_version(form)
+        )
+    except workbench_agents.WorkbenchCommandError as exc:
+        db.rollback()
+        return _redirect("/workbench", err=str(exc))
+    db.commit()
+    return _command_redirect(back, outcome)
+
+
+@router.get(
+    "/workbench/campaigns/{campaign_id}/contacts/{campaign_contact_id}",
+    response_class=HTMLResponse,
+)
+def agent_contact_execution_page(
+    request: Request,
+    campaign_id: str,
+    campaign_contact_id: str,
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    if not _agent_workbench_available():
+        return _agent_workbench_unavailable(request, db)
+    parsed_campaign = _parse_uuid(campaign_id)
+    parsed_membership = _parse_uuid(campaign_contact_id)
+    execution = (
+        _reader(db).contact_execution(parsed_campaign, parsed_membership)
+        if parsed_campaign and parsed_membership
+        else None
+    )
+    if execution is None:
+        return _not_found(request, db, "That Campaign Contact does not exist.")
+    return _render(
+        request,
+        db,
+        "agent_contact_execution.html",
+        {
+            "execution": execution,
+            "agent_labels": _agent_labels(),
+            "active_nav": "agent-workbench",
+            "page_title": execution.contact_label,
+        },
+    )
+
+
+@router.post("/workbench/campaigns/{campaign_id}/contacts/{campaign_contact_id}/{command}")
+async def agent_contact_command(
+    request: Request,
+    campaign_id: str,
+    campaign_contact_id: str,
+    command: str,
+    db: Session = Depends(get_db),
+) -> Response:
+    """Pause, resume, retry, or skip the current stage for one Campaign Contact.
+
+    One route, four named commands, because they share a target and a redirect
+    and differ only in which Phase 2 service they call. An unrecognised command
+    is refused rather than guessed.
+    """
+
+    if not _agent_workbench_available():
+        return _redirect("/", err="The Workbench Agent monitor is disabled.")
+    back = f"/workbench/campaigns/{campaign_id}/contacts/{campaign_contact_id}"
+    parsed = _parse_uuid(campaign_contact_id)
+    if parsed is None or _parse_uuid(campaign_id) is None:
+        return _redirect("/workbench", err="That Campaign Contact does not exist.")
+    form = await request.form()
+    reason = str(form.get("reason", "")).strip()
+    commands = _commands(db)
+    try:
+        if command == "pause":
+            outcome = commands.pause_contact(parsed, reason=reason or "paused by operator")
+        elif command == "resume":
+            outcome = commands.resume_contact(parsed)
+        elif command == "retry":
+            outcome = commands.retry_contact(parsed, reason=reason or "operator requested retry")
+        elif command == "skip-stage":
+            if not reason:
+                return _redirect(back, err="A reason is required to skip a stage. Nothing changed.")
+            outcome = commands.skip_stage(parsed, reason=reason)
+        else:
+            return _redirect(back, err="That command is not available.")
+    except workbench_agents.WorkbenchCommandError as exc:
+        db.rollback()
+        return _redirect("/workbench", err=str(exc))
+    db.commit()
+    return _command_redirect(back, outcome)
 
 
 # --- Local-only tools --------------------------------------------------------
