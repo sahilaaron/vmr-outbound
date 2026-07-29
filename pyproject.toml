@@ -42,6 +42,10 @@ include = ["app*"]
 target-version = "py311"
 line-length = 100
 src = ["app", "tests"]
+# Vendored from the standalone company-website-researcher prototype (#173).
+# Reformatting it in place would make re-vendoring an upstream fix a manual
+# merge every time. Fix defects upstream and re-vendor instead.
+extend-exclude = ["app/services/research/workers/_website"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "W"]
@@ -73,6 +77,19 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["jsonschema.*"]
 ignore_missing_imports = true
+
+# Third-party collection libraries used only by the vendored research worker.
+[[tool.mypy.overrides]]
+module = ["trafilatura.*", "bs4.*", "tldextract.*", "lxml.*", "yaml.*"]
+ignore_missing_imports = true
+
+# The vendored collector itself. Same reasoning as the ruff exclusion above:
+# it is upstream code, not code this repository writes. Everything that calls
+# it -- app/services/research/*.py and workers/website.py -- stays strict, so
+# the typed boundary is the wrapper, which is where it matters.
+[[tool.mypy.overrides]]
+module = ["app.services.research.workers._website.*"]
+ignore_errors = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
