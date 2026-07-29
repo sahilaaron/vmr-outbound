@@ -750,7 +750,7 @@ def execute_started_job(
         )
 
     try:
-        preserved_block: AgentBlocked | None = None
+        preserved_error: AgentExecutionError | None = None
         # An adapter executes behind a savepoint. Unexpected database failures
         # can therefore be classified without leaving the caller's transaction
         # unusable, and partial domain writes never masquerade as completion.
@@ -767,20 +767,25 @@ def execute_started_job(
                         worker_id=worker_id,
                     )
                 )
-            except AgentBlocked as exc:
+            except AgentExecutionError as exc:
                 if not exc.preserve_outcome:
                     raise
-                # Some review blocks intentionally stage a durable domain
-                # outcome (for example generated email candidates). Commit that
-                # savepoint, then project the blocked execution state below.
-                preserved_block = exc
+                # Some outcomes are durable even though the execution did not
+                # succeed. A review block intentionally stages domain writes (for
+                # example generated email candidates), and an adapter that has
+                # already called a paid external provider must keep its evidence,
+                # usage and cost records even when the call failed or the verdict
+                # cannot advance the pipeline — a database rollback cannot undo
+                # the request that was already sent. Commit that savepoint, then
+                # project the classified execution state below.
+                preserved_error = exc
                 result = None
-        if preserved_block is not None:
+        if preserved_error is not None:
             return _handle_execution_error(
                 session,
                 membership=membership,
                 job=job,
-                error=preserved_block,
+                error=preserved_error,
                 actor=worker_id,
             )
         assert result is not None

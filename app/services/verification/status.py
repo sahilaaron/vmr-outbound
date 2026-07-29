@@ -116,8 +116,17 @@ def address_for_contact(session: Session, contact: Contact) -> str | None:
     return selected.email if selected else None
 
 
-def derive_status_for_email(session: Session, email: str | None) -> StatusView:
-    """Derive the status for one exact address (or the empty/no-address state)."""
+def derive_status_for_email(
+    session: Session, email: str | None, *, exclude_job_id: uuid.UUID | None = None
+) -> StatusView:
+    """Derive the status for one exact address (or the empty/no-address state).
+
+    ``exclude_job_id`` omits one job from the in-flight check. The Verification
+    Agent needs it: while its adapter runs, its own job is IN_PROGRESS, so an
+    unfiltered read would answer "checking" and mask the very staleness or
+    conflict the Agent is asking about. Excluding only the caller's own job keeps
+    every other in-flight guarantee intact.
+    """
 
     if not email:
         return StatusView(
@@ -145,14 +154,14 @@ def derive_status_for_email(session: Session, email: str | None) -> StatusView:
     fresh = bool(latest and policy.is_fresh(latest.result, latest.checked_at, now))
 
     # Active (in-flight) job for this address, if any.
+    active_stmt = select(VerificationJob).where(
+        VerificationJob.email == email,
+        VerificationJob.status.in_(ACTIVE_JOB_STATUSES),
+    )
+    if exclude_job_id is not None:
+        active_stmt = active_stmt.where(VerificationJob.id != exclude_job_id)
     active_job = session.scalars(
-        select(VerificationJob)
-        .where(
-            VerificationJob.email == email,
-            VerificationJob.status.in_(ACTIVE_JOB_STATUSES),
-        )
-        .order_by(VerificationJob.created_at.desc())
-        .limit(1)
+        active_stmt.order_by(VerificationJob.created_at.desc()).limit(1)
     ).first()
 
     # Conflict: the two most recent *fresh* results disagree.
