@@ -29,6 +29,7 @@ from app.services.agents.adapters import (
     AgentExecutionContext,
     AgentExecutionError,
     AgentRetryableError,
+    AgentWaiting,
 )
 from app.services.agents.controls import effective_control
 from app.services.agents.registry import get_agent_spec
@@ -39,6 +40,7 @@ from app.services.pipeline import (
     dependencies_satisfied,
     transition_stage,
 )
+from app.services.verification.decisions import VerificationDecision
 
 
 @dataclass(frozen=True)
@@ -48,6 +50,164 @@ class WorkerExecution:
     agent_id: AgentIdentifier | None
     campaign_contact_id: uuid.UUID | None
     message: str
+
+
+_EMAIL_CHILD_WAIT_CODES = frozenset(
+    {
+        "waiting_on_verification",
+        "retryable_verification_dependency",
+        "verification_dependency_agent_disabled",
+        "verification_dependency_agent_paused",
+    }
+)
+
+
+def _email_parent_for_verification_child(
+    session: Session,
+    job: AgentJob,
+) -> AgentJob | None:
+    """Resolve the one supported nested Agent relationship."""
+
+    if job.agent_id is not AgentIdentifier.VERIFICATION or job.parent_job_id is None:
+        return None
+    parent = session.get(AgentJob, job.parent_job_id)
+    if (
+        parent is None
+        or parent.agent_id is not AgentIdentifier.EMAIL
+        or parent.campaign_contact_id != job.campaign_contact_id
+        or parent.contact_id != job.contact_id
+    ):
+        return None
+    return parent
+
+
+def _child_decision_detail(job: AgentJob) -> dict[str, object]:
+    value: object
+    if job.status is AgentJobStatus.SUCCEEDED:
+        value = job.result
+    else:
+        error = job.error
+        value = error.get("detail") if isinstance(error, dict) else None
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _notify_email_parent(
+    session: Session,
+    *,
+    child: AgentJob,
+    parent: AgentJob,
+    membership: CampaignContact,
+    actor: str,
+) -> None:
+    """Project a committed child disposition and wake its waiting parent."""
+
+    detail = _child_decision_detail(child)
+    decision = detail.get("decision")
+    root = dict(parent.result or {})
+    state = root.get("email_discovery")
+    if child.status is AgentJobStatus.RETRY_SCHEDULED:
+        root["domain_outcome"] = "retryable_verification_dependency"
+        root["verification_job_id"] = str(child.id)
+        parent.result = root
+        append_event(
+            session,
+            campaign_contact_id=membership.id,
+            agent_id=AgentIdentifier.EMAIL,
+            job_id=parent.id,
+            event_type=PipelineEventType.STAGE_WAITING,
+            actor=actor,
+            reason_code="retryable_verification_dependency",
+            reason_detail=child.last_error,
+            retryable=True,
+            detail={
+                "verification_job_id": str(child.id),
+                "decision": decision,
+            },
+        )
+        session.flush()
+        return
+
+    # Only a parent paused specifically for its child dependency is resumed.
+    # Operator, membership, Agent-control and suppression pauses remain
+    # authoritative even if the remote answer arrived meanwhile.
+    previous_status = parent.status
+    jobs.resume_paused(
+        session,
+        parent,
+        reason_codes=_EMAIL_CHILD_WAIT_CODES,
+    )
+    if parent.status is not AgentJobStatus.PENDING:
+        return
+    root["domain_outcome"] = "waiting_on_verification"
+    root["verification_job_id"] = str(child.id)
+    if isinstance(state, dict):
+        root["email_discovery"] = state
+    parent.result = root
+    transition_stage(
+        session,
+        membership=membership,
+        agent_id=AgentIdentifier.EMAIL,
+        target=PipelineStageStatus.WAITING,
+        event_type=PipelineEventType.STAGE_WAITING,
+        actor=actor,
+        job=parent,
+        reason_code="verification_child_committed",
+        reason_detail="A child Verification decision is committed; Email can resume.",
+        detail={
+            "verification_job_id": str(child.id),
+            "verification_job_status": child.status.value,
+            "decision": decision,
+            "parent_previous_status": previous_status.value,
+        },
+    )
+
+
+def _append_child_event(
+    session: Session,
+    *,
+    membership: CampaignContact,
+    job: AgentJob,
+    event_type: PipelineEventType,
+    actor: str,
+    reason_code: str | None = None,
+    reason_detail: str | None = None,
+    retryable: bool = False,
+    detail: dict[str, object] | None = None,
+) -> None:
+    """Record child lifecycle without mutating the top-level stage projection."""
+
+    append_event(
+        session,
+        campaign_contact_id=membership.id,
+        agent_id=AgentIdentifier.VERIFICATION,
+        job_id=job.id,
+        event_type=event_type,
+        actor=actor,
+        reason_code=reason_code,
+        reason_detail=reason_detail,
+        retryable=retryable,
+        detail=detail,
+    )
+
+
+def _project_email_control_outcome(
+    job: AgentJob,
+    *,
+    status: AgentControlStatus,
+    source: str,
+) -> None:
+    if job.agent_id is not AgentIdentifier.EMAIL:
+        return
+    if status is AgentControlStatus.PAUSED:
+        outcome = "agent_paused"
+    elif source == "campaign_override":
+        outcome = "campaign_override_disabled"
+    else:
+        outcome = "agent_disabled"
+    result = dict(job.result or {})
+    result["domain_outcome"] = outcome
+    result["control_source"] = source
+    job.result = result
 
 
 def _terminal_eligibility_block(membership: CampaignContact) -> str | None:
@@ -289,16 +449,26 @@ def reconcile_agent_control(
         reason_code = f"agent_{control.status.value}"
         has_domain_pause = False
         for job in controlled_jobs:
-            if job.status is AgentJobStatus.PAUSED and job.error_class not in {
-                "agent_disabled",
-                "agent_paused",
-            }:
+            if (
+                job.status is AgentJobStatus.PAUSED
+                and job.error_class
+                not in {
+                    "agent_disabled",
+                    "agent_paused",
+                }
+                | _EMAIL_CHILD_WAIT_CODES
+            ):
                 # Effective controls are exposed separately; do not erase a
                 # dependency or eligibility pause that already explains the
                 # Campaign Contact's domain state.
                 has_domain_pause = True
                 continue
             if job.status is not AgentJobStatus.PAUSED or job.error_class != reason_code:
+                _project_email_control_outcome(
+                    job,
+                    status=control.status,
+                    source=control.source,
+                )
                 jobs.mark_paused(
                     session,
                     job,
@@ -362,6 +532,259 @@ def _stage_after_handled_queue_result(
     return PipelineStageStatus.FAILED
 
 
+def _complete_verification_from_email(
+    session: Session,
+    *,
+    membership: CampaignContact,
+    email_job: AgentJob,
+    actor: str,
+) -> bool:
+    """Project an Email-accepted child result onto the shared Verification stage."""
+
+    if membership.next_stage is not AgentIdentifier.VERIFICATION:
+        return False
+    result = email_job.result or {}
+    if result.get("domain_outcome") not in {
+        "existing_accepted_email_reused",
+        "verified_email_accepted",
+    }:
+        return False
+    verification_id = result.get("verification_id")
+    if not isinstance(verification_id, str):
+        raise jobs.AgentJobError(
+            "Email acceptance cannot advance Verification without an evidence reference"
+        )
+
+    verification_job: AgentJob | None = None
+    raw_child_id = result.get("verification_job_id")
+    if isinstance(raw_child_id, str):
+        try:
+            child_id = uuid.UUID(raw_child_id)
+        except ValueError as exc:
+            raise jobs.AgentJobError("Email result has an invalid Verification child id") from exc
+        verification_job = session.get(AgentJob, child_id)
+        if (
+            verification_job is None
+            or verification_job.parent_job_id != email_job.id
+            or verification_job.agent_id is not AgentIdentifier.VERIFICATION
+            or verification_job.status is not AgentJobStatus.SUCCEEDED
+            or (verification_job.result or {}).get("decision") != VerificationDecision.ACCEPT.value
+            or (verification_job.result or {}).get("verification_id") != verification_id
+        ):
+            raise jobs.AgentJobError(
+                "Email acceptance does not match its committed Verification child"
+            )
+
+    output_reference = {
+        "decision": VerificationDecision.ACCEPT.value,
+        "verification_id": verification_id,
+        "email": result.get("email"),
+        "provider": result.get("verification_provider"),
+        "policy_version": result.get("verification_policy_version"),
+        "reused_evidence": result.get("domain_outcome") == "existing_accepted_email_reused",
+        "source": (
+            "email_agent_existing_evidence"
+            if result.get("domain_outcome") == "existing_accepted_email_reused"
+            else "email_agent_child"
+        ),
+        "email_job_id": str(email_job.id),
+    }
+    transition_stage(
+        session,
+        membership=membership,
+        agent_id=AgentIdentifier.VERIFICATION,
+        target=PipelineStageStatus.COMPLETED,
+        event_type=PipelineEventType.STAGE_COMPLETED,
+        actor=actor,
+        job=verification_job,
+        reason_code="email_agent_verified_address",
+        reason_detail="Email Agent committed a production-eligible Verification result.",
+        output_reference=output_reference,
+        detail=output_reference,
+    )
+    return True
+
+
+def _prepare_email_verification_child(
+    session: Session,
+    *,
+    job: AgentJob,
+    parent: AgentJob,
+    membership: CampaignContact,
+    campaign: Campaign,
+    worker_id: str,
+) -> WorkerExecution | None:
+    """Prepare a nested Verification job without advancing its top-level stage."""
+
+    if membership.membership_status is not CampaignMembershipStatus.ACTIVE:
+        reason = f"Campaign Contact is {membership.membership_status.value}."
+        jobs.mark_paused(session, job, reason=reason, reason_code="membership_paused")
+        _append_child_event(
+            session,
+            membership=membership,
+            job=job,
+            event_type=PipelineEventType.MEMBERSHIP_PAUSED,
+            actor=worker_id,
+            reason_code="membership_status",
+            reason_detail=reason,
+        )
+        return WorkerExecution(
+            job=job,
+            public_status=jobs.public_status(job),
+            agent_id=job.agent_id,
+            campaign_contact_id=membership.id,
+            message=reason,
+        )
+
+    if refresh_eligibility(session, membership=membership, actor=worker_id):
+        reason_code, reason = next(
+            (
+                (
+                    str(item.get("code") or "eligibility_block"),
+                    str(item.get("detail") or "The Campaign Contact is blocked."),
+                )
+                for item in membership.blocking_reasons
+                if isinstance(item, dict) and item.get("terminal") is True
+            ),
+            ("eligibility_block", "The Campaign Contact is blocked."),
+        )
+        jobs.mark_paused(session, job, reason=reason, reason_code=reason_code)
+        _append_child_event(
+            session,
+            membership=membership,
+            job=job,
+            event_type=PipelineEventType.ELIGIBILITY_BLOCKED,
+            actor=worker_id,
+            reason_code=reason_code,
+            reason_detail=reason,
+        )
+        return WorkerExecution(
+            job=job,
+            public_status=jobs.public_status(job),
+            agent_id=job.agent_id,
+            campaign_contact_id=membership.id,
+            message=reason,
+        )
+
+    parent_control = effective_control(
+        session,
+        campaign=campaign,
+        agent_id=AgentIdentifier.EMAIL,
+    )
+    if parent_control.status is not AgentControlStatus.ENABLED:
+        reason = (
+            parent_control.reason or f"The requesting Email Agent is {parent_control.status.value}."
+        )
+        _project_email_control_outcome(
+            parent,
+            status=parent_control.status,
+            source=parent_control.source,
+        )
+        jobs.mark_paused(
+            session,
+            job,
+            reason=reason,
+            reason_code=f"requesting_email_agent_{parent_control.status.value}",
+        )
+        _append_child_event(
+            session,
+            membership=membership,
+            job=job,
+            event_type=(
+                PipelineEventType.AGENT_PAUSED
+                if parent_control.status is AgentControlStatus.PAUSED
+                else PipelineEventType.AGENT_DISABLED
+            ),
+            actor=worker_id,
+            reason_code=parent_control.source,
+            reason_detail=reason,
+            detail={"parent_job_id": str(parent.id)},
+        )
+        return WorkerExecution(
+            job=job,
+            public_status=jobs.public_status(job),
+            agent_id=job.agent_id,
+            campaign_contact_id=membership.id,
+            message=reason,
+        )
+
+    control = effective_control(
+        session,
+        campaign=campaign,
+        agent_id=AgentIdentifier.VERIFICATION,
+    )
+    if control.status is not AgentControlStatus.ENABLED:
+        reason = control.reason or f"verification is {control.status.value}."
+        jobs.mark_paused(
+            session,
+            job,
+            reason=reason,
+            reason_code=f"agent_{control.status.value}",
+        )
+        _append_child_event(
+            session,
+            membership=membership,
+            job=job,
+            event_type=(
+                PipelineEventType.AGENT_PAUSED
+                if control.status is AgentControlStatus.PAUSED
+                else PipelineEventType.AGENT_DISABLED
+            ),
+            actor=worker_id,
+            reason_code=control.source,
+            reason_detail=reason,
+            detail={"parent_job_id": str(parent.id)},
+        )
+        _notify_email_parent(
+            session,
+            child=job,
+            parent=parent,
+            membership=membership,
+            actor=worker_id,
+        )
+        return WorkerExecution(
+            job=job,
+            public_status=jobs.public_status(job),
+            agent_id=job.agent_id,
+            campaign_contact_id=membership.id,
+            message=reason,
+        )
+
+    reclaimed = jobs.lease_was_reclaimed(job)
+    _append_child_event(
+        session,
+        membership=membership,
+        job=job,
+        event_type=PipelineEventType.JOB_LEASED,
+        actor=worker_id,
+        reason_code="lease_reclaimed" if reclaimed else "worker_claim",
+        reason_detail=(
+            "A replacement worker reclaimed this Verification child." if reclaimed else None
+        ),
+        detail={
+            "worker_id": worker_id,
+            "attempt": job.attempts,
+            "lease_reclaimed": reclaimed,
+            "parent_job_id": str(parent.id),
+        },
+    )
+    jobs.start_job(session, job, worker_id=worker_id)
+    _append_child_event(
+        session,
+        membership=membership,
+        job=job,
+        event_type=PipelineEventType.JOB_STARTED,
+        actor=worker_id,
+        reason_code="worker_started",
+        detail={
+            "worker_id": worker_id,
+            "attempt": job.attempts,
+            "parent_job_id": str(parent.id),
+        },
+    )
+    return None
+
+
 def prepare_leased_job(
     session: Session,
     *,
@@ -410,6 +833,17 @@ def prepare_leased_job(
             agent_id=job.agent_id,
             campaign_contact_id=membership.id,
             message="Job failed: required domain record is missing.",
+        )
+
+    parent = _email_parent_for_verification_child(session, job)
+    if parent is not None:
+        return _prepare_email_verification_child(
+            session,
+            job=job,
+            parent=parent,
+            membership=membership,
+            campaign=campaign,
+            worker_id=worker_id,
         )
 
     if membership.membership_status is not CampaignMembershipStatus.ACTIVE:
@@ -480,6 +914,11 @@ def prepare_leased_job(
     control = effective_control(session, campaign=campaign, agent_id=job.agent_id)
     if control.status is not AgentControlStatus.ENABLED:
         reason = control.reason or f"{job.agent_id.value} is {control.status.value}."
+        _project_email_control_outcome(
+            job,
+            status=control.status,
+            source=control.source,
+        )
         jobs.mark_paused(
             session,
             job,
@@ -577,6 +1016,187 @@ def prepare_leased_job(
     return None
 
 
+def _execute_email_verification_child(
+    session: Session,
+    *,
+    job: AgentJob,
+    parent: AgentJob,
+    membership: CampaignContact,
+    campaign: Campaign,
+    contact: Contact,
+    worker_id: str,
+    adapters: dict[AgentIdentifier, AgentAdapter],
+) -> WorkerExecution:
+    """Execute one already-started child through Verification's real adapter."""
+
+    # Controls and suppression can change after the durable Running checkpoint.
+    # Recheck immediately before the adapter (and therefore before any provider
+    # call) while leaving the Email stage as the top-level projection.
+    parent_control = effective_control(
+        session,
+        campaign=campaign,
+        agent_id=AgentIdentifier.EMAIL,
+    )
+    if parent_control.status is not AgentControlStatus.ENABLED:
+        reason = (
+            parent_control.reason or f"The requesting Email Agent is {parent_control.status.value}."
+        )
+        _project_email_control_outcome(
+            parent,
+            status=parent_control.status,
+            source=parent_control.source,
+        )
+        jobs.mark_paused(
+            session,
+            job,
+            reason=reason,
+            reason_code=f"requesting_email_agent_{parent_control.status.value}",
+        )
+        _append_child_event(
+            session,
+            membership=membership,
+            job=job,
+            event_type=(
+                PipelineEventType.AGENT_PAUSED
+                if parent_control.status is AgentControlStatus.PAUSED
+                else PipelineEventType.AGENT_DISABLED
+            ),
+            actor=worker_id,
+            reason_code=parent_control.source,
+            reason_detail=reason,
+            detail={"parent_job_id": str(parent.id)},
+        )
+        return WorkerExecution(
+            job=job,
+            public_status=jobs.public_status(job),
+            agent_id=job.agent_id,
+            campaign_contact_id=membership.id,
+            message=reason,
+        )
+
+    control = effective_control(
+        session,
+        campaign=campaign,
+        agent_id=AgentIdentifier.VERIFICATION,
+    )
+    if control.status is not AgentControlStatus.ENABLED:
+        error = AgentBlocked(
+            f"agent_{control.status.value}",
+            control.reason or f"verification is {control.status.value}.",
+        )
+        return _handle_execution_error(
+            session,
+            membership=membership,
+            job=job,
+            error=error,
+            actor=worker_id,
+        )
+    if refresh_eligibility(session, membership=membership, actor=worker_id):
+        reason = _terminal_eligibility_block(membership) or "Eligibility is blocked."
+        return _handle_execution_error(
+            session,
+            membership=membership,
+            job=job,
+            error=AgentBlocked("eligibility_block", reason),
+            actor=worker_id,
+        )
+
+    adapter = adapters.get(AgentIdentifier.VERIFICATION)
+    if adapter is None:
+        return _handle_execution_error(
+            session,
+            membership=membership,
+            job=job,
+            error=AgentExecutionError(
+                "adapter_missing",
+                "No executable adapter is registered for verification.",
+            ),
+            actor=worker_id,
+        )
+
+    try:
+        preserved_error: AgentExecutionError | None = None
+        with session.begin_nested():
+            try:
+                result = adapter.execute(
+                    AgentExecutionContext(
+                        session=session,
+                        job=job,
+                        campaign=campaign,
+                        membership=membership,
+                        contact=contact,
+                        config=control.config,
+                        worker_id=worker_id,
+                    )
+                )
+            except AgentExecutionError as exc:
+                if not exc.preserve_outcome:
+                    raise
+                preserved_error = exc
+                result = None
+        if preserved_error is not None:
+            return _handle_execution_error(
+                session,
+                membership=membership,
+                job=job,
+                error=preserved_error,
+                actor=worker_id,
+            )
+        assert result is not None
+        jobs.mark_completed(
+            session,
+            job,
+            result=result.result,
+            outcome_committed=result.outcome_committed,
+        )
+        _append_child_event(
+            session,
+            membership=membership,
+            job=job,
+            event_type=PipelineEventType.STAGE_COMPLETED,
+            actor=worker_id,
+            reason_code="verification_child_committed",
+            detail={
+                **result.result,
+                "parent_job_id": str(parent.id),
+            },
+        )
+        _notify_email_parent(
+            session,
+            child=job,
+            parent=parent,
+            membership=membership,
+            actor=worker_id,
+        )
+        return WorkerExecution(
+            job=job,
+            public_status=jobs.public_status(job),
+            agent_id=job.agent_id,
+            campaign_contact_id=membership.id,
+            message="verification child completed.",
+        )
+    except AgentExecutionError as exc:
+        return _handle_execution_error(
+            session,
+            membership=membership,
+            job=job,
+            error=exc,
+            actor=worker_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - bounded common queue retry
+        return _handle_execution_error(
+            session,
+            membership=membership,
+            job=job,
+            error=AgentRetryableError(
+                "unexpected_error",
+                "The Verification child encountered an unexpected operational error.",
+                detail={"exception_type": type(exc).__name__},
+            ),
+            actor=worker_id,
+        )
+
+
 def execute_started_job(
     session: Session,
     *,
@@ -637,6 +1257,19 @@ def execute_started_job(
             agent_id=job.agent_id,
             campaign_contact_id=membership.id,
             message="Job failed: required domain record is missing.",
+        )
+
+    parent = _email_parent_for_verification_child(session, job)
+    if parent is not None:
+        return _execute_email_verification_child(
+            session,
+            job=job,
+            parent=parent,
+            membership=membership,
+            campaign=campaign,
+            contact=contact,
+            worker_id=worker_id,
+            adapters=adapters,
         )
 
     if membership.membership_status is not CampaignMembershipStatus.ACTIVE:
@@ -701,6 +1334,11 @@ def execute_started_job(
     control = effective_control(session, campaign=campaign, agent_id=job.agent_id)
     if control.status is not AgentControlStatus.ENABLED:
         reason = control.reason or f"{job.agent_id.value} is {control.status.value}."
+        _project_email_control_outcome(
+            job,
+            status=control.status,
+            source=control.source,
+        )
         jobs.mark_paused(
             session,
             job,
@@ -828,6 +1466,13 @@ def execute_started_job(
             output_reference=result.output_reference,
             detail=result.result,
         )
+        if job.agent_id is AgentIdentifier.EMAIL:
+            _complete_verification_from_email(
+                session,
+                membership=membership,
+                email_job=job,
+                actor=worker_id,
+            )
         schedule_next(session, membership=membership, actor=worker_id, parent_job=job)
         return WorkerExecution(
             job=job,
@@ -891,12 +1536,110 @@ def _handle_execution_error(
     error: AgentExecutionError,
     actor: str,
 ) -> WorkerExecution:
+    parent = _email_parent_for_verification_child(session, job)
+    if parent is not None:
+        if isinstance(error, AgentBlocked):
+            jobs.mark_paused(
+                session,
+                job,
+                reason=error.message,
+                reason_code=error.code,
+                error_detail=error.detail,
+            )
+            event_type = PipelineEventType.ELIGIBILITY_BLOCKED
+            retryable = False
+        elif error.retryable:
+            spec = get_agent_spec(job.agent_id)
+            jobs.schedule_retry(
+                session,
+                job,
+                error_class=error.code,
+                reason=error.message,
+                base_seconds=spec.retry_base_seconds,
+                cap_seconds=spec.retry_cap_seconds,
+                error_detail=error.detail,
+            )
+            event_type = (
+                PipelineEventType.RETRY_SCHEDULED
+                if job.status is AgentJobStatus.RETRY_SCHEDULED
+                else PipelineEventType.FAILED_TERMINAL
+            )
+            retryable = job.status is AgentJobStatus.RETRY_SCHEDULED
+        else:
+            jobs.mark_failed(
+                session,
+                job,
+                error_class=error.code,
+                reason=error.message,
+                error_detail=error.detail,
+            )
+            event_type = PipelineEventType.FAILED_TERMINAL
+            retryable = False
+        _append_child_event(
+            session,
+            membership=membership,
+            job=job,
+            event_type=event_type,
+            actor=actor,
+            reason_code=error.code,
+            reason_detail=error.message,
+            retryable=retryable,
+            detail={
+                **error.detail,
+                "parent_job_id": str(parent.id),
+            },
+        )
+        _notify_email_parent(
+            session,
+            child=job,
+            parent=parent,
+            membership=membership,
+            actor=actor,
+        )
+        return WorkerExecution(
+            job=job,
+            public_status=jobs.public_status(job),
+            agent_id=job.agent_id,
+            campaign_contact_id=membership.id,
+            message=error.message,
+        )
+
+    if isinstance(error, AgentWaiting):
+        jobs.mark_paused(
+            session,
+            job,
+            reason=error.message,
+            reason_code=error.code,
+            error_detail=error.detail,
+        )
+        transition_stage(
+            session,
+            membership=membership,
+            agent_id=job.agent_id,
+            target=PipelineStageStatus.WAITING,
+            event_type=PipelineEventType.STAGE_WAITING,
+            actor=actor,
+            job=job,
+            reason_code=error.code,
+            reason_detail=error.message,
+            retryable=error.retryable,
+            detail=error.detail,
+        )
+        return WorkerExecution(
+            job=job,
+            public_status=jobs.public_status(job),
+            agent_id=job.agent_id,
+            campaign_contact_id=membership.id,
+            message=error.message,
+        )
+
     if isinstance(error, AgentBlocked):
         jobs.mark_paused(
             session,
             job,
             reason=error.message,
             reason_code=error.code,
+            error_detail=error.detail,
         )
         transition_stage(
             session,

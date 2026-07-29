@@ -74,6 +74,8 @@ def _same_intent(
     job: AgentJob,
     *,
     agent_id: AgentIdentifier,
+    email: str | None,
+    policy_version: str | None,
     campaign_id: uuid.UUID | None,
     campaign_contact_id: uuid.UUID | None,
     contact_id: uuid.UUID | None,
@@ -87,6 +89,8 @@ def _same_intent(
 ) -> bool:
     return (
         job.agent_id is agent_id
+        and job.email == email
+        and job.policy_version == policy_version
         and job.campaign_id == campaign_id
         and job.campaign_contact_id == campaign_contact_id
         and job.contact_id == contact_id
@@ -108,6 +112,8 @@ def enqueue_job(
     task_kind: str,
     max_attempts: int,
     priority: int = 100,
+    email: str | None = None,
+    policy_version: str | None = None,
     campaign_id: uuid.UUID | None = None,
     campaign_contact_id: uuid.UUID | None = None,
     contact_id: uuid.UUID | None = None,
@@ -141,6 +147,8 @@ def enqueue_job(
         if not _same_intent(
             existing,
             agent_id=agent_id,
+            email=email,
+            policy_version=policy_version,
             campaign_id=campaign_id,
             campaign_contact_id=campaign_contact_id,
             contact_id=contact_id,
@@ -159,6 +167,8 @@ def enqueue_job(
 
     job = AgentJob(
         agent_id=agent_id,
+        email=email,
+        policy_version=policy_version,
         task_kind=clean_task,
         priority=priority,
         entity_type=entity_type,
@@ -189,6 +199,8 @@ def enqueue_job(
         if not _same_intent(
             winner,
             agent_id=agent_id,
+            email=email,
+            policy_version=policy_version,
             campaign_id=campaign_id,
             campaign_contact_id=campaign_contact_id,
             contact_id=contact_id,
@@ -453,6 +465,7 @@ def mark_paused(
     *,
     reason: str,
     reason_code: str = "operator_pause",
+    error_detail: dict[str, Any] | None = None,
 ) -> AgentJob:
     if job.status in TERMINAL_STATUSES:
         raise AgentJobError("a terminal job cannot be paused")
@@ -463,7 +476,64 @@ def mark_paused(
         "class": reason_code,
         "message": reason,
         "retryable": True,
+        "detail": error_detail or {},
     }
+    job.lease_owner = None
+    job.lease_expires_at = None
+    session.flush()
+    return job
+
+
+def resume_paused(
+    session: Session,
+    job: AgentJob,
+    *,
+    reason_codes: frozenset[str],
+    now: datetime | None = None,
+) -> AgentJob:
+    """Make one specifically classified paused job claimable again.
+
+    Callers must name the pause classifications they own. This prevents a
+    dependency wake-up from erasing an operator, membership, suppression, or
+    unrelated domain pause.
+    """
+
+    if job.status is not AgentJobStatus.PAUSED:
+        return job
+    if job.error_class not in reason_codes:
+        return job
+    job.status = AgentJobStatus.PENDING
+    job.next_run_at = now or _now()
+    job.error = None
+    job.error_class = None
+    job.last_error = None
+    job.finished_at = None
+    session.flush()
+    return job
+
+
+def cancel_job(
+    session: Session,
+    job: AgentJob,
+    *,
+    reason: str,
+    reason_code: str,
+    now: datetime | None = None,
+) -> AgentJob:
+    """Cancel one non-terminal job through the shared Agent lifecycle."""
+
+    if job.status in TERMINAL_STATUSES:
+        return job
+    now = now or _now()
+    job.status = AgentJobStatus.CANCELLED
+    job.last_error = reason
+    job.error_class = reason_code[:96]
+    job.error = {
+        "class": reason_code,
+        "message": reason,
+        "retryable": False,
+    }
+    job.finished_at = now
     job.lease_owner = None
     job.lease_expires_at = None
     session.flush()

@@ -42,6 +42,7 @@ _ALLOWED: dict[PipelineStageStatus, frozenset[PipelineStageStatus]] = {
     ),
     PipelineStageStatus.RUNNING: frozenset(
         {
+            PipelineStageStatus.WAITING,
             PipelineStageStatus.PAUSED,
             PipelineStageStatus.RETRYING,
             PipelineStageStatus.FAILED,

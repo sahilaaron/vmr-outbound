@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -16,6 +17,7 @@ from app.models.contact import Contact
 from app.models.email_candidate import EmailCandidate
 from app.models.enums import (
     AgentIdentifier,
+    EmailPreciseStatus,
     IdentityLinkState,
     LinkedInIdentifierKind,
 )
@@ -24,10 +26,8 @@ from app.models.verification_job import AgentJob
 from app.services import identity_links
 from app.services.audit import record_audit_event
 from app.services.companies import conflicts as company_conflicts
-from app.services.email.candidates import generate_candidates
 from app.services.imports.normalization import is_valid_email, normalize_email
 from app.services.resolution import store as resolution_store
-from app.services.resolution.gates import DownstreamStage, authorize_contact
 from app.services.suppressions import evaluate_suppression
 from app.services.verification import service as verification_service
 from app.services.verification import status as verification_status
@@ -37,6 +37,7 @@ from app.services.verification.decisions import (
     DecisionOutcome,
     VerificationDecision,
     decide,
+    refusal,
 )
 from app.services.verification.policy import get_policy
 from app.services.verification.provider import VerificationProvider
@@ -69,6 +70,10 @@ class AgentBlocked(AgentExecutionError):
 
 class AgentRetryableError(AgentExecutionError):
     retryable = True
+
+
+class AgentWaiting(AgentExecutionError):
+    """The job yielded until a separately queued dependency commits."""
 
 
 class AgentTerminalError(AgentExecutionError):
@@ -281,53 +286,51 @@ class CompanyAgentAdapter:
 
 
 class EmailAgentAdapter:
-    """Invoke the existing deterministic candidate generator behind safety gates."""
+    """Advance the policy-bounded Email state machine by one durable step."""
 
     agent_id = AgentIdentifier.EMAIL
 
     def execute(self, context: AgentExecutionContext) -> AgentExecutionResult:
-        suppression = evaluate_suppression(
-            context.session,
-            email=context.contact.email,
-            domain=context.contact.company_domain,
+        # Kept local to avoid making the Email domain depend on Agent adapter
+        # exception types. The state machine returns a semantic step; this
+        # boundary translates it into the shared worker contract.
+        from app.services.email.agent import (
+            EmailExecutionStepKind,
+            execute_step,
         )
-        if suppression.blocked:
-            raise AgentBlocked(
-                "suppression",
-                suppression.blocked_reason or "The suppression ledger blocks this Contact.",
-            )
-        company_gate = authorize_contact(
+
+        step = execute_step(
             context.session,
+            job=context.job,
             contact=context.contact,
-            stage=DownstreamStage.EMAIL_DISCOVERY,
+            membership=context.membership,
+            actor=context.worker_id,
         )
-        if company_gate.blocked:
-            raise AgentBlocked(
-                "company_identity",
-                company_gate.reason or "Company identity is not confirmed.",
+        if step.kind is EmailExecutionStepKind.COMPLETE:
+            return AgentExecutionResult(
+                outcome_committed=True,
+                result=step.result,
+                output_reference=step.output_reference,
             )
-        if not context.contact.first_name or not context.contact.last_name:
-            raise AgentBlocked(
-                "person_name_missing",
-                "Email generation needs an observed first and last name.",
-            )
-        generated = generate_candidates(context.session, context.contact)
-        if generated.needs_review or generated.selected is None:
-            raise AgentBlocked(
-                "email_review_required",
-                generated.review_reason or "No exact email candidate can be selected safely.",
+        if step.kind is EmailExecutionStepKind.WAITING:
+            raise AgentWaiting(
+                step.reason_code or step.outcome.value,
+                step.reason or "Waiting for the child Verification Agent.",
+                detail=step.output_reference,
                 preserve_outcome=True,
             )
-        output = {
-            "email_candidate_id": str(generated.selected.id),
-            "email": generated.selected.email,
-            "source": generated.selected.source.value,
-            "engine_version": generated.selected.engine_version,
-        }
-        return AgentExecutionResult(
-            outcome_committed=True,
-            result={"domain_outcome": "email_candidate_selected", **output},
-            output_reference=output,
+        if step.kind is EmailExecutionStepKind.BLOCKED:
+            raise AgentBlocked(
+                step.reason_code or step.outcome.value,
+                step.reason or "Email discovery is blocked.",
+                detail=step.output_reference,
+                preserve_outcome=True,
+            )
+        raise AgentTerminalError(
+            step.reason_code or step.outcome.value,
+            step.reason or "Email discovery ended without a usable address.",
+            detail=step.output_reference,
+            preserve_outcome=True,
         )
 
 
@@ -368,26 +371,68 @@ class VerificationAgentAdapter:
 
     def execute(self, context: AgentExecutionContext) -> AgentExecutionResult:
         session = context.session
-        selected = session.scalars(
-            select(EmailCandidate).where(
-                EmailCandidate.contact_id == context.contact.id,
-                EmailCandidate.selected.is_(True),
-            )
-        ).one_or_none()
+        requested_candidate_id = (context.job.input_reference or {}).get("candidate_id")
+        selected: EmailCandidate | None
+        if isinstance(requested_candidate_id, str):
+            try:
+                candidate_id = uuid.UUID(requested_candidate_id)
+            except ValueError:
+                candidate_id = None
+            selected = session.get(EmailCandidate, candidate_id) if candidate_id else None
+            if selected is not None and selected.contact_id != context.contact.id:
+                selected = None
+        else:
+            # Backward-compatible standalone Verification stage: the permanent
+            # selected candidate remains its input. Email child jobs carry an
+            # immutable candidate_id and never need to mark generated text as
+            # selected before evidence accepts it.
+            selected = session.scalars(
+                select(EmailCandidate).where(
+                    EmailCandidate.contact_id == context.contact.id,
+                    EmailCandidate.selected.is_(True),
+                )
+            ).one_or_none()
         if selected is None:
-            raise AgentBlocked(
+            rejected = refusal(
                 "email_candidate_missing",
-                "Verification needs one selected exact email candidate.",
+                "Verification needs one exact Email candidate from its requesting job.",
+            )
+            raise AgentBlocked(
+                rejected.reason_code,
+                rejected.reason,
+                detail=self._refusal_output(rejected, context=context),
             )
 
         settings = get_settings()
         policy = get_policy(settings)
         email = normalize_email(selected.email)
         if not email or not is_valid_email(email):
-            raise AgentTerminalError(
+            rejected = refusal(
                 "verification_invalid_input",
-                "The selected email candidate is not a well-formed address.",
-                detail={"email_candidate_id": str(selected.id)},
+                "The requested email candidate is not a well-formed address.",
+            )
+            raise AgentTerminalError(
+                rejected.reason_code,
+                rejected.reason,
+                detail=self._refusal_output(
+                    rejected,
+                    context=context,
+                    extra={"email_candidate_id": str(selected.id)},
+                ),
+            )
+        if context.job.email is not None and normalize_email(context.job.email) != email:
+            rejected = refusal(
+                "verification_candidate_mismatch",
+                "The Verification job address does not match its immutable Email candidate.",
+            )
+            raise AgentTerminalError(
+                rejected.reason_code,
+                rejected.reason,
+                detail=self._refusal_output(
+                    rejected,
+                    context=context,
+                    extra={"email_candidate_id": str(selected.id)},
+                ),
             )
 
         # Suppression is authoritative and is re-checked immediately before the
@@ -398,31 +443,51 @@ class VerificationAgentAdapter:
             session, email=email, domain=context.contact.company_domain
         )
         if suppression.blocked:
-            raise AgentBlocked(
+            rejected = refusal(
                 "suppression",
                 suppression.blocked_reason or "The suppression ledger blocks this Contact.",
+            )
+            raise AgentBlocked(
+                rejected.reason_code,
+                rejected.reason,
+                detail=self._refusal_output(rejected, context=context),
             )
 
         expected_policy = (context.job.input_reference or {}).get("policy_version")
         if expected_policy and expected_policy != policy.version:
-            raise AgentBlocked(
+            rejected = refusal(
                 "verification_policy_mismatch",
                 f"This job was queued for verification policy {expected_policy!r}, but "
                 f"{policy.version!r} is active; results would not mean what was requested.",
             )
+            raise AgentBlocked(
+                rejected.reason_code,
+                rejected.reason,
+                detail=self._refusal_output(rejected, context=context),
+            )
 
         if context.config.get("live") is not True:
-            raise AgentBlocked(
+            rejected = refusal(
                 "verification_live_disabled",
                 "Live MillionVerifier execution is not enabled for this Campaign. "
                 "Simulator output cannot complete the Verification Agent.",
             )
+            raise AgentBlocked(
+                rejected.reason_code,
+                rejected.reason,
+                detail=self._refusal_output(rejected, context=context),
+            )
         provider = self._provider_factory(settings)
         if provider.simulated:
-            raise AgentBlocked(
+            rejected = refusal(
                 "verification_credentials_missing",
                 "Live MillionVerifier credentials are not configured; simulator "
                 "output cannot complete the Verification Agent.",
+            )
+            raise AgentBlocked(
+                rejected.reason_code,
+                rejected.reason,
+                detail=self._refusal_output(rejected, context=context),
             )
 
         context.job.email = email
@@ -436,9 +501,13 @@ class VerificationAgentAdapter:
         )
 
         decision = self._decide(session, context=context, outcome=outcome)
+        context.job.outcome_status = decision.status.value
+        context.job.verification_id = outcome.evidence.id if outcome.evidence else None
         output = {
             "email": email,
             "decision": decision.decision.value,
+            "reason_code": decision.reason_code,
+            "reason": decision.reason,
             "precise_status": decision.status.value,
             "verification_result": outcome.result.value if outcome.result else None,
             "verification_id": str(outcome.evidence.id) if outcome.evidence else None,
@@ -485,6 +554,27 @@ class VerificationAgentAdapter:
             detail=output,
             preserve_outcome=True,
         )
+
+    @staticmethod
+    def _refusal_output(
+        outcome: DecisionOutcome,
+        *,
+        context: AgentExecutionContext,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        output: dict[str, Any] = {
+            "decision": outcome.decision.value,
+            "reason_code": outcome.reason_code,
+            "reason": outcome.reason,
+            "precise_status": outcome.status.value,
+            "verification_id": None,
+            "provider_called": False,
+            "reused_evidence": False,
+            "policy_version": (context.job.input_reference or {}).get("policy_version"),
+        }
+        output.update(extra or {})
+        context.job.outcome_status = EmailPreciseStatus.UNVERIFIED.value
+        return output
 
     @staticmethod
     def _decide(
