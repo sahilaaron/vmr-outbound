@@ -140,11 +140,73 @@ ruff format --check .
 python -m mypy app
 alembic upgrade head
 alembic check
+alembic downgrade base && alembic upgrade head
 python -m pytest
 ```
 
-CI runs exactly these steps against a Postgres 16 service — see
+CI runs exactly these steps, in this order, against a Postgres 16 service — see
 `.github/workflows/ci.yml`.
+
+Two further checks are **local-only** — CI does not run them, and they are what
+catch parallel threads breaking each other:
+
+```bash
+alembic heads                                              # exactly one head
+cd extensions/salesnav-capture && npm install && npm test  # if extension code changed
+```
+
+Two migration heads mean two threads created sibling migrations; restack before
+anything is published.
+
+This file holds the runnable commands; `docs/PARALLEL_INTEGRATION.md` holds the
+rule about when they count. Passing here is not the same as being final: on a
+stacked or parallel-built branch the sequence must pass on the **final assembled
+head**, not on a thread's own commits in isolation. If the environment cannot
+run Postgres, Ruff, or mypy, report `Integration incomplete; do not publish yet`
+rather than relying on CI to find the problems.
+
+`.github/workflows/ci.yml`, the block above, and the gate section of
+`docs/PARALLEL_INTEGRATION.md` change together, in one commit. A stale copy is
+worse than no copy, because someone will run it and believe the result.
+
+## 6a. Worktrees for parallel work
+
+When more than one thread is building, give each its own worktree and keep one
+persistent worktree for integration. The integration worktree must hold no
+unrelated local edits.
+
+```bash
+git worktree add -b <branch> ../vmr-outbound-<domain> <base-sha>
+git worktree add -b <integration-branch> ../vmr-outbound-integration <base-sha>
+git worktree list
+```
+
+Omit `-b` and the worktree lands on a detached HEAD — fine for reading, wrong
+for committing. When a worktree is finished, delete the directory and then run
+`git worktree prune`; a stale registration blocks the next `worktree add` at the
+same path.
+
+```
+vmr-outbound/                      operator clone
+vmr-outbound-<domain-a>/           implementation worktree
+vmr-outbound-<domain-b>/           implementation worktree
+vmr-outbound-integration/          authoritative integration worktree
+```
+
+Before ending a session, the work must survive as a pushed branch or a verified
+bundle:
+
+```bash
+git bundle create ../<artifact>.bundle <base-sha>..<branch>
+git bundle verify ../<artifact>.bundle
+git bundle list-heads ../<artifact>.bundle
+```
+
+The bundle's SHA-256, on Windows CMD:
+
+```bat
+certutil -hashfile ..\<artifact>.bundle SHA256
+```
 
 ## 7. Run the contact-capture extension against the local backend (DAT-013)
 
