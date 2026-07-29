@@ -119,6 +119,13 @@ class FeatureFlags(BaseModel):
     # Phase 3 — Lead Scoring
     scoring: bool = False
     # Phase 4 — Insights
+    # RES-001. Lets the Research Agent read a company's own website through
+    # the registered research workers. Turning it on does NOT authorize any
+    # AI synthesis of what was read, does not make any contact
+    # outreach-eligible, and does not by itself start a crawl: a campaign
+    # must additionally set the Agent config {"live": true}.
+    company_research: bool = False
+
     insights_research: bool = False
     # Phase 5 — Claude Bridge
     claude_mcp_bridge: bool = False

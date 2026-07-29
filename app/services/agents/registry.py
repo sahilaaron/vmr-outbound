@@ -53,7 +53,9 @@ _SPECS = (
         3,
         (AgentIdentifier.COMPANY,),
         AgentControlStatus.DISABLED,
-        False,
+        True,
+        # Still skippable: a company whose site cannot be read must not hold
+        # the pipeline, and the operator escape hatch stays available.
         skippable=True,
     ),
     AgentSpec(

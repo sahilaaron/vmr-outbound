@@ -20,6 +20,17 @@ dependencies = [
     # Validates the Sales Navigator capture intake body against the extension's
     # committed contract schema (DAT-009). Draft 2020-12 validator.
     "jsonschema>=4.18",
+    # RES-001 company research. Used only by the vendored website worker, and
+    # only when the default-off company_research flag is on. Approved
+    # 2026-07-29; the collector is fully offline-deterministic and needs no
+    # API key. Playwright is deliberately NOT taken -- a JS-only site reports
+    # insufficient evidence rather than escalating to a headless browser.
+    "httpx>=0.27",
+    "beautifulsoup4>=4.12,<5.0",
+    "lxml>=5.0,<7.0",
+    "trafilatura>=1.8,<3.0",
+    "tldextract>=5.0,<6.0",
+    "PyYAML>=6.0,<7.0",
 ]
 
 [project.optional-dependencies]
@@ -27,7 +38,6 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.6",
     "mypy>=1.10",
-    "httpx>=0.27",
     "types-openpyxl>=3.1",
 ]
 
@@ -42,6 +52,10 @@ include = ["app*"]
 target-version = "py311"
 line-length = 100
 src = ["app", "tests"]
+# Vendored from the standalone company-website-researcher prototype (#173).
+# Reformatting it in place would make re-vendoring an upstream fix a manual
+# merge every time. Fix defects upstream and re-vendor instead.
+extend-exclude = ["app/services/research/workers/_website"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "W"]
@@ -73,6 +87,19 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["jsonschema.*"]
 ignore_missing_imports = true
+
+# Third-party collection libraries used only by the vendored research worker.
+[[tool.mypy.overrides]]
+module = ["trafilatura.*", "bs4.*", "tldextract.*", "lxml.*", "yaml.*"]
+ignore_missing_imports = true
+
+# The vendored collector itself. Same reasoning as the ruff exclusion above:
+# it is upstream code, not code this repository writes. Everything that calls
+# it -- app/services/research/*.py and workers/website.py -- stays strict, so
+# the typed boundary is the wrapper, which is where it matters.
+[[tool.mypy.overrides]]
+module = ["app.services.research.workers._website.*"]
+ignore_errors = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
