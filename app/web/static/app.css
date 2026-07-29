@@ -529,3 +529,82 @@ tr.row-selected td { font-weight: 500; }
 .stat-row .stat { min-width: 120px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
 .stat-row .stat .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
 .stat-row .stat .value { font-size: 22px; font-weight: 700; }
+
+/* --- Workbench Agent monitor and controls (MVP-01B) -------------------------
+ *
+ * Built entirely from the tokens above — no new colours, no new type scale. The
+ * states an operator has to distinguish at a glance (blocked vs failed vs
+ * skipped, terminal vs retryable) are carried by the semantic ramp already in
+ * use everywhere else, so a colour learned on the import screens means the same
+ * thing here.
+ */
+
+.progress-track {
+  height: 8px; border-radius: 999px; background: var(--muted-soft);
+  overflow: hidden; margin: 10px 0 14px;
+}
+.progress-fill { height: 100%; background: var(--accent); border-radius: 999px; }
+.progress-figure { text-align: right; min-width: 150px; }
+.progress-value { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+td .progress-track { margin: 4px 0 2px; min-width: 120px; }
+
+/* The pipeline strip. Horizontally scrollable rather than wrapped: the order is
+ * the meaning, and a wrapped sequence reads as two sequences. */
+.pipeline {
+  display: flex; gap: 6px; list-style: none; margin: 12px 0; padding: 0 0 6px;
+  overflow-x: auto;
+}
+.pipeline-stage {
+  flex: 1 1 0; min-width: 104px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface-2); padding: 8px 10px;
+}
+.pipeline-stage.has-work { background: var(--surface); border-color: var(--border-strong); }
+.pipeline-stage a { text-decoration: none; color: inherit; display: block; }
+.pipeline-index {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 999px; margin-right: 6px;
+  background: var(--muted-soft); color: var(--muted);
+  font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+/* Label on its own line so every stage in the strip keeps the same three-row
+ * rhythm — index, name, count — however long its name is. */
+.pipeline-label { display: block; font-size: 12.5px; font-weight: 600; margin-top: 4px; min-height: 2.4em; }
+.pipeline-count { display: block; font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* Agent cards. */
+.agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 12px; padding: 4px 0; }
+.agent-card { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 12px 14px; }
+.agent-card.agent-stopped { border-color: var(--err); background: var(--err-soft); }
+.agent-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.agent-name { font-weight: 650; font-size: 13.5px; text-decoration: none; }
+.agent-badges { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.agent-counts { display: flex; flex-wrap: wrap; gap: 4px 10px; margin: 8px 0 6px; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--text-2); }
+.agent-counts .ok { color: var(--ok); }
+.agent-counts .warn { color: var(--warn); font-weight: 600; }
+.agent-counts .err { color: var(--err); font-weight: 600; }
+.agent-counts .info { color: var(--info); }
+
+/* Per-Contact pipeline, rendered vertically so each stage has room for the one
+ * thing that matters most about it: why it is in the state it is in. */
+.stage-list { list-style: none; margin: 0; padding: 0; }
+.stage-item { border-left: 3px solid var(--border); padding: 10px 0 10px 14px; margin-left: 4px; }
+.stage-item + .stage-item { border-top: 1px solid var(--border); }
+.stage-item.stage-completed { border-left-color: var(--ok); }
+.stage-item.stage-running { border-left-color: var(--info); }
+.stage-item.stage-failed, .stage-item.stage-blocked, .stage-item.stage-disabled { border-left-color: var(--err); }
+.stage-item.stage-retrying, .stage-item.stage-paused { border-left-color: var(--warn); }
+.stage-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.stage-meta { margin-top: 3px; }
+.stage-reason { margin-top: 4px; color: var(--text-2); }
+.stage-error { margin-top: 4px; color: var(--err); }
+
+/* Controls. Each control keeps its own consequence note directly beneath it, so
+ * what it does to work in flight is never a paragraph away from the button. */
+.control-row { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-start; }
+.control-form { display: flex; flex-direction: column; gap: 6px; min-width: 230px; flex: 1 1 230px; }
+.control-form .small { max-width: 260px; }
+
+.chip-count { font-variant-numeric: tabular-nums; opacity: .75; margin-left: 2px; }
+tr.row-failure { background: var(--err-soft); }
+td.err, td .err { color: var(--err); font-weight: 600; }

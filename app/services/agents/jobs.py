@@ -53,6 +53,27 @@ def public_status(job: AgentJob) -> str:
     return _PUBLIC_STATUS[job.status]
 
 
+def public_status_for(status: AgentJobStatus) -> str:
+    """The public label for a stored status, without needing a job instance.
+
+    Aggregate queries group by the stored enum, so they need the same mapping
+    the serializers use. Deriving it here keeps one job vocabulary: a caller that
+    built its own map would drift the moment a status is added.
+    """
+
+    return _PUBLIC_STATUS[status]
+
+
+def stored_statuses_for_public(label: str) -> tuple[AgentJobStatus, ...]:
+    """Every stored status that presents as ``label``.
+
+    An unrecognised label returns nothing, so a hand-edited filter widens a list
+    rather than raising.
+    """
+
+    return tuple(stored for stored, public in _PUBLIC_STATUS.items() if public == label)
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 

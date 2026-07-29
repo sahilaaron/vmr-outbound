@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% from "_agent_macros.html" import agent_card, control_badge, control_source, activity_stream %}
+{% block content %}
+<div class="page-head">
+  <h1>Workbench</h1>
+  <div class="sub">
+    The operating control room for the Agent pipeline. Every number below is read from the
+    Phase 2 execution backbone — the Agent registry, its controls, the durable job queue, and
+    the committed pipeline events.
+  </div>
+</div>
+
+{% if overview.sending_stopped %}
+<div class="notice err" role="alert">
+  <div>
+    <strong>Sending is stopped.</strong>
+    The Sending Agent is <strong>{{ overview.sending_control.global_status.value }}</strong> globally, so no new
+    sending work is claimed in any Campaign.
+    {% if overview.sending_control.reason %}Reason on record: {{ overview.sending_control.reason }}.{% endif %}
+    <a href="/workbench/agents/sending">Open the Sending Agent</a>.
+  </div>
+</div>
+{% endif %}
+
+<div class="stat-grid">
+  <div class="stat accent"><div class="label">Campaign Contacts</div><div class="value">{{ overview.total_contacts }}</div></div>
+  <div class="stat"><div class="label">Running</div><div class="value info">{{ overview.active_contacts }}</div></div>
+  <div class="stat"><div class="label">Waiting</div><div class="value muted">{{ overview.waiting_contacts }}</div></div>
+  <div class="stat"><div class="label">Blocked</div><div class="value err">{{ overview.blocked_contacts }}</div><div class="small muted-text">{{ overview.suppressed_contacts }} suppressed</div></div>
+  <div class="stat"><div class="label">Completed</div><div class="value ok">{{ overview.completed_contacts }}</div></div>
+</div>
+
+<div class="stat-grid">
+  <div class="stat"><div class="label">Open jobs</div><div class="value">{{ overview.queue.open_work }}</div><div class="small muted-text">queued, leased, running, retrying, paused</div></div>
+  <div class="stat"><div class="label">Running</div><div class="value info">{{ overview.queue.running }}</div><div class="small muted-text">{{ overview.queue.count("leased") }} leased</div></div>
+  <div class="stat"><div class="label">Retry scheduled</div><div class="value warn">{{ overview.queue.retrying }}</div></div>
+  <div class="stat"><div class="label">Failed</div><div class="value err">{{ overview.queue.failed }}</div><div class="small muted-text"><a href="/workbench/jobs?status=failed">{{ overview.queue.terminal_failures }} terminal · {{ overview.queue.retryable_failures }} retryable</a></div></div>
+  <div class="stat"><div class="label">Completed</div><div class="value ok">{{ overview.queue.count("completed") }}</div></div>
+</div>
+
+{# --- Campaigns ---------------------------------------------------------- #}
+<div class="card">
+  <div class="card-head">
+    <h2>Campaigns</h2>
+    <span class="hint">Execution is separate from Campaign status — a Campaign can be active with execution switched off.</span>
+  </div>
+  <div class="card-body tight">
+    {% if overview.campaigns %}
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">Campaign</th><th scope="col">Execution</th>
+          <th scope="col" class="num">Contacts</th><th scope="col">Progress</th>
+          <th scope="col" class="num">Blocked</th><th scope="col" class="num">Failed jobs</th>
+          <th scope="col">Sending</th><th scope="col">Overrides</th><th scope="col">Latest event</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for campaign in overview.campaigns %}
+        <tr class="{{ 'row-failure' if campaign.needs_attention else '' }}">
+          <td>
+            <a href="/workbench/campaigns/{{ campaign.campaign_id }}">{{ campaign.name }}</a>
+            <div class="small muted-text">status {{ campaign.status }}</div>
+          </td>
+          <td>
+            {% if campaign.execution_enabled %}<span class="badge ok">enabled</span>
+            {% else %}<span class="badge err" title="Every Agent but Capture is disabled for this Campaign while execution is off.">off</span>{% endif %}
+          </td>
+          <td class="num">{{ campaign.enrolled_contacts }}</td>
+          <td>
+            <div class="progress-track" role="img" aria-label="{{ campaign.progress_percent }} percent complete">
+              <div class="progress-fill" style="width: {{ campaign.progress_percent }}%"></div>
+            </div>
+            <div class="small muted-text">{{ campaign.progress_percent }}% · {{ campaign.completed_contacts }} complete</div>
+          </td>
+          <td class="num {{ 'err' if campaign.blocked_contacts }}">{{ campaign.blocked_contacts }}</td>
+          <td class="num {{ 'err' if campaign.queue.failed }}">{{ campaign.queue.failed }}</td>
+          <td>{{ control_badge(campaign.sending_status) }}</td>
+          <td class="num">{{ campaign.override_count }}</td>
+          <td class="small muted-text">{{ campaign.latest_activity_at | dt }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty">
+      <div class="empty-title">No Campaigns exist yet</div>
+      <p>Create a Campaign before the pipeline has anything to execute.</p>
+      <a class="btn" href="/campaigns">Open Campaigns</a>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{# --- Agents ------------------------------------------------------------- #}
+<div class="card">
+  <div class="card-head">
+    <h2>Agents</h2>
+    <span class="hint">{{ overview.agents | length }} registered · order and dependencies come from the Phase 2 registry</span>
+  </div>
+  <div class="card-body tight">
+    <div class="agent-grid">
+      {% for card in overview.agents %}{{ agent_card(card) }}{% endfor %}
+    </div>
+  </div>
+</div>
+
+{# --- Activity ----------------------------------------------------------- #}
+<div class="table-wrap">
+  <div class="toolbar">
+    <strong class="small">Latest committed pipeline events</strong>
+    <a class="chip" href="/workbench/jobs">All jobs</a>
+  </div>
+  {{ activity_stream(overview.recent_activity, "No pipeline event has been committed yet.") }}
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>What the controls can and cannot do</h2></div>
+  <div class="card-body">
+    <p class="small mt-0">
+      Agent controls decide what <em>executes</em>. They never decide what is
+      <em>permitted</em>. Suppression, Campaign Contact eligibility, exact-draft approval and
+      verification truth stay authoritative above every control on these pages: enabling an
+      Agent cannot release a blocked Contact, and a retry cannot bypass a suppression, a
+      disabled Agent, or a Campaign override.
+    </p>
+    <p class="small">
+      No control discards work. Pausing and disabling hold claimable and leased jobs at
+      <code>paused</code>; a retry requeues the same durable job under its existing identity, so
+      completed work cannot be duplicated. A stage is shown as complete only when Phase 2
+      committed a domain outcome and a pipeline event to say so — a succeeded job alone is
+      never enough.
+    </p>
+  </div>
+</div>
+{% endblock %}
