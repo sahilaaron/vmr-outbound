@@ -46,9 +46,10 @@ class FeatureFlags(BaseModel):
     # acquisition extension submits to. Off by default. When on, one reviewed
     # submission persists immutable per-person capture evidence, matches only on
     # an exact normalized LinkedIn profile URL, refreshes canonical fields under
-    # the DAT-005 freshness policy, and applies operator labels and notes. It
-    # never creates a campaign membership, verifies an email, or makes any
-    # contact outreach-eligible; suppression stays authoritative.
+    # the DAT-005 freshness policy, and applies operator labels and notes. A
+    # Campaign is optional; when selected, the permanent Contact is additionally
+    # filed through the idempotent Campaign Contact service and the filing
+    # outcome is reported separately. Suppression stays authoritative.
     contact_capture_intake: bool = False
     # Promotion of a staged contact capture into a canonical contact (DAT-014).
     # Off by default. When on, the workbench can resolve a captured company's
@@ -89,6 +90,20 @@ class FeatureFlags(BaseModel):
     # with a campaign is a statement about what that campaign concerns; it never
     # writes email copy or selects a call to action.
     seller_knowledge_base: bool = False
+    # Workbench Agent monitor and controls (MVP-01B): the operator control room
+    # over the Phase 2 execution backbone — the Agent registry and controls,
+    # Campaign execution, Campaign Contact pipeline state, durable Agent Jobs,
+    # and the operator commands over them. Off by default; while off the area
+    # renders one clean unavailable state and the navigation entry is disabled.
+    # It also requires ``workbench``, because it is part of that UI and inherits
+    # its local-only gate.
+    #
+    # Turning it on shows authoritative Phase 2 state and routes every operator
+    # command through the Phase 2 service layer. It adds no execution capability
+    # of its own: it cannot enable an Agent that has no adapter, cannot advance a
+    # stage, and cannot release a suppression or any other domain block — those
+    # remain authoritative above every control on the pages.
+    agent_workbench: bool = False
     # Operator-driven Sales Navigator company-domain enrichment via the official
     # logo.dev Search Brands API (DAT-010). Off by default so the lookup UI and
     # any outbound call stay fully disabled until deliberately enabled for local

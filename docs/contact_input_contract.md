@@ -23,7 +23,8 @@ manual and compliant.
      and may exclude each person, and they are submitted as **permanent
      Contacts** through a narrow intake endpoint (or handed over as a JSON/CSV
      export). No unattended pagination, credential storage, or undocumented
-     APIs — and **no campaign**: see
+     APIs. Campaign selection is optional and is only a downstream filing
+     shortcut: see
      `extensions/salesnav-capture/docs/CONTACT_CAPTURE_CONTRACT.md`.
 - Legacy `.xls`, Google Sheets direct import, and other spreadsheet formats are
   out of scope until explicitly approved.
@@ -87,22 +88,22 @@ observation time (AGENTS.md; DAT-005).
 
 The capture path does not use the columns above: a LinkedIn page shows a person,
 not a spreadsheet row. It has its own versioned contract
-(`linkedin-contact-capture/2.0.0`) and these rules:
+(`linkedin-contact-capture/2.1.0`; 2.0 remains accepted) and these rules:
 
 - A capture is **permanent, immutable evidence**. It never overwrites earlier
   evidence; the DAT-005 freshness policy decides which observation wins.
 - Only an **exact normalized LinkedIn profile URL** may match and refresh an
   existing contact. Name / company / title / location similarity produces
   review candidates only.
-- A person with no visible profile URL (common on a Sales Navigator result row)
-  stays honestly **unmatched and staged**. Identity is never repaired from a
-  lead URL.
-- A canonical contact is **not created** from a capture, because a contact
-  requires a company domain and a LinkedIn page never shows one. Inventing a
-  domain would be fabricated evidence, so unmatched people wait for domain
-  resolution and operator promotion.
-- Optional **labels** classify permanent contacts (they are not campaigns) and
-  optional **notes** are append-only.
+- A permanent Contact is always created or exactly matched. A missing LinkedIn
+  profile URL or company domain remains `NULL`; the system never repairs
+  identity from a lead URL or fabricates a domain.
+- Optional **Collections** (called Labels in the extension) classify permanent
+  Contacts and optional **notes** are append-only. Collection membership is not
+  Campaign membership.
+- Optional `campaign_id` filing creates the Campaign Contact idempotently after
+  Contact storage. A filing failure is reported without erasing the Contact or
+  capture.
 - Suppression stays authoritative, and no capture makes a contact
   outreach-eligible.
 

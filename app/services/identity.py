@@ -51,6 +51,7 @@ from app.models.import_batch import ImportBatch, ImportRow, ImportRowValidation
 from app.models.provenance import ProvenanceRecord
 from app.models.suppression import Suppression
 from app.services.audit import record_audit_event
+from app.services.campaign_contacts import enrol_contact
 from app.services.contact_state import transition_contact_state
 from app.services.imports import normalization as norm
 from app.services.suppressions import find_active_suppression
@@ -426,7 +427,10 @@ def _preview_assign(
         membership_collision=collision,
         suppression_enforced=suppressed,
     )
-    name = f"{contact.first_name} {contact.last_name}"
+    name = (
+        " ".join(part for part in (contact.first_name, contact.last_name) if part)
+        or "(name not captured)"
+    )
     preview.summary.append(f"Link this row to the existing contact {name}.")
     if collision:
         preview.summary.append(
@@ -671,21 +675,30 @@ def _ensure_membership(
     contact_id: uuid.UUID,
     batch_id: uuid.UUID,
     suppressed: bool,
+    actor: str,
 ) -> tuple[CampaignContact, bool]:
     """Return the (membership, created?) for a (campaign, contact), never duplicating."""
 
-    existing = _campaign_membership(session, campaign_id, contact_id)
-    if existing is not None:
-        return existing, False
-    membership = CampaignContact(
+    result = enrol_contact(
+        session,
         campaign_id=campaign_id,
         contact_id=contact_id,
-        source_batch_id=batch_id,
-        state=ContactWorkflowState.SUPPRESSED if suppressed else ContactWorkflowState.IMPORTED,
+        source_type="identity_resolution",
+        source_reference=str(batch_id),
+        import_batch_id=batch_id,
+        actor=actor,
+        enqueue=False,
     )
-    session.add(membership)
-    session.flush()
-    return membership, True
+    membership = result.membership
+    if suppressed and membership.state not in _TERMINAL_STATES:
+        transition_contact_state(
+            session,
+            membership,
+            target=ContactWorkflowState.SUPPRESSED,
+            actor=actor,
+            reason="suppressed identity confirmed during ambiguity resolution",
+        )
+    return membership, result.created
 
 
 def _append_provenance(
@@ -841,6 +854,7 @@ def _apply_row_resolution(
             contact_id=contact.id,
             batch_id=review.batch.id,
             suppressed=suppressed,
+            actor=actor,
         )
     else:
         # CREATE_NEW / MARK_SEPARATE both create a fresh, distinct contact.
@@ -852,6 +866,7 @@ def _apply_row_resolution(
             contact_id=contact.id,
             batch_id=review.batch.id,
             suppressed=suppressed,
+            actor=actor,
         )
 
     _append_provenance(session, contact_id=contact.id, batch=review.batch, row=review.row)

@@ -5,10 +5,11 @@ service against a live Postgres, using the extension's committed contract schema
 and example payloads as the source of truth.
 
 The guarantees under test are the product ones: no campaign is ever required,
-one submission persists permanent per-person evidence, only an exact normalized
-LinkedIn profile URL may refresh a contact, ambiguity and suppression stay
-authoritative, labels and notes are optional and append-only, retries are
-idempotent, and nothing a capture does makes a contact outreach-eligible.
+one submission persists permanent per-person evidence, only an exact LinkedIn
+identifier may refresh an existing contact, ambiguity and suppression stay
+authoritative, optional Campaign filing is isolated and idempotent, labels and
+notes are optional and append-only, and unmatched capture remains staged until
+promotion can create a Contact without guessing.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from app.api.deps import get_db
 from app.core.config import get_settings
 from app.main import create_app
 from app.models.audit_event import AuditEvent
+from app.models.campaign import Campaign, CampaignContact
 from app.models.contact import Contact
 from app.models.contact_capture import (
     ContactCaptureNote,
@@ -32,14 +34,23 @@ from app.models.contact_capture import (
     ContactLabel,
     ContactLabelAssignment,
 )
-from app.models.enums import LinkedInSnapshotOutcome, SuppressionReason, SuppressionType
+from app.models.enums import (
+    CampaignStatus,
+    CaptureCampaignFilingStatus,
+    EnrichmentConfirmationSource,
+    LinkedInSnapshotOutcome,
+    SuppressionReason,
+    SuppressionType,
+)
 from app.models.linkedin_profile import (
     LinkedInProfileExperienceObservation,
     LinkedInProfileSnapshot,
 )
+from app.models.pipeline import CaptureCampaignFiling
 from app.models.qa_evaluation import ContactQAEvaluation
 from app.services.captures import intake as cc
 from app.services.captures import labels as labels_service
+from app.services.captures import promotion as promotion_service
 from app.services.suppressions import add_suppression
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
@@ -204,21 +215,65 @@ def test_oversized_body_is_rejected_before_parsing(
 # --- The contact-first contract ----------------------------------------------
 
 
-def test_no_campaign_is_required_or_accepted(
+def test_no_campaign_is_required(
     client: TestClient, enable_contact_capture: None, db_session: Session
 ) -> None:
-    """The whole point of the refactor: acquisition without a campaign."""
+    """Acquisition stores evidence without requiring Campaign context."""
 
     payload = _fresh(PROFILE_SUBMISSION)
-    assert "campaign_id" not in payload
+    payload["campaign_id"] = None
     response = _post(client, payload)
     assert response.status_code == 201, response.text
     snapshot = db_session.scalars(select(LinkedInProfileSnapshot)).one()
     assert snapshot.campaign_id is None
     assert snapshot.capture_mode == cc.CAPTURE_MODE_PROFILE
+    assert _contact_count(db_session) == 0
+    assert db_session.scalar(select(func.count()).select_from(CampaignContact)) == 0
 
 
-def test_a_campaign_field_is_rejected_as_an_undeclared_property(
+def test_campaign_selection_waits_for_safe_promotion_then_files_once(
+    client: TestClient, enable_contact_capture: None, db_session: Session
+) -> None:
+    campaign = Campaign(name="Optional capture filing", status=CampaignStatus.DRAFT)
+    db_session.add(campaign)
+    db_session.flush()
+    payload = _fresh(PROFILE_SUBMISSION)
+    payload["campaign_id"] = str(campaign.id)
+
+    response = _post(client, payload)
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["counts"]["staged_unmatched"] == 1
+    assert body["counts"]["campaign_filings_pending"] == 1
+    assert _contact_count(db_session) == 0
+    assert db_session.scalar(select(func.count()).select_from(CampaignContact)) == 0
+    filing = db_session.scalars(select(CaptureCampaignFiling)).one()
+    assert filing.status is CaptureCampaignFilingStatus.PENDING
+    assert filing.campaign_contact_id is None
+
+    snapshot = db_session.scalars(select(LinkedInProfileSnapshot)).one()
+    promotion_service.confirm_domain(
+        db_session,
+        snapshot=snapshot,
+        source=EnrichmentConfirmationSource.MANUAL,
+        domain="meridianworks.example",
+        actor="test",
+    )
+    promoted = promotion_service.promote(db_session, snapshot=snapshot, actor="test")
+    assert promoted.contact is not None
+    membership = db_session.scalars(select(CampaignContact)).one()
+    assert membership.campaign_id == campaign.id
+    assert membership.contact_id == promoted.contact.id
+    assert filing.status is CaptureCampaignFilingStatus.APPLIED
+    assert filing.campaign_contact_id == membership.id
+
+    replay = _post(client, payload)
+    assert replay.status_code == 200
+    assert replay.json()["already_received"] is True
+    assert db_session.scalar(select(func.count()).select_from(CampaignContact)) == 1
+
+
+def test_malformed_campaign_id_is_rejected(
     client: TestClient, enable_contact_capture: None
 ) -> None:
     payload = _fresh(PROFILE_SUBMISSION)
@@ -226,6 +281,21 @@ def test_a_campaign_field_is_rejected_as_an_undeclared_property(
     response = _post(client, payload)
     assert response.status_code == 422
     assert response.json()["error"] == "validation_failed"
+
+
+def test_unknown_campaign_filing_fails_without_losing_the_capture(
+    client: TestClient, enable_contact_capture: None, db_session: Session
+) -> None:
+    payload = _fresh(PROFILE_SUBMISSION)
+    payload["campaign_id"] = str(uuid.uuid4())
+    response = _post(client, payload)
+    assert response.status_code == 201
+    body = response.json()
+    assert body["counts"]["staged_unmatched"] == 1
+    assert body["counts"]["campaign_filings_failed"] == 1
+    assert body["results"][0]["campaign_filing"]["error_code"] == "campaign_not_found"
+    assert _contact_count(db_session) == 0
+    assert db_session.scalar(select(func.count()).select_from(CampaignContact)) == 0
 
 
 def test_legacy_contract_is_refused_with_a_pointer_to_its_own_route(
@@ -285,12 +355,12 @@ def test_manually_opened_profile_is_saved_as_permanent_capture_evidence(
     assert body["already_received"] is False
     assert body["counts"]["submitted"] == 1
     assert body["counts"]["staged_unmatched"] == 1
-    # Honest: an unmatched person is staged, never invented as a canonical row.
     assert body["counts"]["created"] == 0
     assert _contact_count(db_session) == 0
 
     snapshot = db_session.scalars(select(LinkedInProfileSnapshot)).one()
     assert snapshot.outcome is LinkedInSnapshotOutcome.UNMATCHED_STAGED
+    assert snapshot.matched_contact_id is None
     assert snapshot.normalized_profile_url == PROFILE_URL
     assert snapshot.payload["person"]["full_name"] == "Morgan Vale"
     assert snapshot.profile_fields["about_text"].startswith("Operations leader")
@@ -300,6 +370,7 @@ def test_manually_opened_profile_is_saved_as_permanent_capture_evidence(
 
     result = body["results"][0]
     assert result["capture_url"].endswith(f"/contact-captures/{snapshot.id}")
+    assert result["contact_url"] is None
     assert result["outcome"] == "unmatched_staged"
 
 
@@ -310,7 +381,9 @@ def test_salesnav_rows_are_saved_without_a_campaign_and_keep_uncertain_identity(
     assert response.status_code == 201
     body = response.json()
     assert body["counts"]["submitted"] == 2
+    assert body["counts"]["created"] == 0
     assert body["counts"]["staged_unmatched"] == 2
+    assert _contact_count(db_session) == 0
 
     snapshots = {
         s.payload["person"]["full_name"]: s
@@ -406,6 +479,7 @@ def test_weak_name_match_is_review_only(
     snapshot = db_session.scalars(select(LinkedInProfileSnapshot)).one()
     assert snapshot.review_candidates
     assert all(c["auto_merge"] is False for c in snapshot.review_candidates)
+    assert _contact_count(db_session) == 1
 
 
 def test_duplicate_person_in_one_submission_is_marked_and_reconciled_once(
@@ -428,7 +502,7 @@ def test_duplicate_person_in_one_submission_is_marked_and_reconciled_once(
     assert by_id[second_id].duplicate_of_id == by_id[first_id].id
     # The duplicate's evidence is preserved, not dropped.
     assert by_id[second_id].payload["person"]["full_name"] == "Morgan Vale"
-    assert by_id[second_id].matched_contact_id is None
+    assert by_id[second_id].matched_contact_id == target.id
     assert str(target.id) == body["results"][0]["matched_contact_id"]
 
 
@@ -530,7 +604,7 @@ def test_labels_on_an_unmatched_capture_stay_on_the_capture(
     assert body["counts"]["labels_applied"] == 0
     snapshot = db_session.scalars(select(LinkedInProfileSnapshot)).one()
     assert snapshot.operator_labels == ["Healthcare", "Market Entry"]
-    # The registry still learns the label so it can be reused next time.
+    assert db_session.scalar(select(func.count()).select_from(ContactLabelAssignment)) == 0
     assert db_session.scalar(select(func.count()).select_from(ContactLabel)) == 2
 
 

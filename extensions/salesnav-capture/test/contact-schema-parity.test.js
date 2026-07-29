@@ -129,7 +129,7 @@ const CORPUS = [
     expectValid: false,
   },
   {
-    name: "campaign_id smuggled in",
+    name: "malformed campaign_id",
     payload: withPayload((p) => {
       p.campaign_id = "camp-1";
     }),

@@ -2,10 +2,8 @@
  * Side-panel core: shared helpers, the optional labels/note card, the shared
  * Save action and outcome, and the Sales Navigator listings workflow.
  *
- * Contact-first: there is no campaign selector, no campaign id, and no campaign
- * state anywhere in this panel. The operator selects visible people, reviews the
- * selected set, optionally labels and annotates it, and saves them as permanent
- * contacts.
+ * Contact-first: Campaign selection is an optional, durable filing shortcut.
+ * The operator can always save permanent Contacts without choosing one.
  *
  * Presentation is the VM Prospector shell (src/sidepanel/shell.js): header,
  * detected-page strip, three-step rail, one scrolling body, one sticky action.
@@ -39,6 +37,7 @@
   let currentBatch = null;
   let currentPrefs = null;
   let currentMetadata = { labels: [], note: null };
+  let currentFilingContext = { campaignId: null };
   let saveHandler = null;
   // The view the operator returns to when they leave an outcome or settings.
   let returnView = null;
@@ -235,6 +234,70 @@
     }
   }
 
+  // ---- optional Campaign filing ------------------------------------------
+
+  function renderCampaignSelection(campaigns) {
+    const select = $("campaign-select");
+    const selected = currentFilingContext.campaignId || "";
+    select.textContent = "";
+    select.appendChild(el("option", { text: "Save Contact only", attrs: { value: "" } }));
+    let selectedFound = !selected;
+    for (const campaign of campaigns || []) {
+      const option = el("option", {
+        text: campaign.name,
+        attrs: { value: campaign.id },
+      });
+      if (campaign.id === selected) selectedFound = true;
+      select.appendChild(option);
+    }
+    if (selected && !selectedFound) {
+      select.appendChild(
+        el("option", {
+          text: "Previously selected Campaign (unavailable)",
+          attrs: { value: selected },
+        })
+      );
+    }
+    select.value = selected;
+  }
+
+  async function persistCampaignSelection(campaignId) {
+    const r = await send({
+      type: "SET_FILING_CONTEXT",
+      filingContext: { campaignId: campaignId || null },
+    });
+    if (r && r.ok) currentFilingContext = r.filingContext;
+    renderCampaignSelection([]);
+    await refreshCampaigns(false);
+  }
+
+  async function refreshCampaigns(requestPermission) {
+    const feedback = $("campaign-feedback");
+    if (requestPermission) {
+      const permission = await ensureHostPermission(backendBase() + constants.CAMPAIGNS_PATH);
+      if (!permission.granted) {
+        feedback.textContent = "Allow access to the local backend to load Campaigns.";
+        feedback.setAttribute("data-tone", "warning");
+        return;
+      }
+    }
+    const r = await send({ type: "FETCH_CAMPAIGNS" });
+    if (!r || !r.ok) {
+      renderCampaignSelection([]);
+      feedback.textContent =
+        currentFilingContext.campaignId
+          ? "The saved Campaign choice could not be refreshed. Capture still saves the Contact."
+          : "Campaigns are unavailable. You can still save the Contact.";
+      feedback.setAttribute("data-tone", "warning");
+      return;
+    }
+    renderCampaignSelection(r.campaigns);
+    feedback.textContent = currentFilingContext.campaignId
+      ? "The Contact will also be filed into the selected Campaign."
+      : "No Campaign is required. This saves the permanent Contact only.";
+    feedback.removeAttribute("data-tone");
+  }
+
   // ---- shared save action -------------------------------------------------
 
   /**
@@ -344,6 +407,33 @@
     if (counts.notes_recorded) {
       lines.appendChild(
         statusLine("Notes recorded", badge(String(counts.notes_recorded), { tone: "brand" }))
+      );
+      shown += 1;
+    }
+    if (counts.campaign_filings_applied) {
+      lines.appendChild(
+        statusLine(
+          "Added to Campaign",
+          badge(String(counts.campaign_filings_applied), { tone: "success" })
+        )
+      );
+      shown += 1;
+    }
+    if (counts.campaign_filings_pending) {
+      lines.appendChild(
+        statusLine(
+          "Campaign filing waiting",
+          badge(String(counts.campaign_filings_pending), { tone: "warning" })
+        )
+      );
+      shown += 1;
+    }
+    if (counts.campaign_filings_failed) {
+      lines.appendChild(
+        statusLine(
+          "Campaign filing failed (Contact saved)",
+          badge(String(counts.campaign_filings_failed), { tone: "danger" })
+        )
       );
       shown += 1;
     }
@@ -1251,6 +1341,10 @@
       currentMetadata = m || { labels: [], note: null };
       renderMetadata();
     },
+    setFilingContext: (value) => {
+      currentFilingContext = value || { campaignId: null };
+      renderCampaignSelection([]);
+    },
     getBatch: () => currentBatch,
     refreshDetect,
     setReturnView: (v) => {
@@ -1328,6 +1422,10 @@
         renderMetadata();
       }
     });
+    $("campaign-select").addEventListener("change", (e) =>
+      persistCampaignSelection(e.target.value)
+    );
+    $("campaign-refresh").addEventListener("click", () => refreshCampaigns(true));
     $("migration-dismiss").addEventListener("click", async () => {
       await send({ type: "DISCARD_LEGACY_ARCHIVE" });
       $("archive-card").hidden = true;
@@ -1340,7 +1438,9 @@
     if (state && state.ok) {
       loadPrefsIntoUi(state.prefs);
       currentMetadata = state.metadata || { labels: [], note: null };
+      currentFilingContext = state.filingContext || { campaignId: null };
       renderMetadata();
+      renderCampaignSelection([]);
       renderMigration(state);
       renderBatch(state.batchView);
       // Recovery: if contacts were already saved (panel closed/reloaded, or a
@@ -1351,6 +1451,7 @@
     }
     refreshPermissionState();
     refreshLabelSuggestions();
+    refreshCampaigns(false);
   }
 
   document.addEventListener("DOMContentLoaded", init);

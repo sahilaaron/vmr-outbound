@@ -8,8 +8,8 @@ JSON/CSV export). Its responsibility ends there.
 
 > **Save the person first. Decide what to do with them later.**
 >
-> Contacts are permanent. Campaigns are a later, temporary use of a saved
-> audience — the extension does not select one, require one, or store one.
+> Contacts are permanent. Campaign selection is optional: it adds an idempotent
+> Campaign Contact filing but never gates or owns the saved person.
 
 > Manifest V3 · no bundler · **zero runtime dependencies** · no remote code.
 
@@ -23,9 +23,9 @@ By deliberate design, the extension does **not**: connect to PostgreSQL/RDS,
 create or update contacts, run authoritative normalization, deduplicate database
 records, resolve identity, resolve or create labels, enforce or bypass
 suppressions, discover or verify emails, research companies, score or qualify
-contacts, or generate, approve, or schedule outreach. It also does not select,
-create, or require a campaign. All of that stays in the VMR backend or later in
-the workflow.
+contacts, or generate, approve, or schedule outreach. It may remember one
+operator-selected Campaign filing target, but does not create a Campaign or
+require selection. All authoritative work stays in the VMR backend.
 
 It does **not** store LinkedIn credentials/cookies/tokens, automate login, solve
 CAPTCHAs, evade rate limits, auto-paginate, or call undocumented LinkedIn APIs.
@@ -143,7 +143,7 @@ opened and shows exactly one of:
 | Challenge / Login Required | checkpoint, captcha, authwall | Nothing — the operator resolves it themselves |
 
 Both person surfaces submit the same contact-first contract,
-`linkedin-contact-capture/2.0.0` — see
+`linkedin-contact-capture/2.1.0` — see
 [`docs/CONTACT_CAPTURE_CONTRACT.md`](./docs/CONTACT_CAPTURE_CONTRACT.md).
 
 Every mode is **operator-controlled**: the extension reads only the page the
@@ -177,7 +177,7 @@ not silently processed.
 3. Review the name, headline, location, current role, LinkedIn URL, About
    excerpt, connections, open-to-work, and any warnings. Optionally exclude the
    experience section.
-4. Optionally add **labels** and a **note** (both optional, both plain text).
+4. Optionally add **Collections (Labels)**, a note, and a Campaign filing target.
 5. Click *Save Contact* — or *Refresh Contact*, which the panel offers when the
    backend already knows that exact profile URL.
 6. The result reports what actually happened (created / refreshed / staged /
@@ -194,7 +194,7 @@ not silently processed.
    selector fails / pages) and per-row warnings, and **exclude** any row you do
    not want. Move to the next page in Sales Navigator yourself and capture
    again — rows accumulate into one draft batch, de-duplicated by stable URL.
-4. Optionally add labels and a note for the submission.
+4. Optionally add Collections (Labels), a note, and a Campaign filing target.
 5. Click *Review selected (N)*, check the set, then *Capture N prospects* — or
    *Download JSON* / *Download CSV*.
    Nothing is sent without this explicit action.
@@ -208,15 +208,16 @@ the side panel or refreshing the page. Use *Clear batch* to start over.
 On install and on browser start, campaign-era local state is retired
 **explicitly**: any v1 draft is archived verbatim under one storage key (and can
 be downloaded from the panel's one-time notice), the live draft keys and stale
-staged-result summaries are cleared, and the remembered campaign is dropped. A
+staged-result summaries are cleared, and the legacy campaign value is dropped.
+Contract 2.1 stores any new optional filing preference under a separate key. A
 v1 draft is never resubmitted — its idempotency keys may already have been
 accepted under the old contract, so replaying it would conflict or split one
 person's evidence in two. Capture again to save those people contact-first.
 
 ## Export fallback and mock receiver
 
-Until the backend adapter lands, three output modes exist: **Download JSON**,
-**Download CSV**, and **Send to a configurable local mock/HTTP receiver**
+Three output modes exist: **Download JSON**, **Download CSV**, and **Send to the
+local backend or a configurable local mock/HTTP receiver**
 (`tools/mock-receiver.js`). The production-facing default sends nowhere without an
 explicit operator action, and no remote URL is embedded — only loopback origins
 are permitted.
@@ -225,8 +226,8 @@ are permitted.
 
 The live contract is
 [`docs/CONTACT_CAPTURE_CONTRACT.md`](./docs/CONTACT_CAPTURE_CONTRACT.md)
-(`linkedin-contact-capture/2.0.0`, `POST /api/intake/contact-captures`),
-idempotent on `client_submission_id`, with no campaign field of any kind.
+(`linkedin-contact-capture/2.1.0`, `POST /api/intake/contact-captures`),
+idempotent on `client_submission_id`, with optional nullable `campaign_id`.
 
 Company evidence keeps its own contract
 ([`docs/PROFILE_CONTRACT.md`](./docs/PROFILE_CONTRACT.md), company section) —

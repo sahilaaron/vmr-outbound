@@ -27,6 +27,11 @@ Capture permanent Contacts
 
 The backend continues to use jobs and workers. The operator-facing application calls them **Agents**.
 
+The Phase 2 execution backbone is documented in
+[`docs/PHASE_2_EXECUTION_MODEL.md`](docs/PHASE_2_EXECUTION_MODEL.md). The common
+worker is `scripts/run_agent_worker.py`; Research, Insights, Personalization,
+and Sending remain registered but disabled until real adapters exist.
+
 ## Core product objects
 
 - **Campaign** — owns audience criteria, seller context, messaging direction, CTA, guardrails, templates, sending configuration and per-campaign Agent controls.

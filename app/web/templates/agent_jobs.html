@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% from "_agent_macros.html" import job_status_badge, failure_badge, pager %}
+{% block content %}
+<div class="page-head">
+  <div class="crumbs"><a href="/workbench">Workbench</a><span>/</span>Jobs</div>
+  <h1>Agent jobs</h1>
+  <div class="sub">
+    Every durable unit of Agent work in the Phase 2 queue. Open one to read its lease, attempts,
+    structured payloads and failure reason.
+  </div>
+</div>
+
+<div class="table-wrap">
+  <div class="toolbar">
+    <div class="filter-chips" role="group" aria-label="Filter by status">
+      <a class="chip {{ 'on' if not listing.status_filter }}" href="{{ base_url_without_status }}">All statuses</a>
+      {% for state in job_states %}
+      <a class="chip {{ 'on' if listing.status_filter == state }}" href="{{ base_url_without_status }}{{ '&' if '?' in base_url_without_status else '?' }}status={{ state }}">
+        {{ state }}{% if listing.queue.count(state) %} <span class="chip-count">{{ listing.queue.count(state) }}</span>{% endif %}
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="toolbar">
+    <div class="filter-chips" role="group" aria-label="Filter by Agent">
+      <a class="chip {{ 'on' if not listing.agent_filter }}" href="{{ base_url_without_agent }}">All Agents</a>
+      {% for spec in agent_specs %}
+      <a class="chip {{ 'on' if listing.agent_filter and listing.agent_filter.value == spec.identifier.value }}" href="{{ base_url_without_agent }}{{ '&' if '?' in base_url_without_agent else '?' }}agent={{ spec.identifier.value }}">{{ spec.display_name.replace(" Agent", "") }}</a>
+      {% endfor %}
+    </div>
+  </div>
+
+  {% if listing.jobs %}
+  <table>
+    <thead>
+      <tr>
+        <th scope="col">Job</th><th scope="col">Agent</th><th scope="col">Status</th>
+        <th scope="col">Campaign</th><th scope="col">Contact</th>
+        <th scope="col" class="num">Attempts</th><th scope="col">Lease</th>
+        <th scope="col">Next run</th><th scope="col">Failure</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for job in listing.jobs %}
+      <tr class="{{ 'row-failure' if job.stored_status.value == 'failed' else '' }}">
+        <td class="mono small"><a href="/workbench/jobs/{{ job.job_id }}">{{ job.job_id }}</a>
+          <div class="small muted-text">{{ job.task_kind }}</div></td>
+        <td class="small">{{ job.agent_name }}</td>
+        <td>{{ job_status_badge(job.public_status) }} {{ failure_badge(job) }}</td>
+        <td class="small">{% if job.campaign_id %}<a href="/workbench/campaigns/{{ job.campaign_id }}">{{ job.campaign_name }}</a>{% else %}<span class="muted-text">not scoped</span>{% endif %}</td>
+        <td class="small">
+          {% if job.campaign_id and job.campaign_contact_id %}
+          <a href="/workbench/campaigns/{{ job.campaign_id }}/contacts/{{ job.campaign_contact_id }}">{{ job.contact_label or job.campaign_contact_id }}</a>
+          {% else %}{{ job.contact_label or "—" }}{% endif %}
+        </td>
+        <td class="num">{{ job.attempt_count }} / {{ job.max_attempts }}</td>
+        <td class="small">{% if job.lease_held %}{{ job.lease_owner }}<div class="small muted-text">expires {{ job.lease_expires_at | dt }}</div>{% else %}<span class="muted-text">—</span>{% endif %}</td>
+        <td class="small muted-text">{{ job.next_run_at | dt }}</td>
+        <td class="small wrap">{{ job.error_message or "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {{ pager(page, pages, listing.total, base_url, "jobs") }}
+  {% else %}
+  <div class="empty">
+    <div class="empty-title">No jobs match this filter</div>
+    <p>Widen the filter, or check whether the Campaign has execution enabled.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

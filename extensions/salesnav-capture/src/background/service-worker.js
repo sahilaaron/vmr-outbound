@@ -8,12 +8,12 @@
  *  - Build the CONTACT-FIRST submission and POST it — ONLY on explicit operator
  *    action — to the local backend or the dev mock receiver.
  *  - Produce JSON / CSV downloads as an offline fallback.
- *  - Migrate campaign-era local state explicitly (never silently reinterpret it).
+ *  - Persist optional Campaign filing context independently from Contact capture.
+ *  - Migrate superseded campaign-bound local state explicitly.
  *
- * There is no campaign anywhere in this worker: acquisition saves a person, and
- * a campaign consumes a saved audience much later. Never stores
- * credentials/cookies/tokens. Never posts to LinkedIn. Nothing is ever sent
- * without an explicit operator-triggered message.
+ * Campaign filing is optional and additive: acquisition always saves the person
+ * first. Never stores credentials/cookies/tokens. Never posts to LinkedIn.
+ * Nothing is ever sent without an explicit operator-triggered message.
  */
 importScripts(
   "../common/constants.js",
@@ -53,6 +53,7 @@ const {
   ALLOWED_BACKEND_ORIGIN_PATTERNS,
   CONTACT_CAPTURE_PATH,
   CONTACT_LABELS_PATH,
+  CAMPAIGNS_PATH,
   CONTACT_LOOKUP_PATH,
   COMPANY_INTAKE_PATH,
 } = constants;
@@ -428,6 +429,29 @@ async function clearOperatorMetadata() {
   return contactSchema.operatorMetadata(null);
 }
 
+// Campaign choice is a durable filing preference, not part of the Contact
+// draft. Clearing labels/notes or recapturing a page therefore does not erase it.
+function cleanCampaignId(value) {
+  const text = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+    text
+  )
+    ? text
+    : null;
+}
+
+async function getFilingContext() {
+  const data = await chrome.storage.local.get(CONTACT_STORAGE.FILING_CONTEXT);
+  const stored = data[CONTACT_STORAGE.FILING_CONTEXT] || {};
+  return { campaignId: cleanCampaignId(stored.campaignId) };
+}
+
+async function setFilingContext(value) {
+  const next = { campaignId: cleanCampaignId(value && value.campaignId) };
+  await chrome.storage.local.set({ [CONTACT_STORAGE.FILING_CONTEXT]: next });
+  return next;
+}
+
 /** Remember the labels just used so the operator can reapply them next time. */
 async function rememberLabels(labels) {
   if (!labels || !labels.length) return;
@@ -447,6 +471,7 @@ async function buildBatchSubmission() {
   const batch = await ensureBatch();
   const records = includedRecords(batch);
   const metadata = await getOperatorMetadata();
+  const filing = await getFilingContext();
   const submissionId = batch.clientSubmissionId || contactSchema.newId();
   if (!batch.clientSubmissionId) {
     batch.clientSubmissionId = submissionId;
@@ -468,6 +493,7 @@ async function buildBatchSubmission() {
     submittedAt: batch.createdAt,
     extensionVersion: EXTENSION_VERSION,
     metadata,
+    campaignId: filing.campaignId,
     contacts,
   });
   return { batch, payload, records, metadata };
@@ -618,6 +644,36 @@ async function fetchLabels() {
       .map((l) => String(l && l.name ? l.name : ""))
       .filter(Boolean);
     return { ok: true, labels: contactSchema.sanitizeLabels(labels) };
+  } catch (e) {
+    clearTimeout(timer);
+    return { ok: false, error: e && e.name === "AbortError" ? "timeout" : "network_error" };
+  }
+}
+
+/** Fetch active/draft Campaigns for the optional filing selector. */
+async function fetchCampaigns() {
+  const prefs = await getPrefs();
+  const base = (prefs.backendBaseUrl || "").replace(/\/$/, "");
+  const url = base + CAMPAIGNS_PATH;
+  if (!isAllowedBackendOrigin(url)) return { ok: false, error: "origin_not_allowed" };
+  const perm = await hasHostPermission(url);
+  if (!perm.ok) return { ok: false, error: "permission_denied", originPattern: perm.pattern };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
+  try {
+    const resp = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!resp.ok) return { ok: false, error: "http_" + resp.status };
+    const body = await resp.json();
+    const rows = Array.isArray(body) ? body : body.campaigns || [];
+    const campaigns = rows
+      .map((row) => ({
+        id: cleanCampaignId(row && row.id),
+        name: typeof (row && row.name) === "string" ? row.name.trim().slice(0, 255) : "",
+        status: typeof (row && row.status) === "string" ? row.status : null,
+      }))
+      .filter((row) => row.id && row.name);
+    return { ok: true, campaigns };
   } catch (e) {
     clearTimeout(timer);
     return { ok: false, error: e && e.name === "AbortError" ? "timeout" : "network_error" };
@@ -828,13 +884,14 @@ async function profileClear() {
 
 /**
  * Build the contact-first submission for the one reviewed profile draft. The
- * draft carries the person; the submission carries the operator's labels and
- * note. No campaign is involved at any point.
+ * draft carries the person; the submission carries operator metadata and the
+ * independent optional Campaign filing choice.
  */
 async function buildProfileSubmission() {
   const draft = await getProfileDraft();
   if (!draft) return { draft: null, payload: null, metadata: null };
   const metadata = await getOperatorMetadata();
+  const filing = await getFilingContext();
   const submissionId = draft.clientSubmissionId || contactSchema.newId();
   if (!draft.clientSubmissionId) {
     draft.clientSubmissionId = submissionId;
@@ -853,6 +910,7 @@ async function buildProfileSubmission() {
     submittedAt: draft.createdAt,
     extensionVersion: EXTENSION_VERSION,
     metadata,
+    campaignId: filing.campaignId,
     contacts: [capture],
   });
   return { draft, payload, metadata };
@@ -1158,6 +1216,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           lastResult: retained.result,
           lastResultContext: retained.context,
           metadata: await getOperatorMetadata(),
+          filingContext: await getFilingContext(),
           migration: await getMigrationNotice(),
         });
         break;
@@ -1199,8 +1258,20 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case "CLEAR_OPERATOR_METADATA":
         sendResponse({ ok: true, metadata: await clearOperatorMetadata() });
         break;
+      case "GET_FILING_CONTEXT":
+        sendResponse({ ok: true, filingContext: await getFilingContext() });
+        break;
+      case "SET_FILING_CONTEXT":
+        sendResponse({
+          ok: true,
+          filingContext: await setFilingContext(msg.filingContext),
+        });
+        break;
       case "FETCH_LABELS":
         sendResponse(await fetchLabels());
+        break;
+      case "FETCH_CAMPAIGNS":
+        sendResponse(await fetchCampaigns());
         break;
       case "EXPORT_LEGACY_ARCHIVE":
         sendResponse(await exportLegacyArchive());
@@ -1224,6 +1295,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           lastResult: retained.result,
           lastResultContext: retained.context,
           metadata: await getOperatorMetadata(),
+          filingContext: await getFilingContext(),
           migration: await getMigrationNotice(),
         });
         break;

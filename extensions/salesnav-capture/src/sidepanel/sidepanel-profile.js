@@ -1035,6 +1035,7 @@
     if (state && state.ok) {
       panel.setPrefs(state.prefs);
       if (state.metadata) panel.setMetadata(state.metadata);
+      if (state.filingContext) panel.setFilingContext(state.filingContext);
       renderDraft(state.draftView);
       // Recovery: a saved outcome (and the reviewed draft that produced it)
       // survives panel close/reopen without recapture or resave. Reading state

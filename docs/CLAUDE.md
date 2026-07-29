@@ -5,6 +5,8 @@ the outbound system. Claude does not own campaign eligibility, verification
 truth, approval state, or sending.
 
 Read `GOAL.md`, `AGENTS.md`, and `docs/PROJECT_TRACKING.md` before working.
+Read `docs/PARALLEL_INTEGRATION.md` as well whenever another thread is
+building at the same time or the branch is stacked on another branch.
 Optimize for the first successful campaign, not for a theoretical fully
 autonomous platform.
 
@@ -120,9 +122,10 @@ is acquired through the operator-driven Chrome extension
 The extension is **contact-first**: it captures a person the operator has
 deliberately opened or selected, preserves the visible evidence, and submits them
 as a permanent Contact through `POST /api/intake/contact-captures`
-(`linkedin-contact-capture/2.0.0`). It never selects or requires a campaign, and
-research, qualification, email discovery, verification, audience building, and
-outreach are all downstream of it.
+(`linkedin-contact-capture/2.1.0`; 2.0 remains accepted). A Campaign is optional.
+When selected, Campaign filing is an isolated, idempotent step after permanent
+Contact storage; research, qualification, email discovery, verification, and
+outreach remain downstream.
 
 The extension captures observations; the backend owns identity resolution,
 provenance and freshness, label resolution, suppression, and every canonical
@@ -144,6 +147,14 @@ outreach.
 - Prefer explicit state machines and typed schemas.
 - Add safe dry-run modes before live actions.
 - Never silently broaden the scope.
+- When another thread is building concurrently, work only inside the declared
+  ownership block and against the exact frozen base SHA supplied. If that SHA is
+  no longer the tip of the base branch, stop and report it rather than following
+  the moving branch.
+- Do not declare a stacked or assembled branch final until the gate sequence
+  defined in `docs/PARALLEL_INTEGRATION.md` passes locally on the final head.
+  When the session cannot run those gates, say `Integration incomplete; do not
+  publish yet` instead of handing over a supposedly final bundle.
 
 When suggesting a future feature, label it as post-launch and do not build it
 unless the goal file is updated.
@@ -155,6 +166,8 @@ structured handoff containing:
 
 - Authorized phase and issues
 - Branch and commits, including whether the branch is actually on GitHub
+- Base SHA, head SHA, bundle path and SHA-256, `git bundle verify` output, and
+  `git merge-base` proof against the declared base
 - Local check results and reproducible evidence
 - What became usable
 - What remains incomplete
@@ -197,6 +210,16 @@ Once the branch is on GitHub, ChatGPT owns remote administration:
 - Request corrections from Claude and verify each correction commit.
 - Merge only after a passing verdict and Sahil's explicit approval.
 - Close or update linked issues and clean up remote branches where appropriate.
+
+When several Claude threads build related work at the same time, exactly one of
+them is the integration thread. Implementation threads produce commits and
+bundles only. The integration thread selects the authoritative upstream heads,
+restacks downstream commits in dependency order, resolves semantic conflicts,
+runs the complete gate sequence on the final assembled head, and produces the
+only branches handed over for publication. Publication itself is unchanged:
+Claude pushes when credentialed, Sahil bridges when it is not, and ChatGPT owns
+the PR and the merge. An implementation thread never restacks another thread's
+work and never declares a dependent branch final.
 
 Do not ask Sahil to author GitHub content or perform web administration that
 ChatGPT can perform. When a local push is unavoidable, provide the shortest

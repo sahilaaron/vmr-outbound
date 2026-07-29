@@ -200,7 +200,8 @@ def find_review_candidates(
     for contact in session.scalars(select(Contact).where(Contact.merged_into_id.is_(None))):
         if contact.id in excluded:
             continue
-        contact_name = _norm_person_name(f"{contact.first_name} {contact.last_name}")
+        display_name = " ".join(part for part in (contact.first_name, contact.last_name) if part)
+        contact_name = _norm_person_name(display_name or None)
         if contact_name != snap_name:
             continue
         basis = ["name"]
@@ -212,7 +213,7 @@ def find_review_candidates(
             {
                 "contact_id": str(contact.id),
                 "match_basis": basis,
-                "contact_name": f"{contact.first_name} {contact.last_name}",
+                "contact_name": display_name or "Unresolved name",
                 "contact_company": contact.company_name,
                 "contact_title": contact.title,
                 "auto_merge": False,  # explicit, permanent: review-only evidence
@@ -374,7 +375,8 @@ def reconcile_snapshot(
             {
                 "contact_id": str(c.id),
                 "match_basis": ["exact_linkedin_url"],
-                "contact_name": f"{c.first_name} {c.last_name}",
+                "contact_name": " ".join(part for part in (c.first_name, c.last_name) if part)
+                or "Unresolved name",
                 "contact_company": c.company_name,
                 "contact_title": c.title,
                 "auto_merge": False,

@@ -43,7 +43,16 @@ Before changing the repository, read:
     only approval it has. Read it when the work touches offerings, proof points,
     restricted claims, personas, campaign-to-offering associations, context
     readiness, or any future assembly of context for drafting.
-11. Documents explicitly referenced by the current goal.
+11. `docs/PARALLEL_INTEGRATION.md` — how parallel threads are scoped,
+    frozen, handed off, and integrated. Read it whenever more than one
+    thread is building against the same repository, whenever a branch is
+    stacked on another branch, and before declaring any assembled head
+    final.
+12. `docs/ENGINEERING_AGENT_STANDARD.md` — the expected working method for a
+    coding agent: how to investigate a reported failure, what a regression proof
+    must demonstrate, and what a handoff must contain. Read it before any defect
+    fix.
+13. Documents explicitly referenced by the current goal.
 
 The root `CLAUDE.md` is a condensed pointer into these documents; it never
 overrides them.
@@ -57,7 +66,13 @@ When instructions conflict, use this priority:
 3. `docs/AGENTS.md`
 4. `docs/CLAUDE.md`
 5. `docs/PROJECT_TRACKING.md`
-6. Existing implementation conventions
+6. `docs/PARALLEL_INTEGRATION.md`
+7. Existing implementation conventions
+
+A more specific document governs its own subject. `docs/PARALLEL_INTEGRATION.md`
+is the single definition of the gate sequence and of integration authority; the
+documents above it defer to it on those two questions rather than restating
+them.
 
 ## Source-of-Truth Boundaries
 
@@ -152,6 +167,39 @@ explicit approval for consequential GitHub actions such as merging.
 
 Never invent completion, dates, evidence, owners, metrics, or readiness.
 
+## Parallel Work and Integration Authority
+
+Several threads may build at once. Only one thread may assemble, validate, and
+publish the result. Many agents may build; one agent integrates; one exact tree
+is validated.
+
+- Before launching parallel threads, record a dependency table naming each
+  task's base SHA, what it depends on, whether it may be developed in parallel,
+  and whether it may be *finalized* in parallel. Tasks in a dependency chain may
+  be developed in parallel but never finalized in parallel.
+- Every parallel task prompt states what the thread owns and what it must not
+  modify. A thread that needs to change something it does not own stops and asks.
+- A branch becomes a valid base for downstream finalization only once it is
+  committed, published or bundled, recorded by exact SHA, green on the complete
+  gate sequence, contract-reviewed, and explicitly declared frozen. Downstream
+  threads receive a required 40-character SHA, never "the latest branch".
+- Integration happens in one persistent integration worktree holding no
+  unrelated local edits.
+- A branch is not final until the gate sequence defined in
+  `docs/PARALLEL_INTEGRATION.md` passes locally on the final assembled head. That
+  document defines when the checks count; `docs/DEVELOPMENT.md` §6 carries them
+  as runnable commands. Do not create a third copy anywhere. If
+  the environment cannot run those gates, say `Integration incomplete; do not
+  publish yet`. CI is confirmation, not the first complete test environment.
+- When CI fails at one gate, the corrected head must pass every remaining gate
+  locally before another push. Do not ship a sequence of one-gate patches.
+- A stacked chain merges parent before child, and each child's diff is
+  re-checked for drift after its parent merges. The order is a rule; the PR
+  operations themselves remain ChatGPT's, after Sahil's explicit approval.
+
+A prose report is never a substitute for a surviving Git commit. See
+`docs/PARALLEL_INTEGRATION.md` for the full protocol.
+
 ## First-Launch Workflow
 
 Preserve this operating sequence:
@@ -179,8 +227,11 @@ The initial research threshold is an absolute score of **85/100**, not the top
 ## Non-Negotiable Guardrails
 
 - Contacts are permanent; campaigns are a later, temporary use of a saved
-  audience. Acquiring a contact never requires, creates, or records a campaign,
-  and never makes that contact outreach-eligible.
+  audience. Acquiring a contact never requires a campaign and never makes that
+  contact outreach-eligible. If the operator selects a Campaign, capture may
+  additionally perform an isolated, idempotent Campaign Contact upsert after
+  the permanent Contact is stored; the Campaign never owns the Contact or its
+  capture evidence.
 - An existing contact may be matched and refreshed automatically ONLY on an
   exact normalized LinkedIn profile URL. Name, company, title, location, and
   headline — alone or combined — may surface review candidates and nothing more.
@@ -230,6 +281,10 @@ Every externally derived insight must retain:
 - freshness information where relevant.
 
 ## Engineering Rules
+
+`docs/ENGINEERING_AGENT_STANDARD.md` expands these into the expected working
+method for a coding agent: how to investigate a reported failure, what a
+regression proof must demonstrate, and what a handoff must contain.
 
 - Build the smallest complete vertical slice authorized by `GOAL.md`.
 - Prefer simple, reversible, typed, and testable code.
@@ -285,6 +340,14 @@ A change is done only when:
 - documentation reflects what is actually implemented;
 - no non-goal was introduced indirectly;
 - the handoff contains repository evidence and a proposed tracker update;
+- the change survives as a Git commit that is pushed or delivered as a verified
+  bundle, with base SHA, head SHA, commit list, bundle SHA-256, `git bundle
+  verify` output, `git merge-base` proof, `git diff --stat`, changed files,
+  migration parent and resulting head, the exact validation commands and their
+  results, and any gate that was not run;
+- when the branch is stacked or was built in parallel with another thread, the
+  complete gate sequence passed on the final assembled head, not only on the
+  thread's own commits;
 - ChatGPT has independently reviewed material readiness changes.
 
 A useful idea outside the current scope should become a GitHub issue or short

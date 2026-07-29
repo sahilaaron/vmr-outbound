@@ -4,6 +4,8 @@ The operator workspace for permanent people. This document describes what is
 built, what is deliberately not, and the rules that govern both.
 
 Architecture and reasoning: `docs/decisions/0002-contact-first-architecture.md`.
+The Phase 2 Campaign and execution model is documented separately in
+`docs/PHASE_2_EXECUTION_MODEL.md`.
 
 ## The rules this release enforces
 
@@ -11,7 +13,8 @@ Architecture and reasoning: `docs/decisions/0002-contact-first-architecture.md`.
   research, qualification, or outreach readiness.
 * **Campaigns are downstream.** No CRM service accepts a campaign identifier, no
   CRM page offers a campaign selector, and a contact with no membership is a
-  normal contact rather than a broken one.
+  normal contact rather than a broken one. The capture intake may optionally
+  invoke the separate Campaign Contact filing service after permanent storage.
 * **Captures are immutable observations.** A refresh appends another capture; it
   never rewrites an earlier one.
 * **Canonical fields retain provenance.** The winning value, its source, when it
@@ -19,8 +22,9 @@ Architecture and reasoning: `docs/decisions/0002-contact-first-architecture.md`.
 * **Research and qualification are separate**, from each other and from
   everything else, and neither has an engine yet.
 * **Email discovery and verification are downstream** of all of the above.
-* **Labels classify contacts.** A label is not a campaign, not an audience, and
-  never an eligibility signal.
+* **Collections classify contacts.** The extension and legacy CRM call them
+  Labels. Collection membership is not Campaign membership or an eligibility
+  signal.
 * **Saved Audiences combine rules later** (APP-006) and reuse the filter
   predicates in `app/services/crm/records.py` rather than duplicating them.
 * **Contact intake does not require a campaign.**
@@ -36,7 +40,7 @@ Architecture and reasoning: `docs/decisions/0002-contact-first-architecture.md`.
 | Kind | Row | Why it is here |
 | --- | --- | --- |
 | `contact` | a `contacts` row | the permanent canonical person |
-| `pending_capture` | a `linkedin_profile_snapshots` row with outcome `unmatched_staged` or `ambiguous_review` | the operator saved this person; the system has not finished resolving them |
+| `pending_capture` | a legacy unmatched capture or an unresolved exact-identity conflict | capture evidence exists but cannot yet be assigned safely |
 
 A pending capture is never hidden for not being canonical. It can be labelled,
 annotated and inspected while it waits.
@@ -44,16 +48,17 @@ annotated and inspected while it waits.
 The union is performed in SQL. Merging two independently-paginated result sets
 would make `LIMIT`/`OFFSET` lie — page 2 would silently skip or repeat people.
 
-`Contact.company_domain` stays `NOT NULL` deliberately. That invariant is *why*
-unmatched captures stay pending, and the route to a domain is DAT-010's logo.dev
-candidates plus an operator confirmation, never a guess.
+Phase 2 permits `Contact.company_domain` and other unobserved identity fields to
+remain `NULL`. A new accepted capture can therefore persist the permanent person
+immediately without a fabricated domain. Company-dependent Agents remain
+blocked until evidence resolves the missing value.
 
 ## Views
 
 | View | Shows |
 | --- | --- |
 | All | canonical contacts and pending captures together |
-| Awaiting company resolution | captures with no resolved company domain |
+| Awaiting company resolution | Contacts or legacy captures with no resolved company domain |
 | Ambiguous identity | captures matching more than one existing contact |
 | Suppressed | contacts blocked by the suppression ledger |
 
@@ -77,9 +82,9 @@ these plus policy, and the policy belongs to APP-007.
 
 ## Age and freshness
 
-Unmatched captures are kept **indefinitely** and are never auto-deleted or
-auto-archived. A person the operator saved deliberately is not thrown away by a
-background rule.
+Unresolved Contacts and legacy pending captures are kept **indefinitely** and
+are never auto-deleted or auto-archived. A person the operator saved deliberately
+is not thrown away by a background rule.
 
 What the workspace owes them instead is visibility of how long something has
 waited: a `fresh` / `aging` / `stale` band (≤14 days, ≤60 days, beyond) and an
@@ -91,7 +96,7 @@ These are display bands, not policy, and deliberately **not** taken from
 a contact, which is a different question from how long a *record* has waited. A
 real retention policy waits for real usage data.
 
-## Labels and notes
+## Collections (Labels) and notes
 
 Both work on a contact **or** a pending capture, and both are audited.
 
@@ -118,11 +123,14 @@ APP-003.
 ## Compatibility
 
 * Existing contacts, campaigns, memberships, snapshots, suppressions and
-  provenance are untouched and remain readable.
-* No intake contract changed; old payloads keep working.
+  provenance remain readable.
+* Contact capture 2.1 adds optional Campaign filing; 2.0 payloads remain
+  accepted and identical retries replay their stored response.
 * Campaign, import, review and verification screens are unchanged.
 * `import_batches.campaign_id` stays required until APP-007.
-* Nothing under `extensions/` was modified.
+* The Phase 2 extension adds an optional Campaign selector and persists that
+  filing preference separately; selecting no Campaign preserves the original
+  contact-only behavior.
 
 ## Schema
 
@@ -143,9 +151,12 @@ Downgrade is a true inverse that **refuses** rather than deleting rows only the
 widened schema permits — verified by attempting it with a capture-anchored label
 present.
 
-## Not in this release
+## Historical APP-002 exclusions
 
 Full company dossier UI · domain crawler · automated research · final
 qualification algorithm · Saved Audiences · campaign reattachment · email copy
 generation · outbound scheduling · SalesHandy · autonomous orchestration ·
 extension changes.
+
+Several of those historical exclusions now have later implementations. See the
+Phase 2 execution document and current README for the active boundary.

@@ -20,6 +20,94 @@ class CampaignStatus(enum.StrEnum):
     ARCHIVED = "archived"
 
 
+class AgentIdentifier(enum.StrEnum):
+    """Stable identifiers for the operator-visible outbound Agents.
+
+    These values are a public contract. Display names may change, but jobs,
+    Campaign overrides, and pipeline history always use these identifiers.
+    """
+
+    CAPTURE = "capture"
+    IDENTITY = "identity"
+    COMPANY = "company"
+    RESEARCH = "research"
+    EMAIL = "email"
+    VERIFICATION = "verification"
+    INSIGHTS = "insights"
+    PERSONALIZATION = "personalization"
+    SENDING = "sending"
+
+
+class AgentControlStatus(enum.StrEnum):
+    """Global or Campaign-level execution control for one Agent."""
+
+    ENABLED = "enabled"
+    PAUSED = "paused"
+    DISABLED = "disabled"
+
+
+class CampaignMembershipStatus(enum.StrEnum):
+    """Lifecycle of a Contact's membership in one Campaign."""
+
+    ACTIVE = "active"
+    PAUSED = "paused"
+    ARCHIVED = "archived"
+
+
+class CampaignContactEligibility(enum.StrEnum):
+    """Campaign-specific eligibility, independent of pipeline execution."""
+
+    UNKNOWN = "unknown"
+    ELIGIBLE = "eligible"
+    REVIEW_REQUIRED = "review_required"
+    BLOCKED = "blocked"
+
+
+class PipelineStageStatus(enum.StrEnum):
+    """Durable operator-visible state of one Campaign Contact Agent stage."""
+
+    WAITING = "waiting"
+    RUNNING = "running"
+    PAUSED = "paused"
+    RETRYING = "retrying"
+    FAILED = "failed"
+    COMPLETED = "completed"
+    DISABLED = "disabled"
+    SKIPPED = "skipped"
+    BLOCKED = "blocked"
+
+
+class PipelineEventType(enum.StrEnum):
+    """Append-only facts from which pipeline state can be explained."""
+
+    ENROLLED = "enrolled"
+    MEMBERSHIP_PAUSED = "membership_paused"
+    MEMBERSHIP_RESUMED = "membership_resumed"
+    MEMBERSHIP_ARCHIVED = "membership_archived"
+    STAGE_WAITING = "stage_waiting"
+    JOB_QUEUED = "job_queued"
+    JOB_LEASED = "job_leased"
+    JOB_STARTED = "job_started"
+    STAGE_COMPLETED = "stage_completed"
+    STAGE_SKIPPED = "stage_skipped"
+    RETRY_SCHEDULED = "retry_scheduled"
+    FAILED_RETRYABLE = "failed_retryable"
+    FAILED_TERMINAL = "failed_terminal"
+    AGENT_PAUSED = "agent_paused"
+    AGENT_DISABLED = "agent_disabled"
+    ELIGIBILITY_BLOCKED = "eligibility_blocked"
+    ELIGIBILITY_RESTORED = "eligibility_restored"
+    JOB_CANCELLED = "job_cancelled"
+
+
+class CaptureCampaignFilingStatus(enum.StrEnum):
+    """Outcome of the optional Campaign filing attached to a capture."""
+
+    PENDING = "pending"
+    APPLIED = "applied"
+    FAILED = "failed"
+
+
 class ImportBatchStatus(enum.StrEnum):
     """Processing state of a single CSV import batch."""
 
@@ -348,22 +436,28 @@ class EmailCandidateSource(enum.StrEnum):
     GENERATED = "generated"
 
 
-class VerificationJobStatus(enum.StrEnum):
-    """Lifecycle of one queued exact-address verification job (VER-005 / OPS-001).
+class AgentJobStatus(enum.StrEnum):
+    """Stored lifecycle of a durable Agent job.
 
-    A job is the unit of background work. ``PENDING`` is claimable now;
-    ``IN_PROGRESS`` is leased by a worker; ``RETRY_SCHEDULED`` is a transient
-    failure waiting for its backoff window; the three terminal states record how
-    it ended. Only transient failures reach ``RETRY_SCHEDULED``; a definite
-    address result always ends ``SUCCEEDED``.
+    The original verification queue established the first six labels. They stay
+    unchanged in PostgreSQL so existing rows and migrations remain safe.
+    ``LEASED`` separates a generic worker claim from committed execution, and
+    ``PAUSED`` makes operator control durable. API serializers expose the
+    canonical queued/running/retrying/completed vocabulary.
     """
 
     PENDING = "pending"
+    LEASED = "leased"
     IN_PROGRESS = "in_progress"
     RETRY_SCHEDULED = "retry_scheduled"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    PAUSED = "paused"
     CANCELLED = "cancelled"
+
+
+# Backward-compatible import name for the existing verification service.
+VerificationJobStatus = AgentJobStatus
 
 
 class EmailPreciseStatus(enum.StrEnum):
@@ -536,6 +630,7 @@ class LinkedInSnapshotOutcome(enum.StrEnum):
     STORED = "stored"
     EXACT_MATCH_REFRESHED = "exact_match_refreshed"
     EXACT_MATCH_UNCHANGED = "exact_match_unchanged"
+    CONTACT_CREATED = "created"
     UNMATCHED_STAGED = "unmatched_staged"
     AMBIGUOUS_REVIEW = "ambiguous_review"
     SUPPRESSED = "suppressed"
@@ -580,10 +675,10 @@ class CaptureIdentityState(enum.StrEnum):
     """A permanent contact row exists."""
 
     AWAITING_COMPANY = "awaiting_company"
-    """Captured, but no canonical company domain yet, so no contact row.
+    """A permanent Contact exists, but its company domain is unresolved.
 
-    Resolution runs through DAT-010's logo.dev candidates and an operator
-    confirmation. The person is saved; only the promotion is outstanding.
+    Resolution runs through the Company evidence and decision flow. Missing
+    fields remain NULL and downstream Company/email work stays blocked.
     """
 
     AMBIGUOUS_IDENTITY = "ambiguous_identity"
@@ -907,3 +1002,36 @@ class IdentityLinkDecision(enum.StrEnum):
     SAME_CAPTURE_OBSERVED = "same_capture_observed"
     MIGRATION_BACKFILL = "migration_backfill"
     OPERATOR = "operator"
+
+
+class VerificationFailureClass(enum.StrEnum):
+    """Why one exact-address verification attempt produced no accepted answer.
+
+    A *verification-domain* classification, deliberately not an Agent-level
+    vocabulary: the Phase 2 Agent contract already owns execution states, and
+    :class:`AgentJob.error_class` already carries the orchestration-visible class.
+    This says what the provider did, so the Agent adapter can translate it into
+    the shared contract exactly once.
+
+    It is stored per attempt rather than recomputed because a later change to the
+    retry policy must not reach back and relabel a historical failure.
+
+    ``TRANSIENT_PROVIDER`` is the only class the domain reports as retryable —
+    outages, timeouts and rate-limit style responses. A malformed address, a
+    policy refusal, exhausted credits, a rejected credential and every definitive
+    mailbox verdict are final; retrying them spends credit for nothing.
+    ``INSUFFICIENT_CREDITS`` stays distinct from ``PERMANENT_PROVIDER`` because it
+    names a different operator action: top up, rather than fix a credential.
+
+    ``NONE`` means the attempt reached a verdict, including one answered from
+    reused evidence. A verdict is not the same as an acceptance — whether the
+    verdict may advance a Campaign Contact is decided by
+    :mod:`app.services.verification.decisions`.
+    """
+
+    NONE = "none"
+    INVALID_INPUT = "invalid_input"
+    POLICY_REFUSAL = "policy_refusal"
+    TRANSIENT_PROVIDER = "transient_provider"
+    PERMANENT_PROVIDER = "permanent_provider"
+    INSUFFICIENT_CREDITS = "insufficient_credits"

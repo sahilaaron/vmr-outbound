@@ -120,7 +120,13 @@ def test_campaigns_endpoint_404_when_feature_disabled(
 
     app.dependency_overrides[get_db] = _ov
     with TestClient(app) as c:
-        assert c.get("/api/campaigns").status_code == 404
+        assert (
+            c.get(
+                "/api/campaigns?fields=id,name,status",
+                headers={"origin": "chrome-extension://abcdefghijklmnopabcdefghijklmnop"},
+            ).status_code
+            == 404
+        )
     app.dependency_overrides.clear()
     get_settings.cache_clear()
 

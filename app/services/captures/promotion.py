@@ -32,9 +32,10 @@ returns candidates, and a candidate becomes truth only when an operator says so
 weak evidence**: an ambiguous company or an ambiguous person blocks the
 promotion and waits for a human.
 
-Promotion creates identity, not permission. It never produces a campaign
-membership, an email candidate, a verification, a score, a draft, or an
-approval, and it never weakens a suppression.
+Promotion creates identity, not permission. It may complete a durable Campaign
+filing that the operator explicitly requested with the original capture; it
+never invents Campaign membership. It never produces an email candidate,
+verification, score, draft, or approval, and it never weakens a suppression.
 """
 
 from __future__ import annotations
@@ -64,6 +65,7 @@ from app.models.linkedin_profile import LinkedInProfileSnapshot
 from app.models.salesnav_enrichment import SalesNavCompanyEnrichment
 from app.services import identity_links
 from app.services.audit import record_audit_event
+from app.services.captures import campaign_filing
 from app.services.captures import labels as labels_service
 from app.services.enrichment import companies as enrichment
 from app.services.enrichment import logodev
@@ -720,6 +722,25 @@ def _link_notes(session: Session, *, capture_id: uuid.UUID, contact_id: uuid.UUI
     return len(notes)
 
 
+def _apply_optional_campaign_filing(
+    session: Session,
+    *,
+    snapshot: LinkedInProfileSnapshot,
+    contact: Contact,
+    actor: str,
+) -> dict[str, Any] | None:
+    filing = campaign_filing.get_filing(session, capture_id=snapshot.id)
+    if filing is None:
+        return None
+    return campaign_filing.apply_filing(
+        session,
+        filing=filing,
+        snapshot=snapshot,
+        contact=contact,
+        actor=actor,
+    ).to_dict()
+
+
 def _record_provenance(
     session: Session,
     *,
@@ -814,6 +835,28 @@ def promote(
         result.contact_outcome = ContactPromotionOutcome.ALREADY_PROMOTED
         result.labels_applied = list(promotion_row.labels_applied or [])
         result.notes_linked = promotion_row.notes_linked
+        filing = (
+            _apply_optional_campaign_filing(
+                session,
+                snapshot=snapshot,
+                contact=contact,
+                actor=actor,
+            )
+            if contact is not None
+            else None
+        )
+        if filing is not None:
+            result.detail["campaign_filing"] = filing
+        if contact is not None:
+            from app.services.campaign_contacts import reconcile_contact_memberships
+
+            resumed_memberships = reconcile_contact_memberships(
+                session,
+                contact_id=contact.id,
+                actor=actor,
+            )
+            if resumed_memberships:
+                result.detail["campaign_memberships_resumed"] = resumed_memberships
         promotion_row.contact_outcome = ContactPromotionOutcome.ALREADY_PROMOTED
         session.flush()
         return result
@@ -1026,6 +1069,18 @@ def promote(
     else:
         contact = matched
         contact_outcome = ContactPromotionOutcome.CONTACT_EXACT_MATCH_LINKED
+        # Phase 2 capture already creates the permanent person row. Promotion
+        # completes that same Contact once company evidence resolves; it never
+        # creates a Campaign-owned copy or a second "canonical" person.
+        if contact.first_name is None:
+            contact.first_name = identity.first_name
+        if contact.last_name is None:
+            contact.last_name = identity.last_name
+        if contact.company_domain is None:
+            contact.company_domain = domain
+        if contact.natural_key is None:
+            contact.natural_key = natural_key
+        session.flush()
 
     # An existing contact may gain a handle it did not have, but a handle it
     # already has is never displaced by weaker evidence. `canonical_url` is the
@@ -1148,6 +1203,23 @@ def promote(
     result.labels_applied = applied
     result.notes_linked = notes_linked
     result.detail = {"match_kind": match_kind}
+    filing = _apply_optional_campaign_filing(
+        session,
+        snapshot=snapshot,
+        contact=contact,
+        actor=actor,
+    )
+    if filing is not None:
+        result.detail["campaign_filing"] = filing
+    from app.services.campaign_contacts import reconcile_contact_memberships
+
+    resumed_memberships = reconcile_contact_memberships(
+        session,
+        contact_id=contact.id,
+        actor=actor,
+    )
+    if resumed_memberships:
+        result.detail["campaign_memberships_resumed"] = resumed_memberships
 
     record_audit_event(
         session,

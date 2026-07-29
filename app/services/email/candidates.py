@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.models.contact import Contact
 from app.models.email_candidate import EmailCandidate
+from app.models.email_discovery import EmailCandidateAttempt
 from app.models.email_evidence import DomainPatternObservation
 from app.models.enums import EmailCandidateSource
 from app.services.email.normalization import build_identity
@@ -153,9 +154,11 @@ def _fresh_pattern_confidence(session: Session, domain: str) -> dict[str, float]
 def generate_candidates(session: Session, contact: Contact) -> CandidateGenerationResult:
     """(Re)generate, rank, persist, and select candidates for *contact*.
 
-    Idempotent: existing candidates for the contact are replaced so regeneration
-    never accumulates duplicates. Exactly one candidate is selected when possible;
-    an unrenderable name with no imported address is reported for review.
+    Idempotent: existing candidates are reconciled by normalized address so
+    regeneration never accumulates duplicates. Candidate rows referenced by a
+    durable Email Agent attempt are retained rather than deleted; the attempt
+    ledger must remain readable after a legacy regenerate. Exactly one current
+    candidate is selected when possible.
     """
 
     result = CandidateGenerationResult()
@@ -173,13 +176,25 @@ def generate_candidates(session: Session, contact: Contact) -> CandidateGenerati
         result.needs_review = True
         result.review_reason = gate.reason
         return result
+    if not contact.first_name or not contact.last_name:
+        result.needs_review = True
+        result.review_reason = "an observed first and last name are required"
+        return result
 
-    # Replace any prior candidate set for a deterministic regenerate.
-    for existing in session.scalars(
-        select(EmailCandidate).where(EmailCandidate.contact_id == contact.id)
-    ).all():
-        session.delete(existing)
-    session.flush()
+    existing_rows = list(
+        session.scalars(select(EmailCandidate).where(EmailCandidate.contact_id == contact.id)).all()
+    )
+    existing_by_email = {candidate.email: candidate for candidate in existing_rows}
+    attempted_candidate_ids = set(
+        session.scalars(
+            select(EmailCandidateAttempt.candidate_id).where(
+                EmailCandidateAttempt.contact_id == contact.id
+            )
+        ).all()
+    )
+    for existing in existing_rows:
+        existing.selected = False
+        existing.selection_reason = None
 
     domain = contact.company_domain or None
     pattern_confidence = _fresh_pattern_confidence(session, domain) if domain else {}
@@ -191,6 +206,19 @@ def generate_candidates(session: Session, contact: Contact) -> CandidateGenerati
         domain=domain,
         pattern_confidence=pattern_confidence,
     )
+    current_emails = {candidate.email for candidate in ranked}
+    for existing in existing_rows:
+        if existing.email in current_emails:
+            continue
+        if existing.id in attempted_candidate_ids:
+            existing.rank = len(ranked) + existing.rank
+            existing.rank_reason = (
+                "historical candidate retained because a durable Email Agent attempt references it"
+            )
+            continue
+        session.delete(existing)
+        existing_by_email.pop(existing.email, None)
+    session.flush()
 
     identity = build_identity(contact.first_name, contact.last_name)
     result.warnings.extend(identity.warnings)
@@ -208,20 +236,31 @@ def generate_candidates(session: Session, contact: Contact) -> CandidateGenerati
     version = engine_version()
     rows: list[EmailCandidate] = []
     for rank, rc in enumerate(ranked):
-        row = EmailCandidate(
-            contact_id=contact.id,
-            email=rc.email,
-            source=rc.source,
-            pattern=rc.pattern,
-            local_part=rc.local_part,
-            domain=rc.domain,
-            engine_version=version,
-            rank=rank,
-            rank_score=rc.rank_score,
-            rank_reason=rc.rank_reason,
-            selected=False,
-        )
-        session.add(row)
+        row = existing_by_email.get(rc.email)
+        if row is None:
+            row = EmailCandidate(
+                contact_id=contact.id,
+                email=rc.email,
+                source=rc.source,
+                pattern=rc.pattern,
+                local_part=rc.local_part,
+                domain=rc.domain,
+                engine_version=version,
+                rank=rank,
+                rank_score=rc.rank_score,
+                rank_reason=rc.rank_reason,
+                selected=False,
+            )
+            session.add(row)
+        else:
+            row.source = rc.source
+            row.pattern = rc.pattern
+            row.local_part = rc.local_part
+            row.domain = rc.domain
+            row.engine_version = version
+            row.rank = rank
+            row.rank_score = rc.rank_score
+            row.rank_reason = rc.rank_reason
         rows.append(row)
     session.flush()
 

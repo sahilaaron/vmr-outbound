@@ -13,9 +13,10 @@ Four tables complete that picture:
   idempotency anchor (``client_submission_id``), stores the operator's
   submission-level labels and note verbatim, and keeps the exact response body
   so a retry replays the original truthful outcome instead of recomputing one.
-* :class:`ContactLabel` — the canonical, backend-owned label registry. The
-  extension may *request* a label by name; only the backend creates one.
-* :class:`ContactLabelAssignment` — a label applied to a permanent contact.
+* :class:`~app.models.collection.Collection` — the canonical backend-owned
+  Collection registry. The extension calls these Labels.
+* :class:`~app.models.collection.CollectionMembership` — a Collection applied
+  to a permanent contact or pending capture.
 * :class:`ContactCaptureNote` — append-only operator notes. A refresh never
   rewrites an earlier note; it appends another row.
 
@@ -40,7 +41,6 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
-    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -101,83 +101,6 @@ class ContactCaptureSubmission(Base):
         )
 
 
-class ContactLabel(Base):
-    """A reusable operator label that classifies permanent contacts."""
-
-    __tablename__ = "contact_labels"
-    __table_args__ = (UniqueConstraint("slug", name="uq_contact_labels_slug"),)
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    # Deterministic identity key: casefolded, punctuation collapsed to hyphens.
-    slug: Mapped[str] = mapped_column(String(96), nullable=False)
-    # The first name the operator used, preserved verbatim for display.
-    name: Mapped[str] = mapped_column(String(64), nullable=False)
-    created_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-
-    def __repr__(self) -> str:  # pragma: no cover - debug helper
-        return f"<ContactLabel slug={self.slug!r}>"
-
-
-class ContactLabelAssignment(Base):
-    """One label applied to one permanent contact or one pending capture.
-
-    A capture that is still awaiting company-domain resolution has no contact
-    row yet, but the operator can still classify it (APP-002). Exactly one of
-    the two anchors identifies the subject: ``contact_id`` when the person is
-    canonical, ``capture_id`` when they are not.
-
-    ``capture_id`` does double duty. On a contact-anchored row it is
-    *provenance* — which capture produced the label — so a row may legitimately
-    carry both columns. That is why the anchor check is an inclusive OR, and why
-    uniqueness is enforced by two partial indexes rather than one constraint:
-    contact-anchored and capture-anchored assignments occupy separate spaces.
-    """
-
-    __tablename__ = "contact_label_assignments"
-    __table_args__ = (
-        CheckConstraint(
-            "contact_id IS NOT NULL OR capture_id IS NOT NULL",
-            name="ck_contact_label_assignments_anchor",
-        ),
-        Index(
-            "uq_contact_label_assignments_contact",
-            "contact_id",
-            "label_id",
-            unique=True,
-            postgresql_where=text("contact_id IS NOT NULL"),
-        ),
-        Index(
-            "uq_contact_label_assignments_capture",
-            "capture_id",
-            "label_id",
-            unique=True,
-            postgresql_where=text("contact_id IS NULL"),
-        ),
-        Index("ix_contact_label_assignments_label_id", "label_id"),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    contact_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("contacts.id", ondelete="CASCADE"), nullable=True
-    )
-    label_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("contact_labels.id", ondelete="CASCADE"), nullable=False
-    )
-    # Where the assignment came from (never a free-text audit substitute).
-    source: Mapped[str] = mapped_column(String(64), nullable=False)
-    capture_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("linkedin_profile_snapshots.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-
-
 class ContactCaptureNote(Base):
     """An append-only operator note attached to a capture, a contact, or both.
 
@@ -225,3 +148,20 @@ class ContactCaptureNote(Base):
 
     def __repr__(self) -> str:  # pragma: no cover - debug helper
         return f"<ContactCaptureNote capture={self.capture_id} scope={self.scope!r}>"
+
+
+# Compatibility import names for existing capture, CRM, and extension callers.
+# New backend code should import Collection/CollectionMembership directly.
+from app.models.collection import Collection as ContactLabel  # noqa: E402,F401
+from app.models.collection import (  # noqa: E402,F401
+    CollectionMembership as ContactLabelAssignment,
+)
+
+__all__ = [
+    "ContactCaptureNote",
+    "ContactCaptureSubmission",
+    "ContactLabel",
+    "ContactLabelAssignment",
+    "NOTE_SCOPE_CONTACT",
+    "NOTE_SCOPE_SUBMISSION",
+]

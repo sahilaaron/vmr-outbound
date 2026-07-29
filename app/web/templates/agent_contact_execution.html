@@ -1,0 +1,456 @@
+{% extends "base.html" %}
+{% from "_agent_macros.html" import stage_status_badge, job_status_badge, failure_badge, eligibility_badge, membership_badge, control_badge, control_source, simulated_badge, decision_badge, verified_badge, failure_class_badge %}
+{% block content %}
+<div class="page-head">
+  <div class="crumbs">
+    <a href="/workbench">Workbench</a><span>/</span>
+    <a href="/workbench/campaigns/{{ execution.campaign_id }}">{{ execution.campaign_name }}</a><span>/</span>
+    {{ execution.contact_label }}
+  </div>
+  <h1>{{ execution.contact_label }} {{ membership_badge(execution.membership_status) }}</h1>
+  <div class="sub">
+    How <strong>{{ execution.campaign_name }}</strong> is working on this person. This page shows
+    Campaign-specific execution only — the permanent
+    <a href="/contacts/{{ execution.contact_id }}">Contact record</a> is separate and nothing here
+    is written back to it.
+  </div>
+</div>
+
+{% if execution.terminal_block %}
+<div class="notice err" role="alert">
+  <div>
+    <strong>Blocked:</strong> {{ execution.terminal_block }}.
+    No Agent control releases a block: whatever is holding this Contact has to be resolved by its
+    own owner, and a retry will be refused until it is.
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-head">
+    <h2>Execution</h2>
+    <span class="hint">{{ execution.next_action }}</span>
+  </div>
+  <div class="card-body">
+    <dl class="kv">
+      <dt>Company</dt><dd>{{ execution.company_label or "—" }}</dd>
+      <dt>Address on the Contact</dt><dd class="mono">{{ execution.contact_email or "none" }}</dd>
+      <dt>Membership</dt><dd>{{ membership_badge(execution.membership_status) }}</dd>
+      <dt>Eligibility</dt>
+      <dd>{{ eligibility_badge(execution.eligibility) }}{% if execution.suppressed %} <span class="badge err">suppressed</span>{% endif %}</dd>
+      <dt>Desired stage</dt><dd>{{ agent_labels[execution.desired_stage.value] }}</dd>
+      <dt>Current stage</dt>
+      <dd>{% if execution.current_stage %}{{ agent_labels[execution.current_stage.value] }} {{ stage_status_badge(execution.pipeline_status) }}{% else %}<span class="muted-text">—</span>{% endif %}</dd>
+      <dt>Next stage</dt><dd>{{ agent_labels[execution.next_stage.value] if execution.next_stage else "—" }}</dd>
+      <dt>Completed through</dt>
+      <dd>{{ agent_labels[execution.latest_completed_stage.value] if execution.latest_completed_stage else "nothing completed yet" }}</dd>
+      <dt>Stages completed</dt><dd>{{ execution.completed_stages | length }} of {{ execution.stages | length }}</dd>
+      <dt>Failed / skipped / blocked</dt>
+      <dd>{{ execution.failed_stages | length }} failed · {{ execution.skipped_stages | length }} skipped · {{ execution.blocked_stages | length }} blocked</dd>
+      <dt>Retries</dt><dd>{{ execution.total_retries }}</dd>
+      <dt>Review / sending state</dt><dd class="small">{{ execution.review_state }} · {{ execution.sending_state }}</dd>
+      <dt>Enrolled / last change</dt><dd class="small">{{ execution.enrolled_at | dt }} · {{ execution.updated_at | dt }}</dd>
+      <dt>Campaign Contact</dt><dd class="mono small">{{ execution.campaign_contact_id }}</dd>
+      <dt>Contact record</dt><dd class="mono small">{{ execution.contact_id }}</dd>
+    </dl>
+
+    {% if execution.blocking_reasons %}
+    <hr class="sep">
+    <h3 class="small">Blocking reasons on record</h3>
+    <table>
+      <thead><tr><th scope="col">Code</th><th scope="col">Terminal</th><th scope="col">Detail</th></tr></thead>
+      <tbody>
+        {% for reason in execution.blocking_reasons %}
+        <tr>
+          <td class="mono small">{{ reason.get("code") }}</td>
+          <td>{% if reason.get("terminal") %}<span class="badge err">terminal</span>{% else %}<span class="badge warn">resolvable</span>{% endif %}</td>
+          <td class="small wrap">{{ reason.get("detail") }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+</div>
+
+{% if execution.email %}
+{% set e = execution.email %}
+<div class="card">
+  <div class="card-head">
+    <h2>Email discovery</h2>
+    <span class="hint">The Email Agent's locked candidate sequence and terminal outcome.</span>
+  </div>
+  <div class="card-body">
+    <dl class="kv">
+      <dt>Outcome</dt>
+      <dd>
+        {% if e.accepted %}<span class="badge ok">accepted</span>
+        {% elif e.no_verified_address %}<span class="badge err">no verified address</span>
+        {% elif e.blocked_outcome %}<span class="badge warn">{{ e.blocked_outcome.replace("_", " ") }}</span>
+        {% elif e.terminal_outcome %}<span class="badge warn">{{ e.terminal_outcome.replace("_", " ") }}</span>
+        {% else %}<span class="badge info">in progress</span>{% endif %}
+        {% if e.stage_status %}<span class="small muted-text">stage {{ e.stage_status.value }}</span>{% endif %}
+      </dd>
+      <dt>Accepted address</dt>
+      <dd class="mono small">{{ e.accepted_email or "none" }}
+        {% if e.accepted_candidate_index is not none %}<span class="muted-text"> · candidate {{ e.accepted_candidate_index + 1 }}</span>{% endif %}
+      </dd>
+      <dt>Outcome committed</dt>
+      <dd>
+        {% if e.outcome_committed %}<span class="badge ok">yes</span>
+        {% else %}<span class="badge warn">no</span>{% endif %}
+      </dd>
+      <dt>Policy</dt>
+      <dd class="small mono">{{ e.policy_identifier or "—" }} · {{ e.policy_version or "—" }}
+        {% if e.policy_outcome %}<span class="badge muted">{{ e.policy_outcome.replace("_", " ") }}</span>{% endif %}
+      </dd>
+      <dt>Company evidence</dt>
+      <dd class="small">{{ e.employee_count_class or "unknown" }}
+        {% if e.employee_evidence_freshness %} · {{ e.employee_evidence_freshness.replace("_", " ") }}{% endif %}
+        {% if e.normalized_domain %} · <span class="mono">{{ e.normalized_domain }}</span>{% endif %}
+      </dd>
+      <dt>Candidate progress</dt>
+      <dd class="small">
+        {{ e.attempted_count }} attempted of {{ e.candidate_count }} allowed
+        {% if e.current_position %} · current position {{ e.current_position }}{% endif %}
+        {% if e.ordered_candidate_formats %} · <span class="mono">{{ e.ordered_candidate_formats | join(" → ") }}</span>{% endif %}
+      </dd>
+      <dt>Verification evidence</dt>
+      <dd class="small">
+        {% if e.verification_id %}<span class="mono">{{ e.verification_id }}</span>
+          {% if e.verification_provider %} · {{ e.verification_provider }}{% endif %}
+          {% if e.verification_policy_version %} · policy {{ e.verification_policy_version }}{% endif %}
+        {% else %}<span class="muted-text">none recorded</span>{% endif %}
+      </dd>
+      <dt>Execution</dt>
+      <dd class="small">
+        {% if e.job_id %}<a href="/workbench/jobs/{{ e.job_id }}">Email job</a>{% else %}no job reference{% endif %}
+        {% if e.force_refresh %} · <span class="badge warn">forced refresh</span> {{ e.refresh_scope or "" }}{% endif %}
+      </dd>
+      {% if e.reason %}<dt>Reason</dt><dd class="small wrap">{{ e.reason }}</dd>{% endif %}
+    </dl>
+
+    {% if e.attempts %}
+    <hr class="sep">
+    <h3 class="small">Candidate attempts</h3>
+    <table>
+      <thead><tr><th scope="col">#</th><th scope="col">Address</th><th scope="col">Format</th><th scope="col">State</th><th scope="col">Verification</th><th scope="col">Evidence</th><th scope="col">Detail</th></tr></thead>
+      <tbody>
+        {% for attempt in e.attempts %}
+        <tr>
+          <td>{{ attempt.position }}</td>
+          <td class="mono small">{{ attempt.email }}</td>
+          <td class="mono small">{{ attempt.candidate_format }}</td>
+          <td><span class="badge {{ 'ok' if attempt.status == 'accepted' else ('err' if attempt.status in ('terminal_no_result', 'refused', 'simulated') else 'muted') }}">{{ attempt.status.replace("_", " ") }}</span></td>
+          <td class="small">
+            {{ attempt.verification_decision or "—" }}
+            {% if attempt.verification_job_id %}<div><a href="/workbench/jobs/{{ attempt.verification_job_id }}">child job</a></div>{% endif %}
+          </td>
+          <td class="mono small">{{ attempt.verification_id or "—" }}</td>
+          <td class="small wrap">{{ attempt.refusal_reason or "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="small muted-text">No Email candidate attempt has been recorded.</p>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{% if execution.verification %}
+{% set v = execution.verification %}
+<div class="card">
+  <div class="card-head">
+    <h2>Verification</h2>
+    <span class="hint">The committed decision — not whether a queue job finished.</span>
+  </div>
+  <div class="card-body">
+    <dl class="kv">
+      <dt>Decision</dt>
+      <dd>{{ decision_badge(v.decision, v.refused_before_provider) }} {{ verified_badge(v) }}</dd>
+      {# Only shown when there is one. An accepted address needs no explanation,
+         and an empty "no reason was recorded" beside a success reads as a gap. #}
+      {% if v.reason or v.reason_code %}
+      <dt>Reason</dt>
+      <dd class="small wrap">
+        {% if v.reason_code %}<span class="badge muted">{{ v.reason_code }}</span> {% endif %}
+        {{ v.reason or "" }}
+      </dd>
+      {% endif %}
+      <dt>Normalized status</dt>
+      <dd class="small">{{ v.precise_status.replace("_", " ") if v.precise_status else "—" }}
+        {%- if v.verification_result %} · provider result <code>{{ v.verification_result }}</code>{% endif %}</dd>
+      <dt>Outcome committed</dt>
+      <dd>
+        {% if v.outcome_committed %}<span class="badge ok" title="A pipeline event recorded the stage outcome.">yes</span>
+        {% else %}<span class="badge warn" title="No committed stage event, so nothing here may advance the Contact.">no</span>{% endif %}
+        {% if v.stage_status %}<span class="small muted-text">stage {{ v.stage_status.value }}</span>{% endif %}
+      </dd>
+      <dt>Retry</dt>
+      <dd>
+        {% if v.decision == "retry_later" %}<span class="badge info">another attempt is permitted</span>
+        {% elif v.refused %}<span class="badge err" title="Nothing changes until the cause named above is fixed.">blocked before any provider work</span>
+        {% elif v.terminal %}<span class="badge err" title="No further attempt will change this.">terminal for this address</span>
+        {% elif v.retryable %}<span class="badge warn">Phase 2 marked this stage retryable</span>
+        {% else %}<span class="muted-text small">—</span>{% endif %}
+      </dd>
+      <dt>Evidence source</dt>
+      <dd>
+        {% if v.provider %}
+          {% if v.simulated %}<span class="badge warn" title="A simulator result is a real normalized outcome, but it is not external verification and can never advance a Campaign Contact.">simulated</span>
+          {% else %}<span class="badge ok" title="An external provider produced this result.">live</span>{% endif %}
+          <span class="small mono">{{ v.provider }}</span>
+        {% else %}<span class="muted-text small">No provider is recorded for this outcome.</span>{% endif %}
+        {% if v.reused_evidence %}<span class="badge muted" title="Answered from sufficiently fresh existing evidence rather than a new call.">reused evidence</span>{% endif %}
+      </dd>
+      <dt>Provider calls</dt>
+      <dd class="small">
+        {{ v.paid_calls }} attempt{{ "" if v.paid_calls == 1 else "s" }} reached the provider
+        {%- if v.attempts %} of {{ v.attempts | length }} recorded{% endif %}
+      </dd>
+      <dt>Evidence reference</dt>
+      <dd class="mono small">{{ v.evidence_reference or "none — no evidence row is referenced" }}</dd>
+      <dt>Policy version</dt><dd class="mono small">{{ v.policy_version or "—" }}</dd>
+    </dl>
+
+    {% if v.attempts %}
+    <hr class="sep">
+    <h3 class="small">Provider attempts</h3>
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">#</th><th scope="col">Started</th><th scope="col">Provider</th>
+          <th scope="col">Called</th><th scope="col">Status</th><th scope="col">Classification</th>
+          <th scope="col">Evidence</th><th scope="col">Detail</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for attempt in v.attempts %}
+        <tr class="{{ 'row-failure' if attempt.failure_class != 'none' and not attempt.retryable else '' }}">
+          <td>{{ attempt.attempt_number }}</td>
+          <td class="small muted-text">{{ attempt.started_at | dt }}</td>
+          <td class="small">
+            {% if attempt.simulated %}<span class="badge warn">simulated</span>{% else %}<span class="badge ok">live</span>{% endif %}
+            <div class="small mono muted-text">{{ attempt.provider }}</div>
+          </td>
+          <td class="small">
+            {% if attempt.provider_called %}yes{% elif attempt.reused_evidence %}<span class="muted-text">reused</span>{% else %}<span class="muted-text">no</span>{% endif %}
+          </td>
+          <td class="small">{{ attempt.precise_status.replace("_", " ") if attempt.precise_status else "—" }}
+            {%- if attempt.verification_result %}<div class="small mono muted-text">{{ attempt.verification_result }}</div>{% endif %}</td>
+          <td class="small">{{ failure_class_badge(attempt.failure_class, attempt.retryable) }}</td>
+          <td class="mono small">{{ attempt.evidence_reference or "—" }}</td>
+          <td class="small wrap">{{ attempt.error_summary or "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="small muted-text">No provider attempt has been recorded for this Campaign Contact.</p>
+    {% endif %}
+
+    {% if v.evidence %}
+    <hr class="sep">
+    <h3 class="small">Committed evidence</h3>
+    <table>
+      <thead><tr><th scope="col">Address</th><th scope="col">Result</th><th scope="col">Source</th><th scope="col">Checked</th><th scope="col">Policy</th><th scope="col">Reference</th></tr></thead>
+      <tbody>
+        {% for evidence in v.evidence %}
+        <tr>
+          <td class="mono small">{{ evidence.email }}</td>
+          <td class="small">{{ evidence.result }}</td>
+          <td>{{ simulated_badge(evidence) }} <span class="small mono muted-text">{{ evidence.provider }}</span></td>
+          <td class="small muted-text">{{ evidence.checked_at | dt }}</td>
+          <td class="small mono">{{ evidence.policy_version or "—" }}</td>
+          <td class="mono small">{{ evidence.evidence_id }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-head">
+    <h2>Pipeline</h2>
+    <span class="hint">Every stage in registry order — including the ones that did not run, and why.</span>
+  </div>
+  <div class="card-body tight">
+    <ol class="stage-list">
+      {% for stage in execution.stages %}
+      <li class="stage-item stage-{{ stage.status.value }}">
+        <div class="stage-head">
+          <span class="pipeline-index">{{ stage.position + 1 }}</span>
+          <strong>{{ stage.display_name }}</strong>
+          {{ stage_status_badge(stage.status) }}
+          {% if stage.status.value == "completed" %}
+            {% if stage.outcome_committed %}
+            <span class="badge ok" title="A pipeline event committed this stage's domain outcome.">outcome committed</span>
+            {% else %}
+            <span class="badge warn" title="The stage reads completed but no committed stage event was found in the retained history.">no committed event in history</span>
+            {% endif %}
+          {% endif %}
+          {% if stage.disabled_for_campaign %}<span class="badge err" title="Disabled for this Campaign by an override.">disabled for this Campaign</span>
+          {% elif stage.disabled_globally and not stage.control.accepting_work %}<span class="badge err" title="Not accepting work under the inherited control.">{{ stage.control.status.value }} globally</span>{% endif %}
+        </div>
+        <div class="stage-meta small muted-text">
+          {# "not started" is only worth saying when nothing has happened at all;
+             beside a completion timestamp it reads as a contradiction. #}
+          {% if stage.started_at %}started {{ stage.started_at | dt }}
+          {% elif not stage.completed_at %}not started{% endif %}
+          {% if stage.completed_at %}{{ " · " if stage.started_at }}completed {{ stage.completed_at | dt }}{% endif %}
+          {% if stage.attempt_count %} · {{ stage.attempt_count }} attempt{{ "" if stage.attempt_count == 1 else "s" }}{% endif %}
+          {% if stage.waiting_on_agent %} · waiting on {{ agent_labels[stage.waiting_on_agent.value] }}{% endif %}
+          {% if stage.latest_job_id %} · <a href="/workbench/jobs/{{ stage.latest_job_id }}">latest job</a>{% endif %}
+        </div>
+        {% if stage.reason_detail %}
+        <div class="stage-{{ 'error' if stage.status.value in ('failed', 'blocked') else 'reason' }} small wrap">
+          {% if stage.reason_code %}<span class="badge muted">{{ stage.reason_code }}</span> {% endif %}{{ stage.reason_detail }}
+          {% if stage.status.value == "failed" %}
+            {% if stage.retryable %}<span class="badge warn">retryable</span>{% else %}<span class="badge err">terminal</span>{% endif %}
+          {% endif %}
+        </div>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ol>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Agent Jobs</h2>
+    <span class="hint">Every durable job recorded against this Campaign Contact, newest first.</span>
+  </div>
+  <div class="card-body tight">
+    {% if execution.jobs %}
+    <table>
+      <thead><tr><th scope="col">Job</th><th scope="col">Agent</th><th scope="col">Status</th><th scope="col" class="num">Attempts</th><th scope="col">Lease</th><th scope="col">Next run</th><th scope="col">Failure</th></tr></thead>
+      <tbody>
+        {% for job in execution.jobs %}
+        <tr class="{{ 'row-failure' if job.stored_status.value == 'failed' else '' }}">
+          <td class="mono small"><a href="/workbench/jobs/{{ job.job_id }}">{{ job.job_id }}</a></td>
+          <td class="small">{{ job.agent_name }}</td>
+          <td>{{ job_status_badge(job.public_status) }} {{ failure_badge(job) }}
+            {% if job.completed_without_result %}<span class="badge warn" title="Phase 2 committed an outcome, and it carried no usable result.">no usable result</span>{% endif %}
+          </td>
+          <td class="num">{{ job.attempt_count }} / {{ job.max_attempts }}</td>
+          <td class="small">{% if job.lease_held %}{{ job.lease_owner }}<div class="small muted-text">expires {{ job.lease_expires_at | dt }}</div>{% else %}<span class="muted-text">unleased</span>{% endif %}</td>
+          <td class="small muted-text">{{ job.next_run_at | dt }}</td>
+          <td class="small wrap">{{ job.error_message or "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="small muted-text mt-0">No Agent job has been created for this Campaign Contact yet.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Pipeline history</h2>
+    <span class="hint">Append-only and in order. This is the record that decides what actually happened.</span>
+  </div>
+  <div class="card-body tight">
+    {% if execution.events %}
+    <table>
+      <thead><tr><th scope="col">When</th><th scope="col">Event</th><th scope="col">Agent</th><th scope="col">Transition</th><th scope="col">Why</th><th scope="col">Actor</th></tr></thead>
+      <tbody>
+        {% for event in execution.events %}
+        <tr>
+          <td class="small muted-text">{{ event.occurred_at | dt }}</td>
+          <td class="small"><strong>{{ event.event_type.value.replace("_", " ") }}</strong>
+            {% if event.job_id %}<div class="small"><a class="mono" href="/workbench/jobs/{{ event.job_id }}">job</a></div>{% endif %}</td>
+          <td class="small">{{ event.agent_id.value if event.agent_id else "—" }}</td>
+          <td class="small">{{ event.from_status.value if event.from_status else "—" }} → {{ event.to_status.value if event.to_status else "—" }}</td>
+          <td class="small wrap">
+            {% if event.reason_code %}<span class="badge muted">{{ event.reason_code }}</span> {% endif %}{{ event.reason_detail or "—" }}
+            {% if event.event_type.value.startswith("failed") %}
+              {% if event.retryable %}<span class="badge warn">retryable</span>{% else %}<span class="badge err">terminal</span>{% endif %}
+            {% endif %}
+          </td>
+          <td class="small">{{ event.actor }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="small muted-text mt-0">No pipeline event has been committed for this Campaign Contact.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Operator actions</h2>
+    <span class="hint">Every action runs through the Phase 2 service that owns it and can be refused.</span>
+  </div>
+  <div class="card-body">
+    <div class="control-row">
+      {% if execution.membership_status.value == "active" %}
+      <form method="post" action="/workbench/campaigns/{{ execution.campaign_id }}/contacts/{{ execution.campaign_contact_id }}/pause" class="control-form">
+        <label class="sr-only" for="pause-reason">Reason</label>
+        <input id="pause-reason" name="reason" type="text" placeholder="Why (recorded)" maxlength="500">
+        <button class="btn small secondary" type="submit">Pause this Campaign Contact</button>
+        <div class="small muted-text">Its claimable and leased jobs are held at paused; nothing is discarded.</div>
+      </form>
+      {% elif execution.membership_status.value == "paused" %}
+      <form method="post" action="/workbench/campaigns/{{ execution.campaign_id }}/contacts/{{ execution.campaign_contact_id }}/resume" class="control-form">
+        <button class="btn small" type="submit">Resume this Campaign Contact</button>
+        <div class="small muted-text">Work paused by the membership is released; a domain block keeps its own reason.</div>
+      </form>
+      {% endif %}
+
+      <form method="post" action="/workbench/campaigns/{{ execution.campaign_id }}/contacts/{{ execution.campaign_contact_id }}/retry" class="control-form">
+        <label class="sr-only" for="retry-reason">Reason</label>
+        <input id="retry-reason" name="reason" type="text" placeholder="Why (recorded)" maxlength="500">
+        <button class="btn small" type="submit">Retry the current stage</button>
+        <div class="small muted-text">Refused if the Contact is paused, blocked by a terminal gate, or held by a control.</div>
+      </form>
+
+      <form method="post" action="/workbench/campaigns/{{ execution.campaign_id }}/contacts/{{ execution.campaign_contact_id }}/skip-stage" class="control-form">
+        <label class="sr-only" for="skip-reason">Reason</label>
+        <input id="skip-reason" name="reason" type="text" placeholder="Why (required, recorded)" maxlength="500" required>
+        <button class="btn small warn" type="submit">Skip the current stage</button>
+        <div class="small muted-text">Cancels that stage's non-terminal jobs and records why it was passed over.</div>
+      </form>
+    </div>
+
+    {% if execution.retryable_jobs %}
+    <hr class="sep">
+    <h3 class="small">Retryable jobs</h3>
+    <table>
+      <thead><tr><th scope="col">Job</th><th scope="col">Agent</th><th scope="col">Failure</th><th scope="col">Action</th></tr></thead>
+      <tbody>
+        {% for job in execution.retryable_jobs %}
+        <tr>
+          <td class="mono small"><a href="/workbench/jobs/{{ job.job_id }}">{{ job.job_id }}</a></td>
+          <td class="small">{{ job.agent_name }}</td>
+          <td class="small wrap">{{ job.error_message or "No message was recorded." }}</td>
+          <td>
+            <form method="post" action="/workbench/jobs/{{ job.job_id }}/retry" class="action-row">
+              <input type="hidden" name="back" value="/workbench/campaigns/{{ execution.campaign_id }}/contacts/{{ execution.campaign_contact_id }}">
+              <label class="sr-only" for="job-retry-{{ job.job_id }}">Reason</label>
+              <input id="job-retry-{{ job.job_id }}" name="reason" type="text" placeholder="Why (recorded)" maxlength="500">
+              <button class="btn small" type="submit">Retry job</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="small muted-text">
+      No job here is retryable. Only a failed job that Phase 2 marked retryable and that has
+      attempts left can be requeued.
+    </p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "vmr:intake:linkedin-contact-capture:2.0.0",
+  "$id": "vmr:intake:linkedin-contact-capture:2.1.0",
   "title": "LinkedIn contact capture intake payload",
-  "description": "One operator-reviewed submission of one or more people captured from a LinkedIn or Sales Navigator page the operator opened themselves. Contact-first: there is no campaign in this contract. The extension submits observations only; identity matching, provenance/freshness resolution, suppression enforcement, label resolution, canonical updates and audit logging are backend responsibilities. See docs/CONTACT_CAPTURE_CONTRACT.md.",
+  "description": "One operator-reviewed submission of one or more people captured from a LinkedIn or Sales Navigator page the operator opened themselves. Contact-first: Campaign selection is optional and acts only as an idempotent filing shortcut after permanent Contact capture. The extension submits observations only; identity matching, provenance/freshness resolution, suppression enforcement, Collection resolution, canonical updates and audit logging are backend responsibilities. See docs/CONTACT_CAPTURE_CONTRACT.md.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -16,7 +16,9 @@
     "contacts"
   ],
   "properties": {
-    "schema_version": { "const": "linkedin-contact-capture/2.0.0" },
+    "schema_version": {
+      "enum": ["linkedin-contact-capture/2.0.0", "linkedin-contact-capture/2.1.0"]
+    },
     "client_submission_id": {
       "type": "string",
       "minLength": 8,
@@ -30,6 +32,12 @@
     "submitted_at": { "type": "string", "format": "date-time" },
     "source": { "const": "chrome-extension:linkedin-contact-capture" },
     "extension_version": { "type": ["string", "null"] },
+    "campaign_id": {
+      "type": ["string", "null"],
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+      "description": "Optional filing target. Capture always persists independently; when a permanent Contact is available the backend idempotently upserts Campaign Contact membership. A filing failure cannot roll back capture."
+    },
     "operator_metadata": { "$ref": "#/$defs/operatorMetadata" },
     "contacts": {
       "type": "array",

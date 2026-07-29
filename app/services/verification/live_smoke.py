@@ -38,6 +38,7 @@ from app.services.verification import queue as jobs
 from app.services.verification import service
 from app.services.verification.policy import VerificationPolicy, get_policy
 from app.services.verification.provider import (
+    LIVE_PROVIDER_LABEL,
     TEST_KEYS,
     HttpMillionVerifier,
     ProviderResponse,
@@ -181,7 +182,13 @@ def run_live_smoke(
 
     # 6) Cache guard: a fresh cached result would skip the provider call, so a run
     # against it could never prove a live request occurred.
-    fresh = service.find_fresh_evidence(session, norm, policy, _now())
+    fresh = service.find_fresh_evidence(
+        session,
+        norm,
+        policy,
+        _now(),
+        required_provider_label=LIVE_PROVIDER_LABEL,
+    )
     if fresh is not None and not allow_existing_fresh:
         raise LiveSmokeError(
             "fresh cached evidence already exists for this exact address, so a live "
@@ -214,8 +221,20 @@ def run_live_smoke(
         policy_version=policy.version,
         max_attempts=settings.verification_max_attempts,
     )
+    worker_id = f"live-smoke:{uuid.uuid4()}"
+    claimed = jobs.claim_job(
+        session,
+        job_id=job.id,
+        worker_id=worker_id,
+        lease_seconds=max(30.0, settings.millionverifier_timeout_seconds + 10.0),
+    )
+    if claimed is None:
+        raise LiveSmokeError(
+            "the exact verification job could not be claimed; another worker may be "
+            "processing it or it is not yet due"
+        )
     processed = service.process_job(
-        session, job, provider=provider, settings=settings, policy=policy
+        session, claimed, provider=provider, settings=settings, policy=policy
     )
     session.flush()
 

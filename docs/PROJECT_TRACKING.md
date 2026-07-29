@@ -175,6 +175,14 @@ After a meaningful build:
 4. State what became usable, what remains blocked and the next action.
 5. Preserve earlier log entries; append corrections instead of rewriting history.
 
+Also update the relevant tab when a stacked pull-request chain is assembled, or
+merged in part, so that the remaining merge order and its owner stay visible.
+
+Treat a stacked chain built by parallel threads as one unit of work. Do not log
+each thread's branch separately. Record the merge order, which parent is
+currently blocking its children, and who must act next. Intermediate restacks
+and corrective pushes are engineering detail and belong in GitHub.
+
 ## Backlog rule
 
 The single MVP epic owns the active end-to-end build. Keep a separate open issue only when it is:
