@@ -35,12 +35,15 @@ from app.models.enums import (
     CampaignContactEligibility,
     PipelineStageStatus,
 )
-from app.models.pipeline import PipelineEvent
+from app.models.pipeline import CampaignContactAgentState, PipelineEvent
+from app.models.verification_attempt import VerificationAttempt
 from app.models.verification_job import AgentJob
 from app.services.agents import controls as agent_controls
 from app.services.agents import jobs as agent_jobs
 from app.services.agents.registry import AGENT_SPECS, PIPELINE_ORDER, get_agent_spec
 from app.services.pipeline import pipeline_snapshot
+from app.services.verification import attempts as verification_attempts
+from app.services.verification.decisions import VerificationDecision
 from app.services.verification.provider import SIMULATOR_PROVIDER_LABEL
 from app.services.workbench_agents.sanitize import sanitize_mapping, sanitize_text
 from app.services.workbench_agents.views import (
@@ -57,7 +60,9 @@ from app.services.workbench_agents.views import (
     PipelineEventView,
     QueueCounts,
     StageView,
+    VerificationAttemptView,
     VerificationEvidenceView,
+    VerificationOutcomeView,
     WorkbenchOverviewView,
 )
 
@@ -767,24 +772,11 @@ class PhaseTwoWorkbenchReader:
 
         campaign_names = {campaign.id: campaign.name}
         contact_labels = {membership.contact_id: _contact_label(contact)}
-        evidence: tuple[VerificationEvidenceView, ...] = ()
-        if contact is not None and contact.email:
-            evidence = tuple(
-                VerificationEvidenceView(
-                    email=row.email,
-                    result=row.result.value,
-                    provider=row.provider,
-                    simulated=row.provider == SIMULATOR_PROVIDER_LABEL,
-                    checked_at=row.checked_at,
-                    policy_version=row.policy_version,
-                )
-                for row in self._session.scalars(
-                    select(ExactEmailVerification)
-                    .where(ExactEmailVerification.email == contact.email)
-                    .order_by(ExactEmailVerification.checked_at.desc())
-                    .limit(10)
-                ).all()
-            )
+        verification = self._verification_outcome(
+            stages=snapshot.stages,
+            events=snapshot.events,
+            jobs=snapshot.jobs,
+        )
 
         return ContactExecutionView(
             campaign_contact_id=membership.id,
@@ -827,11 +819,176 @@ class PhaseTwoWorkbenchReader:
                 )
                 for event in snapshot.events
             ),
-            verification_evidence=evidence,
+            verification=verification,
             enrolled_at=membership.enrolled_at,
             updated_at=membership.updated_at,
             review_state=membership.review_state,
             sending_state=membership.sending_state,
+        )
+
+    # --- verification -----------------------------------------------------
+
+    def _verification_outcome(
+        self,
+        *,
+        stages: tuple[CampaignContactAgentState, ...],
+        events: tuple[PipelineEvent, ...],
+        jobs: tuple[AgentJob, ...],
+    ) -> VerificationOutcomeView | None:
+        """Project the Verification stage's committed decision (MVP-01E).
+
+        The decision is read from what Phase 2 committed — the stage's
+        ``output_reference``, or the ``detail`` on the pipeline event that
+        recorded the transition — and never from a job having succeeded. Those
+        are different facts: the Verification Agent completes a job for an
+        accepted address *and* preserves the evidence when it refuses one, so
+        "the queue finished" says nothing about whether the mailbox is usable.
+        """
+
+        stage = next((row for row in stages if row.agent_id is AgentIdentifier.VERIFICATION), None)
+        stage_events = [event for event in events if event.agent_id is AgentIdentifier.VERIFICATION]
+        stage_jobs = [job for job in jobs if job.agent_id is AgentIdentifier.VERIFICATION]
+        if stage is None and not stage_events and not stage_jobs:
+            return None
+
+        # Prefer the durable stage projection; fall back to the newest committed
+        # event detail, which carries the same payload for a non-accepted
+        # outcome. Both are things Phase 2 wrote; neither is inferred.
+        payload: dict[str, Any] = {}
+        if stage is not None and stage.output_reference:
+            payload = dict(stage.output_reference)
+        if "decision" not in payload:
+            for event in reversed(stage_events):
+                detail = dict(event.detail or {})
+                if "decision" in detail:
+                    payload = detail
+                    break
+
+        latest_event = stage_events[-1] if stage_events else None
+        outcome_committed = any(
+            event.event_type.value in COMMITTED_STAGE_EVENTS for event in stage_events
+        )
+        provider = payload.get("provider")
+        provider_label = str(provider) if provider else None
+
+        attempt_rows: list[VerificationAttempt] = []
+        for job in stage_jobs:
+            attempt_rows.extend(verification_attempts.attempts_for_job(self._session, job.id))
+        attempt_rows.sort(key=lambda row: (row.started_at, row.attempt_number))
+
+        attempts = tuple(
+            VerificationAttemptView(
+                attempt_number=row.attempt_number,
+                started_at=row.started_at,
+                finished_at=row.finished_at,
+                provider=row.provider,
+                simulated=row.provider == SIMULATOR_PROVIDER_LABEL,
+                provider_called=row.provider_called,
+                reused_evidence=row.reused_evidence,
+                precise_status=row.precise_status,
+                verification_result=(
+                    row.verification_result.value if row.verification_result else None
+                ),
+                failure_class=row.failure_class.value,
+                retryable=verification_attempts.is_retryable(row.failure_class),
+                error_summary=sanitize_text(row.error_summary),
+                evidence_reference=row.verification_id,
+            )
+            for row in attempt_rows
+        )
+
+        # Provenance is taken from whichever source recorded it. One simulated
+        # attempt is enough to keep the outcome out of "verified".
+        simulated = bool(
+            provider_label == SIMULATOR_PROVIDER_LABEL
+            or any(attempt.simulated for attempt in attempts)
+        )
+
+        evidence_id: uuid.UUID | None = None
+        raw_reference = payload.get("verification_id")
+        if raw_reference:
+            try:
+                evidence_id = uuid.UUID(str(raw_reference))
+            except ValueError:  # pragma: no cover - defensive against payload drift
+                evidence_id = None
+        if evidence_id is None:
+            evidence_id = next(
+                (a.evidence_reference for a in reversed(attempts) if a.evidence_reference), None
+            )
+
+        evidence_ids = {a.evidence_reference for a in attempts if a.evidence_reference}
+        if evidence_id is not None:
+            evidence_ids.add(evidence_id)
+        evidence: tuple[VerificationEvidenceView, ...] = ()
+        if evidence_ids:
+            evidence = tuple(
+                VerificationEvidenceView(
+                    evidence_id=row.id,
+                    email=row.email,
+                    result=row.result.value,
+                    provider=row.provider,
+                    simulated=row.provider == SIMULATOR_PROVIDER_LABEL,
+                    checked_at=row.checked_at,
+                    policy_version=row.policy_version,
+                )
+                for row in self._session.scalars(
+                    select(ExactEmailVerification)
+                    .where(ExactEmailVerification.id.in_(evidence_ids))
+                    .order_by(ExactEmailVerification.checked_at.desc())
+                ).all()
+            )
+
+        # A refusal that happened before any provider work carries no decision
+        # payload, because the adapter declines before the verification domain is
+        # consulted. It is still observable without interpretation: the stage is
+        # held, nothing was committed, and no attempt reached a provider.
+        stage_held = stage is not None and stage.status in (
+            PipelineStageStatus.BLOCKED,
+            PipelineStageStatus.FAILED,
+        )
+        refused_before_provider = bool(
+            stage_held
+            and not payload.get("decision")
+            and not any(attempt.provider_called for attempt in attempts)
+        )
+
+        decision = payload.get("decision")
+        decision_value = str(decision) if decision else None
+        if decision_value is not None and decision_value not in set(VerificationDecision):
+            # A decision this build cannot read is reported as undecided rather
+            # than guessed; guessing is how "risky" becomes "verified".
+            decision_value = None
+
+        return VerificationOutcomeView(
+            decision=decision_value,
+            precise_status=(
+                str(payload["precise_status"]) if payload.get("precise_status") else None
+            ),
+            verification_result=(
+                str(payload["verification_result"]) if payload.get("verification_result") else None
+            ),
+            reason_code=(stage.reason_code if stage else None)
+            or (latest_event.reason_code if latest_event else None),
+            reason=sanitize_text(
+                (stage.reason_detail if stage else None)
+                or (latest_event.reason_detail if latest_event else None)
+            ),
+            provider=provider_label,
+            simulated=simulated,
+            provider_called=bool(payload.get("provider_called"))
+            or any(a.provider_called for a in attempts),
+            reused_evidence=bool(payload.get("reused_evidence"))
+            or any(a.reused_evidence for a in attempts),
+            policy_version=(
+                str(payload["policy_version"]) if payload.get("policy_version") else None
+            ),
+            evidence_reference=evidence_id,
+            outcome_committed=outcome_committed,
+            stage_status=stage.status if stage else None,
+            retryable=bool(stage.retryable) if stage else False,
+            refused_before_provider=refused_before_provider,
+            attempts=attempts,
+            evidence=evidence,
         )
 
     # --- jobs ------------------------------------------------------------

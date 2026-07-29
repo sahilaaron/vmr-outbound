@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_agent_macros.html" import stage_status_badge, job_status_badge, failure_badge, eligibility_badge, membership_badge, control_badge, control_source, simulated_badge %}
+{% from "_agent_macros.html" import stage_status_badge, job_status_badge, failure_badge, eligibility_badge, membership_badge, control_badge, control_source, simulated_badge, decision_badge, verified_badge, failure_class_badge %}
 {% block content %}
 <div class="page-head">
   <div class="crumbs">
@@ -73,28 +73,113 @@
   </div>
 </div>
 
-{% if execution.verification_evidence %}
+{% if execution.verification %}
+{% set v = execution.verification %}
 <div class="card">
   <div class="card-head">
-    <h2>Verification evidence</h2>
-    <span class="hint">Simulated evidence can never read as production-ready.</span>
+    <h2>Verification</h2>
+    <span class="hint">The committed decision — not whether a queue job finished.</span>
   </div>
-  <div class="card-body tight">
+  <div class="card-body">
+    <dl class="kv">
+      <dt>Decision</dt>
+      <dd>{{ decision_badge(v.decision, v.refused_before_provider) }} {{ verified_badge(v) }}</dd>
+      <dt>Reason</dt>
+      <dd class="small wrap">
+        {% if v.reason_code %}<span class="badge muted">{{ v.reason_code }}</span> {% endif %}
+        {{ v.reason or "No reason was recorded." }}
+      </dd>
+      <dt>Normalized status</dt>
+      <dd class="small">{{ v.precise_status.replace("_", " ") if v.precise_status else "—" }}
+        {%- if v.verification_result %} · provider result <code>{{ v.verification_result }}</code>{% endif %}</dd>
+      <dt>Outcome committed</dt>
+      <dd>
+        {% if v.outcome_committed %}<span class="badge ok" title="A pipeline event recorded the stage outcome.">yes</span>
+        {% else %}<span class="badge warn" title="No committed stage event, so nothing here may advance the Contact.">no</span>{% endif %}
+        {% if v.stage_status %}<span class="small muted-text">stage {{ v.stage_status.value }}</span>{% endif %}
+      </dd>
+      <dt>Retry</dt>
+      <dd>
+        {% if v.decision == "retry_later" %}<span class="badge info">another attempt is permitted</span>
+        {% elif v.refused_before_provider %}<span class="badge err" title="Nothing changes until the cause named above is fixed.">blocked before any provider work</span>
+        {% elif v.terminal %}<span class="badge err" title="No further attempt will change this.">terminal for this address</span>
+        {% elif v.retryable %}<span class="badge warn">Phase 2 marked this stage retryable</span>
+        {% else %}<span class="muted-text small">—</span>{% endif %}
+      </dd>
+      <dt>Evidence source</dt>
+      <dd>
+        {% if v.provider %}
+          {% if v.simulated %}<span class="badge warn" title="A simulator result is a real normalized outcome, but it is not external verification and can never advance a Campaign Contact.">simulated</span>
+          {% else %}<span class="badge ok" title="An external provider produced this result.">live</span>{% endif %}
+          <span class="small mono">{{ v.provider }}</span>
+        {% else %}<span class="muted-text small">No provider is recorded for this outcome.</span>{% endif %}
+        {% if v.reused_evidence %}<span class="badge muted" title="Answered from sufficiently fresh existing evidence rather than a new call.">reused evidence</span>{% endif %}
+      </dd>
+      <dt>Provider calls</dt>
+      <dd class="small">
+        {{ v.paid_calls }} attempt{{ "" if v.paid_calls == 1 else "s" }} reached the provider
+        {%- if v.attempts %} of {{ v.attempts | length }} recorded{% endif %}
+      </dd>
+      <dt>Evidence reference</dt>
+      <dd class="mono small">{{ v.evidence_reference or "none — no evidence row is referenced" }}</dd>
+      <dt>Policy version</dt><dd class="mono small">{{ v.policy_version or "—" }}</dd>
+    </dl>
+
+    {% if v.attempts %}
+    <hr class="sep">
+    <h3 class="small">Provider attempts</h3>
     <table>
-      <thead><tr><th scope="col">Address</th><th scope="col">Result</th><th scope="col">Source</th><th scope="col">Provider</th><th scope="col">Checked</th><th scope="col">Policy</th></tr></thead>
-      <tbody>
-        {% for evidence in execution.verification_evidence %}
+      <thead>
         <tr>
-          <td class="mono small">{{ evidence.email }}</td>
-          <td>{{ evidence.result }}</td>
-          <td>{{ simulated_badge(evidence) }}</td>
-          <td class="small mono">{{ evidence.provider }}</td>
-          <td class="small muted-text">{{ evidence.checked_at | dt }}</td>
-          <td class="small mono">{{ evidence.policy_version or "—" }}</td>
+          <th scope="col">#</th><th scope="col">Started</th><th scope="col">Provider</th>
+          <th scope="col">Called</th><th scope="col">Status</th><th scope="col">Classification</th>
+          <th scope="col">Evidence</th><th scope="col">Detail</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for attempt in v.attempts %}
+        <tr class="{{ 'row-failure' if attempt.failure_class != 'none' and not attempt.retryable else '' }}">
+          <td>{{ attempt.attempt_number }}</td>
+          <td class="small muted-text">{{ attempt.started_at | dt }}</td>
+          <td class="small">
+            {% if attempt.simulated %}<span class="badge warn">simulated</span>{% else %}<span class="badge ok">live</span>{% endif %}
+            <div class="small mono muted-text">{{ attempt.provider }}</div>
+          </td>
+          <td class="small">
+            {% if attempt.provider_called %}yes{% elif attempt.reused_evidence %}<span class="muted-text">reused</span>{% else %}<span class="muted-text">no</span>{% endif %}
+          </td>
+          <td class="small">{{ attempt.precise_status.replace("_", " ") if attempt.precise_status else "—" }}
+            {%- if attempt.verification_result %}<div class="small mono muted-text">{{ attempt.verification_result }}</div>{% endif %}</td>
+          <td class="small">{{ failure_class_badge(attempt.failure_class, attempt.retryable) }}</td>
+          <td class="mono small">{{ attempt.evidence_reference or "—" }}</td>
+          <td class="small wrap">{{ attempt.error_summary or "—" }}</td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
+    {% else %}
+    <p class="small muted-text">No provider attempt has been recorded for this Campaign Contact.</p>
+    {% endif %}
+
+    {% if v.evidence %}
+    <hr class="sep">
+    <h3 class="small">Committed evidence</h3>
+    <table>
+      <thead><tr><th scope="col">Address</th><th scope="col">Result</th><th scope="col">Source</th><th scope="col">Checked</th><th scope="col">Policy</th><th scope="col">Reference</th></tr></thead>
+      <tbody>
+        {% for evidence in v.evidence %}
+        <tr>
+          <td class="mono small">{{ evidence.email }}</td>
+          <td class="small">{{ evidence.result }}</td>
+          <td>{{ simulated_badge(evidence) }} <span class="small mono muted-text">{{ evidence.provider }}</span></td>
+          <td class="small muted-text">{{ evidence.checked_at | dt }}</td>
+          <td class="small mono">{{ evidence.policy_version or "—" }}</td>
+          <td class="mono small">{{ evidence.evidence_id }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
   </div>
 </div>
 {% endif %}

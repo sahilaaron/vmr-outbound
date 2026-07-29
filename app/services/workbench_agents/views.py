@@ -414,20 +414,111 @@ class PipelineEventView:
 
 
 @dataclass(frozen=True)
-class VerificationEvidenceView:
-    """Whether a stored verification result came from a live provider.
+class VerificationAttemptView:
+    """One provider-facing attempt, as MVP-01E records it.
 
-    Simulated evidence can never read as production-ready. The Verification
-    thread owns the policy and the evidence; the Workbench only reports the
-    provenance label already stored beside the result.
+    Distinct from an Agent Job attempt: Phase 2 owns execution attempts, this
+    says what the *provider* did. ``provider_called`` is the only honest basis
+    for reading a paid-call count, so it is shown rather than inferred.
     """
 
+    attempt_number: int
+    started_at: datetime | None
+    finished_at: datetime | None
+    provider: str
+    simulated: bool
+    provider_called: bool
+    reused_evidence: bool
+    precise_status: str | None
+    verification_result: str | None
+    failure_class: str
+    retryable: bool
+    error_summary: str | None
+    evidence_reference: uuid.UUID | None
+
+
+@dataclass(frozen=True)
+class VerificationEvidenceView:
+    """One committed exact-address evidence row.
+
+    Provenance is carried explicitly: a simulated result is a real normalized
+    outcome and is stored as such, but it is not external verification and this
+    view never lets it read as one.
+    """
+
+    evidence_id: uuid.UUID
     email: str
     result: str
     provider: str
     simulated: bool
     checked_at: datetime | None
     policy_version: str | None
+
+
+@dataclass(frozen=True)
+class VerificationOutcomeView:
+    """The Verification stage's committed decision for one Campaign Contact.
+
+    ``decision`` is read from the outcome Phase 2 committed — the stage's
+    ``output_reference``, or the detail on the pipeline event that recorded the
+    transition. It is never derived from a job having succeeded: the whole point
+    of the MVP-01E decision vocabulary is that a finished job and an accepted
+    address are different facts, and only one of them may advance a Contact.
+    """
+
+    #: One of the MVP-01E decisions, or None when none was committed.
+    decision: str | None
+    precise_status: str | None
+    verification_result: str | None
+    reason_code: str | None
+    reason: str | None
+    provider: str | None
+    simulated: bool
+    provider_called: bool
+    reused_evidence: bool
+    policy_version: str | None
+    evidence_reference: uuid.UUID | None
+    #: True only when a pipeline event committed the stage outcome.
+    outcome_committed: bool
+    stage_status: PipelineStageStatus | None
+    #: Whether Phase 2 marked the stage retryable.
+    retryable: bool
+    #: Verification declined before any provider work: the stage is held, no
+    #: decision payload was committed, and no attempt reached a provider. Read
+    #: from those three observable facts, never by interpreting a reason code —
+    #: the Workbench does not classify verification outcomes.
+    refused_before_provider: bool = False
+    attempts: tuple[VerificationAttemptView, ...] = ()
+    evidence: tuple[VerificationEvidenceView, ...] = ()
+
+    @property
+    def accepted(self) -> bool:
+        """Verified and pipeline-ready.
+
+        Three conditions, all required: the committed decision is ``accept``, a
+        pipeline event committed it, and the evidence was not simulated. Any one
+        of them missing means the address is not verified, whatever the queue did.
+        """
+
+        return self.decision == "accept" and self.outcome_committed and not self.simulated
+
+    @property
+    def decided(self) -> bool:
+        return self.decision is not None
+
+    @property
+    def terminal(self) -> bool:
+        return self.decision in {"stop_no_result", "try_next_candidate", "refused"}
+
+    @property
+    def refused(self) -> bool:
+        """Declined, either by a committed ``refused`` decision or before one."""
+
+        return self.decision == "refused" or self.refused_before_provider
+
+    @property
+    def paid_calls(self) -> int:
+        return sum(1 for attempt in self.attempts if attempt.provider_called)
 
 
 @dataclass(frozen=True)
@@ -457,7 +548,7 @@ class ContactExecutionView:
     stages: tuple[StageView, ...]
     jobs: tuple[JobView, ...]
     events: tuple[PipelineEventView, ...]
-    verification_evidence: tuple[VerificationEvidenceView, ...] = ()
+    verification: VerificationOutcomeView | None = None
     enrolled_at: datetime | None = None
     updated_at: datetime | None = None
     review_state: str = ""
