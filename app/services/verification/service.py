@@ -29,24 +29,30 @@ from app.models.contact import Contact
 from app.models.email_evidence import ExactEmailVerification
 from app.models.enums import (
     EmailPreciseStatus,
+    EmailVerificationResult,
     UsageCacheStatus,
     UsageChargeStatus,
+    VerificationFailureClass,
     VerificationUsageEventType,
 )
+from app.models.verification_attempt import VerificationAttempt
 from app.models.verification_job import VerificationJob
 from app.services import usage_ledger
 from app.services.email.candidates import generate_candidates
 from app.services.imports.normalization import normalize_email
 from app.services.suppressions import evaluate_suppression
+from app.services.verification import attempts as job_attempts
 from app.services.verification import queue as jobs
 from app.services.verification import usage
 from app.services.verification.policy import MappedOutcome, VerificationPolicy, get_policy
 from app.services.verification.provider import (
+    SIMULATOR_PROVIDER_LABEL,
     ProviderResponse,
     ProviderTransientError,
     VerificationProvider,
     build_provider,
     evidence_provider_label,
+    redact_secret,
 )
 
 # Provider-neutral labels for the shared usage ledger.
@@ -250,36 +256,127 @@ def _store_evidence(
     return row
 
 
-def process_job(
+@dataclass(frozen=True)
+class VerificationOutcome:
+    """One classified verification attempt, with no queue side effects.
+
+    This is what the verification domain knows after doing its work: what the
+    provider said, what evidence exists, what it cost, and how any failure
+    classifies. It deliberately says nothing about job status, retry timing or
+    pipeline state — the Phase 2 Agent contract owns all of those, and this
+    object is what its adapter translates.
+    """
+
+    email: str
+    precise: EmailPreciseStatus
+    result: EmailVerificationResult | None
+    evidence: ExactEmailVerification | None
+    reused: bool
+    provider_called: bool
+    # Simulated-vs-live provenance label, as stored on the evidence row.
+    provider_label: str
+    failure_class: VerificationFailureClass
+    policy_version: str
+    # Operator-readable and already redacted; None on success.
+    reason: str | None = None
+    attempt: VerificationAttempt | None = None
+
+    @property
+    def simulated(self) -> bool:
+        """True when this outcome came from the network-free simulator."""
+
+        return self.provider_label == SIMULATOR_PROVIDER_LABEL
+
+    @property
+    def is_address_evidence(self) -> bool:
+        return self.evidence is not None
+
+
+def verify_exact_address(
     session: Session,
     job: VerificationJob,
     *,
     provider: VerificationProvider,
     settings: Settings | None = None,
     policy: VerificationPolicy | None = None,
-) -> VerificationJob:
-    """Process one claimed job to a terminal or retry state. Never network in tests."""
+    reuse_fresh: bool = True,
+) -> VerificationOutcome:
+    """Obtain one normalized verification outcome for one claimed job's address.
+
+    Does every durable thing verification owns — reuse fresh evidence or make one
+    provider call, store the address evidence, record usage and the neutral cost
+    ledger, append the provider-facing attempt record — and then returns.
+
+    It never sets a job status, schedules a retry, or writes pipeline state. That
+    separation is the whole point: the Phase 2 worker owns the job lifecycle, and
+    a domain service that also moved jobs would be a second orchestrator.
+
+    ``reuse_fresh`` and the job's own ``input_reference["force_refresh"]`` both
+    disable the cache-first shortcut. The instruction lives on the job so it
+    survives whoever ends up executing it: an operator who asked for a fresh
+    check must never be quietly handed the cached verdict.
+    """
 
     settings = settings or get_settings()
     policy = policy or get_policy(settings)
     now = _now()
     provider_name = provider.name
-    if job.email is None:
-        return jobs.mark_failed(
+    provider_label = evidence_provider_label(provider)
+    email = job.email or ""
+
+    def _attempt(
+        *,
+        provider_called: bool,
+        failure_class: VerificationFailureClass,
+        precise: EmailPreciseStatus,
+        result: EmailVerificationResult | None = None,
+        reused: bool = False,
+        reason: str | None = None,
+        evidence: ExactEmailVerification | None = None,
+    ) -> VerificationOutcome:
+        record = job_attempts.record_attempt(
             session,
             job,
-            reason="verification job has no exact email address",
-            outcome_status=EmailPreciseStatus.PROVIDER_ERROR.value,
-            now=now,
+            started_at=now,
+            finished_at=_now(),
+            provider=provider_label,
+            provider_called=provider_called,
+            reused_evidence=reused,
+            failure_class=failure_class,
+            precise_status=precise.value,
+            verification_result=result,
+            error_summary=reason,
+            verification_id=evidence.id if evidence is not None else None,
+            settings=settings,
         )
-    email = job.email
+        return VerificationOutcome(
+            email=email,
+            precise=precise,
+            result=result,
+            evidence=evidence,
+            reused=reused,
+            provider_called=provider_called,
+            provider_label=provider_label,
+            failure_class=failure_class,
+            policy_version=policy.version,
+            reason=reason,
+            attempt=record,
+        )
+
+    if not email:
+        return _attempt(
+            provider_called=False,
+            failure_class=VerificationFailureClass.INVALID_INPUT,
+            precise=EmailPreciseStatus.PROVIDER_ERROR,
+            reason="verification job has no exact email address",
+        )
 
     if jobs.lease_was_reclaimed(job):
         usage.record_usage(
             session,
             event_type=VerificationUsageEventType.RECOVERED,
             provider=provider_name,
-            email=job.email,
+            email=email,
             contact_id=job.contact_id,
             job_id=job.id,
             reason="job reclaimed after a worker lease expired",
@@ -298,13 +395,14 @@ def process_job(
         )
 
     # Cache reuse safety net: fresh evidence may have appeared since enqueue.
-    fresh = find_fresh_evidence(session, email, policy, now)
+    may_reuse = reuse_fresh and not _force_refresh_requested(job)
+    fresh = find_fresh_evidence(session, email, policy, now) if may_reuse else None
     if fresh is not None:
         usage.record_usage(
             session,
             event_type=VerificationUsageEventType.CACHE_REUSE,
             provider=provider_name,
-            email=job.email,
+            email=email,
             contact_id=job.contact_id,
             job_id=job.id,
             result=fresh.result.value,
@@ -321,14 +419,23 @@ def process_job(
             reason="fresh evidence already present; skipped provider call",
         )
         precise = policy.precise_for_result(fresh.result, is_role=bool(fresh.is_role))
-        return jobs.mark_succeeded(
-            session, job, verification_id=fresh.id, outcome_status=precise.value, now=now
+        return _attempt(
+            provider_called=False,
+            failure_class=VerificationFailureClass.NONE,
+            precise=precise,
+            result=fresh.result,
+            reused=True,
+            evidence=fresh,
         )
 
     # One provider call.
     try:
         response = provider.verify(email)
-    except ProviderTransientError as exc:
+    except ProviderTransientError as raw_exc:
+        # The live client redacts its own key before raising; redact again here so
+        # a provider that forgets cannot write a credential into durable text that
+        # the workbench renders (AGENTS.md: secrets never in logs).
+        detail = redact_secret(str(raw_exc), settings.millionverifier_api_key)
         usage.record_usage(
             session,
             event_type=VerificationUsageEventType.TIMEOUT,
@@ -336,7 +443,7 @@ def process_job(
             email=email,
             contact_id=job.contact_id,
             job_id=job.id,
-            reason=f"transport failure: {exc}",
+            reason=f"transport failure: {detail}",
         )
         _maybe_retry_usage(session, job, provider_name)
         _ledger_for_job(
@@ -347,16 +454,13 @@ def process_job(
             charge_status=UsageChargeStatus.NONE,
             now=now,
             result=None,
-            reason=f"transport failure (no charge): {exc}",
+            reason=f"transport failure (no charge): {detail}",
         )
-        return jobs.schedule_retry(
-            session,
-            job,
-            reason=f"transport failure: {exc}",
-            base=settings.verification_retry_base_seconds,
-            cap=settings.verification_retry_max_seconds,
-            outcome_status=EmailPreciseStatus.PROVIDER_ERROR.value,
-            now=now,
+        return _attempt(
+            provider_called=True,
+            failure_class=VerificationFailureClass.TRANSIENT_PROVIDER,
+            precise=EmailPreciseStatus.PROVIDER_ERROR,
+            reason=f"transport failure: {detail}",
         )
 
     mapped = policy.map_response(response)
@@ -364,7 +468,7 @@ def process_job(
     if mapped.is_address_evidence:
         row = _store_evidence(
             session,
-            email=job.email,
+            email=email,
             mapped=mapped,
             response=response,
             policy=policy,
@@ -372,14 +476,14 @@ def process_job(
             # Evidence records simulated-vs-live provenance so a simulated result
             # is never displayed as an external verification (VER-007). Usage and
             # the neutral ledger keep the vendor label for cost correlation.
-            provider_name=evidence_provider_label(provider),
+            provider_name=provider_label,
             now=now,
         )
         usage.record_usage(
             session,
             event_type=VerificationUsageEventType.CALL_MADE,
             provider=provider_name,
-            email=job.email,
+            email=email,
             contact_id=job.contact_id,
             job_id=job.id,
             result=mapped.result.value if mapped.result else None,
@@ -405,8 +509,12 @@ def process_job(
             credits_remaining=response.credits,
             reason=mapped.reason,
         )
-        return jobs.mark_succeeded(
-            session, job, verification_id=row.id, outcome_status=mapped.precise.value, now=now
+        return _attempt(
+            provider_called=True,
+            failure_class=VerificationFailureClass.NONE,
+            precise=mapped.precise,
+            result=mapped.result,
+            evidence=row,
         )
 
     if mapped.kind == "insufficient_credits":
@@ -414,7 +522,7 @@ def process_job(
             session,
             event_type=VerificationUsageEventType.INSUFFICIENT_CREDITS,
             provider=provider_name,
-            email=job.email,
+            email=email,
             contact_id=job.contact_id,
             job_id=job.id,
             credits_remaining=response.credits,
@@ -431,12 +539,11 @@ def process_job(
             credits_remaining=response.credits,
             reason=mapped.reason,
         )
-        return jobs.mark_failed(
-            session,
-            job,
+        return _attempt(
+            provider_called=True,
+            failure_class=VerificationFailureClass.INSUFFICIENT_CREDITS,
+            precise=EmailPreciseStatus.INSUFFICIENT_CREDITS,
             reason=mapped.reason,
-            outcome_status=EmailPreciseStatus.INSUFFICIENT_CREDITS.value,
-            now=now,
         )
 
     if mapped.retryable:  # transient provider error / result=error / unrecognised
@@ -444,7 +551,7 @@ def process_job(
             session,
             event_type=VerificationUsageEventType.PROVIDER_ERROR,
             provider=provider_name,
-            email=job.email,
+            email=email,
             contact_id=job.contact_id,
             job_id=job.id,
             reason=mapped.reason,
@@ -460,14 +567,11 @@ def process_job(
             result=None,
             reason=f"provider error (no charge): {mapped.reason}",
         )
-        return jobs.schedule_retry(
-            session,
-            job,
+        return _attempt(
+            provider_called=True,
+            failure_class=VerificationFailureClass.TRANSIENT_PROVIDER,
+            precise=EmailPreciseStatus.PROVIDER_ERROR,
             reason=mapped.reason,
-            base=settings.verification_retry_base_seconds,
-            cap=settings.verification_retry_max_seconds,
-            outcome_status=EmailPreciseStatus.PROVIDER_ERROR.value,
-            now=now,
         )
 
     # Non-retryable provider/config error: fail without paid evidence.
@@ -475,7 +579,7 @@ def process_job(
         session,
         event_type=VerificationUsageEventType.PROVIDER_ERROR,
         provider=provider_name,
-        email=job.email,
+        email=email,
         contact_id=job.contact_id,
         job_id=job.id,
         reason=mapped.reason,
@@ -490,12 +594,79 @@ def process_job(
         result=None,
         reason=f"provider/config error (no charge): {mapped.reason}",
     )
+    return _attempt(
+        provider_called=True,
+        failure_class=VerificationFailureClass.PERMANENT_PROVIDER,
+        precise=EmailPreciseStatus.PROVIDER_ERROR,
+        reason=mapped.reason,
+    )
+
+
+def _force_refresh_requested(job: VerificationJob) -> bool:
+    """Whether this Agent Job was queued as a deliberate re-check.
+
+    Carried in the Phase 2 ``input_reference`` rather than a dedicated column:
+    the common Agent Job already provides a durable, structured place for a job's
+    input, and adding a verification-only column beside it would duplicate what
+    Phase 2 supplies.
+    """
+
+    return bool((job.input_reference or {}).get("force_refresh"))
+
+
+def process_job(
+    session: Session,
+    job: VerificationJob,
+    *,
+    provider: VerificationProvider,
+    settings: Settings | None = None,
+    policy: VerificationPolicy | None = None,
+    reuse_fresh: bool = True,
+) -> VerificationJob:
+    """Run one claimed job to a terminal or retry state through the legacy queue.
+
+    Compatibility surface for the callers that predate the Phase 2 worker: the
+    workbench verification console, ``run_worker``, and the deliberate live smoke
+    command. It performs the domain work through :func:`verify_exact_address` and
+    then applies the queue transitions those callers still expect.
+
+    The Phase 2 Verification Agent adapter does **not** use this function. It
+    calls :func:`verify_exact_address` and lets the common worker own every job
+    transition, so retries, backoff and terminal failure have one owner.
+    """
+
+    settings = settings or get_settings()
+    policy = policy or get_policy(settings)
+    outcome = verify_exact_address(
+        session,
+        job,
+        provider=provider,
+        settings=settings,
+        policy=policy,
+        reuse_fresh=reuse_fresh,
+    )
+
+    if outcome.evidence is not None:
+        return jobs.mark_succeeded(
+            session,
+            job,
+            verification_id=outcome.evidence.id,
+            outcome_status=outcome.precise.value,
+        )
+    if outcome.failure_class is VerificationFailureClass.TRANSIENT_PROVIDER:
+        return jobs.schedule_retry(
+            session,
+            job,
+            reason=outcome.reason or "transient provider failure",
+            base=settings.verification_retry_base_seconds,
+            cap=settings.verification_retry_max_seconds,
+            outcome_status=EmailPreciseStatus.PROVIDER_ERROR.value,
+        )
     return jobs.mark_failed(
         session,
         job,
-        reason=mapped.reason,
-        outcome_status=EmailPreciseStatus.PROVIDER_ERROR.value,
-        now=now,
+        reason=outcome.reason or "verification produced no usable result",
+        outcome_status=outcome.precise.value,
     )
 
 

@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.models.campaign import Campaign, CampaignContact
 from app.models.company import Company
 from app.models.contact import Contact
 from app.models.email_candidate import EmailCandidate
 from app.models.enums import (
     AgentIdentifier,
-    AgentJobStatus,
     IdentityLinkState,
     LinkedInIdentifierKind,
 )
@@ -25,11 +25,21 @@ from app.services import identity_links
 from app.services.audit import record_audit_event
 from app.services.companies import conflicts as company_conflicts
 from app.services.email.candidates import generate_candidates
+from app.services.imports.normalization import is_valid_email, normalize_email
 from app.services.resolution import store as resolution_store
 from app.services.resolution.gates import DownstreamStage, authorize_contact
 from app.services.suppressions import evaluate_suppression
 from app.services.verification import service as verification_service
+from app.services.verification import status as verification_status
+from app.services.verification.decisions import (
+    ADDRESS_VERDICTS,
+    UNSETTLED_EVIDENCE,
+    DecisionOutcome,
+    VerificationDecision,
+    decide,
+)
 from app.services.verification.policy import get_policy
+from app.services.verification.provider import VerificationProvider
 
 
 class AgentExecutionError(Exception):
@@ -322,12 +332,43 @@ class EmailAgentAdapter:
 
 
 class VerificationAgentAdapter:
-    """Invoke the existing MillionVerifier service only in explicitly live mode."""
+    """Verify one exact address through the existing MillionVerifier service.
+
+    The Agent boundary for MVP-01E (#225). It receives an already claimed and
+    running Verification Agent Job from the common worker, validates the input,
+    invokes the verification domain once, and returns a classified decision. It
+    owns no queue transition, no retry schedule and no lifecycle of its own:
+    every job status change is the Phase 2 worker's, translated from the error
+    class this adapter raises.
+
+    The rule the adapter exists to enforce is that a verdict is not an
+    acceptance. ``verification_service`` will happily record durable evidence
+    that a mailbox is invalid, catch-all, unknown, disposable or role-based —
+    those are correct, valuable results — but none of them may complete the
+    Verification stage and let a Campaign Contact advance toward outreach. Only
+    fresh, live, valid, non-role evidence does. Everything else is recorded
+    truthfully and stops the pipeline where it stands.
+    """
 
     agent_id = AgentIdentifier.VERIFICATION
 
+    def __init__(
+        self,
+        *,
+        provider_factory: Callable[[Settings], VerificationProvider] | None = None,
+    ) -> None:
+        # A narrow, explicit seam so the automated suite can exercise the live
+        # branch without a network call or a real credential. Production uses the
+        # default, which is the same builder every other verification caller
+        # uses; a test supplying its own provider still has to get past the live
+        # authority and simulated-provider gates below.
+        self._provider_factory = provider_factory or (
+            lambda settings: verification_service.get_provider(settings, live=True)
+        )
+
     def execute(self, context: AgentExecutionContext) -> AgentExecutionResult:
-        selected = context.session.scalars(
+        session = context.session
+        selected = session.scalars(
             select(EmailCandidate).where(
                 EmailCandidate.contact_id == context.contact.id,
                 EmailCandidate.selected.is_(True),
@@ -338,70 +379,143 @@ class VerificationAgentAdapter:
                 "email_candidate_missing",
                 "Verification needs one selected exact email candidate.",
             )
+
+        settings = get_settings()
+        policy = get_policy(settings)
+        email = normalize_email(selected.email)
+        if not email or not is_valid_email(email):
+            raise AgentTerminalError(
+                "verification_invalid_input",
+                "The selected email candidate is not a well-formed address.",
+                detail={"email_candidate_id": str(selected.id)},
+            )
+
+        # Suppression is authoritative and is re-checked immediately before the
+        # provider is built, not merely when the job was queued: a ledger entry
+        # added while this job sat in the queue must still stop it. Verifying a
+        # suppressed identity is the first step of contacting it.
+        suppression = evaluate_suppression(
+            session, email=email, domain=context.contact.company_domain
+        )
+        if suppression.blocked:
+            raise AgentBlocked(
+                "suppression",
+                suppression.blocked_reason or "The suppression ledger blocks this Contact.",
+            )
+
+        expected_policy = (context.job.input_reference or {}).get("policy_version")
+        if expected_policy and expected_policy != policy.version:
+            raise AgentBlocked(
+                "verification_policy_mismatch",
+                f"This job was queued for verification policy {expected_policy!r}, but "
+                f"{policy.version!r} is active; results would not mean what was requested.",
+            )
+
         if context.config.get("live") is not True:
             raise AgentBlocked(
                 "verification_live_disabled",
                 "Live MillionVerifier execution is not enabled for this Campaign. "
                 "Simulator output cannot complete the Verification Agent.",
             )
-        settings = get_settings()
-        policy = get_policy(settings)
-        context.job.email = selected.email
-        context.job.policy_version = policy.version
-        provider = verification_service.get_provider(
-            settings,
-            live=True,
-        )
+        provider = self._provider_factory(settings)
         if provider.simulated:
             raise AgentBlocked(
                 "verification_credentials_missing",
                 "Live MillionVerifier credentials are not configured; simulator "
                 "output cannot complete the Verification Agent.",
             )
-        verification_service.process_job(
-            context.session,
+
+        context.job.email = email
+        context.job.policy_version = policy.version
+        outcome = verification_service.verify_exact_address(
+            session,
             context.job,
             provider=provider,
+            settings=settings,
             policy=policy,
         )
-        if context.job.status is AgentJobStatus.RETRY_SCHEDULED:
-            return AgentExecutionResult(
-                outcome_committed=False,
-                result={
-                    "domain_outcome": "verification_retry_scheduled",
-                    "error": context.job.last_error,
-                },
-                output_reference={"email": selected.email},
-                queue_status_handled=True,
-            )
-        if context.job.status is AgentJobStatus.FAILED:
-            return AgentExecutionResult(
-                outcome_committed=False,
-                result={
-                    "domain_outcome": "verification_failed",
-                    "error": context.job.last_error,
-                },
-                output_reference={"email": selected.email},
-                queue_status_handled=True,
-            )
-        if context.job.status is not AgentJobStatus.SUCCEEDED:
-            raise AgentRetryableError(
-                "verification_incomplete",
-                "Verification did not reach a durable outcome.",
-            )
+
+        decision = self._decide(session, context=context, outcome=outcome)
         output = {
-            "email": selected.email,
-            "verification_id": (
-                str(context.job.verification_id) if context.job.verification_id else None
-            ),
-            "precise_status": context.job.outcome_status,
+            "email": email,
+            "decision": decision.decision.value,
+            "precise_status": decision.status.value,
+            "verification_result": outcome.result.value if outcome.result else None,
+            "verification_id": str(outcome.evidence.id) if outcome.evidence else None,
+            "reused_evidence": outcome.reused,
+            "provider_called": outcome.provider_called,
+            "provider": outcome.provider_label,
+            "policy_version": outcome.policy_version,
         }
-        context.job.result = {"domain_outcome": "exact_email_verified", **output}
-        return AgentExecutionResult(
-            outcome_committed=True,
-            result=context.job.result,
-            output_reference=output,
-            queue_status_handled=True,
+
+        if decision.decision is VerificationDecision.ACCEPT:
+            return AgentExecutionResult(
+                outcome_committed=True,
+                result={"domain_outcome": "exact_email_verified", **output},
+                output_reference=output,
+            )
+
+        # Everything below preserves the durable evidence this attempt produced.
+        # The address was genuinely checked and paid for; discarding that because
+        # the answer was unwelcome would make the next run buy it again.
+        if decision.decision is VerificationDecision.RETRY_LATER:
+            raise AgentRetryableError(
+                decision.reason_code,
+                decision.reason,
+                detail=output,
+                preserve_outcome=True,
+            )
+        if decision.decision is VerificationDecision.TRY_NEXT_CANDIDATE:
+            raise AgentBlocked(
+                decision.reason_code,
+                decision.reason,
+                detail=output,
+                preserve_outcome=True,
+            )
+        if decision.decision is VerificationDecision.REFUSED:
+            raise AgentBlocked(
+                decision.reason_code,
+                decision.reason,
+                detail=output,
+                preserve_outcome=True,
+            )
+        raise AgentTerminalError(
+            decision.reason_code,
+            decision.reason,
+            detail=output,
+            preserve_outcome=True,
+        )
+
+    @staticmethod
+    def _decide(
+        session: Session,
+        *,
+        context: AgentExecutionContext,
+        outcome: verification_service.VerificationOutcome,
+    ) -> DecisionOutcome:
+        """Classify the outcome, re-asking the address read model about verdicts.
+
+        A verdict recorded moments ago can still be untrustworthy: reused
+        evidence may have aged past its freshness policy, and a second fresh
+        result may contradict it. Rather than re-deriving those rules, the
+        existing single read model for "what is true about this address now" is
+        consulted and its answer wins when it says the evidence is unsettled.
+        """
+
+        status = outcome.precise
+        if status in ADDRESS_VERDICTS:
+            current = verification_status.derive_status_for_email(
+                session, outcome.email, exclude_job_id=context.job.id
+            ).precise
+            if current in UNSETTLED_EVIDENCE:
+                status = current
+
+        job = context.job
+        return decide(
+            status,
+            failure_class=outcome.failure_class,
+            retry_available=job.attempts < job.max_attempts,
+            simulated=outcome.simulated,
         )
 
 

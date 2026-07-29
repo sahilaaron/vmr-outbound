@@ -129,10 +129,23 @@ def evidence_provider_label(provider: VerificationProvider) -> str:
     )
 
 
-def _redact(text: str, secret: str | None) -> str:
+REDACTION_PLACEHOLDER = "***REDACTED***"
+
+
+def redact_secret(text: str, secret: str | None) -> str:
+    """Replace *secret* wherever it appears in *text*.
+
+    The one definition of redaction in the codebase, so every layer that stores
+    or displays provider text strips the same thing the same way.
+    """
+
     if secret:
-        return text.replace(secret, "***REDACTED***")
+        return text.replace(secret, REDACTION_PLACEHOLDER)
     return text
+
+
+# Historical private alias, kept so the live client's call sites read unchanged.
+_redact = redact_secret
 
 
 # --- Simulator ---------------------------------------------------------------
