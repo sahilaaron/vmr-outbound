@@ -625,6 +625,8 @@ def contact_lookup_route(
 # --- Campaign selection for the capture extension (read-only, local) ---------
 
 CAMPAIGNS_PATH = "/api/campaigns"
+
+
 @router.options(CAMPAIGNS_PATH, include_in_schema=False)
 async def campaigns_list_preflight(request: Request) -> Response:
     """CORS preflight for the capture extension's campaign selector."""

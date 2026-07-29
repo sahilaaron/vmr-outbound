@@ -177,9 +177,7 @@ def test_retry_backoff_and_limit_are_durable(
 
 def test_lease_expiry_recovers_or_fails_at_attempt_limit(db_session: Session) -> None:
     now = datetime.now(UTC)
-    recoverable = _enqueue(
-        db_session, key="recoverable", max_attempts=2, available_at=now
-    )
+    recoverable = _enqueue(db_session, key="recoverable", max_attempts=2, available_at=now)
     jobs.claim_next_job(
         db_session,
         worker_id="dead-worker",
@@ -204,9 +202,7 @@ def test_lease_expiry_recovers_or_fails_at_attempt_limit(db_session: Session) ->
     assert reclaimed.__dict__.get("_reclaimed") is True
     assert reclaimed.attempts == 2
 
-    exhausted = _enqueue(
-        db_session, key="exhausted", max_attempts=1, available_at=now
-    )
+    exhausted = _enqueue(db_session, key="exhausted", max_attempts=1, available_at=now)
     jobs.claim_next_job(
         db_session,
         worker_id="dead-worker",
