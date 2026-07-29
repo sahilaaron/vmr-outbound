@@ -8,8 +8,9 @@ what can safely be controlled.
 It is a **read-and-command surface**. It owns no execution vocabulary and no
 state. Phase 2 owns the Agent registry, the execution and job states, the
 controls, the Campaign overrides, the pipeline stages, the retry lifecycle and
-the event vocabulary; MVP-01E owns everything about verification. The Workbench
-projects those, and routes operator intent back through their services.
+the event vocabulary; the Email Agent owns discovery policy and candidate
+sequencing; MVP-01E owns everything about verification. The Workbench projects
+those, and routes operator intent back through their services.
 
 Issues: **#221** (MVP-01B) under **#202** (MVP-01), against the shared execution
 contract in **#223** and the Verification Agent contract in **#225**.
@@ -69,8 +70,8 @@ Campaign's Agent overrides, its Sending state, and the latest pipeline events.
 **Contact execution** — the permanent Contact identity, membership state, desired
 / current / completed stages, the ordered append-only pipeline history, the
 Agent Jobs with attempts and leases, the committed domain outcomes, retry or
-terminal status, the blocking reason, suppression status, and the Verification
-outcome (below).
+terminal status, the blocking reason, suppression status, the Email discovery
+outcome and candidate ledger, and the Verification outcome (below).
 
 **Job inspection** — filter by Agent and by public status; drill into the durable
 identity, lease, attempts, structured input, committed result, sanitized failure
@@ -96,6 +97,28 @@ reason rather than a silent no-op.
 **A stale screen cannot overwrite a newer decision.** Every control form carries
 the control version it rendered with. If the stored version has moved on, the
 command is refused with an explanation and the newer decision survives.
+
+## Email Agent projection
+
+The Contact page reads the latest Email Agent job's persisted
+`email_discovery` state and the durable `email_candidate_attempts` ledger. It
+shows the versioned policy and employee-count evidence class, the locked
+candidate order, the current and accepted positions, every child Verification
+job and exact evidence reference, forced-refresh scope, and the terminal Email
+outcome.
+
+`verified_email_accepted` and `existing_accepted_email_reused` read as accepted
+only when an Email stage event committed the outcome and the persisted state
+names the accepted address. A Contact having an email does not create that
+meaning, and a Verification child job succeeding does not create it either.
+
+`no_verified_address` is shown as the Email Agent's truthful terminal result
+after all allowed candidates are exhausted. It is not displayed as a provider
+failure and it is not collapsed into a generic completed job.
+
+The Email and Verification sections remain separate deliberately: an Email
+candidate attempt is the policy sequencer's parent/child ledger, while a
+Verification attempt records provider-facing work and paid-call provenance.
 
 ## Verification (MVP-01E projection)
 
@@ -176,9 +199,10 @@ Every control declares what it does to work already in flight:
 
 ## No schema change
 
-The Workbench adds no table, column, index or migration. `alembic check` reports
-no un-generated changes and the OpenAPI document is byte-identical to the
-Verification branch's baseline — no route was added, changed or shadowed.
+The Workbench adds no table, column, index or migration. Relative to the Email
+Agent base, `alembic check` reports no un-generated changes and the Alembic head
+remains `d2f6c8a104be`. The OpenAPI document is byte-identical to the Email Agent
+baseline — no Workbench route was added, changed or shadowed.
 
 ## Known limitations
 
@@ -188,5 +212,3 @@ Verification branch's baseline — no route was added, changed or shadowed.
 * Job and Campaign Contact lists page at 50 rows, matching the rest of the
   workbench. There is no server-side search over jobs.
 * The activity stream is scoped by Agent and Campaign only.
-* Email Agent projection — candidate attempts, accepted-email state and
-  `no_verified_address` — lands with the Email Agent integration.

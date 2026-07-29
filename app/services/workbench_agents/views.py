@@ -414,6 +414,98 @@ class PipelineEventView:
 
 
 @dataclass(frozen=True)
+class EmailCandidateAttemptView:
+    """One policy-ordered address handed from Email to Verification.
+
+    This is the Email Agent's durable sequencing ledger, not a provider-call
+    attempt. The child Verification job and exact evidence references remain
+    explicit so the operator can follow the parent/child boundary without
+    collapsing Email and Verification into one state machine.
+    """
+
+    attempt_id: uuid.UUID
+    candidate_index: int
+    candidate_format: str
+    email: str
+    status: str
+    verification_job_id: uuid.UUID | None
+    verification_id: uuid.UUID | None
+    verification_decision: str | None
+    verification_result: dict[str, Any] | None
+    refusal_reason: str | None
+    employee_count_class: str
+    employee_evidence_freshness: str
+    force_refresh: bool
+    refresh_scope: str | None
+    verification_queued_at: datetime | None
+    resolved_at: datetime | None
+
+    @property
+    def position(self) -> int:
+        return self.candidate_index + 1
+
+
+@dataclass(frozen=True)
+class EmailOutcomeView:
+    """The latest Email Agent execution and its locked candidate sequence.
+
+    All semantic outcomes come from the Email Agent's persisted, versioned
+    state. A Contact having an email is not enough to infer acceptance, and a
+    Verification child succeeding is not enough either.
+    """
+
+    job_id: uuid.UUID | None
+    policy_identifier: str | None
+    policy_version: str | None
+    policy_outcome: str | None
+    reason: str | None
+    normalized_domain: str | None
+    employee_count_class: str | None
+    employee_evidence_freshness: str | None
+    ordered_candidate_formats: tuple[str, ...]
+    candidate_count: int
+    current_candidate_index: int | None
+    accepted_candidate_index: int | None
+    accepted_email: str | None
+    terminal_outcome: str | None
+    blocked_outcome: str | None
+    verification_id: uuid.UUID | None
+    verification_provider: str | None
+    verification_policy_version: str | None
+    force_refresh: bool
+    refresh_scope: str | None
+    outcome_committed: bool
+    stage_status: PipelineStageStatus | None
+    attempts: tuple[EmailCandidateAttemptView, ...] = ()
+
+    @property
+    def accepted(self) -> bool:
+        return (
+            self.terminal_outcome
+            in {"existing_accepted_email_reused", "verified_email_accepted"}
+            and self.outcome_committed
+            and bool(self.accepted_email)
+        )
+
+    @property
+    def no_verified_address(self) -> bool:
+        return self.terminal_outcome == "no_verified_address"
+
+    @property
+    def attempted_count(self) -> int:
+        return len(self.attempts)
+
+    @property
+    def current_position(self) -> int | None:
+        if (
+            self.current_candidate_index is None
+            or self.current_candidate_index >= self.candidate_count
+        ):
+            return None
+        return self.current_candidate_index + 1
+
+
+@dataclass(frozen=True)
 class VerificationAttemptView:
     """One provider-facing attempt, as MVP-01E records it.
 
@@ -548,6 +640,7 @@ class ContactExecutionView:
     stages: tuple[StageView, ...]
     jobs: tuple[JobView, ...]
     events: tuple[PipelineEventView, ...]
+    email: EmailOutcomeView | None = None
     verification: VerificationOutcomeView | None = None
     enrolled_at: datetime | None = None
     updated_at: datetime | None = None

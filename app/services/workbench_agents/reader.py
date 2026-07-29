@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from app.models.agent import AgentControl, CampaignAgentOverride
 from app.models.campaign import Campaign, CampaignContact
 from app.models.contact import Contact
+from app.models.email_discovery import EmailCandidateAttempt
 from app.models.email_evidence import ExactEmailVerification
 from app.models.enums import (
     AgentControlStatus,
@@ -41,6 +42,8 @@ from app.models.verification_job import AgentJob
 from app.services.agents import controls as agent_controls
 from app.services.agents import jobs as agent_jobs
 from app.services.agents.registry import AGENT_SPECS, PIPELINE_ORDER, get_agent_spec
+from app.services.email.agent import STATE_KEY as EMAIL_STATE_KEY
+from app.services.email.agent import EmailExecutionOutcome
 from app.services.pipeline import pipeline_snapshot
 from app.services.verification import attempts as verification_attempts
 from app.services.verification.decisions import VerificationDecision
@@ -55,6 +58,8 @@ from app.services.workbench_agents.views import (
     ContactExecutionView,
     ContactRowView,
     ControlView,
+    EmailCandidateAttemptView,
+    EmailOutcomeView,
     JobListView,
     JobView,
     PipelineEventView,
@@ -772,6 +777,11 @@ class PhaseTwoWorkbenchReader:
 
         campaign_names = {campaign.id: campaign.name}
         contact_labels = {membership.contact_id: _contact_label(contact)}
+        email = self._email_outcome(
+            stages=snapshot.stages,
+            events=snapshot.events,
+            jobs=snapshot.jobs,
+        )
         verification = self._verification_outcome(
             stages=snapshot.stages,
             events=snapshot.events,
@@ -819,11 +829,162 @@ class PhaseTwoWorkbenchReader:
                 )
                 for event in snapshot.events
             ),
+            email=email,
             verification=verification,
             enrolled_at=membership.enrolled_at,
             updated_at=membership.updated_at,
             review_state=membership.review_state,
             sending_state=membership.sending_state,
+        )
+
+    # --- email ------------------------------------------------------------
+
+    def _email_outcome(
+        self,
+        *,
+        stages: tuple[CampaignContactAgentState, ...],
+        events: tuple[PipelineEvent, ...],
+        jobs: tuple[AgentJob, ...],
+    ) -> EmailOutcomeView | None:
+        """Project the latest policy-bounded Email execution.
+
+        Candidate order and terminal meaning come from the Email Agent's
+        persisted versioned state. Child Verification success is never promoted
+        into an accepted Email outcome by the Workbench.
+        """
+
+        stage = next((row for row in stages if row.agent_id is AgentIdentifier.EMAIL), None)
+        stage_events = [event for event in events if event.agent_id is AgentIdentifier.EMAIL]
+        stage_jobs = [job for job in jobs if job.agent_id is AgentIdentifier.EMAIL]
+        if stage is None and not stage_events and not stage_jobs:
+            return None
+
+        latest_job: AgentJob | None = None
+        if stage is not None and stage.latest_job_id is not None:
+            latest_job = next((job for job in stage_jobs if job.id == stage.latest_job_id), None)
+        if latest_job is None and stage_jobs:
+            latest_job = max(stage_jobs, key=lambda job: (job.updated_at, job.created_at))
+
+        root = dict(latest_job.result or {}) if latest_job is not None else {}
+        raw_state = root.get(EMAIL_STATE_KEY)
+        state = dict(raw_state) if isinstance(raw_state, dict) else {}
+
+        attempt_rows: list[EmailCandidateAttempt] = []
+        if latest_job is not None:
+            attempt_rows = list(
+                self._session.scalars(
+                    select(EmailCandidateAttempt)
+                    .where(EmailCandidateAttempt.email_job_id == latest_job.id)
+                    .order_by(EmailCandidateAttempt.candidate_index)
+                ).all()
+            )
+        attempts = tuple(
+            EmailCandidateAttemptView(
+                attempt_id=row.id,
+                candidate_index=row.candidate_index,
+                candidate_format=row.candidate_format,
+                email=row.normalized_email,
+                status=row.status,
+                verification_job_id=row.verification_job_id,
+                verification_id=row.verification_id,
+                verification_decision=row.verification_decision,
+                verification_result=(
+                    sanitize_mapping(dict(row.verification_result))
+                    if row.verification_result
+                    else None
+                ),
+                refusal_reason=sanitize_text(row.refusal_reason),
+                employee_count_class=row.employee_count_class,
+                employee_evidence_freshness=row.employee_evidence_freshness,
+                force_refresh=row.force_refresh,
+                refresh_scope=sanitize_text(row.refresh_scope),
+                verification_queued_at=row.verification_queued_at,
+                resolved_at=row.resolved_at,
+            )
+            for row in attempt_rows
+        )
+
+        def _text(value: object) -> str | None:
+            return str(value) if isinstance(value, str) and value else None
+
+        def _index(value: object) -> int | None:
+            return value if isinstance(value, int) and value >= 0 else None
+
+        def _uuid_value(value: object) -> uuid.UUID | None:
+            if value is None:
+                return None
+            try:
+                return uuid.UUID(str(value))
+            except ValueError:
+                return None
+
+        candidates = state.get("candidates")
+        candidate_count = len(candidates) if isinstance(candidates, list) else len(attempts)
+        ordered_formats = state.get("ordered_candidate_formats")
+        format_values = (
+            tuple(str(value) for value in ordered_formats if isinstance(value, str))
+            if isinstance(ordered_formats, list)
+            else ()
+        )
+        evidence = state.get("employee_evidence")
+        evidence_map = evidence if isinstance(evidence, dict) else {}
+
+        terminal_outcome = _text(state.get("terminal_outcome")) or _text(
+            root.get("domain_outcome")
+        )
+        if terminal_outcome not in {outcome.value for outcome in EmailExecutionOutcome}:
+            terminal_outcome = None
+
+        outcome_committed = any(
+            event.event_type.value in COMMITTED_STAGE_EVENTS for event in stage_events
+        )
+        accepted_email = _text(state.get("accepted_email")) or _text(root.get("email"))
+        return EmailOutcomeView(
+            job_id=latest_job.id if latest_job is not None else None,
+            policy_identifier=_text(state.get("policy_identifier"))
+            or _text(root.get("email_policy_identifier")),
+            policy_version=_text(state.get("policy_version"))
+            or _text(root.get("email_policy_version")),
+            policy_outcome=_text(state.get("policy_outcome")),
+            reason=sanitize_text(
+                _text(state.get("reason")) or (stage.reason_detail if stage else None)
+            ),
+            normalized_domain=_text(state.get("normalized_domain")),
+            employee_count_class=_text(state.get("employee_count_class"))
+            or _text(root.get("employee_count_class")),
+            employee_evidence_freshness=_text(evidence_map.get("freshness")),
+            ordered_candidate_formats=format_values,
+            candidate_count=candidate_count,
+            current_candidate_index=_index(state.get("current_candidate_index")),
+            accepted_candidate_index=_index(state.get("accepted_candidate_index")),
+            accepted_email=accepted_email,
+            terminal_outcome=terminal_outcome,
+            blocked_outcome=_text(state.get("blocked_outcome")),
+            verification_id=_uuid_value(
+                state.get("verification_id") or root.get("verification_id")
+            ),
+            verification_provider=_text(root.get("verification_provider")),
+            verification_policy_version=_text(root.get("verification_policy_version")),
+            force_refresh=bool(
+                state.get("force_refresh")
+                if "force_refresh" in state
+                else (
+                    (latest_job.input_reference or {}).get("force_refresh", False)
+                    if latest_job
+                    else False
+                )
+            ),
+            refresh_scope=sanitize_text(
+                _text(state.get("refresh_scope"))
+                or (
+                    _text((latest_job.input_reference or {}).get("refresh_scope"))
+                    if latest_job is not None
+                    else None
+                )
+            ),
+            outcome_committed=outcome_committed,
+            stage_status=stage.status if stage else None,
+            attempts=attempts,
         )
 
     # --- verification -----------------------------------------------------

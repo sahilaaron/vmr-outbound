@@ -73,6 +73,92 @@
   </div>
 </div>
 
+{% if execution.email %}
+{% set e = execution.email %}
+<div class="card">
+  <div class="card-head">
+    <h2>Email discovery</h2>
+    <span class="hint">The Email Agent's locked candidate sequence and terminal outcome.</span>
+  </div>
+  <div class="card-body">
+    <dl class="kv">
+      <dt>Outcome</dt>
+      <dd>
+        {% if e.accepted %}<span class="badge ok">accepted</span>
+        {% elif e.no_verified_address %}<span class="badge err">no verified address</span>
+        {% elif e.blocked_outcome %}<span class="badge warn">{{ e.blocked_outcome.replace("_", " ") }}</span>
+        {% elif e.terminal_outcome %}<span class="badge warn">{{ e.terminal_outcome.replace("_", " ") }}</span>
+        {% else %}<span class="badge info">in progress</span>{% endif %}
+        {% if e.stage_status %}<span class="small muted-text">stage {{ e.stage_status.value }}</span>{% endif %}
+      </dd>
+      <dt>Accepted address</dt>
+      <dd class="mono small">{{ e.accepted_email or "none" }}
+        {% if e.accepted_candidate_index is not none %}<span class="muted-text"> · candidate {{ e.accepted_candidate_index + 1 }}</span>{% endif %}
+      </dd>
+      <dt>Outcome committed</dt>
+      <dd>
+        {% if e.outcome_committed %}<span class="badge ok">yes</span>
+        {% else %}<span class="badge warn">no</span>{% endif %}
+      </dd>
+      <dt>Policy</dt>
+      <dd class="small mono">{{ e.policy_identifier or "—" }} · {{ e.policy_version or "—" }}
+        {% if e.policy_outcome %}<span class="badge muted">{{ e.policy_outcome.replace("_", " ") }}</span>{% endif %}
+      </dd>
+      <dt>Company evidence</dt>
+      <dd class="small">{{ e.employee_count_class or "unknown" }}
+        {% if e.employee_evidence_freshness %} · {{ e.employee_evidence_freshness.replace("_", " ") }}{% endif %}
+        {% if e.normalized_domain %} · <span class="mono">{{ e.normalized_domain }}</span>{% endif %}
+      </dd>
+      <dt>Candidate progress</dt>
+      <dd class="small">
+        {{ e.attempted_count }} attempted of {{ e.candidate_count }} allowed
+        {% if e.current_position %} · current position {{ e.current_position }}{% endif %}
+        {% if e.ordered_candidate_formats %} · <span class="mono">{{ e.ordered_candidate_formats | join(" → ") }}</span>{% endif %}
+      </dd>
+      <dt>Verification evidence</dt>
+      <dd class="small">
+        {% if e.verification_id %}<span class="mono">{{ e.verification_id }}</span>
+          {% if e.verification_provider %} · {{ e.verification_provider }}{% endif %}
+          {% if e.verification_policy_version %} · policy {{ e.verification_policy_version }}{% endif %}
+        {% else %}<span class="muted-text">none recorded</span>{% endif %}
+      </dd>
+      <dt>Execution</dt>
+      <dd class="small">
+        {% if e.job_id %}<a href="/workbench/jobs/{{ e.job_id }}">Email job</a>{% else %}no job reference{% endif %}
+        {% if e.force_refresh %} · <span class="badge warn">forced refresh</span> {{ e.refresh_scope or "" }}{% endif %}
+      </dd>
+      {% if e.reason %}<dt>Reason</dt><dd class="small wrap">{{ e.reason }}</dd>{% endif %}
+    </dl>
+
+    {% if e.attempts %}
+    <hr class="sep">
+    <h3 class="small">Candidate attempts</h3>
+    <table>
+      <thead><tr><th scope="col">#</th><th scope="col">Address</th><th scope="col">Format</th><th scope="col">State</th><th scope="col">Verification</th><th scope="col">Evidence</th><th scope="col">Detail</th></tr></thead>
+      <tbody>
+        {% for attempt in e.attempts %}
+        <tr>
+          <td>{{ attempt.position }}</td>
+          <td class="mono small">{{ attempt.email }}</td>
+          <td class="mono small">{{ attempt.candidate_format }}</td>
+          <td><span class="badge {{ 'ok' if attempt.status == 'accepted' else ('err' if attempt.status in ('terminal_no_result', 'refused', 'simulated') else 'muted') }}">{{ attempt.status.replace("_", " ") }}</span></td>
+          <td class="small">
+            {{ attempt.verification_decision or "—" }}
+            {% if attempt.verification_job_id %}<div><a href="/workbench/jobs/{{ attempt.verification_job_id }}">child job</a></div>{% endif %}
+          </td>
+          <td class="mono small">{{ attempt.verification_id or "—" }}</td>
+          <td class="small wrap">{{ attempt.refusal_reason or "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="small muted-text">No Email candidate attempt has been recorded.</p>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
 {% if execution.verification %}
 {% set v = execution.verification %}
 <div class="card">
