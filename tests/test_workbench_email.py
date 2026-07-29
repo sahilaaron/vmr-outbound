@@ -22,6 +22,7 @@ from app.services.email.discovery_policy import POLICY_IDENTIFIER, POLICY_VERSIO
 from app.services.pipeline import transition_stage
 from app.services.workbench_agents.reader import PhaseTwoWorkbenchReader
 from sqlalchemy.orm import Session
+
 from tests.workbench_scenario import Scenario, build
 
 NOW = datetime(2026, 7, 29, 13, 0, tzinfo=UTC)
