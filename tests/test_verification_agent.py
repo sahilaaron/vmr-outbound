@@ -42,7 +42,8 @@ from app.models.pipeline import CampaignContactAgentState, PipelineEvent
 from app.models.verification_attempt import VerificationAttempt
 from app.models.verification_job import AgentJob
 from app.services import campaign_contacts, pipeline
-from app.services.agents import controls, jobs as agent_jobs
+from app.services.agents import controls
+from app.services.agents import jobs as agent_jobs
 from app.services.agents.adapters import DEFAULT_ADAPTERS, VerificationAgentAdapter
 from app.services.agents.orchestrator import run_next
 from app.services.suppressions import add_suppression
