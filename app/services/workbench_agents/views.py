@@ -481,8 +481,7 @@ class EmailOutcomeView:
     @property
     def accepted(self) -> bool:
         return (
-            self.terminal_outcome
-            in {"existing_accepted_email_reused", "verified_email_accepted"}
+            self.terminal_outcome in {"existing_accepted_email_reused", "verified_email_accepted"}
             and self.outcome_committed
             and bool(self.accepted_email)
         )

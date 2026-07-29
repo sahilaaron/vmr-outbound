@@ -929,9 +929,7 @@ class PhaseTwoWorkbenchReader:
         evidence = state.get("employee_evidence")
         evidence_map = evidence if isinstance(evidence, dict) else {}
 
-        terminal_outcome = _text(state.get("terminal_outcome")) or _text(
-            root.get("domain_outcome")
-        )
+        terminal_outcome = _text(state.get("terminal_outcome")) or _text(root.get("domain_outcome"))
         if terminal_outcome not in {outcome.value for outcome in EmailExecutionOutcome}:
             terminal_outcome = None
 

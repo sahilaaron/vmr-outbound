@@ -51,9 +51,7 @@ def _email_execution(
     return scenario, membership, contact, company, job
 
 
-def _candidate(
-    db: Session, *, contact_id: uuid.UUID, email: str, index: int
-) -> EmailCandidate:
+def _candidate(db: Session, *, contact_id: uuid.UUID, email: str, index: int) -> EmailCandidate:
     row = EmailCandidate(
         contact_id=contact_id,
         email=email,
