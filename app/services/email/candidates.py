@@ -173,6 +173,10 @@ def generate_candidates(session: Session, contact: Contact) -> CandidateGenerati
         result.needs_review = True
         result.review_reason = gate.reason
         return result
+    if not contact.first_name or not contact.last_name:
+        result.needs_review = True
+        result.review_reason = "an observed first and last name are required"
+        return result
 
     # Replace any prior candidate set for a deterministic regenerate.
     for existing in session.scalars(

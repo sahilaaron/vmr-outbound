@@ -56,7 +56,10 @@ class LinkedContact:
 
     @property
     def display_name(self) -> str:
-        return f"{self.contact.first_name} {self.contact.last_name}".strip()
+        return (
+            " ".join(part for part in (self.contact.first_name, self.contact.last_name) if part)
+            or "(name not captured)"
+        )
 
 
 @dataclass(frozen=True)

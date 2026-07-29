@@ -16,16 +16,16 @@ Durable, idempotent, resumable background work with no external broker:
 
 from __future__ import annotations
 
-import random
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models.enums import VerificationJobStatus
+from app.models.enums import AgentIdentifier, VerificationJobStatus
 from app.models.verification_job import ACTIVE_JOB_STATUSES, VerificationJob
+from app.services.agents import jobs as agent_jobs
 from app.services.imports.normalization import normalize_email
 
 
@@ -60,6 +60,9 @@ def enqueue_verification(
         return existing, False
 
     job = VerificationJob(
+        agent_id=AgentIdentifier.VERIFICATION,
+        task_kind="verify_exact_email",
+        entity_type="email",
         email=norm,
         contact_id=contact_id,
         campaign_id=campaign_id,
@@ -69,6 +72,7 @@ def enqueue_verification(
         attempts=0,
         max_attempts=max_attempts,
         next_run_at=_now(),
+        input_reference={"email": norm, "policy_version": policy_version},
     )
     savepoint = session.begin_nested()
     try:
@@ -93,6 +97,7 @@ def _find_reusable_job(session: Session, *, key: str, email: str) -> Verificatio
         return by_key
     return session.scalars(
         select(VerificationJob).where(
+            VerificationJob.agent_id == AgentIdentifier.VERIFICATION,
             VerificationJob.email == email,
             VerificationJob.status.in_(ACTIVE_JOB_STATUSES),
         )
@@ -102,55 +107,33 @@ def _find_reusable_job(session: Session, *, key: str, email: str) -> Verificatio
 def claim_next_job(
     session: Session, *, worker_id: str, lease_seconds: float, now: datetime | None = None
 ) -> VerificationJob | None:
-    """Claim the next runnable job for *worker_id*, stamping a lease.
+    """Compatibility claim that uses the common queue, then starts immediately."""
 
-    Runnable = a PENDING/RETRY_SCHEDULED job due now, or an IN_PROGRESS job whose
-    lease has expired (its worker died — reclaimed here). ``SKIP LOCKED`` keeps
-    concurrent workers from colliding.
-    """
-
-    now = now or _now()
-    stmt = (
-        select(VerificationJob)
-        .where(
-            or_(
-                (
-                    VerificationJob.status.in_(
-                        [VerificationJobStatus.PENDING, VerificationJobStatus.RETRY_SCHEDULED]
-                    )
-                )
-                & (VerificationJob.next_run_at <= now),
-                (VerificationJob.status == VerificationJobStatus.IN_PROGRESS)
-                & (VerificationJob.lease_expires_at.is_not(None))
-                & (VerificationJob.lease_expires_at < now),
-            )
-        )
-        .order_by(VerificationJob.next_run_at.asc())
-        .limit(1)
-        .with_for_update(skip_locked=True)
+    leased = agent_jobs.claim_next_job(
+        session,
+        worker_id=worker_id,
+        lease_seconds=lease_seconds,
+        agent_ids=(AgentIdentifier.VERIFICATION,),
+        now=now,
     )
-    job = session.scalars(stmt).first()
-    if job is None:
+    if leased is None:
         return None
+    reclaimed = agent_jobs.lease_was_reclaimed(leased)
+    agent_jobs.start_job(session, leased, worker_id=worker_id, now=now)
+    leased.__dict__["_reclaimed"] = reclaimed
+    return leased
 
-    reclaimed = job.status == VerificationJobStatus.IN_PROGRESS
-    job.status = VerificationJobStatus.IN_PROGRESS
-    job.attempts += 1
-    job.lease_owner = worker_id
-    job.lease_expires_at = now + timedelta(seconds=lease_seconds)
-    session.flush()
-    # Annotate whether this claim reclaimed a dead worker's job (used for a
-    # RECOVERED usage event by the caller).
-    job.__dict__["_reclaimed"] = reclaimed
-    return job
+
+def lease_was_reclaimed(job: VerificationJob) -> bool:
+    """Expose the common queue's durable recovery marker to verification usage."""
+
+    return agent_jobs.lease_was_reclaimed(job)
 
 
 def compute_backoff(attempts: int, *, base: float, cap: float) -> float:
     """Exponential backoff (seconds) with bounded jitter for retry *attempts*."""
 
-    exp = min(base * (2 ** max(0, attempts - 1)), cap)
-    jitter = random.uniform(0, exp * 0.25)  # noqa: S311 - jitter, not security
-    return float(min(exp + jitter, cap * 1.25))
+    return agent_jobs.compute_backoff(attempts, base=base, cap=cap)
 
 
 def schedule_retry(
@@ -165,18 +148,17 @@ def schedule_retry(
 ) -> VerificationJob:
     """Reschedule a transient failure, or fail the job if attempts are exhausted."""
 
-    now = now or _now()
-    job.last_error = reason
-    job.lease_owner = None
-    job.lease_expires_at = None
-    if job.attempts >= job.max_attempts:
-        job.status = VerificationJobStatus.FAILED
-        job.finished_at = now
+    agent_jobs.schedule_retry(
+        session,
+        job,
+        error_class="verification_transient",
+        reason=reason,
+        base_seconds=base,
+        cap_seconds=cap,
+        now=now,
+    )
+    if job.status is VerificationJobStatus.FAILED:
         job.outcome_status = outcome_status
-    else:
-        delay = compute_backoff(job.attempts, base=base, cap=cap)
-        job.status = VerificationJobStatus.RETRY_SCHEDULED
-        job.next_run_at = now + timedelta(seconds=delay)
     session.flush()
     return job
 
@@ -189,16 +171,19 @@ def mark_succeeded(
     outcome_status: str,
     now: datetime | None = None,
 ) -> VerificationJob:
-    now = now or _now()
-    job.status = VerificationJobStatus.SUCCEEDED
-    job.finished_at = now
     job.verification_id = verification_id
     job.outcome_status = outcome_status
-    job.lease_owner = None
-    job.lease_expires_at = None
-    job.last_error = None
-    session.flush()
-    return job
+    return agent_jobs.mark_completed(
+        session,
+        job,
+        result={
+            "domain_outcome": "exact_email_verification",
+            "verification_id": str(verification_id) if verification_id else None,
+            "outcome_status": outcome_status,
+        },
+        outcome_committed=True,
+        now=now,
+    )
 
 
 def mark_failed(
@@ -209,15 +194,14 @@ def mark_failed(
     outcome_status: str,
     now: datetime | None = None,
 ) -> VerificationJob:
-    now = now or _now()
-    job.status = VerificationJobStatus.FAILED
-    job.finished_at = now
-    job.last_error = reason
     job.outcome_status = outcome_status
-    job.lease_owner = None
-    job.lease_expires_at = None
-    session.flush()
-    return job
+    return agent_jobs.mark_failed(
+        session,
+        job,
+        error_class="verification_failed",
+        reason=reason,
+        now=now,
+    )
 
 
 def recover_stale_jobs(session: Session, *, now: datetime | None = None) -> list[VerificationJob]:
@@ -227,24 +211,8 @@ def recover_stale_jobs(session: Session, *, now: datetime | None = None) -> list
     this sweep exists so recovery can be run and observed on demand.
     """
 
-    now = now or _now()
-    stale = list(
-        session.scalars(
-            select(VerificationJob)
-            .where(
-                VerificationJob.status == VerificationJobStatus.IN_PROGRESS,
-                VerificationJob.lease_expires_at.is_not(None),
-                VerificationJob.lease_expires_at < now,
-            )
-            .with_for_update(skip_locked=True)
-        ).all()
+    return agent_jobs.recover_expired_leases(
+        session,
+        now=now,
+        agent_ids=(AgentIdentifier.VERIFICATION,),
     )
-    for job in stale:
-        job.status = VerificationJobStatus.PENDING
-        job.lease_owner = None
-        job.lease_expires_at = None
-        job.next_run_at = now
-        job.last_error = "reclaimed after worker lease expired"
-    if stale:
-        session.flush()
-    return stale

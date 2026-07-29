@@ -50,6 +50,7 @@ from app.models.enums import (
 from app.models.import_batch import ImportBatch, ImportRow, ImportRowError, ImportRowValidation
 from app.models.provenance import ProvenanceRecord
 from app.services.audit import record_audit_event
+from app.services.campaign_contacts import enrol_contact
 from app.services.contact_state import transition_contact_state
 from app.services.enrichment import companies as enrichment_companies
 from app.services.imports import dedup, parsing, validation
@@ -228,15 +229,30 @@ def _create_membership(
     contact_id: uuid.UUID,
     batch_id: uuid.UUID,
     state: ContactWorkflowState,
+    actor: str,
 ) -> CampaignContact:
-    membership = CampaignContact(
+    result = enrol_contact(
+        session,
         campaign_id=campaign_id,
         contact_id=contact_id,
-        source_batch_id=batch_id,
-        state=state,
+        source_type="import",
+        source_reference=str(batch_id),
+        import_batch_id=batch_id,
+        actor=actor,
+        enqueue=False,
     )
-    session.add(membership)
-    session.flush()
+    membership = result.membership
+    if (
+        state is ContactWorkflowState.SUPPRESSED
+        and membership.state is not ContactWorkflowState.SUPPRESSED
+    ):
+        transition_contact_state(
+            session,
+            membership,
+            target=ContactWorkflowState.SUPPRESSED,
+            actor=actor,
+            reason="suppressed identity observed during import",
+        )
     return membership
 
 
@@ -281,6 +297,7 @@ def _suppress_all_memberships(
             contact_id=contact_id,
             batch_id=batch_id,
             state=ContactWorkflowState.SUPPRESSED,
+            actor=actor,
         )
 
 
@@ -446,6 +463,7 @@ def _process_row(
                 contact_id=contact.id,
                 batch_id=batch.id,
                 state=ContactWorkflowState.IMPORTED,
+                actor=actor,
             )
         _append_provenance(
             session,
@@ -510,6 +528,7 @@ def _process_row(
         contact_id=contact.id,
         batch_id=batch.id,
         state=ContactWorkflowState.IMPORTED,
+        actor=actor,
     )
     _append_provenance(
         session,
