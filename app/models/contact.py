@@ -57,11 +57,14 @@ class Contact(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
-    # --- Normalized identity (required) --------------------------------------
-    first_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    last_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    company_name: Mapped[str] = mapped_column(String(512), nullable=False)
-    company_domain: Mapped[str] = mapped_column(String(255), nullable=False)
+    # --- Normalized identity --------------------------------------------------
+    # A Contact is the permanent person record, including while some observed
+    # identity fields are unresolved. Missing values stay NULL; capture must not
+    # invent a surname, company, or domain merely to satisfy storage.
+    first_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    company_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    company_domain: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # --- The permanent company edge (APP-003) --------------------------------
     #
@@ -70,11 +73,10 @@ class Contact(Base):
     # the edge to a mutable string: correcting a company's domain silently
     # re-parented everyone under it, with nothing recording that it had happened.
     #
-    # ``company_id`` is the real edge. ``company_domain`` stays, and stays NOT
-    # NULL — it is identity and dedup input (``natural_key`` is built from it),
-    # it is the captured evidence of what the source said, and legacy rows still
-    # need it. The two are allowed to disagree: that disagreement is a reviewable
-    # conflict, not a bug to paper over (see app.services.companies.conflicts).
+    # ``company_id`` is the real edge. ``company_domain`` stays as identity and
+    # dedup input when observed/resolved, but is NULL until that happens. The two
+    # are allowed to disagree: that disagreement is a reviewable conflict, not a
+    # bug to paper over (see app.services.companies.conflicts).
     #
     # Deliberately nullable, and deliberately left NULL rather than guessed when
     # no company matches, when several do, or when the domain is missing or
@@ -96,7 +98,7 @@ class Contact(Base):
 
     # --- Deterministic dedup fingerprint -------------------------------------
     # casefold(first_name)|casefold(last_name)|company_domain — computed at import.
-    natural_key: Mapped[str] = mapped_column(String(1024), nullable=False)
+    natural_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
 
     # --- Merge tombstone (DAT-004 identity resolution) -----------------------
     # When two contacts are confirmed duplicates, the loser is NOT deleted (its

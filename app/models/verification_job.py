@@ -13,10 +13,11 @@ Two database invariants make duplicate paid calls structurally impossible:
   restricted to the *active* statuses, so an address can have at most one job in
   flight at a time regardless of policy version.
 
-Recovery: a claimed job carries a ``lease_owner`` and ``lease_expires_at``. A
-worker that dies mid-flight leaves the lease to expire; a later sweep reclaims the
-job (its attempt was already counted, so a partial call cannot be double-charged
-without evidence — the worker writes evidence before releasing the lease).
+Recovery: a claimed job carries a ``lease_owner`` and ``lease_expires_at``. The
+production worker commits lease and Running checkpoints before it stages the
+domain outcome. A process that dies therefore leaves recoverable work. External
+providers remain responsible for honoring any provider-side idempotency key;
+database rollback cannot undo a remote side effect.
 """
 
 from __future__ import annotations
@@ -34,20 +35,22 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
-from app.models.enums import VerificationJobStatus
+from app.models.enums import AgentIdentifier, AgentJobStatus
 
 # Statuses in which a job is considered "in flight" and holds the single active
 # slot for its address. Kept here so the model, the partial index predicate, and
 # the queue service agree on one definition.
-ACTIVE_JOB_STATUSES: tuple[VerificationJobStatus, ...] = (
-    VerificationJobStatus.PENDING,
-    VerificationJobStatus.IN_PROGRESS,
-    VerificationJobStatus.RETRY_SCHEDULED,
+ACTIVE_JOB_STATUSES: tuple[AgentJobStatus, ...] = (
+    AgentJobStatus.PENDING,
+    AgentJobStatus.LEASED,
+    AgentJobStatus.IN_PROGRESS,
+    AgentJobStatus.RETRY_SCHEDULED,
 )
 # The native enum stores member *names* (uppercase) as its labels, matching the
 # repo's existing enums; the predicate compares against those, cast to the enum
@@ -55,13 +58,19 @@ ACTIVE_JOB_STATUSES: tuple[VerificationJobStatus, ...] = (
 _ACTIVE_SQL = (
     "status IN ("
     "'PENDING'::verification_job_status,"
+    "'LEASED'::verification_job_status,"
     "'IN_PROGRESS'::verification_job_status,"
     "'RETRY_SCHEDULED'::verification_job_status)"
 )
 
 
-class VerificationJob(Base):
-    """A durable, idempotent unit of exact-address verification work."""
+class AgentJob(Base):
+    """A durable, idempotent unit of work for any registered Agent.
+
+    The physical table name is retained from the proven verification queue so
+    existing jobs, usage-ledger foreign keys, and deployments migrate
+    additively. ``VerificationJob`` remains an import alias below.
+    """
 
     __tablename__ = "verification_jobs"
     __table_args__ = (
@@ -74,14 +83,33 @@ class VerificationJob(Base):
             postgresql_where=_ACTIVE_SQL,
         ),
         # The claim query orders claimable work by next_run_at; index it.
-        Index("ix_verification_jobs_claimable", "status", "next_run_at"),
+        Index("ix_verification_jobs_claimable", "status", "priority", "next_run_at"),
+        Index("ix_verification_jobs_agent_status", "agent_id", "status"),
+        Index("ix_verification_jobs_campaign_contact_id", "campaign_contact_id"),
         Index("ix_verification_jobs_contact_id", "contact_id"),
         Index("ix_verification_jobs_email", "email"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    agent_id: Mapped[AgentIdentifier] = mapped_column(
+        Enum(AgentIdentifier, name="agent_identifier"),
+        nullable=False,
+        default=AgentIdentifier.VERIFICATION,
+        server_default=AgentIdentifier.VERIFICATION.name,
+    )
+    task_kind: Mapped[str] = mapped_column(
+        String(96),
+        nullable=False,
+        default="verify_exact_email",
+        server_default="verify_exact_email",
+    )
+    priority: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=100, server_default="100"
+    )
+    entity_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     # The exact normalized address to verify.
-    email: Mapped[str] = mapped_column(String(320), nullable=False)
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
     # Optional link to the contact whose selected candidate this is.
     contact_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
@@ -95,18 +123,46 @@ class VerificationJob(Base):
         ForeignKey("campaigns.id", ondelete="SET NULL"),
         nullable=True,
     )
+    campaign_contact_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("campaign_contacts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    company_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("companies.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    capture_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("linkedin_profile_snapshots.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     idempotency_key: Mapped[str] = mapped_column(String(400), nullable=False)
-    policy_version: Mapped[str] = mapped_column(String(50), nullable=False)
-    status: Mapped[VerificationJobStatus] = mapped_column(
-        Enum(VerificationJobStatus, name="verification_job_status"),
+    policy_version: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    status: Mapped[AgentJobStatus] = mapped_column(
+        Enum(AgentJobStatus, name="verification_job_status"),
         nullable=False,
-        default=VerificationJobStatus.PENDING,
+        default=AgentJobStatus.PENDING,
     )
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    max_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=3, server_default="3"
+    )
     # When the job becomes claimable (now for a fresh job, later for a retry).
     next_run_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    input_reference: Mapped[dict[str, object]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    result: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
+    error: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
+    error_class: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    parent_job_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("verification_jobs.id", ondelete="SET NULL"),
+        nullable=True,
     )
     # Lease held by the worker currently processing the job.
     lease_owner: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -132,10 +188,16 @@ class VerificationJob(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     def __repr__(self) -> str:  # pragma: no cover - debug helper
         return (
-            f"VerificationJob(email={self.email!r}, status={self.status.value!r}, "
-            f"attempts={self.attempts!r})"
+            f"AgentJob(agent={self.agent_id.value!r}, status={self.status.value!r}, "
+            f"entity={self.entity_type!r}:{self.entity_id!r})"
         )
+
+
+# Existing verification services and tests keep their import contract while
+# operating on the common durable job model.
+VerificationJob = AgentJob

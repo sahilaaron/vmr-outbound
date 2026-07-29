@@ -27,9 +27,11 @@ class Base(DeclarativeBase):
 # Import models here so that ``Base.metadata`` is fully populated for Alembic
 # autogenerate and ``create_all`` in tests. Keep this list current as models
 # are added in later phases.
+from app.models import agent as _agent  # noqa: E402,F401
 from app.models import audit_event as _audit_event  # noqa: E402,F401
 from app.models import campaign as _campaign  # noqa: E402,F401
 from app.models import capture_promotion as _capture_promotion  # noqa: E402,F401
+from app.models import collection as _collection  # noqa: E402,F401
 from app.models import company as _company  # noqa: E402,F401
 from app.models import company_domain_resolution as _company_domain_resolution  # noqa: E402,F401
 from app.models import company_dossier as _company_dossier  # noqa: E402,F401
@@ -47,6 +49,7 @@ from app.models import insight as _insight  # noqa: E402,F401
 from app.models import linkedin_company as _linkedin_company  # noqa: E402,F401
 from app.models import linkedin_identity_link as _linkedin_identity_link  # noqa: E402,F401
 from app.models import linkedin_profile as _linkedin_profile  # noqa: E402,F401
+from app.models import pipeline as _pipeline  # noqa: E402,F401
 from app.models import provenance as _provenance  # noqa: E402,F401
 from app.models import qa_evaluation as _qa_evaluation  # noqa: E402,F401
 from app.models import salesnav_enrichment as _salesnav_enrichment  # noqa: E402,F401
