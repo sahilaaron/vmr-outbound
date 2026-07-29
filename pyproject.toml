@@ -20,6 +20,17 @@ dependencies = [
     # Validates the Sales Navigator capture intake body against the extension's
     # committed contract schema (DAT-009). Draft 2020-12 validator.
     "jsonschema>=4.18",
+    # RES-001 company research. Used only by the vendored website worker, and
+    # only when the default-off company_research flag is on. Approved
+    # 2026-07-29; the collector is fully offline-deterministic and needs no
+    # API key. Playwright is deliberately NOT taken -- a JS-only site reports
+    # insufficient evidence rather than escalating to a headless browser.
+    "httpx>=0.27",
+    "beautifulsoup4>=4.12,<5.0",
+    "lxml>=5.0,<7.0",
+    "trafilatura>=1.8,<3.0",
+    "tldextract>=5.0,<6.0",
+    "PyYAML>=6.0,<7.0",
 ]
 
 [project.optional-dependencies]
@@ -27,7 +38,6 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.6",
     "mypy>=1.10",
-    "httpx>=0.27",
     "types-openpyxl>=3.1",
 ]
 
