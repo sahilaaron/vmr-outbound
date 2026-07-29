@@ -242,6 +242,7 @@ def test_workers_run_in_the_order_requested() -> None:
 def test_requesting_no_workers_yields_none() -> None:
     assert build_workers([]) == ()
 
+
 # --- live HTTP safety boundary ------------------------------------------------
 
 
@@ -252,7 +253,6 @@ def _public_resolver(host: str, _port: int) -> tuple[str, ...]:
 
 def test_http_fetcher_rejects_private_targets_before_transport() -> None:
     import httpx
-
     from app.services.research.workers._website.config import CrawlerConfig
     from app.services.research.workers._website.fetcher import HttpFetcher
 
@@ -278,7 +278,6 @@ def test_http_fetcher_rejects_private_targets_before_transport() -> None:
 
 def test_http_fetcher_rejects_private_redirect_before_second_request() -> None:
     import httpx
-
     from app.services.research.workers._website.config import CrawlerConfig
     from app.services.research.workers._website.fetcher import HttpFetcher
 
