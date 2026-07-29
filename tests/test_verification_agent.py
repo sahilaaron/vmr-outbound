@@ -664,9 +664,7 @@ def test_evidence_from_an_older_policy_is_not_reused(db_session: Session) -> Non
     assert state.output_reference["verification_id"] != str(old.id)
 
 
-def test_live_lookup_rejects_simulator_evidence(
-    db_session: Session, settings: Settings
-) -> None:
+def test_live_lookup_rejects_simulator_evidence(db_session: Session, settings: Settings) -> None:
     email = "ada.lovelace@engines.example"
     _seed_evidence(
         db_session,
