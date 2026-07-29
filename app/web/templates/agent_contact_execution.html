@@ -191,7 +191,7 @@
       <dt>Retry</dt>
       <dd>
         {% if v.decision == "retry_later" %}<span class="badge info">another attempt is permitted</span>
-        {% elif v.refused_before_provider %}<span class="badge err" title="Nothing changes until the cause named above is fixed.">blocked before any provider work</span>
+        {% elif v.refused %}<span class="badge err" title="Nothing changes until the cause named above is fixed.">blocked before any provider work</span>
         {% elif v.terminal %}<span class="badge err" title="No further attempt will change this.">terminal for this address</span>
         {% elif v.retryable %}<span class="badge warn">Phase 2 marked this stage retryable</span>
         {% else %}<span class="muted-text small">—</span>{% endif %}

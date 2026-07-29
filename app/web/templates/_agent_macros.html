@@ -88,12 +88,12 @@
    consequences — and only one of them means the address may be used. A finished
    Verification job is never enough on its own to reach "verified".
 
-   A refusal that happened before any provider work carries no committed
-   decision, so it gets its own state rather than being folded into "refused" by
-   guesswork. #}
+   A held stage that carries no committed decision at all is a different fact
+   from a committed "refused", so it keeps its own state rather than being
+   folded into one by guesswork. #}
 {% macro decision_badge(decision, refused_before_provider=false) -%}
   {%- if not decision and refused_before_provider -%}
-  <span class="badge err" title="Verification declined before any provider work: nothing was committed, no attempt reached a provider, and no credit was spent.">refused before provider work</span>
+  <span class="badge err" title="The stage is held before any provider work and Verification committed no decision: nothing reached a provider and no credit was spent.">held before provider work</span>
   {%- elif decision == "accept" -%}<span class="badge ok" title="Fresh live evidence confirms this mailbox. The Contact may advance.">accepted</span>
   {%- elif decision == "try_next_candidate" -%}<span class="badge warn" title="A real verdict that is not a usable address — invalid, disposable, catch-all, unknown or role-based. Retrying it would only spend credit.">try next candidate</span>
   {%- elif decision == "retry_later" -%}<span class="badge info" title="No answer yet and another attempt is permitted. Phase 2 owns whether and when it runs.">retry later</span>

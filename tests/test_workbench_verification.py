@@ -8,7 +8,10 @@ job stand in for an accepted address.
 
 The five MVP-01E decisions each get a case, plus the two rules that exist to stop
 a false "verified": simulated evidence cannot advance a Contact, and suppression
-outranks a Verification job that is still in flight.
+outranks a Verification job that is still in flight. A refusal is one of those
+five decisions and is asserted as such — the projection reads the reason
+Verification committed. One further case covers the only state left without a
+decision: a stage held by the orchestrator before the adapter ever ran.
 
 The provider fakes mirror the ones in ``tests/test_verification_agent.py`` — a
 local object with an explicit ``simulated`` flag and no network — because the
@@ -307,14 +310,71 @@ def test_refused_is_projected_with_its_reason_and_no_provider_call(
     _run(db_session, provider)
 
     view = _verification(reader, membership)
-    # The adapter declines before the verification domain is consulted, so no
-    # decision payload exists. The Workbench reports that as exactly what it is
-    # rather than inventing a decision from the reason code.
+    # The refusal is the Verification domain's own committed decision, carrying
+    # the exact reason code and reason it recorded. The Workbench reports that
+    # decision as it stands rather than deriving one from the reason code.
+    assert view.decision == VerificationDecision.REFUSED.value
+    assert view.reason_code == "verification_live_disabled"
+    assert view.reason
+    assert view.decided is True
+    assert view.refused is True
+    assert view.terminal is True
+    assert view.accepted is False
+    # An authoritative refusal exists, so the decision-less fallback stays off.
+    assert view.refused_before_provider is False
+    # Refused means refused before provider work: nothing was attempted, and no
+    # credit was spent.
+    assert view.attempts == ()
+    assert view.provider_called is False
+    assert view.paid_calls == 0
+    assert provider.calls == 0
+
+
+# --- the decision-less fallback ----------------------------------------------
+
+
+def test_a_held_stage_with_no_committed_decision_is_reported_as_exactly_that(
+    db_session: Session, reader: PhaseTwoWorkbenchReader
+) -> None:
+    """The one state ``refused_before_provider`` still exists for.
+
+    Verification commits an explicit ``refused`` for every block it makes
+    itself, so that flag is a fallback now — but it is not dead. An
+    orchestrator-level eligibility block holds the stage before the adapter is
+    ever called, so no decision payload is written at all. The Workbench must
+    report that as undecided-and-held rather than inventing a decision, while
+    still telling the operator the work was stopped before any provider work.
+    """
+
+    membership = _setup(db_session)
+    contact = db_session.get(Contact, membership.contact_id)
+    assert contact is not None
+    # Suppressing the permanent Contact's own address blocks eligibility, which
+    # the orchestrator re-checks before it reaches the Verification adapter.
+    contact.email = EMAIL
+    add_suppression(
+        db_session,
+        suppression_type=SuppressionType.EMAIL,
+        value=EMAIL,
+        reason=SuppressionReason.OPT_OUT,
+        source="workbench-verification-test",
+    )
+    db_session.flush()
+    provider = LiveProvider()
+    _run(db_session, provider)
+
+    view = _verification(reader, membership)
+    # Nothing decided, so nothing is reported as decided.
     assert view.decision is None
+    assert view.decided is False
+    assert view.terminal is False
+    assert view.accepted is False
+    # The three observable facts the fallback is derived from.
+    assert view.stage_status is PipelineStageStatus.BLOCKED
+    assert view.outcome_committed is False
+    assert view.attempts == ()
     assert view.refused_before_provider is True
     assert view.refused is True
-    assert view.accepted is False
-    assert view.reason
     assert view.paid_calls == 0
     assert provider.calls == 0
 
@@ -443,7 +503,15 @@ def test_suppression_overrides_a_verification_job_still_in_flight(
     # check. Both facts are true at once, and the Workbench shows the one that
     # actually stopped the work.
     assert execution.suppressed is False
-    assert execution.verification.refused_before_provider is True
+    # Suppression is re-checked immediately before the provider is built and
+    # commits Verification's own refusal, so the operator reads the committed
+    # decision and its exact reason — not a flag derived because none existed.
+    assert execution.verification.decision == VerificationDecision.REFUSED.value
+    assert execution.verification.reason_code == "suppression"
+    assert execution.verification.reason
+    assert execution.verification.refused is True
+    assert execution.verification.refused_before_provider is False
+    assert execution.verification.attempts == ()
 
 
 def test_a_succeeded_queue_job_alone_is_never_projected_as_verified(

@@ -144,18 +144,29 @@ was not simulated. A succeeded queue job never contributes to that judgement.
 `paid_calls` is counted from `VerificationAttempt.provider_called`, not from the
 queue, because that is the only honest basis for a paid-call figure.
 
-### One integration gap, reported not papered over
+### Pre-provider refusals read from the committed decision
 
 The Verification adapter's pre-provider blocks — missing candidate, malformed
-address, suppression, policy mismatch, live not authorised, simulator provider —
-raise before the verification domain is consulted, so they carry no decision
-payload. Rather than infer `refused` from a reason code (which would be the
-Workbench classifying a verification outcome), the view exposes
-`refused_before_provider`, derived only from three observable facts: the stage is
-held, nothing was committed, and no attempt reached a provider. The page names
-that state explicitly. If the Verification thread later routes those blocks
-through `decisions.refusal()`, this projection reads the committed decision and
-the derived flag becomes redundant.
+address, candidate mismatch, suppression, policy mismatch, live not authorised,
+simulator provider — route through `decisions.refusal()` and commit an explicit
+`refused` decision with its exact reason code and reason, no provider attempt,
+and no credit spent. That decision is authoritative, so the projection reports
+it as it stands: `decision` is `refused`, `reason_code` and `reason` are the
+committed ones, `attempts` is empty and `paid_calls` is `0`. The Workbench never
+classifies a verification outcome of its own.
+
+`refused_before_provider` is retained only as a fallback for a held stage that
+Verification never decided, and is `False` whenever a decision exists. It is
+still reachable: an orchestrator-level eligibility block holds the stage before
+the adapter is ever called and writes no decision payload, and rows committed
+before this contract carry none either. It stays derived from the same three
+observable facts — the stage is held, nothing was committed, no attempt reached
+a provider — read from the raw payload, so a decision string this build cannot
+read is reported as an unknown outcome rather than a refusal.
+
+`refused` is true for either, so the page reads "blocked before any provider
+work" in both cases; only the decision-less one is badged separately, as "held
+before provider work".
 
 ## The control hierarchy
 

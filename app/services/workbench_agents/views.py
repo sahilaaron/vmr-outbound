@@ -555,6 +555,11 @@ class VerificationOutcomeView:
     transition. It is never derived from a job having succeeded: the whole point
     of the MVP-01E decision vocabulary is that a finished job and an accepted
     address are different facts, and only one of them may advance a Contact.
+
+    That includes refusals. Verification commits ``refused`` with its exact
+    reason for every block it makes itself, so the projection reports that
+    decision rather than deriving one; ``refused_before_provider`` survives only
+    for a held stage no decision ever reached.
     """
 
     #: One of the MVP-01E decisions, or None when none was committed.
@@ -574,10 +579,14 @@ class VerificationOutcomeView:
     stage_status: PipelineStageStatus | None
     #: Whether Phase 2 marked the stage retryable.
     retryable: bool
-    #: Verification declined before any provider work: the stage is held, no
-    #: decision payload was committed, and no attempt reached a provider. Read
-    #: from those three observable facts, never by interpreting a reason code —
-    #: the Workbench does not classify verification outcomes.
+    #: Fallback for a held stage Verification never decided. Its own
+    #: pre-provider blocks now commit an explicit ``refused`` decision, so this
+    #: stays False whenever a decision exists; it fires only where nothing
+    #: decided — an orchestrator-level block that holds the stage before the
+    #: adapter runs, and rows written before that contract. Read from three
+    #: observable facts — the stage is held, no decision payload was committed,
+    #: no attempt reached a provider — never by interpreting a reason code, the
+    #: Workbench does not classify verification outcomes.
     refused_before_provider: bool = False
     attempts: tuple[VerificationAttemptView, ...] = ()
     evidence: tuple[VerificationEvidenceView, ...] = ()
@@ -603,7 +612,12 @@ class VerificationOutcomeView:
 
     @property
     def refused(self) -> bool:
-        """Declined, either by a committed ``refused`` decision or before one."""
+        """Declined before any provider work.
+
+        Normally the committed ``refused`` decision, which carries its own exact
+        reason. The fallback flag only covers a held stage that carries no
+        decision at all.
+        """
 
         return self.decision == "refused" or self.refused_before_provider
 

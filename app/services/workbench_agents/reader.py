@@ -1097,10 +1097,21 @@ class PhaseTwoWorkbenchReader:
                 ).all()
             )
 
-        # A refusal that happened before any provider work carries no decision
-        # payload, because the adapter declines before the verification domain is
-        # consulted. It is still observable without interpretation: the stage is
-        # held, nothing was committed, and no attempt reached a provider.
+        # Fallback for a held stage that Verification never decided. The
+        # Verification Agent now commits an explicit ``refused`` decision for its
+        # own pre-provider blocks — malformed address, suppression, policy
+        # mismatch, live not authorised, simulator provider — so that decision is
+        # authoritative and this flag stays off whenever one exists.
+        #
+        # It still fires where nothing decided: an orchestrator-level block holds
+        # the stage before the adapter is ever reached (eligibility), and rows
+        # written before the decision contract existed carry no payload either.
+        # Those remain observable without interpretation — the stage is held,
+        # nothing was committed, and no attempt reached a provider.
+        #
+        # Read from the raw payload rather than the validated decision below: a
+        # decision string this build cannot read is an unknown outcome, not a
+        # refusal, and must never be rendered as one.
         stage_held = stage is not None and stage.status in (
             PipelineStageStatus.BLOCKED,
             PipelineStageStatus.FAILED,
