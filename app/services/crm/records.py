@@ -571,7 +571,10 @@ def _contact_row(session: Session, contact: Contact, labels: list[str]) -> CrmRo
     return CrmRow(
         kind="contact",
         record_id=contact.id,
-        full_name=f"{contact.first_name} {contact.last_name}".strip(),
+        full_name=(
+            " ".join(part for part in (contact.first_name, contact.last_name) if part)
+            or "(name not captured)"
+        ),
         title=contact.title,
         company_name=contact.company_name,
         company_domain=contact.company_domain,

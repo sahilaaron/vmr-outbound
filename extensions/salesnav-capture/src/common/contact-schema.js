@@ -1,12 +1,13 @@
 /**
  * Contact-first payload construction and validation (DAT-013).
  *
- *   linkedin-contact-capture/2.0.0 -> docs/contact-capture.schema.json
+ *   linkedin-contact-capture/2.1.0 -> docs/contact-capture.schema.json
  *
  * Mirrors docs/CONTACT_CAPTURE_CONTRACT.md. One submission carries one or more
  * people the operator deliberately opened or selected, plus optional labels and
- * an optional note. There is NO campaign in this contract, and this module will
- * refuse to build a payload that contains one.
+ * an optional note. Campaign selection is optional and files the permanent
+ * Contact after capture; it never changes the evidence or makes capture depend
+ * on Campaign availability.
  *
  * The extension submits observations only: it never matches identities, never
  * decides what becomes canonical, never resolves a label, and never writes to a
@@ -65,6 +66,7 @@
     "submitted_at",
     "source",
     "extension_version",
+    "campaign_id",
     "operator_metadata",
     "contacts",
   ];
@@ -353,6 +355,7 @@
       submitted_at: args.submittedAt,
       source: CONTACT_CAPTURE_SOURCE_IDENTIFIER,
       extension_version: args.extensionVersion || null,
+      campaign_id: args.campaignId || null,
       operator_metadata: operatorMetadata(args.metadata),
       contacts: args.contacts || [],
     };
@@ -635,6 +638,15 @@
     }
     if (!isNullableString(payload.extension_version)) {
       errors.push("extension_version must be a string or null");
+    }
+    if (
+      payload.campaign_id !== null &&
+      (!isString(payload.campaign_id) ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+          payload.campaign_id
+        ))
+    ) {
+      errors.push("campaign_id must be a UUID string or null");
     }
     validateMetadata(payload.operator_metadata, "operator_metadata", errors);
 

@@ -179,8 +179,11 @@ The initial research threshold is an absolute score of **85/100**, not the top
 ## Non-Negotiable Guardrails
 
 - Contacts are permanent; campaigns are a later, temporary use of a saved
-  audience. Acquiring a contact never requires, creates, or records a campaign,
-  and never makes that contact outreach-eligible.
+  audience. Acquiring a contact never requires a campaign and never makes that
+  contact outreach-eligible. If the operator selects a Campaign, capture may
+  additionally perform an isolated, idempotent Campaign Contact upsert after
+  the permanent Contact is stored; the Campaign never owns the Contact or its
+  capture evidence.
 - An existing contact may be matched and refreshed automatically ONLY on an
   exact normalized LinkedIn profile URL. Name, company, title, location, and
   headline — alone or combined — may surface review candidates and nothing more.

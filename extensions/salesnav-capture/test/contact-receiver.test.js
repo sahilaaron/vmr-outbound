@@ -4,9 +4,9 @@
  *
  * Proves the operator-visible behaviour of the contact-first path without a
  * running backend: a reviewed submission is accepted, a retry of the same
- * content replays idempotently, a campaign field is refused, a validation
- * failure is reported clearly, and the returned record links are the only ones
- * the panel will open.
+ * content replays idempotently, optional Campaign filing is represented
+ * truthfully, validation failures are clear, and returned record links are the
+ * only ones the panel will open.
  */
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
@@ -64,7 +64,8 @@ test("a reviewed submission is accepted and returns per-capture outcomes", async
     assert.equal(status, 201);
     assert.equal(body.already_received, false);
     assert.equal(body.counts.submitted, 1);
-    assert.equal(body.counts.created, 0);
+    assert.equal(body.counts.created, 1);
+    assert.equal(body.results[0].outcome, "created");
     assert.equal(body.results.length, 1);
 
     const result = handoff.sanitizeContactSubmissionResult(body, { submittedAt: "now" });
@@ -93,15 +94,32 @@ test("retrying the same submission replays it instead of duplicating", async () 
   }
 });
 
-test("a submission carrying a campaign is refused", async () => {
+test("a submission may request optional Campaign filing", async () => {
   const server = createReceiver();
   const { port } = await listen(server);
   const base = `http://127.0.0.1:${port}`;
   try {
-    const { status, body } = await post(base, freshPayload({ campaign_id: "camp_demo_001" }));
+    const { status, body } = await post(
+      base,
+      freshPayload({ campaign_id: "11111111-1111-4111-8111-111111111111" })
+    );
+    assert.equal(status, 201);
+    assert.equal(body.counts.campaign_filings_pending, 1);
+    assert.equal(body.results[0].campaign_filing.status, "pending");
+  } finally {
+    await close(server);
+  }
+});
+
+test("a malformed Campaign filing id is refused", async () => {
+  const server = createReceiver();
+  const { port } = await listen(server);
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    const { status, body } = await post(base, freshPayload({ campaign_id: "campaign-one" }));
     assert.equal(status, 422);
     assert.equal(body.error, "validation_failed");
-    assert.ok(body.details.some((d) => /campaign_id is not part of this contract/.test(d)));
+    assert.ok(body.details.some((d) => /campaign_id must be a UUID/.test(d)));
   } finally {
     await close(server);
   }

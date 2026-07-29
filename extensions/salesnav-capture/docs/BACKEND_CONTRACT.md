@@ -2,7 +2,7 @@
 
 > **LEGACY (superseded by DAT-013).** This is the campaign-era staged-import
 > contract. The extension no longer produces it: the contact-first workflow
-> submits `linkedin-contact-capture/2.0.0` to `POST /api/intake/contact-captures`
+> submits `linkedin-contact-capture/2.1.0` to `POST /api/intake/contact-captures`
 > instead — see [`CONTACT_CAPTURE_CONTRACT.md`](./CONTACT_CAPTURE_CONTRACT.md).
 >
 > The route and this document remain so previously staged batches stay readable

@@ -117,6 +117,21 @@ The exact API-key step and the single manual live smoke test are in
 `docs/VERIFICATION_RUNBOOK.md`. A synthetic end-to-end demo is available with
 `python scripts/phase2_verification_demo.py` (local only).
 
+Run one durable Agent job with the shared worker:
+
+```bash
+python scripts/run_agent_worker.py --once
+```
+
+For a continuous local worker restricted to the Phase 2 vertical adapters:
+
+```bash
+python scripts/run_agent_worker.py --agent identity --agent company
+```
+
+See `docs/PHASE_2_EXECUTION_MODEL.md` for queue leases, controls, retry
+semantics, and pipeline-state inspection.
+
 ## 6. Run the checks (same as CI)
 
 ```bash

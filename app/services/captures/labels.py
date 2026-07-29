@@ -112,9 +112,9 @@ def resolve_labels(
             resolved.labels.append(existing)
             continue
         label = ContactLabel(slug=slug, name=name, created_by=created_by)
-        session.add(label)
         try:
             with session.begin_nested():
+                session.add(label)
                 session.flush()
         except IntegrityError:
             winner = session.scalars(
@@ -156,18 +156,24 @@ def assign_labels(
     for label in labels:
         if label.id in existing_ids:
             continue
-        session.add(
-            ContactLabelAssignment(
-                contact_id=contact_id,
-                label_id=label.id,
-                source=source,
-                capture_id=capture_id,
-            )
+        assignment = ContactLabelAssignment(
+            contact_id=contact_id,
+            label_id=label.id,
+            source=source,
+            capture_id=capture_id,
         )
-        existing_ids.add(label.id)
-        applied.append(label.name)
-    if applied:
-        session.flush()
+        try:
+            # The partial unique index is the final concurrency authority.
+            # A retry racing another writer loses only this SAVEPOINT.
+            with session.begin_nested():
+                session.add(assignment)
+                session.flush()
+        except IntegrityError:
+            existing_ids.add(label.id)
+            continue
+        else:
+            existing_ids.add(label.id)
+            applied.append(label.name)
     return applied
 
 

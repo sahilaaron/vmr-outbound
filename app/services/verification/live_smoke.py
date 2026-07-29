@@ -214,8 +214,20 @@ def run_live_smoke(
         policy_version=policy.version,
         max_attempts=settings.verification_max_attempts,
     )
+    worker_id = f"live-smoke:{uuid.uuid4()}"
+    claimed = jobs.claim_job(
+        session,
+        job_id=job.id,
+        worker_id=worker_id,
+        lease_seconds=max(30.0, settings.millionverifier_timeout_seconds + 10.0),
+    )
+    if claimed is None:
+        raise LiveSmokeError(
+            "the exact verification job could not be claimed; another worker may be "
+            "processing it or it is not yet due"
+        )
     processed = service.process_job(
-        session, job, provider=provider, settings=settings, policy=policy
+        session, claimed, provider=provider, settings=settings, policy=policy
     )
     session.flush()
 

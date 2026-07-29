@@ -120,9 +120,10 @@ is acquired through the operator-driven Chrome extension
 The extension is **contact-first**: it captures a person the operator has
 deliberately opened or selected, preserves the visible evidence, and submits them
 as a permanent Contact through `POST /api/intake/contact-captures`
-(`linkedin-contact-capture/2.0.0`). It never selects or requires a campaign, and
-research, qualification, email discovery, verification, audience building, and
-outreach are all downstream of it.
+(`linkedin-contact-capture/2.1.0`; 2.0 remains accepted). A Campaign is optional.
+When selected, Campaign filing is an isolated, idempotent step after permanent
+Contact storage; research, qualification, email discovery, verification, and
+outreach remain downstream.
 
 The extension captures observations; the backend owns identity resolution,
 provenance and freshness, label resolution, suppression, and every canonical

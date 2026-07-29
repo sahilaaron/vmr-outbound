@@ -264,8 +264,17 @@ def process_job(
     policy = policy or get_policy(settings)
     now = _now()
     provider_name = provider.name
+    if job.email is None:
+        return jobs.mark_failed(
+            session,
+            job,
+            reason="verification job has no exact email address",
+            outcome_status=EmailPreciseStatus.PROVIDER_ERROR.value,
+            now=now,
+        )
+    email = job.email
 
-    if job.__dict__.get("_reclaimed"):
+    if jobs.lease_was_reclaimed(job):
         usage.record_usage(
             session,
             event_type=VerificationUsageEventType.RECOVERED,
@@ -289,7 +298,7 @@ def process_job(
         )
 
     # Cache reuse safety net: fresh evidence may have appeared since enqueue.
-    fresh = find_fresh_evidence(session, job.email, policy, now)
+    fresh = find_fresh_evidence(session, email, policy, now)
     if fresh is not None:
         usage.record_usage(
             session,
@@ -318,13 +327,13 @@ def process_job(
 
     # One provider call.
     try:
-        response = provider.verify(job.email)
+        response = provider.verify(email)
     except ProviderTransientError as exc:
         usage.record_usage(
             session,
             event_type=VerificationUsageEventType.TIMEOUT,
             provider=provider_name,
-            email=job.email,
+            email=email,
             contact_id=job.contact_id,
             job_id=job.id,
             reason=f"transport failure: {exc}",

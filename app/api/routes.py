@@ -15,12 +15,10 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.core.config import get_settings
-from app.models.campaign import Campaign
 from app.models.enums import CampaignStatus
 from app.services.campaigns import CampaignError, create_campaign
 from app.services.captures import intake as captures_intake
@@ -483,11 +481,11 @@ async def contact_capture_preflight(request: Request) -> Response:
 async def contact_capture_route(request: Request, db: Session = Depends(get_db)) -> Response:
     """Accept one operator-reviewed contact-capture submission (DAT-013).
 
-    Contact-first: there is no campaign in the contract and none is required. A
-    success persists immutable per-person capture evidence, matches only on an
-    exact normalized LinkedIn profile URL, and returns a truthful per-capture
-    outcome. It never creates a campaign membership, scores, qualifies, verifies,
-    or makes a contact outreach-eligible.
+    Contact-first: a Campaign remains optional. A success persists immutable
+    per-person capture evidence and matches only on an exact normalized LinkedIn
+    profile URL. When ``campaign_id`` is supplied, the response separately
+    reports the idempotent filing outcome; a filing problem never discards the
+    permanent Contact or its evidence.
     """
 
     settings = get_settings()
@@ -627,8 +625,6 @@ def contact_lookup_route(
 # --- Campaign selection for the capture extension (read-only, local) ---------
 
 CAMPAIGNS_PATH = "/api/campaigns"
-# Only campaigns that can actually receive an import are offered for selection.
-_SELECTABLE_CAMPAIGN_STATUSES = (CampaignStatus.DRAFT, CampaignStatus.ACTIVE)
 
 
 @router.options(CAMPAIGNS_PATH, include_in_schema=False)
@@ -644,47 +640,7 @@ async def campaigns_list_preflight(request: Request) -> Response:
     return Response(status_code=status.HTTP_204_NO_CONTENT, headers=_cors_headers(origin))
 
 
-@router.get(CAMPAIGNS_PATH)
-def campaigns_list_route(request: Request, db: Session = Depends(get_db)) -> Response:
-    """Return active/draft campaigns for the capture extension to choose from.
-
-    Deliberately minimal (DAT-009 deferred this; #125 needs only a usable
-    selector): read-only, local-only, gated behind the same feature switch as the
-    intake endpoint, and it returns only ``id``/``name``/``status`` for campaigns
-    that can receive an import. It performs no campaign management of any kind.
-    """
-
-    settings = get_settings()
-    origin = request.headers.get("origin")
-
-    if not settings.features.salesnav_intake:
-        return JSONResponse(
-            status_code=status.HTTP_404_NOT_FOUND,
-            content={"error": "not_found", "status": 404},
-        )
-    if settings.app_env.lower() != "local":
-        return JSONResponse(
-            status_code=status.HTTP_403_FORBIDDEN,
-            content={"error": "unauthorized", "status": 403},
-            headers=_cors_headers(origin),
-        )
-    if not _origin_allowed(origin):
-        return JSONResponse(
-            status_code=status.HTTP_403_FORBIDDEN,
-            content={"error": "unauthorized", "status": 403},
-        )
-
-    campaigns = db.scalars(
-        select(Campaign)
-        .where(Campaign.status.in_(_SELECTABLE_CAMPAIGN_STATUSES))
-        .order_by(Campaign.name)
-    ).all()
-    payload = {
-        "campaigns": [
-            {"id": str(c.id), "name": c.name, "status": c.status.value} for c in campaigns
-        ]
-    }
-    return JSONResponse(status_code=200, content=payload, headers=_cors_headers(origin))
+# GET /api/campaigns is owned by app.api.phase2; OPTIONS remains here for extension CORS.
 
 
 class CampaignCreate(BaseModel):

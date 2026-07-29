@@ -31,11 +31,10 @@ const CONTACT_CAPTURE_PATH = constants.CONTACT_CAPTURE_PATH;
 const CONTACT_LABELS_PATH = constants.CONTACT_LABELS_PATH;
 const CONTACT_LOOKUP_PATH = constants.CONTACT_LOOKUP_PATH;
 
-// Legacy campaign list, retained only so the pre-DAT-013 route keeps working
-// against the mock. The contact-first workflow never calls it.
+// Minimal Campaign list for the optional filing selector.
 const MOCK_CAMPAIGNS = [
-  { id: "camp_demo_001", name: "Pilot — Q3 SaaS Ops", status: "draft" },
-  { id: "camp_demo_002", name: "Manufacturing DACH", status: "draft" },
+  { id: "11111111-1111-4111-8111-111111111111", name: "Pilot — Q3 SaaS Ops", status: "draft" },
+  { id: "22222222-2222-4222-8222-222222222222", name: "Manufacturing DACH", status: "draft" },
 ];
 
 const MOCK_LABELS = [
@@ -95,7 +94,15 @@ function validateSubmission(payload) {
   if (typeof payload.client_submission_id !== "string" || !payload.client_submission_id) {
     errors.push("client_submission_id missing");
   }
-  if ("campaign_id" in payload) errors.push("campaign_id is not part of this contract");
+  if (
+    payload.campaign_id !== null &&
+    (typeof payload.campaign_id !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        payload.campaign_id
+      ))
+  ) {
+    errors.push("campaign_id must be a UUID string or null");
+  }
   if (!Array.isArray(payload.contacts)) errors.push("contacts must be an array");
   else if (payload.contacts.length === 0) errors.push("contacts must not be empty");
   return errors;
@@ -171,18 +178,35 @@ function createReceiver(opts) {
       }
       const port = server.address() ? server.address().port : 8787;
       const submissionId = "sub_" + payload.client_submission_id.slice(0, 8);
-      const results = payload.contacts.map((c) => ({
-        client_capture_id: c.client_capture_id,
-        capture_id: "cap_" + String(c.client_capture_id).slice(0, 8),
-        // The mock never claims a match: identity resolution is the backend's.
-        outcome: "unmatched_staged",
-        matched_contact_id: null,
-        contact_url: null,
-        capture_url: `http://127.0.0.1:${port}/contact-captures/cap_${String(c.client_capture_id).slice(0, 8)}`,
-        review_candidate_count: 0,
-        labels_applied: [],
-        warnings: [],
-      }));
+      const filingRequested = typeof payload.campaign_id === "string";
+      const results = payload.contacts.map((c) => {
+        const captureId = "cap_" + String(c.client_capture_id).slice(0, 8);
+        const contactId = "contact_" + String(c.client_capture_id).slice(0, 8);
+        return {
+          client_capture_id: c.client_capture_id,
+          capture_id: captureId,
+          // Mirror the create-only intake boundary without pretending later
+          // identity or Company work has completed.
+          outcome: "created",
+          matched_contact_id: contactId,
+          contact_url: `http://127.0.0.1:${port}/contacts/${contactId}`,
+          capture_url: `http://127.0.0.1:${port}/contact-captures/${captureId}`,
+          review_candidate_count: 0,
+          labels_applied: [],
+          campaign_filing: filingRequested
+            ? {
+                status: "pending",
+                requested_campaign_id: payload.campaign_id,
+                campaign_id: payload.campaign_id,
+                campaign_contact_id: null,
+                attempts: 0,
+                error_code: null,
+                error_detail: null,
+              }
+            : null,
+          warnings: [],
+        };
+      });
       const body = {
         submission_id: submissionId,
         client_submission_id: payload.client_submission_id,
@@ -190,15 +214,18 @@ function createReceiver(opts) {
         already_received: false,
         counts: {
           submitted: payload.contacts.length,
-          created: 0,
+          created: payload.contacts.length,
           refreshed_exact_match: 0,
           exact_match_unchanged: 0,
-          staged_unmatched: payload.contacts.length,
+          staged_unmatched: 0,
           staged_ambiguous: 0,
           duplicate_in_submission: 0,
           suppressed: 0,
           labels_applied: 0,
           notes_recorded: payload.operator_metadata && payload.operator_metadata.note ? payload.contacts.length : 0,
+          campaign_filings_applied: 0,
+          campaign_filings_pending: filingRequested ? payload.contacts.length : 0,
+          campaign_filings_failed: 0,
         },
         results,
         operator_workbench_url: `http://127.0.0.1:${port}/contact-captures/submissions/${submissionId}`,

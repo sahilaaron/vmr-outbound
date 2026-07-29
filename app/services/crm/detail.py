@@ -179,7 +179,10 @@ class ContactDetailView:
 
     @property
     def full_name(self) -> str:
-        return f"{self.contact.first_name} {self.contact.last_name}".strip()
+        return (
+            " ".join(part for part in (self.contact.first_name, self.contact.last_name) if part)
+            or "(name not captured)"
+        )
 
     @property
     def has_captures(self) -> bool:
@@ -346,23 +349,28 @@ def _company_link_for_contact(
 ) -> CompanyLink:
     """Resolve a contact's employer to a canonical company where possible.
 
-    A canonical contact always has a ``company_domain`` — that invariant is why
-    unmatched captures stay pending — so the domain is the join key. When no
-    company row carries it, the contact is still fully valid; the company record
-    simply has not been created, which is stated plainly.
+    Prefer the permanent company edge, then an exact domain. An unresolved
+    Contact truthfully has neither and remains valid but downstream-blocked.
     """
 
-    company = session.scalars(
-        select(Company).where(Company.domain == contact.company_domain).limit(1)
-    ).first()
+    company = session.get(Company, contact.company_id) if contact.company_id is not None else None
+    if company is None and contact.company_domain:
+        company = session.scalars(
+            select(Company).where(Company.domain == contact.company_domain).limit(1)
+        ).first()
 
     current = current_experience(latest_capture) if latest_capture is not None else None
     if company is not None:
         note = "Linked to a canonical company by exact domain match."
-    else:
+    elif contact.company_domain:
         note = (
             f"No company record exists for {contact.company_domain!r} yet. "
             "The contact is unaffected — the company workspace is a later stage."
+        )
+    else:
+        note = (
+            "No company domain has been observed or approved yet. The permanent "
+            "Contact is preserved while Company resolution waits."
         )
 
     return CompanyLink(

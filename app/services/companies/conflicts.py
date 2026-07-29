@@ -98,7 +98,7 @@ def _contact_domain_mismatch(session: Session, company: Company) -> CompanyConfl
             "not rewritten."
         ),
         count=total,
-        references=tuple(sorted(rows)),
+        references=tuple(sorted(row for row in rows if row is not None)),
     )
 
 

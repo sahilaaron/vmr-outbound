@@ -125,6 +125,23 @@
           ? r.review_candidate_count
           : 0,
         labelsApplied: Array.isArray(r.labels_applied) ? r.labels_applied.length : 0,
+        campaignFiling:
+          r.campaign_filing && typeof r.campaign_filing === "object"
+            ? {
+                status:
+                  typeof r.campaign_filing.status === "string"
+                    ? r.campaign_filing.status
+                    : null,
+                campaignContactId:
+                  typeof r.campaign_filing.campaign_contact_id === "string"
+                    ? r.campaign_filing.campaign_contact_id
+                    : null,
+                errorCode:
+                  typeof r.campaign_filing.error_code === "string"
+                    ? r.campaign_filing.error_code
+                    : null,
+              }
+            : null,
       })),
       workbenchUrl: isOpenableWorkbenchUrl(b.operator_workbench_url)
         ? b.operator_workbench_url

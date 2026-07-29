@@ -1,14 +1,14 @@
 """Contact-first capture intake (DAT-013).
 
 The backend adapter for the contact-acquisition edge of the system. It receives
-ONE operator-reviewed submission — ``linkedin-contact-capture/2.0.0`` — carrying
+ONE operator-reviewed submission — ``linkedin-contact-capture/2.1.0`` — carrying
 one or more people the operator deliberately opened or selected on LinkedIn or
 Sales Navigator, and persists each of them as permanent, immutable capture
 evidence.
 
-There is no campaign anywhere in this path. A campaign consumes a saved audience
-much later; acquisition never needs one, never asks for one, and the contract has
-no field for one.
+Acquisition never requires a Campaign. Version 2.1 adds an optional filing
+shortcut: capture still commits permanent evidence first, while Campaign Contact
+enrolment is an idempotent, isolated action that cannot erase the capture.
 
 What one accepted submission does:
 
@@ -17,16 +17,18 @@ What one accepted submission does:
 * creates one immutable
   :class:`~app.models.linkedin_profile.LinkedInProfileSnapshot` per captured
   person, plus its nested experience observations;
-* reconciles each capture through the existing identity rules
-  (:mod:`app.services.profiles.refresh`): an exact normalized LinkedIn profile
-  URL may refresh one contact, everything weaker stays review-only;
+* refreshes a permanent :class:`~app.models.contact.Contact` only when an
+  exact existing LinkedIn identity is already known; otherwise the capture stays
+  staged until domain resolution and promotion create the Contact;
+* reconciles identifiers through the existing exact LinkedIn identity rules,
+  while weaker similarity remains review-only and never merges people;
 * applies the operator's labels to a matched, unsuppressed contact;
 * appends operator notes (never overwrites an earlier one).
 
-What it deliberately never does: create a campaign membership, score, qualify,
-discover or verify an email, research a company, approve or schedule outreach,
-remove a suppression, or make any contact outreach-eligible. It also never
-creates a canonical contact from thin evidence — see ``CANONICAL_CREATION_NOTE``.
+What it deliberately never does: require Campaign selection, qualify, discover
+or verify an email, research a company, approve or schedule outreach, remove a
+suppression, or make any contact sending-eligible. An unmatched capture remains
+staged until the existing resolution and promotion path can establish a Contact.
 """
 
 from __future__ import annotations
@@ -55,24 +57,30 @@ from app.models.contact_capture import (
     ContactCaptureNote,
     ContactCaptureSubmission,
 )
-from app.models.enums import LinkedInSnapshotOutcome
+from app.models.enums import LinkedInIdentifierKind, LinkedInSnapshotOutcome
 from app.models.linkedin_profile import (
     LinkedInProfileExperienceObservation,
     LinkedInProfileSnapshot,
 )
+from app.services import identity_links
 from app.services.audit import record_audit_event
+from app.services.captures import campaign_filing
 from app.services.captures import labels as labels_service
 from app.services.imports.normalization import (
     normalize_linkedin_profile_url,
     normalize_linkedin_url,
+    normalize_name,
+    normalize_text,
 )
 from app.services.profiles import refresh as refresh_service
+from app.services.provenance import service as provenance
+from app.services.suppressions import evaluate_suppression
 
 # --- Contract constants ------------------------------------------------------
 
 CONTRACT_NAMESPACE = "linkedin-contact-capture"
 SUPPORTED_MAJOR = 2
-SCHEMA_VERSION = f"{CONTRACT_NAMESPACE}/2.0.0"
+SCHEMA_VERSION = f"{CONTRACT_NAMESPACE}/2.1.0"
 SOURCE_IDENTIFIER = "chrome-extension:linkedin-contact-capture"
 
 CAPTURE_MODE_PROFILE = "linkedin_profile"
@@ -96,17 +104,10 @@ LEGACY_CONTRACT_ROUTES = {
     "linkedin-company-capture": "/api/intake/linkedin-company/stage",
 }
 
-#: Why an unmatched capture is *staged* rather than turned into a contact.
-#:
-#: A canonical :class:`~app.models.contact.Contact` requires a company domain
-#: (it is the deduplication and email-generation key, and it is NOT NULL). A
-#: LinkedIn profile page never shows one, and inferring a domain from a company
-#: name would be fabricated evidence. So an unmatched person is stored as a
-#: permanent capture awaiting domain resolution and operator promotion, and the
-#: response reports ``created: 0`` honestly instead of pretending otherwise.
+#: Why a newly captured Contact may remain downstream-blocked.
 CANONICAL_CREATION_NOTE = (
-    "unmatched captures are staged as permanent capture evidence; a canonical "
-    "contact requires a company domain, which a LinkedIn page does not show"
+    "capture preserves evidence and refreshes exact existing identities; unmatched "
+    "people stay staged until promotion can create a Contact without guessing"
 )
 
 _SCHEMA_PATH = (
@@ -197,10 +198,14 @@ _COUNT_KEYS = (
     "suppressed",
     "labels_applied",
     "notes_recorded",
+    "campaign_filings_applied",
+    "campaign_filings_pending",
+    "campaign_filings_failed",
 )
 
 # Truthful outcome -> the response counter it increments.
 _OUTCOME_COUNTER = {
+    LinkedInSnapshotOutcome.CONTACT_CREATED: "created",
     LinkedInSnapshotOutcome.EXACT_MATCH_REFRESHED: "refreshed_exact_match",
     LinkedInSnapshotOutcome.EXACT_MATCH_UNCHANGED: "exact_match_unchanged",
     LinkedInSnapshotOutcome.UNMATCHED_STAGED: "staged_unmatched",
@@ -223,6 +228,7 @@ class CaptureOutcome:
     capture_url: str | None = None
     review_candidate_count: int = 0
     labels_applied: list[str] = field(default_factory=list)
+    campaign_filing: dict[str, Any] | None = None
     warnings: list[dict[str, Any]] = field(default_factory=list)
 
     def to_body(self) -> dict[str, Any]:
@@ -235,6 +241,7 @@ class CaptureOutcome:
             "capture_url": self.capture_url,
             "review_candidate_count": self.review_candidate_count,
             "labels_applied": self.labels_applied,
+            "campaign_filing": self.campaign_filing,
             "warnings": self.warnings,
         }
 
@@ -654,6 +661,279 @@ def _stage_without_identity(
     return candidates
 
 
+def _capture_contact_values(capture: dict[str, Any]) -> dict[str, str | None]:
+    """Project only directly observed person/employment values onto Contact."""
+
+    person = capture.get("person") or {}
+    current = next(
+        (
+            item
+            for item in (capture.get("experience_observations") or [])
+            if item.get("is_current") is True
+        ),
+        None,
+    )
+    hint = current or capture.get("current_employment_hint") or {}
+    return {
+        "first_name": normalize_name(person.get("first_name")),
+        "last_name": normalize_name(person.get("last_name")),
+        "company_name": normalize_name(hint.get("company_name")),
+        "title": normalize_text(
+            hint.get("job_title") or hint.get("title") or person.get("headline")
+        ),
+        "linkedin_url": normalize_linkedin_profile_url(person.get("linkedin_profile_url")),
+    }
+
+
+def _record_capture_observations(
+    session: Session,
+    *,
+    contact: Contact,
+    snapshot: LinkedInProfileSnapshot,
+    values: dict[str, str | None],
+    actor: str,
+) -> list[str]:
+    """Append descriptive observations and fill missing observed name parts."""
+
+    changed: list[str] = []
+    for field_name in ("first_name", "last_name"):
+        value = values[field_name]
+        if getattr(contact, field_name) is None and value is not None:
+            setattr(contact, field_name, value)
+            changed.append(field_name)
+    observed_at = snapshot.captured_at or snapshot.ingested_at or datetime.now(UTC)
+    for field_name in ("title", "company_name", "linkedin_url"):
+        value = values[field_name]
+        if value is None:
+            continue
+        before = getattr(contact, field_name)
+        provenance.record_observation(
+            session,
+            contact_id=contact.id,
+            field_name=field_name,
+            value=value,
+            source_name="linkedin-contact-capture",
+            source_reference=str(snapshot.id),
+            observed_at=observed_at,
+            created_by=actor,
+        )
+        provenance.reconcile_field(
+            session,
+            contact=contact,
+            field_name=field_name,
+            actor=actor,
+        )
+        if getattr(contact, field_name) != before:
+            changed.append(field_name)
+    session.flush()
+    return changed
+
+
+def _record_capture_identifiers(
+    session: Session,
+    *,
+    contact: Contact,
+    snapshot: LinkedInProfileSnapshot,
+    actor: str,
+) -> list[str]:
+    """Record only identifiers directly observed on this one capture."""
+
+    observed_url = (
+        snapshot.normalized_profile_url if snapshot.profile_url_source == "observed" else None
+    )
+    outcomes: list[identity_links.LinkOutcome] = []
+    if snapshot.salesnav_member_id and observed_url:
+        bridge = identity_links.bridge_observed_pair(
+            session,
+            contact=contact,
+            member_id=snapshot.salesnav_member_id,
+            vanity_url=observed_url,
+            decided_by=actor,
+            capture_id=snapshot.id,
+            source_surface=snapshot.source_surface,
+        )
+        outcomes.extend(item for item in (bridge.member, bridge.vanity) if item is not None)
+    else:
+        for kind, value in (
+            (LinkedInIdentifierKind.SALESNAV_MEMBER_ID, snapshot.salesnav_member_id),
+            (LinkedInIdentifierKind.PUBLIC_VANITY_URL, observed_url),
+        ):
+            if value:
+                outcomes.append(
+                    identity_links.record_observed(
+                        session,
+                        contact=contact,
+                        kind=kind,
+                        value=value,
+                        decided_by=actor,
+                        capture_id=snapshot.id,
+                        source_surface=snapshot.source_surface,
+                    )
+                )
+    session.flush()
+    return sorted(
+        {
+            str(outcome.conflicting_contact_id)
+            for outcome in outcomes
+            if outcome.conflicting_contact_id is not None
+        }
+    )
+
+
+def _link_existing_contact(
+    session: Session,
+    *,
+    snapshot: LinkedInProfileSnapshot,
+    capture: dict[str, Any],
+    contact: Contact,
+    actor: str,
+    review_candidates: list[dict[str, Any]] | None = None,
+) -> tuple[Contact, list[dict[str, Any]]]:
+    """Refresh one exact identity owner without bypassing suppression."""
+
+    candidates = review_candidates or []
+    snapshot.matched_contact_id = contact.id
+    decision = evaluate_suppression(
+        session,
+        email=contact.email,
+        domain=contact.company_domain,
+    )
+    if decision.blocked:
+        snapshot.outcome = LinkedInSnapshotOutcome.SUPPRESSED
+        snapshot.reconciled_at = datetime.now(UTC)
+        snapshot.refresh_summary = {
+            "outcome": snapshot.outcome.value,
+            "matched_contact_id": str(contact.id),
+            "refreshed_fields": [],
+            "unchanged_fields": [],
+            "skipped_fields": {
+                "*": (
+                    f"contact is suppressed ({decision.blocked_reason}); evidence linked, "
+                    "canonical fields untouched"
+                )
+            },
+            "review_candidate_count": len(candidates),
+            "suppression_reason": decision.blocked_reason,
+        }
+        session.flush()
+        return contact, candidates
+
+    values = _capture_contact_values(capture)
+    changed = _record_capture_observations(
+        session,
+        contact=contact,
+        snapshot=snapshot,
+        values=values,
+        actor=actor,
+    )
+    conflicts = _record_capture_identifiers(
+        session,
+        contact=contact,
+        snapshot=snapshot,
+        actor=actor,
+    )
+    snapshot.outcome = (
+        LinkedInSnapshotOutcome.EXACT_MATCH_REFRESHED
+        if changed
+        else LinkedInSnapshotOutcome.EXACT_MATCH_UNCHANGED
+    )
+    snapshot.reconciled_at = datetime.now(UTC)
+    snapshot.review_candidates = candidates or None
+    snapshot.refresh_summary = {
+        "outcome": snapshot.outcome.value,
+        "matched_contact_id": str(contact.id),
+        "refreshed_fields": changed,
+        "unchanged_fields": [],
+        "skipped_fields": {},
+        "review_candidate_count": len(candidates),
+        "suppression_reason": None,
+        "identity_link_conflicts": conflicts,
+    }
+    session.flush()
+    return contact, candidates
+
+
+def _resolve_contact(
+    session: Session,
+    *,
+    snapshot: LinkedInProfileSnapshot,
+    capture: dict[str, Any],
+    actor: str,
+) -> tuple[Contact | None, list[dict[str, Any]]]:
+    """Resolve only exact existing identity owners; otherwise keep evidence staged.
+
+    Capture is an evidence-acquisition step, not canonical-person creation.  A
+    permanent Contact is created later by the existing promotion service once
+    company identity and suppression checks have converged.  This preserves the
+    DAT-014/DAT-017A safety boundary while still allowing exact existing
+    identities to refresh immediately.
+    """
+
+    observed_url = (
+        snapshot.normalized_profile_url if snapshot.profile_url_source == "observed" else None
+    )
+    by_url = identity_links.lookup_contact(
+        session,
+        LinkedInIdentifierKind.PUBLIC_VANITY_URL,
+        observed_url,
+    )
+    by_member = identity_links.lookup_contact(
+        session,
+        LinkedInIdentifierKind.SALESNAV_MEMBER_ID,
+        snapshot.salesnav_member_id,
+    )
+    if by_url is not None and by_member is not None and by_url.id != by_member.id:
+        conflict_candidates = [
+            {
+                "contact_id": str(contact.id),
+                "match_basis": ["conflicting_exact_linkedin_identifier"],
+                "auto_merge": False,
+            }
+            for contact in (by_url, by_member)
+        ]
+        snapshot.outcome = LinkedInSnapshotOutcome.AMBIGUOUS_REVIEW
+        snapshot.reconciled_at = datetime.now(UTC)
+        snapshot.review_candidates = conflict_candidates
+        snapshot.refresh_summary = {
+            "outcome": snapshot.outcome.value,
+            "matched_contact_id": None,
+            "refreshed_fields": [],
+            "unchanged_fields": [],
+            "skipped_fields": {"*": "observed LinkedIn identifiers belong to different Contacts"},
+            "review_candidate_count": len(conflict_candidates),
+            "suppression_reason": None,
+        }
+        session.flush()
+        return None, conflict_candidates
+
+    owner = by_url or by_member
+    if owner is not None:
+        return _link_existing_contact(
+            session,
+            snapshot=snapshot,
+            capture=capture,
+            contact=owner,
+            actor=actor,
+        )
+
+    if snapshot.normalized_profile_url is not None:
+        refreshed = refresh_service.reconcile_snapshot(session, snapshot, actor=actor)
+        candidates = refreshed.review_candidates
+        if refreshed.matched_contact_id is not None:
+            contact = session.get(Contact, uuid.UUID(refreshed.matched_contact_id))
+            assert contact is not None
+            _record_capture_identifiers(
+                session,
+                contact=contact,
+                snapshot=snapshot,
+                actor=actor,
+            )
+            return contact, candidates
+        return None, candidates
+
+    return None, _stage_without_identity(session, snapshot)
+
+
 def _record_note(
     session: Session,
     *,
@@ -713,6 +993,11 @@ def _replay(submission: ContactCaptureSubmission) -> SubmissionResult:
                 capture_url=r.get("capture_url"),
                 review_candidate_count=int(r.get("review_candidate_count") or 0),
                 labels_applied=list(r.get("labels_applied") or []),
+                campaign_filing=(
+                    dict(r["campaign_filing"])
+                    if isinstance(r.get("campaign_filing"), dict)
+                    else None
+                ),
                 warnings=list(r.get("warnings") or []),
             )
             for r in (body.get("results") or [])
@@ -783,6 +1068,15 @@ def stage_contact_captures(
 
     submission_meta = payload.get("operator_metadata") or {}
     requested_labels = labels_service.normalize_requested_labels(submission_meta.get("labels"))
+    try:
+        requested_campaign_id = (
+            uuid.UUID(str(payload["campaign_id"])) if payload.get("campaign_id") else None
+        )
+    except ValueError as exc:
+        raise ValidationFailedError(
+            "request body failed schema validation",
+            details=["campaign_id: must be a UUID string or null"],
+        ) from exc
     submission_note = submission_meta.get("note") or None
     capture_mode = str(payload.get("capture_mode"))
     received = datetime.now(UTC)
@@ -832,18 +1126,35 @@ def stage_contact_captures(
             )
             session.add(snapshot)
             session.flush()
+            filing = (
+                campaign_filing.ensure_filing(
+                    session,
+                    snapshot=snapshot,
+                    requested_campaign_id=requested_campaign_id,
+                )
+                if requested_campaign_id is not None
+                else None
+            )
+            if filing is not None and filing.campaign_id is not None:
+                snapshot.campaign_id = filing.campaign_id
             _add_experience_rows(session, snapshot, capture)
             session.flush()
 
             duplicate_of = seen_keys.get(dedup_key) if dedup_key else None
             if duplicate_of is not None:
+                original = session.get(LinkedInProfileSnapshot, duplicate_of)
                 snapshot.outcome = LinkedInSnapshotOutcome.DUPLICATE_IN_SUBMISSION
                 snapshot.duplicate_of_id = duplicate_of
+                snapshot.matched_contact_id = (
+                    original.matched_contact_id if original is not None else None
+                )
                 snapshot.reconciled_at = datetime.now(UTC)
                 snapshot.refresh_summary = {
                     "outcome": LinkedInSnapshotOutcome.DUPLICATE_IN_SUBMISSION.value,
                     "duplicate_of_capture_id": str(duplicate_of),
-                    "matched_contact_id": None,
+                    "matched_contact_id": (
+                        str(snapshot.matched_contact_id) if snapshot.matched_contact_id else None
+                    ),
                     "refreshed_fields": [],
                     "unchanged_fields": [],
                     "skipped_fields": {
@@ -857,20 +1168,22 @@ def stage_contact_captures(
             else:
                 if dedup_key:
                     seen_keys[dedup_key] = snapshot.id
-                if normalized_url is not None:
-                    refresh_result = refresh_service.reconcile_snapshot(
-                        session, snapshot, actor=actor
-                    )
-                    candidates = refresh_result.review_candidates
-                else:
-                    candidates = _stage_without_identity(session, snapshot)
+                matched_contact, candidates = _resolve_contact(
+                    session,
+                    snapshot=snapshot,
+                    capture=capture,
+                    actor=actor,
+                )
 
-            matched_contact: Contact | None = None
-            if snapshot.matched_contact_id is not None:
-                matched_contact = session.get(Contact, snapshot.matched_contact_id)
+            if duplicate_of is not None:
+                matched_contact = (
+                    session.get(Contact, snapshot.matched_contact_id)
+                    if snapshot.matched_contact_id is not None
+                    else None
+                )
 
-            # Labels apply only to a matched, unsuppressed contact. Otherwise the
-            # requested names stay on the capture until it is promoted.
+            # Labels apply to the permanent Contact unless suppression blocks
+            # mutation. Ambiguous identifier conflicts remain capture-scoped.
             applied: list[str] = []
             if (
                 matched_contact is not None
@@ -887,6 +1200,22 @@ def stage_contact_captures(
             elif effective_labels:
                 # Register the label so it is reusable, without assigning it.
                 labels_service.resolve_labels(session, effective_labels)
+
+            filing_body: dict[str, Any] | None = None
+            if filing is not None:
+                filing_result = (
+                    campaign_filing.apply_filing(
+                        session,
+                        filing=filing,
+                        snapshot=snapshot,
+                        contact=matched_contact,
+                        actor=actor,
+                    )
+                    if matched_contact is not None
+                    else campaign_filing.FilingResult(filing=filing, applied=False)
+                )
+                filing_body = filing_result.to_dict()
+                counts[f"campaign_filings_{filing.status.value}"] += 1
 
             if _record_note(
                 session,
@@ -930,6 +1259,7 @@ def stage_contact_captures(
                     capture_url=capture_url(operator_base_url, snapshot.id),
                     review_candidate_count=len(candidates),
                     labels_applied=applied,
+                    campaign_filing=filing_body,
                     warnings=list(person.get("warnings") or []),
                 )
             )
@@ -962,6 +1292,7 @@ def stage_contact_captures(
                 "counts": counts,
                 "label_count": len(requested_labels),
                 "note_present": bool(submission_note),
+                "campaign_requested": requested_campaign_id is not None,
                 "canonical_creation": CANONICAL_CREATION_NOTE,
             },
         )

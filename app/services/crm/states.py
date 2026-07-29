@@ -57,6 +57,7 @@ PENDING_OUTCOMES: tuple[LinkedInSnapshotOutcome, ...] = (
 
 _OUTCOME_TO_IDENTITY: dict[LinkedInSnapshotOutcome, CaptureIdentityState] = {
     LinkedInSnapshotOutcome.STORED: CaptureIdentityState.CANONICAL,
+    LinkedInSnapshotOutcome.CONTACT_CREATED: CaptureIdentityState.AWAITING_COMPANY,
     LinkedInSnapshotOutcome.EXACT_MATCH_REFRESHED: CaptureIdentityState.CANONICAL,
     LinkedInSnapshotOutcome.EXACT_MATCH_UNCHANGED: CaptureIdentityState.CANONICAL,
     LinkedInSnapshotOutcome.UNMATCHED_STAGED: CaptureIdentityState.AWAITING_COMPANY,
@@ -113,7 +114,11 @@ def states_for_contact(session: Session, contact: Contact) -> WorkflowStates:
         domain=contact.company_domain,
     )
     return WorkflowStates(
-        identity=CaptureIdentityState.CANONICAL,
+        identity=(
+            CaptureIdentityState.CANONICAL
+            if contact.company_domain
+            else CaptureIdentityState.AWAITING_COMPANY
+        ),
         research=ResearchState.NOT_REQUESTED,
         qualification=QualificationState.NOT_ASSESSED,
         email_precise=email_view.precise,
