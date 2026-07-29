@@ -1002,3 +1002,36 @@ class IdentityLinkDecision(enum.StrEnum):
     SAME_CAPTURE_OBSERVED = "same_capture_observed"
     MIGRATION_BACKFILL = "migration_backfill"
     OPERATOR = "operator"
+
+
+class VerificationFailureClass(enum.StrEnum):
+    """Why one exact-address verification attempt produced no accepted answer.
+
+    A *verification-domain* classification, deliberately not an Agent-level
+    vocabulary: the Phase 2 Agent contract already owns execution states, and
+    :class:`AgentJob.error_class` already carries the orchestration-visible class.
+    This says what the provider did, so the Agent adapter can translate it into
+    the shared contract exactly once.
+
+    It is stored per attempt rather than recomputed because a later change to the
+    retry policy must not reach back and relabel a historical failure.
+
+    ``TRANSIENT_PROVIDER`` is the only class the domain reports as retryable —
+    outages, timeouts and rate-limit style responses. A malformed address, a
+    policy refusal, exhausted credits, a rejected credential and every definitive
+    mailbox verdict are final; retrying them spends credit for nothing.
+    ``INSUFFICIENT_CREDITS`` stays distinct from ``PERMANENT_PROVIDER`` because it
+    names a different operator action: top up, rather than fix a credential.
+
+    ``NONE`` means the attempt reached a verdict, including one answered from
+    reused evidence. A verdict is not the same as an acceptance — whether the
+    verdict may advance a Campaign Contact is decided by
+    :mod:`app.services.verification.decisions`.
+    """
+
+    NONE = "none"
+    INVALID_INPUT = "invalid_input"
+    POLICY_REFUSAL = "policy_refusal"
+    TRANSIENT_PROVIDER = "transient_provider"
+    PERMANENT_PROVIDER = "permanent_provider"
+    INSUFFICIENT_CREDITS = "insufficient_credits"
