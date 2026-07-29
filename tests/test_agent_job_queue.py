@@ -18,6 +18,7 @@ def _enqueue(
     key: str = "phase2-job",
     max_attempts: int = 3,
     input_reference: dict[str, object] | None = None,
+    available_at: datetime | None = None,
 ) -> AgentJob:
     job, _ = jobs.enqueue_job(
         db,
@@ -27,6 +28,7 @@ def _enqueue(
         max_attempts=max_attempts,
         entity_type="test",
         input_reference=input_reference,
+        available_at=available_at,
     )
     return job
 
@@ -76,6 +78,26 @@ def test_claim_leases_then_starts_one_job(db_session: Session) -> None:
 
     jobs.start_job(db_session, claimed, worker_id="worker-a")
     assert _status(claimed) is AgentJobStatus.IN_PROGRESS
+
+
+def test_claim_job_targets_one_exact_job_without_consuming_neighbour(
+    db_session: Session,
+) -> None:
+    now = datetime.now(UTC)
+    first = _enqueue(db_session, key="first", available_at=now)
+    second = _enqueue(db_session, key="second", available_at=now)
+
+    claimed = jobs.claim_job(
+        db_session,
+        job_id=second.id,
+        worker_id="targeted-worker",
+        lease_seconds=60,
+        now=now,
+    )
+
+    assert claimed is second
+    assert _status(second) is AgentJobStatus.LEASED
+    assert _status(first) is AgentJobStatus.PENDING
 
 
 def test_concurrent_claim_uses_skip_locked(
@@ -155,7 +177,9 @@ def test_retry_backoff_and_limit_are_durable(
 
 def test_lease_expiry_recovers_or_fails_at_attempt_limit(db_session: Session) -> None:
     now = datetime.now(UTC)
-    recoverable = _enqueue(db_session, key="recoverable", max_attempts=2)
+    recoverable = _enqueue(
+        db_session, key="recoverable", max_attempts=2, available_at=now
+    )
     jobs.claim_next_job(
         db_session,
         worker_id="dead-worker",
@@ -180,7 +204,9 @@ def test_lease_expiry_recovers_or_fails_at_attempt_limit(db_session: Session) ->
     assert reclaimed.__dict__.get("_reclaimed") is True
     assert reclaimed.attempts == 2
 
-    exhausted = _enqueue(db_session, key="exhausted", max_attempts=1)
+    exhausted = _enqueue(
+        db_session, key="exhausted", max_attempts=1, available_at=now
+    )
     jobs.claim_next_job(
         db_session,
         worker_id="dead-worker",
@@ -199,7 +225,7 @@ def test_job_survives_session_restart_and_is_reclaimed(
     committed_session: Session,
 ) -> None:
     now = datetime.now(UTC)
-    job = _enqueue(committed_session, max_attempts=3)
+    job = _enqueue(committed_session, max_attempts=3, available_at=now)
     committed_session.commit()
 
     first_worker = Session(bind=engine, expire_on_commit=False)

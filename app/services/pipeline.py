@@ -82,6 +82,7 @@ _ALLOWED: dict[PipelineStageStatus, frozenset[PipelineStageStatus]] = {
             PipelineStageStatus.WAITING,
             PipelineStageStatus.PAUSED,
             PipelineStageStatus.SKIPPED,
+            PipelineStageStatus.BLOCKED,
         }
     ),
     PipelineStageStatus.SKIPPED: frozenset(),

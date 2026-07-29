@@ -5,11 +5,11 @@ service against a live Postgres, using the extension's committed contract schema
 and example payloads as the source of truth.
 
 The guarantees under test are the product ones: no campaign is ever required,
-one submission persists permanent per-person evidence and a permanent Contact,
-only an exact LinkedIn identifier may refresh an existing contact, ambiguity and
-suppression stay authoritative, optional Campaign filing is isolated and
-idempotent, labels and notes are optional and append-only, and capture alone
-never makes a contact outreach-eligible.
+one submission persists permanent per-person evidence, only an exact LinkedIn
+identifier may refresh an existing contact, ambiguity and suppression stay
+authoritative, optional Campaign filing is isolated and idempotent, labels and
+notes are optional and append-only, and unmatched capture remains staged until
+promotion can create a Contact without guessing.
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ from app.models.contact_capture import (
 from app.models.enums import (
     CampaignStatus,
     CaptureCampaignFilingStatus,
+    EnrichmentConfirmationSource,
     LinkedInSnapshotOutcome,
     SuppressionReason,
     SuppressionType,
@@ -49,6 +50,7 @@ from app.models.pipeline import CaptureCampaignFiling
 from app.models.qa_evaluation import ContactQAEvaluation
 from app.services.captures import intake as cc
 from app.services.captures import labels as labels_service
+from app.services.captures import promotion as promotion_service
 from app.services.suppressions import add_suppression
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
@@ -216,7 +218,7 @@ def test_oversized_body_is_rejected_before_parsing(
 def test_no_campaign_is_required(
     client: TestClient, enable_contact_capture: None, db_session: Session
 ) -> None:
-    """Acquisition creates the permanent Contact without Campaign context."""
+    """Acquisition stores evidence without requiring Campaign context."""
 
     payload = _fresh(PROFILE_SUBMISSION)
     payload["campaign_id"] = None
@@ -225,11 +227,11 @@ def test_no_campaign_is_required(
     snapshot = db_session.scalars(select(LinkedInProfileSnapshot)).one()
     assert snapshot.campaign_id is None
     assert snapshot.capture_mode == cc.CAPTURE_MODE_PROFILE
-    assert _contact_count(db_session) == 1
+    assert _contact_count(db_session) == 0
     assert db_session.scalar(select(func.count()).select_from(CampaignContact)) == 0
 
 
-def test_campaign_selection_adds_one_idempotent_campaign_contact(
+def test_campaign_selection_waits_for_safe_promotion_then_files_once(
     client: TestClient, enable_contact_capture: None, db_session: Session
 ) -> None:
     campaign = Campaign(name="Optional capture filing", status=CampaignStatus.DRAFT)
@@ -241,13 +243,27 @@ def test_campaign_selection_adds_one_idempotent_campaign_contact(
     response = _post(client, payload)
     assert response.status_code == 201, response.text
     body = response.json()
-    assert body["counts"]["created"] == 1
-    assert body["counts"]["campaign_filings_applied"] == 1
-    membership = db_session.scalars(select(CampaignContact)).one()
-    contact = db_session.scalars(select(Contact)).one()
-    assert membership.campaign_id == campaign.id
-    assert membership.contact_id == contact.id
+    assert body["counts"]["staged_unmatched"] == 1
+    assert body["counts"]["campaign_filings_pending"] == 1
+    assert _contact_count(db_session) == 0
+    assert db_session.scalar(select(func.count()).select_from(CampaignContact)) == 0
     filing = db_session.scalars(select(CaptureCampaignFiling)).one()
+    assert filing.status is CaptureCampaignFilingStatus.PENDING
+    assert filing.campaign_contact_id is None
+
+    snapshot = db_session.scalars(select(LinkedInProfileSnapshot)).one()
+    promotion_service.confirm_domain(
+        db_session,
+        snapshot=snapshot,
+        source=EnrichmentConfirmationSource.MANUAL,
+        domain="meridianworks.example",
+        actor="test",
+    )
+    promoted = promotion_service.promote(db_session, snapshot=snapshot, actor="test")
+    assert promoted.contact is not None
+    membership = db_session.scalars(select(CampaignContact)).one()
+    assert membership.campaign_id == campaign.id
+    assert membership.contact_id == promoted.contact.id
     assert filing.status is CaptureCampaignFilingStatus.APPLIED
     assert filing.campaign_contact_id == membership.id
 
@@ -267,7 +283,7 @@ def test_malformed_campaign_id_is_rejected(
     assert response.json()["error"] == "validation_failed"
 
 
-def test_unknown_campaign_filing_fails_without_losing_the_contact(
+def test_unknown_campaign_filing_fails_without_losing_the_capture(
     client: TestClient, enable_contact_capture: None, db_session: Session
 ) -> None:
     payload = _fresh(PROFILE_SUBMISSION)
@@ -275,10 +291,10 @@ def test_unknown_campaign_filing_fails_without_losing_the_contact(
     response = _post(client, payload)
     assert response.status_code == 201
     body = response.json()
-    assert body["counts"]["created"] == 1
+    assert body["counts"]["staged_unmatched"] == 1
     assert body["counts"]["campaign_filings_failed"] == 1
     assert body["results"][0]["campaign_filing"]["error_code"] == "campaign_not_found"
-    assert _contact_count(db_session) == 1
+    assert _contact_count(db_session) == 0
     assert db_session.scalar(select(func.count()).select_from(CampaignContact)) == 0
 
 
@@ -338,18 +354,13 @@ def test_manually_opened_profile_is_saved_as_permanent_capture_evidence(
 
     assert body["already_received"] is False
     assert body["counts"]["submitted"] == 1
-    assert body["counts"]["staged_unmatched"] == 0
-    assert body["counts"]["created"] == 1
-    assert _contact_count(db_session) == 1
+    assert body["counts"]["staged_unmatched"] == 1
+    assert body["counts"]["created"] == 0
+    assert _contact_count(db_session) == 0
 
     snapshot = db_session.scalars(select(LinkedInProfileSnapshot)).one()
-    contact = db_session.scalars(select(Contact)).one()
-    assert snapshot.outcome is LinkedInSnapshotOutcome.CONTACT_CREATED
-    assert snapshot.matched_contact_id == contact.id
-    assert contact.first_name == "Morgan"
-    assert contact.last_name == "Vale"
-    assert contact.company_domain is None
-    assert contact.natural_key is None
+    assert snapshot.outcome is LinkedInSnapshotOutcome.UNMATCHED_STAGED
+    assert snapshot.matched_contact_id is None
     assert snapshot.normalized_profile_url == PROFILE_URL
     assert snapshot.payload["person"]["full_name"] == "Morgan Vale"
     assert snapshot.profile_fields["about_text"].startswith("Operations leader")
@@ -359,8 +370,8 @@ def test_manually_opened_profile_is_saved_as_permanent_capture_evidence(
 
     result = body["results"][0]
     assert result["capture_url"].endswith(f"/contact-captures/{snapshot.id}")
-    assert result["contact_url"].endswith(f"/contacts/{contact.id}")
-    assert result["outcome"] == "created"
+    assert result["contact_url"] is None
+    assert result["outcome"] == "unmatched_staged"
 
 
 def test_salesnav_rows_are_saved_without_a_campaign_and_keep_uncertain_identity(
@@ -370,9 +381,9 @@ def test_salesnav_rows_are_saved_without_a_campaign_and_keep_uncertain_identity(
     assert response.status_code == 201
     body = response.json()
     assert body["counts"]["submitted"] == 2
-    assert body["counts"]["created"] == 2
-    assert body["counts"]["staged_unmatched"] == 0
-    assert _contact_count(db_session) == 2
+    assert body["counts"]["created"] == 0
+    assert body["counts"]["staged_unmatched"] == 2
+    assert _contact_count(db_session) == 0
 
     snapshots = {
         s.payload["person"]["full_name"]: s
@@ -464,13 +475,11 @@ def test_weak_name_match_is_review_only(
     _seed_contact(db_session, linkedin_url=None)
     response = _post(client, _fresh(PROFILE_SUBMISSION))
     body = response.json()
-    assert body["counts"]["created"] == 1
+    assert body["counts"]["staged_unmatched"] == 1
     snapshot = db_session.scalars(select(LinkedInProfileSnapshot)).one()
     assert snapshot.review_candidates
     assert all(c["auto_merge"] is False for c in snapshot.review_candidates)
-    # A second permanent Contact represents the captured person, but the weak
-    # candidate is never silently merged into it.
-    assert _contact_count(db_session) == 2
+    assert _contact_count(db_session) == 1
 
 
 def test_duplicate_person_in_one_submission_is_marked_and_reconciled_once(
@@ -588,22 +597,14 @@ def test_labels_are_created_once_and_applied_to_a_matched_contact(
     assert db_session.scalar(select(func.count()).select_from(ContactLabel)) == 2
 
 
-def test_labels_on_a_new_contact_are_applied_and_preserved_on_capture(
+def test_labels_on_an_unmatched_capture_stay_on_the_capture(
     client: TestClient, enable_contact_capture: None, db_session: Session
 ) -> None:
     body = _post(client, _fresh(PROFILE_SUBMISSION)).json()
-    assert body["counts"]["labels_applied"] == 2
+    assert body["counts"]["labels_applied"] == 0
     snapshot = db_session.scalars(select(LinkedInProfileSnapshot)).one()
     assert snapshot.operator_labels == ["Healthcare", "Market Entry"]
-    contact = db_session.scalars(select(Contact)).one()
-    assert (
-        db_session.scalar(
-            select(func.count())
-            .select_from(ContactLabelAssignment)
-            .where(ContactLabelAssignment.contact_id == contact.id)
-        )
-        == 2
-    )
+    assert db_session.scalar(select(func.count()).select_from(ContactLabelAssignment)) == 0
     assert db_session.scalar(select(func.count()).select_from(ContactLabel)) == 2
 
 
@@ -857,7 +858,7 @@ def test_capture_and_submission_pages_render(
 
     submission_page = client.get(f"/contact-captures/submissions/{submission_id}")
     assert submission_page.status_code == 200
-    assert "created" in submission_page.text
+    assert "unmatched_staged" in submission_page.text
 
 
 def test_unknown_capture_page_is_a_clean_not_found(workbench_client: TestClient) -> None:

@@ -82,8 +82,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "detail": detail,
         }
 
-    app.include_router(api_router)
     app.include_router(phase2_router)
+    app.include_router(api_router)
 
     # Operator workbench (server-rendered pages). Mounted only when the feature
     # switch is on, so the UI stays fully disabled until deliberately enabled

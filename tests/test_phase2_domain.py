@@ -17,7 +17,7 @@ from app.models.enums import (
     SuppressionReason,
     SuppressionType,
 )
-from app.models.pipeline import CampaignContactSource
+from app.models.pipeline import CampaignContactAgentState, CampaignContactSource
 from app.models.verification_job import AgentJob
 from app.services import campaign_contacts, collections
 from app.services.suppressions import add_suppression
@@ -276,4 +276,11 @@ def test_idempotent_reenrolment_rechecks_late_suppression(
 
     assert replay.membership.eligibility_status is CampaignContactEligibility.BLOCKED
     assert replay.membership.pipeline_status is PipelineStageStatus.BLOCKED
+    stage = db_session.scalars(
+        select(CampaignContactAgentState).where(
+            CampaignContactAgentState.campaign_contact_id == replay.membership.id,
+            CampaignContactAgentState.agent_id == replay.membership.next_stage,
+        )
+    ).one()
+    assert stage.status is PipelineStageStatus.BLOCKED
     assert replay.queued_job is None

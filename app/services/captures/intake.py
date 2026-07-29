@@ -17,8 +17,9 @@ What one accepted submission does:
 * creates one immutable
   :class:`~app.models.linkedin_profile.LinkedInProfileSnapshot` per captured
   person, plus its nested experience observations;
-* creates or refreshes the permanent :class:`~app.models.contact.Contact`
-  independently of Campaign selection; unresolved fields remain NULL;
+* refreshes a permanent :class:`~app.models.contact.Contact` only when an
+  exact existing LinkedIn identity is already known; otherwise the capture stays
+  staged until domain resolution and promotion create the Contact;
 * reconciles identifiers through the existing exact LinkedIn identity rules,
   while weaker similarity remains review-only and never merges people;
 * applies the operator's labels to a matched, unsuppressed contact;
@@ -26,8 +27,8 @@ What one accepted submission does:
 
 What it deliberately never does: require Campaign selection, qualify, discover
 or verify an email, research a company, approve or schedule outreach, remove a
-suppression, or make any contact sending-eligible. An unresolved Contact remains
-blocked from downstream company/email work until evidence completes it.
+suppression, or make any contact sending-eligible. An unmatched capture remains
+staged until the existing resolution and promotion path can establish a Contact.
 """
 
 from __future__ import annotations
@@ -105,8 +106,8 @@ LEGACY_CONTRACT_ROUTES = {
 
 #: Why a newly captured Contact may remain downstream-blocked.
 CANONICAL_CREATION_NOTE = (
-    "capture creates the permanent Contact without inventing missing identity "
-    "or company values; downstream work waits for those fields to converge"
+    "capture preserves evidence and refreshes exact existing identities; unmatched "
+    "people stay staged until promotion can create a Contact without guessing"
 )
 
 _SCHEMA_PATH = (
@@ -852,14 +853,21 @@ def _link_existing_contact(
     return contact, candidates
 
 
-def _resolve_or_create_contact(
+def _resolve_contact(
     session: Session,
     *,
     snapshot: LinkedInProfileSnapshot,
     capture: dict[str, Any],
     actor: str,
 ) -> tuple[Contact | None, list[dict[str, Any]]]:
-    """Resolve exact identifiers or create the permanent unresolved Contact."""
+    """Resolve only exact existing identity owners; otherwise keep evidence staged.
+
+    Capture is an evidence-acquisition step, not canonical-person creation.  A
+    permanent Contact is created later by the existing promotion service once
+    company identity and suppression checks have converged.  This preserves the
+    DAT-014/DAT-017A safety boundary while still allowing exact existing
+    identities to refresh immediately.
+    """
 
     observed_url = (
         snapshot.normalized_profile_url if snapshot.profile_url_source == "observed" else None
@@ -908,7 +916,6 @@ def _resolve_or_create_contact(
             actor=actor,
         )
 
-    candidates: list[dict[str, Any]]
     if snapshot.normalized_profile_url is not None:
         refreshed = refresh_service.reconcile_snapshot(session, snapshot, actor=actor)
         candidates = refreshed.review_candidates
@@ -922,85 +929,9 @@ def _resolve_or_create_contact(
                 actor=actor,
             )
             return contact, candidates
-        if refreshed.outcome is LinkedInSnapshotOutcome.AMBIGUOUS_REVIEW:
-            return None, candidates
-    else:
-        candidates = _stage_without_identity(session, snapshot)
+        return None, candidates
 
-    values = _capture_contact_values(capture)
-    contact = Contact(
-        first_name=values["first_name"],
-        last_name=values["last_name"],
-        company_name=values["company_name"],
-        company_domain=None,
-        company_id=None,
-        title=values["title"],
-        linkedin_url=values["linkedin_url"],
-        natural_key=None,
-    )
-    session.add(contact)
-    session.flush()
-    _record_capture_observations(
-        session,
-        contact=contact,
-        snapshot=snapshot,
-        values=values,
-        actor=actor,
-    )
-    conflicts = _record_capture_identifiers(
-        session,
-        contact=contact,
-        snapshot=snapshot,
-        actor=actor,
-    )
-    snapshot.matched_contact_id = contact.id
-    snapshot.outcome = LinkedInSnapshotOutcome.CONTACT_CREATED
-    snapshot.reconciled_at = datetime.now(UTC)
-    snapshot.review_candidates = candidates or None
-    skipped_fields = {
-        "company_domain": "not observed; left unresolved",
-        "natural_key": "requires a resolved company domain",
-    }
-    if observed_url is None:
-        skipped_fields["linkedin_url"] = (
-            "no canonical LinkedIn profile URL was visible; identity remains unresolved"
-        )
-    snapshot.refresh_summary = {
-        "outcome": snapshot.outcome.value,
-        "matched_contact_id": str(contact.id),
-        "refreshed_fields": [],
-        "unchanged_fields": [],
-        "skipped_fields": skipped_fields,
-        "review_candidate_count": len(candidates),
-        "suppression_reason": None,
-        "identity_link_conflicts": conflicts,
-    }
-    session.flush()
-    record_audit_event(
-        session,
-        actor=actor,
-        action="contact.created_from_capture",
-        entity_type="contact",
-        entity_id=str(contact.id),
-        new_state="unresolved",
-        reason="permanent Contact created from operator-authorized capture",
-        context={
-            "capture_id": str(snapshot.id),
-            "observed_profile_url": bool(observed_url),
-            "observed_member_id": bool(snapshot.salesnav_member_id),
-            "missing_fields": [
-                field_name
-                for field_name in (
-                    "first_name",
-                    "last_name",
-                    "company_name",
-                    "company_domain",
-                )
-                if getattr(contact, field_name) is None
-            ],
-        },
-    )
-    return contact, candidates
+    return None, _stage_without_identity(session, snapshot)
 
 
 def _record_note(
@@ -1237,18 +1168,19 @@ def stage_contact_captures(
             else:
                 if dedup_key:
                     seen_keys[dedup_key] = snapshot.id
-                _, candidates = _resolve_or_create_contact(
+                matched_contact, candidates = _resolve_contact(
                     session,
                     snapshot=snapshot,
                     capture=capture,
                     actor=actor,
                 )
 
-            matched_contact = (
-                session.get(Contact, snapshot.matched_contact_id)
-                if snapshot.matched_contact_id is not None
-                else None
-            )
+            if duplicate_of is not None:
+                matched_contact = (
+                    session.get(Contact, snapshot.matched_contact_id)
+                    if snapshot.matched_contact_id is not None
+                    else None
+                )
 
             # Labels apply to the permanent Contact unless suppression blocks
             # mutation. Ambiguous identifier conflicts remain capture-scoped.

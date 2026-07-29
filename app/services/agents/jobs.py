@@ -276,6 +276,75 @@ def claim_next_job(
     return job
 
 
+def claim_job(
+    session: Session,
+    *,
+    job_id: uuid.UUID,
+    worker_id: str,
+    lease_seconds: float,
+    now: datetime | None = None,
+) -> AgentJob | None:
+    """Lease one exact due job without consuming any neighbouring queue item.
+
+    This is used by deliberate one-job execution paths such as the live
+    verification smoke test.  It preserves the same lease and recovery semantics
+    as :func:`claim_next_job` while guaranteeing that an unrelated queued job can
+    never be selected instead.
+    """
+
+    clean_worker = worker_id.strip()
+    if not clean_worker or len(clean_worker) > 100:
+        raise AgentJobError("worker_id must be 1 to 100 characters")
+    if lease_seconds <= 0:
+        raise AgentJobError("lease_seconds must be positive")
+    now = now or _now()
+    job = session.scalars(
+        select(AgentJob).where(AgentJob.id == job_id).with_for_update(skip_locked=True)
+    ).one_or_none()
+    if job is None:
+        return None
+
+    reclaimed = False
+    if (
+        job.status in LEASED_STATUSES
+        and job.lease_expires_at is not None
+        and job.lease_expires_at < now
+    ):
+        reclaimed = True
+        job.lease_owner = None
+        job.lease_expires_at = None
+        job.last_error = "reclaimed after worker lease expired"
+        job.error_class = "lease_expired"
+        job.error = {
+            "class": "lease_expired",
+            "message": job.last_error,
+            "retryable": job.attempts < job.max_attempts,
+        }
+        if job.attempts >= job.max_attempts:
+            job.status = AgentJobStatus.FAILED
+            job.finished_at = now
+            session.flush()
+            return None
+        job.status = AgentJobStatus.PENDING
+        job.next_run_at = now
+
+    if job.status not in CLAIMABLE_STATUSES or job.next_run_at > now:
+        session.flush()
+        return None
+
+    job.status = AgentJobStatus.LEASED
+    job.attempts += 1
+    job.lease_owner = clean_worker
+    job.lease_expires_at = now + timedelta(seconds=lease_seconds)
+    if not reclaimed:
+        job.error = None
+        job.error_class = None
+        job.last_error = None
+    session.flush()
+    job.__dict__["_reclaimed"] = reclaimed
+    return job
+
+
 def lease_was_reclaimed(job: AgentJob) -> bool:
     """Return a durable-or-in-memory signal that this lease replaced an abandoned one."""
 

@@ -124,6 +124,31 @@ def claim_next_job(
     return leased
 
 
+def claim_job(
+    session: Session,
+    *,
+    job_id: uuid.UUID,
+    worker_id: str,
+    lease_seconds: float,
+    now: datetime | None = None,
+) -> VerificationJob | None:
+    """Claim and start one exact verification job through the common queue."""
+
+    leased = agent_jobs.claim_job(
+        session,
+        job_id=job_id,
+        worker_id=worker_id,
+        lease_seconds=lease_seconds,
+        now=now,
+    )
+    if leased is None:
+        return None
+    reclaimed = agent_jobs.lease_was_reclaimed(leased)
+    agent_jobs.start_job(session, leased, worker_id=worker_id, now=now)
+    leased.__dict__["_reclaimed"] = reclaimed
+    return leased
+
+
 def lease_was_reclaimed(job: VerificationJob) -> bool:
     """Expose the common queue's durable recovery marker to verification usage."""
 

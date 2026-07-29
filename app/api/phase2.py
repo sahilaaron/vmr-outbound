@@ -8,13 +8,15 @@ from __future__ import annotations
 
 import uuid
 from typing import Annotated, Any
+from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.core.config import get_settings
 from app.models.agent import AgentControl
 from app.models.campaign import Campaign, CampaignContact
 from app.models.collection import Collection
@@ -243,21 +245,57 @@ def _job(job: AgentJob) -> dict[str, Any]:
 
 @router.get("/campaigns")
 def list_campaigns(
+    request: Request,
+    response: Response,
     db: DbSession,
     include_archived: bool = False,
 ) -> dict[str, Any]:
+    """List Campaigns for both the operating API and the local extension.
+
+    Browser-origin requests are treated as the extension's local selector and
+    retain its feature, environment, and CORS safety gates. Server-side/no-origin
+    requests use the canonical Phase 2 operating API without those acquisition
+    gates. One route therefore owns the resource and OpenAPI contract.
+    """
+
+    origin = request.headers.get("origin")
+    extension_request = origin is not None
+    if origin is not None:
+        settings = get_settings()
+        parsed_origin = urlsplit(origin)
+        allowed_origin = parsed_origin.scheme == "chrome-extension" or (
+            parsed_origin.scheme in {"http", "https"}
+            and parsed_origin.hostname in {"127.0.0.1", "localhost", "::1"}
+        )
+        if not (settings.features.salesnav_intake or settings.features.contact_capture_intake):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
+        if settings.app_env.lower() != "local" or not allowed_origin:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="unauthorized")
+        response.headers["Access-Control-Allow-Origin"] = origin
+
     overviews = campaigns.list_campaigns(db)
-    return {
-        "campaigns": [
+    rows = []
+    for overview in overviews:
+        campaign = overview.campaign
+        if extension_request and campaign.status not in (
+            CampaignStatus.DRAFT,
+            CampaignStatus.ACTIVE,
+        ):
+            continue
+        if (
+            not extension_request
+            and not include_archived
+            and campaign.status is CampaignStatus.ARCHIVED
+        ):
+            continue
+        rows.append(
             {
-                **_campaign(overview.campaign),
+                **_campaign(campaign),
                 "contact_count": overview.contact_count,
                 "import_count": overview.import_count,
             }
-            for overview in overviews
-            if include_archived or overview.campaign.status is not CampaignStatus.ARCHIVED
-        ]
-    }
+        )
+    return {"campaigns": rows}
 
 
 @router.post("/campaigns", status_code=status.HTTP_201_CREATED)

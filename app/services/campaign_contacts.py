@@ -198,6 +198,48 @@ def refresh_eligibility(
     previous_reasons = list(membership.blocking_reasons or [])
     membership.eligibility_status = target
     membership.blocking_reasons = reasons
+    if terminal_block:
+        # Eligibility is authoritative over operator execution controls. A
+        # suppressed/excluded Contact is blocked, never merely disabled or
+        # paused, even when the Campaign or Agent was already switched off.
+        membership.pipeline_status = PipelineStageStatus.BLOCKED
+        current_agent = membership.next_stage
+        current_state = (
+            agent_state(
+                session,
+                campaign_contact_id=membership.id,
+                agent_id=current_agent,
+                create=False,
+            )
+            if current_agent is not None
+            else None
+        )
+        if (
+            current_agent is not None
+            and current_state is not None
+            and current_state.status
+            in {
+                PipelineStageStatus.WAITING,
+                PipelineStageStatus.RUNNING,
+                PipelineStageStatus.PAUSED,
+                PipelineStageStatus.RETRYING,
+                PipelineStageStatus.DISABLED,
+            }
+        ):
+            transition_stage(
+                session,
+                membership=membership,
+                agent_id=current_agent,
+                target=PipelineStageStatus.BLOCKED,
+                event_type=PipelineEventType.ELIGIBILITY_BLOCKED,
+                actor=actor,
+                reason_code=str(reasons[0].get("code")) if reasons else "eligibility_blocked",
+                reason_detail=(
+                    str(reasons[0].get("detail"))
+                    if reasons
+                    else "Campaign Contact is blocked by an authoritative eligibility rule."
+                ),
+            )
     if terminal_block and any(reason.get("code") == "suppression" for reason in reasons):
         membership.state = ContactWorkflowState.SUPPRESSED
     session.flush()
