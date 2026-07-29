@@ -3,8 +3,8 @@
  * Contact-first payload construction and validation (DAT-013).
  *
  * These prove the product rules the refactor exists for: a submission carries
- * people and never a campaign, an uncertain identity stays uncertain, labels and
- * notes are optional and bounded, and the extension refuses to send anything the
+ * people with optional filing context, an uncertain identity stays uncertain,
+ * labels and notes are bounded, and the extension refuses to send anything the
  * committed contract would reject.
  */
 const { test } = require("node:test");
@@ -78,21 +78,25 @@ function submission(overrides) {
   );
 }
 
-// --- No campaign anywhere ----------------------------------------------------
+// --- Campaign filing is optional --------------------------------------------
 
-test("a built submission has no campaign field of any kind", () => {
+test("a built submission defaults to Contact-only Campaign filing", () => {
   const payload = submission();
-  const serialized = JSON.stringify(payload);
-  assert.equal("campaign_id" in payload, false);
-  assert.equal(/campaign/i.test(serialized), false);
+  assert.equal(payload.campaign_id, null);
+  assert.equal(contactSchema.validateSubmission(payload).valid, true);
 });
 
-test("a campaign field added by hand is rejected as undeclared", () => {
-  const payload = submission();
-  payload.campaign_id = "camp-1";
+test("a valid optional Campaign id is accepted", () => {
+  const payload = submission({ campaignId: "11111111-2222-4333-8444-555555555555" });
+  assert.equal(payload.campaign_id, "11111111-2222-4333-8444-555555555555");
+  assert.equal(contactSchema.validateSubmission(payload).valid, true);
+});
+
+test("a malformed Campaign id is rejected", () => {
+  const payload = submission({ campaignId: "camp-1" });
   const r = contactSchema.validateSubmission(payload);
   assert.equal(r.valid, false);
-  assert.ok(r.errors.some((e) => /campaign_id is not a declared property/.test(e)));
+  assert.ok(r.errors.some((e) => /campaign_id must be a UUID/.test(e)));
 });
 
 // --- Profile captures --------------------------------------------------------

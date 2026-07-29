@@ -1,10 +1,11 @@
 {
-  "schema_version": "linkedin-contact-capture/2.0.0",
+  "schema_version": "linkedin-contact-capture/2.1.0",
   "client_submission_id": "7c6b5a49-0000-4000-8000-ddddeeeeffff",
   "capture_mode": "salesnav_people_search",
   "submitted_at": "2026-07-26T09:20:00.000Z",
   "source": "chrome-extension:linkedin-contact-capture",
   "extension_version": "2.0.0",
+  "campaign_id": null,
   "operator_metadata": {
     "labels": [
       "Conference Lead"

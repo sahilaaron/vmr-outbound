@@ -1,9 +1,4 @@
-"""FastAPI application shell.
-
-Phase 0 provides only a minimal, safe app shell that starts from the documented
-commands and reports health. It contains no business rules and performs no
-outreach actions. Later phases add API surfaces behind feature switches.
-"""
+"""FastAPI application for the VMR outbound operating system."""
 
 from __future__ import annotations
 
@@ -15,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
 from app import __version__
+from app.api.phase2 import router as phase2_router
 from app.api.routes import router as api_router
 from app.core.config import Settings, get_settings
 from app.db.session import engine
@@ -48,7 +44,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
         version=__version__,
-        summary="Phase 0 foundation shell — no outreach capabilities enabled.",
+        summary=(
+            "Contact-first outbound operations with durable Campaign, Agent, "
+            "queue, and pipeline state."
+        ),
     )
 
     @app.get("/health", tags=["system"])
@@ -84,6 +83,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     app.include_router(api_router)
+    app.include_router(phase2_router)
 
     # Operator workbench (server-rendered pages). Mounted only when the feature
     # switch is on, so the UI stays fully disabled until deliberately enabled

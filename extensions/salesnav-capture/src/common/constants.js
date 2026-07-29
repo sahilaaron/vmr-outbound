@@ -20,10 +20,10 @@
 
   // ---- Contracts -----------------------------------------------------------
   //
-  // The CONTACT-FIRST contract (DAT-013) is what the normal workflow uses. A
-  // submission carries one or more reviewed people and has no campaign field at
-  // all. See docs/CONTACT_CAPTURE_CONTRACT.md.
-  const CONTACT_CAPTURE_SCHEMA_VERSION = "linkedin-contact-capture/2.0.0";
+  // The CONTACT-FIRST contract is what the normal workflow uses. A submission
+  // always saves permanent Contacts; Campaign selection is an optional filing
+  // shortcut, never an acquisition prerequisite.
+  const CONTACT_CAPTURE_SCHEMA_VERSION = "linkedin-contact-capture/2.1.0";
   const CONTACT_CAPTURE_SOURCE_IDENTIFIER = "chrome-extension:linkedin-contact-capture";
 
   // LEGACY, campaign-era contracts. Retained so previously staged batches and
@@ -68,8 +68,8 @@
     LAST_RESULT: "sn_last_stage_result",
   };
 
-  // Default, overridable operator preferences. No secrets, no remote URLs, and
-  // deliberately no campaign: acquisition never needs one.
+  // Default, overridable operator preferences. No secrets or remote URLs.
+  // Optional Campaign filing is stored separately from acquisition preferences.
   const DEFAULT_PREFERENCES = {
     // Local VMR backend base URL. Loopback only by default.
     backendBaseUrl: "http://127.0.0.1:8000",
@@ -96,6 +96,7 @@
   // uses; the rest are the legacy campaign-era intakes.
   const CONTACT_CAPTURE_PATH = "/api/intake/contact-captures";
   const CONTACT_LABELS_PATH = "/api/contact-labels";
+  const CAMPAIGNS_PATH = "/api/campaigns";
   const CONTACT_LOOKUP_PATH = "/api/contacts/lookup";
   const INTAKE_PATH = "/api/intake/sales-navigator/stage";
   const PROFILE_INTAKE_PATH = "/api/intake/linkedin-profile/stage";
@@ -194,6 +195,7 @@
   // submission, and the archive a superseded campaign-era draft is moved to.
   const CONTACT_STORAGE = {
     OPERATOR_METADATA: "cc_operator_metadata",
+    FILING_CONTEXT: "cc_filing_context",
     LEGACY_ARCHIVE: "cc_legacy_v1_archive",
     MIGRATION_NOTICE: "cc_migration_notice",
   };
@@ -218,6 +220,7 @@
     ALLOWED_BACKEND_ORIGIN_PATTERNS,
     CONTACT_CAPTURE_PATH,
     CONTACT_LABELS_PATH,
+    CAMPAIGNS_PATH,
     CONTACT_LOOKUP_PATH,
     INTAKE_PATH,
     PROFILE_INTAKE_PATH,

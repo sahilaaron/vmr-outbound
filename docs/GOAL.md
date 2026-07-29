@@ -18,9 +18,12 @@ down. The pause changes the ORDER of the remaining work, not the launch goal or
 any non-goal below.
 
 **Contacts are permanent; campaigns consume saved audiences later.** Acquisition
-therefore never selects, requires, or records a campaign. A capture stores
-immutable evidence and may refresh an existing contact only on an exact
-normalized LinkedIn profile URL; it never makes a contact outreach-eligible.
+therefore never requires a campaign. Capture stores immutable evidence and may
+refresh an existing contact only on an exact normalized LinkedIn profile URL.
+The Phase 2 capture contract may optionally file the resulting permanent Contact
+into a selected Campaign through an isolated, idempotent Campaign Contact upsert;
+that shortcut never makes the Contact outreach-eligible or makes the Campaign
+the owner of the Contact or capture.
 
 The first version must take an authorized contact batch from import to
 Saleshandy scheduling while preserving data provenance, deterministic
@@ -35,9 +38,9 @@ completeness or full autonomy.
 1. Create a campaign with targeting rules, scoring threshold, offer, tone, and
 sending configuration reference.
 2. Acquire contacts — an authorized CSV/XLSX upload into a campaign, or an
-operator-driven **contact-first** capture from the extension, which saves people
-permanently without a campaign — and see row-level validation errors or truthful
-per-person capture outcomes.
+operator-driven **contact-first** capture from the extension, which always saves
+people permanently and may optionally file them into a Campaign — and see
+row-level validation errors or truthful per-person capture outcomes.
 2a. Resolve each captured person's company domain through the operator-confirmed
 logo.dev candidate flow, and promote the capture into a canonical Contact.
 3. Normalize and deduplicate contacts; match them to companies and existing
@@ -80,8 +83,8 @@ and audit events
 * CSV staging import with provenance, validation, normalization, deduplication,
 and identity resolution
 * Contact-first capture intake: permanent per-person capture evidence, exact-URL
-matching only, operator labels and append-only notes, and truthful per-capture
-outcomes — with no campaign anywhere in the path
+matching only, operator Collections/Labels and append-only notes, truthful
+per-capture outcomes, and an optional isolated Campaign Contact filing step
 * Capture promotion: resolving a captured company's domain through the operator-
 confirmed logo.dev candidate flow, then creating or safely matching the canonical
 Company and Contact — never fabricating a domain and never merging on weak
@@ -186,8 +189,9 @@ team, or a public plugin marketplace
 * A general agent platform, arbitrary workflow builder, or unrestricted MCP
 server
 * Paid LLM API integration
-* Windows VPS deployment, 24/7 autonomous routines, or multi-agent
-orchestration
+* Windows VPS deployment, 24/7 autonomous routines, or a general autonomous
+multi-agent platform (the bounded durable Agent worker framework is part of the
+approved application backbone)
 * Mailbox/domain purchasing, DNS setup, or warm-up infrastructure; IT and
 Saleshandy own these
 * Advanced deliverability analytics, inbox placement testing, CRM replacement,

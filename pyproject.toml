@@ -1,7 +1,7 @@
 [project]
 name = "vmr-outbound"
 version = "0.0.1"
-description = "VMR Outbound Agent — semi-automated outbound campaign operating system (Phase 0 foundation)."
+description = "VMR Outbound Agent — contact-first outbound campaign operating system."
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",

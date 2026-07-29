@@ -1,5 +1,10 @@
 # Phase 2 — Email Verification: evidence map
 
+> Historical subsystem plan: this document records the earlier email-
+> verification Phase 2 deliverable. The current cross-application Campaign,
+> Collection, Agent, queue, and pipeline backbone is documented in
+> [`PHASE_2_EXECUTION_MODEL.md`](./PHASE_2_EXECUTION_MODEL.md).
+
 This tracks the Phase 2 build: deterministic email-pattern intelligence and
 exact-address verification through MillionVerifier, delivered as one cohesive
 vertical path behind the `FEATURES__EMAIL_GENERATION` and

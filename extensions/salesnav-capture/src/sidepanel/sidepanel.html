@@ -325,9 +325,22 @@
           </p>
         </section>
 
-        <!-- ---- shared: optional labels + note (both contact workflows) ---- -->
+        <!-- shared Contact metadata and optional Campaign filing -->
         <section id="metadata-card" hidden>
           <div class="box">
+            <span class="eyebrow t">Save options</span>
+            <label class="field-label" for="campaign-select">Campaign (optional)</label>
+            <div class="badge-row">
+              <select id="campaign-select" class="input">
+                <option value="">Save Contact only</option>
+              </select>
+              <button id="campaign-refresh" class="btn btn-sm" type="button">Refresh</button>
+            </div>
+            <p id="campaign-feedback" class="p tiny muted" aria-live="polite">
+              No Campaign is required. A selection also files the permanent Contact into that
+              Campaign.
+            </p>
+            <hr class="rule" />
             <div class="line">
               <span class="eyebrow t">Labels &amp; note (optional)</span>
               <button id="metadata-clear" class="linkbtn" type="button">Clear</button>

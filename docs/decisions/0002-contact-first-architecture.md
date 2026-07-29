@@ -6,6 +6,11 @@ Issue: [#157](https://github.com/sahilaaron/vmr-outbound/issues/157)
 Baseline: `feat/dat-013-contact-first-capture` @ `2cdf83f`, Alembic head `26f8ab7044f1`
 Deciders: Sahil (owner); reconciliation produced by the development agent.
 
+> Phase 2 update (2026-07-29): the ownership decision in this ADR remains in
+> force. ADR 0004 supersedes two implementation-era constraints: capture
+> contract 2.1 permits optional Campaign filing, and an accepted capture may
+> create a permanent Contact with unresolved fields stored as `NULL`.
+
 ## Context
 
 The product is moving from a campaign-first architecture to a contact-first one.

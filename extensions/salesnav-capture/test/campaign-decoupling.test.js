@@ -1,15 +1,10 @@
 "use strict";
 /**
- * Campaign decoupling (DAT-013).
+ * Optional Campaign filing stays decoupled from Contact acquisition.
  *
- * These are the guard rails for the product decision: the extension is the
- * contact-acquisition edge, so the normal capture experience must contain no
- * campaign selector, no campaign id, and no campaign state — and it must stay
- * that way as the panel evolves.
- *
- * The legacy campaign-bound contracts are deliberately still referenced (a
- * previously staged batch must remain readable and the transition must be
- * explicit), so the assertions target the LIVE workflow, not the whole tree.
+ * The selector is a convenience after the Contact-first decision: empty is a
+ * valid durable choice, the Campaign id is top-level filing context, and Labels
+ * remain reusable Collections rather than Campaign membership.
  */
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
@@ -27,124 +22,71 @@ function read(...parts) {
 
 const PANEL_HTML = read("sidepanel", "sidepanel.html");
 const PANEL_DOC = new JSDOM(PANEL_HTML).window.document;
+const PANEL_JS = read("sidepanel", "sidepanel.js");
+const WORKER_JS = read("background", "service-worker.js");
 
-// --- The side panel ----------------------------------------------------------
-
-// The campaign-oriented language the contact-first panel must never show.
-const CAMPAIGN_PHRASES = [
-  /select campaign/i,
-  /campaign id/i,
-  /add to campaign/i,
-  /send to campaign/i,
-  /campaign required/i,
-];
-
-test("no campaign selector or campaign input is rendered", () => {
-  assert.equal(PANEL_DOC.getElementById("campaign-select"), null);
-  assert.equal(PANEL_DOC.getElementById("campaign-manual"), null);
-  assert.equal(PANEL_DOC.getElementById("profile-campaign-select"), null);
-  assert.equal(PANEL_DOC.getElementById("fetch-campaigns"), null);
-  assert.equal(PANEL_DOC.getElementById("profile-fetch-campaigns"), null);
-  for (const el of PANEL_DOC.querySelectorAll("select, input, button, option, datalist")) {
-    assert.equal(/campaign/i.test(el.outerHTML), false, `campaign control left behind: ${el.id}`);
-  }
+test("the Campaign selector is explicitly optional and defaults to Contact only", () => {
+  const select = PANEL_DOC.getElementById("campaign-select");
+  assert.ok(select);
+  assert.equal(select.value, "");
+  assert.match(select.options[0].textContent, /Save Contact only/i);
+  assert.match(PANEL_DOC.getElementById("campaign-feedback").textContent, /No Campaign is required/i);
+  assert.ok(PANEL_DOC.getElementById("campaign-refresh"));
 });
 
-test("no campaign-oriented language is shown to the operator", () => {
-  const visible = PANEL_DOC.body.textContent;
-  for (const phrase of CAMPAIGN_PHRASES) {
-    assert.equal(phrase.test(visible), false, `panel still says ${phrase}`);
-  }
-  // The only permitted mention is the sentence that says labels are NOT
-  // campaigns, which exists precisely to prevent the old mental model.
-  const mentions = (visible.match(/campaigns?/gi) || []).length;
-  assert.equal(mentions, 1);
-  assert.match(visible, /they are not campaigns/i);
+test("Labels remain separate from Campaign filing", () => {
+  assert.ok(PANEL_DOC.getElementById("label-input"));
+  assert.ok(PANEL_DOC.getElementById("label-chips"));
+  assert.ok(PANEL_DOC.getElementById("note-input"));
+  assert.match(PANEL_DOC.getElementById("metadata-card").textContent, /not campaigns/i);
 });
 
-test("the panel offers the contact-first actions", () => {
-  const text = PANEL_DOC.body.textContent;
-  assert.match(text, /Capture visible contacts/);
-  assert.match(text, /Save to VMR/);
+test("the selector loads Campaigns but never changes the Save Contact action", () => {
+  assert.match(PANEL_JS, /FETCH_CAMPAIGNS/);
+  assert.match(PANEL_JS, /SET_FILING_CONTEXT/);
   assert.ok(PANEL_DOC.getElementById("save-btn"));
   assert.equal(PANEL_DOC.getElementById("save-btn").textContent.trim(), "Save Contact");
 });
 
-test("the panel exposes optional labels and an optional note", () => {
-  assert.ok(PANEL_DOC.getElementById("label-input"));
-  assert.ok(PANEL_DOC.getElementById("label-chips"));
-  assert.ok(PANEL_DOC.getElementById("note-input"));
-  assert.match(PANEL_DOC.getElementById("metadata-card").textContent, /optional/i);
+test("Campaign filing context persists separately from capture drafts and preferences", () => {
+  assert.equal(constants.CONTACT_STORAGE.FILING_CONTEXT, "cc_filing_context");
+  assert.equal("campaignId" in constants.DEFAULT_PREFERENCES, false);
+  assert.match(WORKER_JS, /getFilingContext/);
+  assert.match(WORKER_JS, /chrome\.storage\.local\.set/);
+  assert.match(WORKER_JS, /campaignId: filing\.campaignId/);
+  assert.match(WORKER_JS, /FETCH_CAMPAIGNS/);
+  assert.equal(constants.CAMPAIGNS_PATH, "/api/campaigns");
 });
 
-test("the panel still exposes the JSON and CSV export fallback", () => {
-  assert.ok(PANEL_DOC.getElementById("export-json"));
-  assert.ok(PANEL_DOC.getElementById("export-csv"));
-});
-
-test("the panel explains the unsupported and challenge states", () => {
-  assert.match(PANEL_DOC.getElementById("unsupported-detail").textContent, /linkedin\.com\/in/);
-  assert.match(PANEL_DOC.getElementById("challenge-section").textContent, /login wall|security check/i);
-});
-
-// --- Panel controllers --------------------------------------------------------
-
-// Identifiers, not prose: the modules may explain that campaigns are gone, but
-// they must carry no campaign state, field, element, or endpoint.
-const CAMPAIGN_IDENTIFIERS = [
-  /campaignId/,
-  /campaign_id/,
-  /campaign-select/,
-  /campaign-manual/,
-  /FETCH_CAMPAIGNS/,
-  /api\/campaigns/,
-];
-
-test("neither side-panel controller carries campaign state", () => {
-  for (const file of ["sidepanel.js", "sidepanel-profile.js"]) {
-    const source = read("sidepanel", file);
-    for (const pattern of CAMPAIGN_IDENTIFIERS) {
-      assert.equal(pattern.test(source), false, `${file} still references ${pattern}`);
-    }
-  }
-});
-
-test("the service worker has no campaign fetch, preference, or selection", () => {
-  const worker = read("background", "service-worker.js");
-  assert.equal(/FETCH_CAMPAIGNS/.test(worker), false);
-  assert.equal(/lastCampaignId/.test(worker), false);
-  assert.equal(/api\/campaigns/.test(worker), false);
-  assert.equal(/campaign-select/.test(worker), false);
-});
-
-// --- Contract and defaults ----------------------------------------------------
-
-test("default preferences carry no campaign selection", () => {
-  assert.equal("lastCampaignId" in constants.DEFAULT_PREFERENCES, false);
-  assert.equal(/campaign/i.test(JSON.stringify(constants.DEFAULT_PREFERENCES)), false);
-});
-
-test("the live contract targets the contact-capture route", () => {
-  assert.equal(constants.CONTACT_CAPTURE_PATH, "/api/intake/contact-captures");
-  assert.equal(constants.CONTACT_CAPTURE_SCHEMA_VERSION, "linkedin-contact-capture/2.0.0");
-  assert.equal(/campaign/i.test(constants.DEFAULT_PREFERENCES.mockReceiverUrl), false);
-});
-
-test("the contact contract declares no campaign property", () => {
+test("the contact contract makes campaign_id optional and nullable", () => {
   const schema = JSON.parse(
-    fs.readFileSync(
-      path.join(__dirname, "..", "docs", "contact-capture.schema.json"),
-      "utf8"
-    )
+    fs.readFileSync(path.join(__dirname, "..", "docs", "contact-capture.schema.json"), "utf8")
   );
-  assert.equal("campaign_id" in schema.properties, false);
+  assert.ok(schema.properties.campaign_id);
   assert.equal(schema.required.includes("campaign_id"), false);
-  // No sub-schema anywhere declares a campaign property either.
-  const declared = JSON.stringify(schema.$defs) + JSON.stringify(schema.properties);
-  assert.equal(/campaign/i.test(declared), false);
+  assert.deepEqual(schema.properties.campaign_id.type, ["string", "null"]);
 });
 
-test("the committed example submissions carry no campaign", () => {
+test("submission builder supports both Contact-only and Campaign filing", () => {
+  const base = {
+    clientSubmissionId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    captureMode: "linkedin_profile",
+    submittedAt: "2026-07-29T10:00:00.000Z",
+    extensionVersion: "2.1.0",
+    metadata: { labels: [], note: null },
+    contacts: [],
+  };
+  assert.equal(contactSchema.buildSubmission(base).campaign_id, null);
+  assert.equal(
+    contactSchema.buildSubmission({
+      ...base,
+      campaignId: "11111111-2222-4333-8444-555555555555",
+    }).campaign_id,
+    "11111111-2222-4333-8444-555555555555"
+  );
+});
+
+test("committed examples show the valid Contact-only choice", () => {
   for (const name of [
     "contact-capture.profile.example.json",
     "contact-capture.salesnav.example.json",
@@ -152,7 +94,12 @@ test("the committed example submissions carry no campaign", () => {
     const payload = JSON.parse(
       fs.readFileSync(path.join(__dirname, "..", "docs", "fixtures", name), "utf8")
     );
-    assert.equal("campaign_id" in payload, false);
+    assert.equal(payload.campaign_id, null);
     assert.equal(contactSchema.validateSubmission(payload).valid, true, name);
   }
+});
+
+test("JSON and CSV export fallback remains available", () => {
+  assert.ok(PANEL_DOC.getElementById("export-json"));
+  assert.ok(PANEL_DOC.getElementById("export-csv"));
 });

@@ -1,4 +1,4 @@
-# Contact-first capture contract — `linkedin-contact-capture/2.0.0`
+# Contact-first capture contract — `linkedin-contact-capture/2.1.0`
 
 The contract between the capture extension and the VMR backend for **acquiring a
 person**. Schema files (the single source of truth for the wire shape):
@@ -19,9 +19,10 @@ LinkedIn / Sales Navigator  →  Chrome extension  →  permanent Contact
               → verification → saved audience → campaign → outreach
 ```
 
-Contacts are permanent. Campaigns are a later, temporary use of a saved
-audience. **There is no campaign in this contract, and none is required to save
-a person.** Everything downstream of acquisition belongs to the backend.
+Contacts are permanent. Campaigns are a later operating context over permanent
+Contacts. **Campaign selection is optional and is never required to save a
+person.** When selected, it requests a separate idempotent Campaign Contact
+filing; it does not change Contact ownership or capture success.
 
 The extension captures observations. The backend decides identity, freshness,
 labels, and canonical truth.
@@ -39,6 +40,7 @@ Companion reads (same feature switch, same local-only and origin guards):
 ```
 GET {backend_base_url}/api/contact-labels
 GET {backend_base_url}/api/contacts/lookup?linkedin_profile_url=…
+GET {backend_base_url}/api/campaigns
 ```
 
 `/api/contacts/lookup` answers **existence only** —
@@ -54,8 +56,9 @@ loopback origin.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `schema_version` | const | `linkedin-contact-capture/2.0.0` |
+| `schema_version` | const | `linkedin-contact-capture/2.1.0` |
 | `client_submission_id` | string (8–128) | Idempotency key for the whole reviewed submission |
+| `campaign_id` | UUID string \| null | Optional Campaign Contact filing; null means capture only |
 | `capture_mode` | enum | `linkedin_profile` \| `salesnav_people_search` |
 | `submitted_at` | ISO-8601 | When the reviewed submission was assembled |
 | `source` | const | `chrome-extension:linkedin-contact-capture` |
@@ -102,15 +105,21 @@ capture path, and the contract makes that structurally unrepresentable.
   "received_at": "ISO-8601",
   "already_received": false,
   "counts": {
-    "submitted": 2, "created": 0, "refreshed_exact_match": 1,
-    "exact_match_unchanged": 0, "staged_unmatched": 1, "staged_ambiguous": 0,
+    "submitted": 2, "created": 1, "refreshed_exact_match": 1,
+    "exact_match_unchanged": 0, "staged_unmatched": 0, "staged_ambiguous": 0,
     "duplicate_in_submission": 0, "suppressed": 0,
-    "labels_applied": 2, "notes_recorded": 2
+    "labels_applied": 2, "notes_recorded": 2,
+    "campaign_filings_applied": 2,
+    "campaign_filings_pending": 0,
+    "campaign_filings_failed": 0
   },
   "results": [ { "client_capture_id": "…", "capture_id": "…",
                  "outcome": "exact_match_refreshed", "matched_contact_id": "…",
                  "contact_url": "…", "capture_url": "…",
                  "review_candidate_count": 0, "labels_applied": ["Healthcare"],
+                 "campaign_filing": { "status": "applied",
+                   "requested_campaign_id": "…",
+                   "campaign_contact_id": "…" },
                  "warnings": [] } ],
   "operator_workbench_url": "http://127.0.0.1:8000/contact-captures/submissions/…"
 }
@@ -120,9 +129,10 @@ capture path, and the contract makes that structurally unrepresentable.
 
 | Outcome | Meaning |
 | --- | --- |
+| `created` | A permanent Contact was created. Unobserved name/company fields remain `null` and block dependent Agents |
 | `exact_match_refreshed` | Exactly one contact carries this normalized URL; ≥1 field changed under the freshness policy |
 | `exact_match_unchanged` | Exactly one match; evidence recorded, nothing newer than the current winners |
-| `unmatched_staged` | No URL match (or no URL at all). Permanent capture evidence; weak candidates stored for review |
+| `unmatched_staged` | Compatibility outcome for an older stored response. New safe unmatched captures create an unresolved permanent Contact |
 | `ambiguous_review` | More than one contact carries this URL. Surfaced, never merged |
 | `duplicate_in_submission` | The same person appeared earlier in this submission. Evidence kept; reconciled once |
 | `suppressed` | The matched contact is suppressed. Evidence linked, no canonical field touched, suppression untouched |
@@ -130,35 +140,37 @@ capture path, and the contract makes that structurally unrepresentable.
 `rejected_invalid` is not an outcome: a rejected submission is never persisted,
 so it is reported as an HTTP error instead of a stored row.
 
-### Why `created` is always 0 here
+### Permanent Contact, unresolved fields
 
-A canonical contact requires a company **domain** — it is the deduplication and
-email-generation key and is `NOT NULL`. A LinkedIn page never shows one, and
-inferring a domain from a company name would be fabricated evidence. So an
-unmatched person is stored as a permanent, reviewable capture, and the response
-reports `created: 0` honestly.
+Capture always creates or updates the permanent person record. A LinkedIn page
+usually does not expose a company domain, and inferring one from a company name
+would be fabricated evidence. The backend therefore stores missing values as
+`null`; Company and Email Agents remain blocked until later evidence resolves
+them. It never creates placeholder names or domains merely to satisfy storage.
 
-`created: 0` is the **capture boundary**, not a dead end. Domain resolution and
-promotion happen afterwards, in the backend, through DAT-010 + DAT-014: the
-captured company name and LinkedIn hints go to the logo.dev candidate flow, the
-operator confirms a domain, and the capture becomes a canonical Contact. See
-[`docs/CAPTURE_PROMOTION.md`](../../../docs/CAPTURE_PROMOTION.md).
+The extension plays no part in resolution: it never calls a domain provider,
+never holds a provider key, and never claims an inferred domain was observed.
 
-The extension plays no part in that: it never calls logo.dev, never holds a
-provider key, and never resolves a domain.
+### Optional Campaign filing
 
-## Labels
+When `campaign_id` is a UUID, the backend records a durable filing intent and
+upserts one Campaign Contact for `(campaign_id, contact_id)`. Filing runs behind
+a savepoint. A missing or archived Campaign produces a truthful
+`campaign_filing.status: "failed"` while the permanent Contact and capture still
+commit. An identical submission replay cannot duplicate the Campaign Contact.
 
-Labels classify permanent contacts. They are **not** campaigns, audiences, or
-an eligibility signal, and applying one can never make a contact
+## Collections (shown as Labels)
+
+Collections classify permanent contacts. They are **not** Campaign membership
+or an eligibility signal, and applying one can never make a contact
 outreach-eligible or lift a suppression.
 
 - The extension **requests** label names. The backend slugs them
   (`"Venture Capital"`, `"venture  capital"`, `"Venture-Capital!"` → `venture-capital`),
   finds or creates the canonical row, and assigns it.
-- Assignment happens only for a capture that matched exactly one contact and is
-  not suppressed. Otherwise the requested names stay on the capture as evidence
-  and apply when it is promoted.
+- Assignment happens after the capture has a permanent, unsuppressed Contact.
+  Ambiguous identity conflicts keep requested names on capture evidence until
+  an operator resolves the person.
 - Assignment is additive and idempotent: an existing label is never duplicated
   and existing labels are never removed.
 
@@ -206,15 +218,13 @@ is never reinterpreted as a contact-first submission: its idempotency keys may
 already have been accepted under the old contract, so replaying it would either
 conflict or split one person's evidence in two.
 
-Local extension state is migrated on install and on browser start
-(`src/common/migration.js`): campaign-era drafts are archived verbatim under one
-key and can be downloaded, the live draft keys and stale staged-result summaries
-are cleared, and the campaign preference is dropped. The panel shows a one-time
-notice explaining exactly that.
+The selected Campaign is stored as a separate filing preference and survives
+browser sessions. It is not embedded in capture drafts, so choosing another
+Campaign never rewrites previously reviewed people.
 
 ## What a capture never does
 
-Create a campaign or campaign membership · score or qualify · discover or verify
-an email · research a company website · generate, approve, or schedule outreach ·
-merge an ambiguous identity · remove or weaken a suppression · make any contact
-outreach-eligible · reach the database from browser code.
+Create a Campaign · require Campaign selection · score or qualify · discover or
+verify an email · research a company website · generate, approve, or schedule
+outreach · merge an ambiguous identity · remove or weaken a suppression · make
+any contact outreach-eligible · reach the database from browser code.

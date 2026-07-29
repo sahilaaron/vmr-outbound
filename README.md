@@ -24,11 +24,18 @@ The acquisition foundation is operational on `main`:
 - seller-side Knowledge Base records for company profile, offerings, personas,
   proof points, restricted claims, and campaign-offering links;
 - deterministic email candidate generation and MillionVerifier-backed exact
-  address verification behind feature flags.
+  address verification behind feature flags;
+- Campaign operating context, reusable Collections, first-class Campaign
+  Contacts, a shared PostgreSQL Agent queue, and explainable pipeline history.
 
 The authenticated operator path has been exercised end to end: Sales Navigator
 and normal LinkedIn captures can converge on one canonical Contact, domain
 resolution can create or reuse the Company, and retries remain idempotent.
+
+The Phase 2 execution backbone is documented in
+[`docs/PHASE_2_EXECUTION_MODEL.md`](docs/PHASE_2_EXECUTION_MODEL.md). The common
+worker is `scripts/run_agent_worker.py`; Research, Insights, Personalization,
+and Sending remain registered but disabled until real adapters exist.
 
 Two focused acquisition corrections remain active before the intake workflow is
 considered friction-complete:
