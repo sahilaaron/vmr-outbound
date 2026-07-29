@@ -147,19 +147,32 @@ def _collect(
     include_subdomains = cfg.discovery.include_subdomains
 
     # 1. Homepage, trying the apex/www/http variants the prototype tried.
+    # Load and evaluate the policy for each host before requesting its homepage.
     homepage = None
+    robots = RobotsInfo.deny_all()
     tried: list[str] = []
     for start in (nd.start_url, f"https://www.{nd.host}/", f"http://{nd.host}/"):
         if start in tried:
             continue
         tried.append(start)
+        candidate_robots = (
+            fetch_robots(fetcher, start)
+            if cfg.discovery.use_robots_txt
+            else RobotsInfo.allow_all()
+        )
+        if not candidate_robots.can_fetch(start):
+            outcome.warnings.append(
+                f"skipped {start}: robots.txt unavailable or disallows the homepage"
+            )
+            continue
         homepage = fetcher.fetch(start)
         if homepage.ok:
+            robots = candidate_robots
             break
         time.sleep(delay)
 
     if homepage is None or not homepage.ok:
-        reason = (homepage.error if homepage else None) or "no response"
+        reason = (homepage.error if homepage else None) or "no response permitted by robots.txt"
         return _fail(outcome, nd.start_url, "homepage", f"homepage unreachable: {reason}")
 
     if not same_site(homepage.final_url, nd, include_subdomains):
@@ -171,11 +184,7 @@ def _collect(
         )
         return _fail(outcome, nd.start_url, "homepage", reason)
 
-    # 2. robots.txt is authoritative over everything below.
-    robots = RobotsInfo.allow_all()
-    if cfg.discovery.use_robots_txt:
-        robots = fetch_robots(fetcher, homepage.final_url)
-        time.sleep(min(delay, 0.5))
+    # 2. The already-loaded robots policy is authoritative below.
     if robots.crawl_delay and robots.crawl_delay > delay:
         delay = min(robots.crawl_delay, 10.0)
 

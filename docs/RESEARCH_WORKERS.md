@@ -15,7 +15,8 @@ without touching the pipeline, the job queue, or the evidence model.
 name: str
 version: str
 
-def run(self, request: ResearchRequest) -> WorkerResult: ...
+def run(self, request: ResearchRequest) -> WorkerResult:
+    ...
 ```
 
 It receives a `ResearchRequest` (domain, company name, timeout, and its

@@ -241,3 +241,111 @@ def test_workers_run_in_the_order_requested() -> None:
 
 def test_requesting_no_workers_yields_none() -> None:
     assert build_workers([]) == ()
+
+# --- live HTTP safety boundary ------------------------------------------------
+
+
+def _public_resolver(host: str, _port: int) -> tuple[str, ...]:
+    assert host == "public.example"
+    return ("93.184.216.34",)
+
+
+def test_http_fetcher_rejects_private_targets_before_transport() -> None:
+    import httpx
+
+    from app.services.research.workers._website.config import CrawlerConfig
+    from app.services.research.workers._website.fetcher import HttpFetcher
+
+    calls: list[str] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(200, text="should not be reached")
+
+    fetcher = HttpFetcher(
+        CrawlerConfig(max_retries=0),
+        transport=httpx.MockTransport(_handler),
+    )
+    try:
+        result = fetcher.fetch("http://127.0.0.1/admin")
+    finally:
+        fetcher.close()
+
+    assert result.ok is False
+    assert "non-public" in (result.error or "")
+    assert calls == []
+
+
+def test_http_fetcher_rejects_private_redirect_before_second_request() -> None:
+    import httpx
+
+    from app.services.research.workers._website.config import CrawlerConfig
+    from app.services.research.workers._website.fetcher import HttpFetcher
+
+    calls: list[str] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(
+            302,
+            headers={"location": "http://169.254.169.254/latest/meta-data"},
+            request=request,
+        )
+
+    fetcher = HttpFetcher(
+        CrawlerConfig(max_retries=0),
+        resolver=_public_resolver,
+        transport=httpx.MockTransport(_handler),
+    )
+    try:
+        result = fetcher.fetch("https://public.example/")
+    finally:
+        fetcher.close()
+
+    assert result.ok is False
+    assert "non-public" in (result.error or "")
+    assert calls == ["https://public.example/"]
+
+
+def test_robots_network_failure_denies_crawling() -> None:
+    from app.services.research.workers._website.models import FetchResult
+    from app.services.research.workers._website.robots import fetch_robots
+
+    class StubFetcher:
+        def fetch(self, url: str, expect_html: bool = True) -> FetchResult:
+            del expect_html
+            return FetchResult(
+                requested_url=url,
+                final_url=url,
+                status_code=None,
+                ok=False,
+                method="http",
+                error="timeout",
+            )
+
+    policy = fetch_robots(StubFetcher(), "https://public.example/")  # type: ignore[arg-type]
+
+    assert policy.fetched is False
+    assert policy.can_fetch("https://public.example/") is False
+
+
+def test_missing_robots_file_allows_crawling() -> None:
+    from app.services.research.workers._website.models import FetchResult
+    from app.services.research.workers._website.robots import fetch_robots
+
+    class StubFetcher:
+        def fetch(self, url: str, expect_html: bool = True) -> FetchResult:
+            del expect_html
+            return FetchResult(
+                requested_url=url,
+                final_url=url,
+                status_code=404,
+                ok=False,
+                method="http",
+                error="HTTP 404",
+            )
+
+    policy = fetch_robots(StubFetcher(), "https://public.example/")  # type: ignore[arg-type]
+
+    assert policy.fetched is True
+    assert policy.can_fetch("https://public.example/") is True
