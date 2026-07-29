@@ -12,6 +12,10 @@ outreach capability exists anywhere in it.
 Functional areas: **Overview**, **Campaigns**, **Imports**, **Contacts**, and
 the guarded **Local Tools** panel (local development only).
 
+The **Workbench Agent monitor and controls** (`/workbench`, MVP-01B) are a
+separate area behind their own switch: the operator control room over the Phase 2
+execution backbone. See `docs/AGENT_WORKBENCH.md`.
+
 The navigation also lists the later-phase areas — Email Verification, Scoring,
 Research, Drafts & Approval, Sequences, Activity, Settings — as visibly
 disabled entries. Each leads to one clean "isn't available yet" state. There

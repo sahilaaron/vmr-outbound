@@ -84,11 +84,15 @@
     <dl class="kv">
       <dt>Decision</dt>
       <dd>{{ decision_badge(v.decision, v.refused_before_provider) }} {{ verified_badge(v) }}</dd>
+      {# Only shown when there is one. An accepted address needs no explanation,
+         and an empty "no reason was recorded" beside a success reads as a gap. #}
+      {% if v.reason or v.reason_code %}
       <dt>Reason</dt>
       <dd class="small wrap">
         {% if v.reason_code %}<span class="badge muted">{{ v.reason_code }}</span> {% endif %}
-        {{ v.reason or "No reason was recorded." }}
+        {{ v.reason or "" }}
       </dd>
+      {% endif %}
       <dt>Normalized status</dt>
       <dd class="small">{{ v.precise_status.replace("_", " ") if v.precise_status else "—" }}
         {%- if v.verification_result %} · provider result <code>{{ v.verification_result }}</code>{% endif %}</dd>
