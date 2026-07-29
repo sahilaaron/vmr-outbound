@@ -15,6 +15,7 @@ without touching the pipeline, the job queue, or the evidence model.
 name: str
 version: str
 
+
 def run(self, request: ResearchRequest) -> WorkerResult: ...
 ```
 
