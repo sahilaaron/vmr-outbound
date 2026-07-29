@@ -1,15 +1,14 @@
-"""Durable Email Agent state machine for Issue #224.
+"""Durable, policy-bounded Email Agent state machine for Issue #224.
 
-The Email Agent owns candidate policy and sequencing.  Verification remains a
-separate child Agent: this service persists one candidate attempt, asks a narrow
-Verification port to ensure one child job, and yields.  It never claims or runs
-that child inline.
+The Email Agent owns candidate policy and sequencing. Verification remains a
+separate child Agent on the common Phase 2 queue: this service persists one
+candidate attempt, idempotently enqueues one child job, and yields. It never
+claims or executes that child and never calls a provider.
 
-``VerificationPort`` is intentionally temporary while the stacked Verification
-Agent branch is being integrated.  Its surface is only what Email needs:
-idempotently ensure the exact child job and read the child's committed decision.
-The final stacked branch replaces the port with the authoritative Verification
-contract; no provider semantics live here.
+On resume, the parent reads :class:`VerificationDecision` from the child job's
+committed result/error projection. Generic job success is deliberately
+insufficient: an accepted address also needs the exact evidence reference and
+must pass the existing freshness, provenance, and suppression gates.
 """
 
 from __future__ import annotations
@@ -18,7 +17,7 @@ import enum
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -37,10 +36,12 @@ from app.models.enums import (
     AgentJobStatus,
     EmailCandidateSource,
     EmailVerificationResult,
+    PipelineEventType,
     ResearchState,
 )
 from app.models.verification_job import AgentJob
 from app.services.agents import jobs
+from app.services.agents.registry import get_agent_spec
 from app.services.audit import record_audit_event
 from app.services.email.discovery_policy import (
     POLICY_IDENTIFIER,
@@ -56,8 +57,10 @@ from app.services.email.discovery_policy import (
     evidence_freshness,
 )
 from app.services.imports.normalization import is_valid_email, normalize_domain, normalize_email
+from app.services.pipeline import append_event
 from app.services.resolution.gates import DownstreamStage, authorize_contact
 from app.services.suppressions import evaluate_suppression
+from app.services.verification.decisions import VerificationDecision
 from app.services.verification.policy import VerificationPolicy, get_policy
 from app.services.verification.provider import SIMULATOR_PROVIDER_LABEL
 
@@ -79,6 +82,9 @@ class EmailExecutionOutcome(enum.StrEnum):
     DOMAIN_UNAVAILABLE = "domain_unavailable"
     DOMAIN_INELIGIBLE = "domain_ineligible"
     SUPPRESSED = "suppressed"
+    AGENT_DISABLED = "agent_disabled"
+    AGENT_PAUSED = "agent_paused"
+    CAMPAIGN_OVERRIDE_DISABLED = "campaign_override_disabled"
     CAMPAIGN_CONTACT_INELIGIBLE = "campaign_contact_ineligible"
     WAITING_ON_VERIFICATION = "waiting_on_verification"
     RETRYABLE_VERIFICATION_DEPENDENCY = "retryable_verification_dependency"
@@ -94,47 +100,15 @@ class EmailExecutionStepKind(enum.StrEnum):
     TERMINAL = "terminal"
 
 
-class VerificationPortDecision(enum.StrEnum):
-    """Temporary normalized decisions consumed by the Email state machine."""
-
-    ACCEPT = "accept"
-    REJECT = "reject"
-    RETRYABLE = "retryable"
-    TERMINAL = "terminal"
-    REFUSED = "refused"
-    SIMULATED = "simulated"
-
-
 @dataclass(frozen=True)
-class VerificationPortOutcome:
-    """Temporary projection of one committed child Verification outcome."""
+class CommittedVerificationOutcome:
+    """The authoritative decision and evidence committed by one child job."""
 
-    decision: VerificationPortDecision
+    decision: VerificationDecision | None
     verification_id: uuid.UUID | None = None
-    production_eligible: bool = False
+    reason_code: str | None = None
     reason: str | None = None
     reference: dict[str, Any] | None = None
-
-
-class VerificationPort(Protocol):
-    """Narrow temporary boundary replaced by the authoritative stacked branch."""
-
-    def ensure_child(
-        self,
-        session: Session,
-        *,
-        parent_job: AgentJob,
-        attempt: EmailCandidateAttempt,
-        actor: str,
-    ) -> AgentJob: ...
-
-    def outcome_for(
-        self,
-        session: Session,
-        *,
-        child_job: AgentJob,
-        attempt: EmailCandidateAttempt,
-    ) -> VerificationPortOutcome | None: ...
 
 
 @dataclass(frozen=True)
@@ -261,7 +235,7 @@ def enqueue_email_job(
         agent_id=AgentIdentifier.EMAIL,
         idempotency_key=key,
         task_kind=EMAIL_REFRESH_TASK_KIND if force_refresh else EMAIL_TASK_KIND,
-        max_attempts=3,
+        max_attempts=get_agent_spec(AgentIdentifier.EMAIL).max_attempts,
         priority=priority,
         campaign_id=campaign_id,
         campaign_contact_id=campaign_contact_id,
@@ -280,6 +254,184 @@ def enqueue_email_job(
         },
         parent_job_id=parent_job_id,
         actor=actor,
+    )
+
+
+def _verification_child_input(
+    *,
+    parent_job: AgentJob,
+    attempt: EmailCandidateAttempt,
+    verification_policy: VerificationPolicy,
+) -> dict[str, Any]:
+    """Immutable intent consumed by the authoritative Verification adapter."""
+
+    return {
+        "candidate_id": str(attempt.candidate_id),
+        "candidate_attempt_id": str(attempt.id),
+        "email": attempt.normalized_email,
+        "policy_version": verification_policy.version,
+        "requesting_email_job_id": str(parent_job.id),
+        "force_refresh": attempt.force_refresh,
+        "refresh_scope": attempt.refresh_scope,
+    }
+
+
+def _ensure_verification_child(
+    session: Session,
+    *,
+    parent_job: AgentJob,
+    attempt: EmailCandidateAttempt,
+    verification_policy: VerificationPolicy,
+    actor: str,
+) -> AgentJob:
+    """Idempotently enqueue exactly one Verification child for *attempt*."""
+
+    spec = get_agent_spec(AgentIdentifier.VERIFICATION)
+    input_reference = _verification_child_input(
+        parent_job=parent_job,
+        attempt=attempt,
+        verification_policy=verification_policy,
+    )
+    child, created = jobs.enqueue_job(
+        session,
+        agent_id=AgentIdentifier.VERIFICATION,
+        idempotency_key=(
+            f"email:{parent_job.id}:candidate:{attempt.candidate_index}:"
+            f"verification:{verification_policy.version}"
+        ),
+        task_kind="verify_email_candidate",
+        max_attempts=spec.max_attempts,
+        priority=parent_job.priority,
+        email=attempt.normalized_email,
+        policy_version=verification_policy.version,
+        campaign_id=parent_job.campaign_id,
+        campaign_contact_id=parent_job.campaign_contact_id,
+        contact_id=parent_job.contact_id,
+        company_id=attempt.company_id,
+        entity_type="email_candidate_attempt",
+        entity_id=attempt.id,
+        input_reference=input_reference,
+        parent_job_id=parent_job.id,
+        actor=actor,
+    )
+    if (
+        child.parent_job_id != parent_job.id
+        or child.agent_id is not AgentIdentifier.VERIFICATION
+        or child.entity_id != attempt.id
+        or child.email != attempt.normalized_email
+    ):
+        raise EmailAgentStateError(
+            "Verification enqueue returned a job outside the candidate intent"
+        )
+    if (
+        not created
+        and child.status is AgentJobStatus.PAUSED
+        and child.error_class
+        in {
+            "requesting_email_agent_disabled",
+            "requesting_email_agent_paused",
+        }
+    ):
+        jobs.resume_paused(
+            session,
+            child,
+            reason_codes=frozenset(
+                {
+                    "requesting_email_agent_disabled",
+                    "requesting_email_agent_paused",
+                }
+            ),
+        )
+    if created and parent_job.campaign_contact_id is not None:
+        append_event(
+            session,
+            campaign_contact_id=parent_job.campaign_contact_id,
+            agent_id=AgentIdentifier.VERIFICATION,
+            job_id=child.id,
+            event_type=PipelineEventType.JOB_QUEUED,
+            actor=actor,
+            reason_code="email_candidate_child",
+            reason_detail=(
+                f"Verification child queued for Email candidate {attempt.candidate_index + 1}."
+            ),
+            detail={
+                "parent_job_id": str(parent_job.id),
+                "candidate_attempt_id": str(attempt.id),
+                "candidate_index": attempt.candidate_index,
+            },
+        )
+    return child
+
+
+def _decision_payload(child: AgentJob) -> dict[str, Any] | None:
+    """Return the adapter's committed output regardless of queue disposition."""
+
+    value: object
+    if child.status is AgentJobStatus.SUCCEEDED:
+        value = child.result
+    else:
+        error = child.error
+        value = error.get("detail") if isinstance(error, dict) else None
+    return dict(value) if isinstance(value, dict) else None
+
+
+def _committed_verification_outcome(
+    child: AgentJob,
+) -> CommittedVerificationOutcome | None:
+    """Read one authoritative child decision after its transaction committed.
+
+    Pending, leased, and running jobs have no committed decision. A retry
+    projection is readable but remains owned by the child queue. Control pauses
+    may have no Verification decision at all; those are returned as dependency
+    blocks rather than relabelled as mailbox verdicts.
+    """
+
+    if child.status in {
+        AgentJobStatus.PENDING,
+        AgentJobStatus.LEASED,
+        AgentJobStatus.IN_PROGRESS,
+    }:
+        return None
+    payload = _decision_payload(child)
+    raw_decision = payload.get("decision") if payload is not None else None
+    decision: VerificationDecision | None = None
+    if isinstance(raw_decision, str):
+        try:
+            decision = VerificationDecision(raw_decision)
+        except ValueError as exc:
+            raise EmailAgentStateError("Verification child committed an unknown decision") from exc
+
+    if decision is None and child.status is AgentJobStatus.RETRY_SCHEDULED:
+        raise EmailAgentStateError(
+            "retry-scheduled Verification child has no committed RETRY_LATER decision"
+        )
+    if decision is None and child.status in {
+        AgentJobStatus.SUCCEEDED,
+        AgentJobStatus.FAILED,
+        AgentJobStatus.CANCELLED,
+    }:
+        raise EmailAgentStateError(
+            "terminal Verification child has no committed authoritative decision"
+        )
+
+    raw_id = payload.get("verification_id") if payload is not None else None
+    verification_id = _uuid(raw_id) or child.verification_id
+    reason_code = (
+        str(payload.get("reason_code"))
+        if payload is not None and payload.get("reason_code") is not None
+        else child.error_class
+    )
+    reason = (
+        str(payload.get("reason"))
+        if payload is not None and payload.get("reason") is not None
+        else child.last_error
+    )
+    return CommittedVerificationOutcome(
+        decision=decision,
+        verification_id=verification_id,
+        reason_code=reason_code,
+        reason=reason,
+        reference=payload or {},
     )
 
 
@@ -621,17 +773,12 @@ def _cancel_unstarted_child(
         AgentJobStatus.PAUSED,
     }:
         return
-    child.status = AgentJobStatus.CANCELLED
-    child.last_error = reason
-    child.error_class = "existing_email_reused"
-    child.error = {
-        "class": "existing_email_reused",
-        "message": reason,
-        "retryable": False,
-    }
-    child.finished_at = _now()
-    child.lease_owner = None
-    child.lease_expires_at = None
+    jobs.cancel_job(
+        session,
+        child,
+        reason=reason,
+        reason_code="existing_email_reused",
+    )
 
 
 def _reuse_step(
@@ -754,16 +901,19 @@ def _accepted_write(
     contact: Contact,
     company: Company,
     attempt: EmailCandidateAttempt,
-    port_outcome: VerificationPortOutcome,
+    verification_outcome: CommittedVerificationOutcome,
     verification_policy: VerificationPolicy,
     now: datetime,
 ) -> tuple[EmailExecutionOutcome, ExactEmailVerification]:
-    if not port_outcome.production_eligible or port_outcome.verification_id is None:
+    if (
+        verification_outcome.decision is not VerificationDecision.ACCEPT
+        or verification_outcome.verification_id is None
+    ):
         raise EmailAcceptedWriteRefused(
             EmailExecutionOutcome.TERMINAL_VERIFICATION_REFUSAL,
             "Verification ACCEPT lacked production-eligible exact-address evidence",
         )
-    evidence = session.get(ExactEmailVerification, port_outcome.verification_id)
+    evidence = session.get(ExactEmailVerification, verification_outcome.verification_id)
     if evidence is None or not _production_eligible_evidence(
         evidence,
         email=attempt.normalized_email,
@@ -845,8 +995,8 @@ def _accepted_write(
         )
     attempt.status = EmailCandidateAttemptStatus.ACCEPTED.value
     attempt.verification_id = evidence.id
-    attempt.verification_decision = VerificationPortDecision.ACCEPT.value
-    attempt.verification_result = port_outcome.reference or {}
+    attempt.verification_decision = VerificationDecision.ACCEPT.value
+    attempt.verification_result = verification_outcome.reference or {}
     attempt.resolved_at = now
     session.flush()
     record_audit_event(
@@ -934,7 +1084,6 @@ def execute_step(
     job: AgentJob,
     contact: Contact,
     membership: CampaignContact | None,
-    verification_port: VerificationPort,
     verification_policy: VerificationPolicy | None = None,
     now: datetime | None = None,
     actor: str = "email-agent",
@@ -995,6 +1144,18 @@ def execute_step(
     company = session.get(Company, contact.company_id)
     if company is None:  # pragma: no cover - protected by FK
         raise EmailAgentStateError("the Contact's canonical Company no longer exists")
+    if job.company_id is not None and job.company_id != company.id:
+        return EmailExecutionStep(
+            kind=EmailExecutionStepKind.BLOCKED,
+            outcome=EmailExecutionOutcome.COMPANY_UNAVAILABLE,
+            result={"domain_outcome": EmailExecutionOutcome.COMPANY_UNAVAILABLE.value},
+            output_reference={"company_id": str(company.id)},
+            reason_code="canonical_company_changed",
+            reason=(
+                "The Contact's canonical Company changed during Email execution; "
+                "an explicitly scoped refresh is required."
+            ),
+        )
     canonical_domain = normalize_domain(company.domain)
     if canonical_domain is None:
         return EmailExecutionStep(
@@ -1171,8 +1332,27 @@ def execute_step(
                 "stored Email execution belongs to a different discovery policy version"
             )
         if state.get("normalized_domain") != canonical_domain:
-            raise EmailAgentStateError(
-                "canonical Company domain changed during Email execution; explicit refresh required"
+            state["blocked_outcome"] = EmailExecutionOutcome.DOMAIN_INELIGIBLE.value
+            state["reason"] = (
+                "The canonical Company domain changed during Email execution; "
+                "an explicitly scoped refresh is required."
+            )
+            result = _persist_result(
+                job,
+                state,
+                {"domain_outcome": EmailExecutionOutcome.DOMAIN_INELIGIBLE.value},
+            )
+            return EmailExecutionStep(
+                kind=EmailExecutionStepKind.BLOCKED,
+                outcome=EmailExecutionOutcome.DOMAIN_INELIGIBLE,
+                result=result,
+                output_reference={
+                    "company_id": str(company.id),
+                    "policy_identifier": POLICY_IDENTIFIER,
+                    "policy_version": POLICY_VERSION,
+                },
+                reason_code="canonical_domain_changed",
+                reason=str(state["reason"]),
             )
         evidence_block = _persisted_evidence_block(
             state=state,
@@ -1290,16 +1470,17 @@ def execute_step(
         _write_state(job, state)
 
     if attempt.verification_job_id is None:
-        child: AgentJob | None = verification_port.ensure_child(
+        child: AgentJob | None = _ensure_verification_child(
             session,
             parent_job=job,
             attempt=attempt,
+            verification_policy=verification_policy,
             actor=actor,
         )
         assert child is not None
         if child.parent_job_id != job.id or child.agent_id is not AgentIdentifier.VERIFICATION:
             raise EmailAgentStateError(
-                "Verification port returned a child outside the parent/Agent contract"
+                "Verification enqueue returned a child outside the parent/Agent contract"
             )
         attempt.verification_job_id = child.id
         attempt.status = EmailCandidateAttemptStatus.VERIFICATION_QUEUED.value
@@ -1308,32 +1489,48 @@ def execute_step(
     else:
         child = session.get(AgentJob, attempt.verification_job_id)
         if child is None:
-            # A deleted child does not authorize another arbitrary job.  The
-            # deterministic port may recreate the same intent and returns its
-            # real relationship.
-            child = verification_port.ensure_child(
+            # A deleted child does not authorize an arbitrary replacement. The
+            # deterministic idempotency key can only recreate the same intent.
+            child = _ensure_verification_child(
                 session,
                 parent_job=job,
                 attempt=attempt,
+                verification_policy=verification_policy,
                 actor=actor,
             )
             attempt.verification_job_id = child.id
             session.flush()
 
     assert child is not None
-    port_outcome = verification_port.outcome_for(
-        session,
-        child_job=child,
-        attempt=attempt,
-    )
-    if port_outcome is None:
+    if child.status is AgentJobStatus.PAUSED and child.error_class in {
+        "requesting_email_agent_disabled",
+        "requesting_email_agent_paused",
+    }:
+        # Reaching this point proves the common worker re-authorized the Email
+        # parent. Resume only child pauses owned by that requesting control;
+        # Verification, suppression, eligibility, and operator pauses remain
+        # untouched.
+        jobs.resume_paused(
+            session,
+            child,
+            reason_codes=frozenset(
+                {
+                    "requesting_email_agent_disabled",
+                    "requesting_email_agent_paused",
+                }
+            ),
+        )
+    verification_outcome = _committed_verification_outcome(child)
+    if verification_outcome is None:
         attempt.status = EmailCandidateAttemptStatus.WAITING.value
         session.flush()
         return _waiting_step(job=job, state=state, attempt=attempt)
 
-    attempt.verification_decision = port_outcome.decision.value
-    attempt.verification_result = port_outcome.reference or {}
-    if port_outcome.decision is VerificationPortDecision.RETRYABLE:
+    attempt.verification_decision = (
+        verification_outcome.decision.value if verification_outcome.decision is not None else None
+    )
+    attempt.verification_result = verification_outcome.reference or {}
+    if verification_outcome.decision is VerificationDecision.RETRY_LATER:
         attempt.status = EmailCandidateAttemptStatus.RETRYABLE.value
         session.flush()
         return _waiting_step(
@@ -1341,11 +1538,11 @@ def execute_step(
             state=state,
             attempt=attempt,
             retryable=True,
-            reason=port_outcome.reason,
+            reason=verification_outcome.reason,
         )
-    if port_outcome.decision is VerificationPortDecision.REJECT:
+    if verification_outcome.decision is VerificationDecision.TRY_NEXT_CANDIDATE:
         attempt.status = EmailCandidateAttemptStatus.REJECTED.value
-        attempt.verification_id = port_outcome.verification_id
+        attempt.verification_id = verification_outcome.verification_id
         attempt.resolved_at = now
         state["current_candidate_index"] = index + 1
         _write_state(job, state)
@@ -1356,16 +1553,25 @@ def execute_step(
             job=job,
             contact=contact,
             membership=membership,
-            verification_port=verification_port,
             verification_policy=verification_policy,
             now=now,
             actor=actor,
         )
-    if port_outcome.decision is VerificationPortDecision.SIMULATED:
+
+    evidence = (
+        session.get(ExactEmailVerification, verification_outcome.verification_id)
+        if verification_outcome.verification_id is not None
+        else None
+    )
+    simulated = verification_outcome.reason_code == "verification_simulated" or (
+        evidence is not None and evidence.provider == SIMULATOR_PROVIDER_LABEL
+    )
+    if verification_outcome.decision is VerificationDecision.REFUSED and simulated:
         attempt.status = EmailCandidateAttemptStatus.SIMULATED.value
-        attempt.verification_id = port_outcome.verification_id
+        attempt.verification_id = verification_outcome.verification_id
         attempt.refusal_reason = (
-            port_outcome.reason or "Simulated Verification cannot produce a production-ready email."
+            verification_outcome.reason
+            or "Simulated Verification cannot produce a production-ready email."
         )
         attempt.resolved_at = now
         state["terminal_outcome"] = EmailExecutionOutcome.SIMULATED_VERIFICATION_REFUSED.value
@@ -1387,13 +1593,13 @@ def execute_step(
             reason_code=EmailExecutionOutcome.SIMULATED_VERIFICATION_REFUSED.value,
             reason=attempt.refusal_reason,
         )
-    if port_outcome.decision is VerificationPortDecision.REFUSED:
+    if verification_outcome.decision is VerificationDecision.REFUSED:
         attempt.status = EmailCandidateAttemptStatus.REFUSED.value
-        attempt.verification_id = port_outcome.verification_id
-        attempt.refusal_reason = port_outcome.reason
+        attempt.verification_id = verification_outcome.verification_id
+        attempt.refusal_reason = verification_outcome.reason
         attempt.resolved_at = now
         state["terminal_outcome"] = EmailExecutionOutcome.TERMINAL_VERIFICATION_REFUSAL.value
-        state["reason"] = port_outcome.reason
+        state["reason"] = verification_outcome.reason
         result = _persist_result(
             job,
             state,
@@ -1409,15 +1615,15 @@ def execute_step(
             result=result,
             output_reference={"candidate_attempt_id": str(attempt.id)},
             reason_code=EmailExecutionOutcome.TERMINAL_VERIFICATION_REFUSAL.value,
-            reason=port_outcome.reason or "Verification refused the candidate.",
+            reason=verification_outcome.reason or "Verification refused the candidate.",
         )
-    if port_outcome.decision is VerificationPortDecision.TERMINAL:
+    if verification_outcome.decision is VerificationDecision.STOP_NO_RESULT:
         attempt.status = EmailCandidateAttemptStatus.TERMINAL_NO_RESULT.value
-        attempt.verification_id = port_outcome.verification_id
-        attempt.refusal_reason = port_outcome.reason
+        attempt.verification_id = verification_outcome.verification_id
+        attempt.refusal_reason = verification_outcome.reason
         attempt.resolved_at = now
         state["terminal_outcome"] = EmailExecutionOutcome.TERMINAL_VERIFICATION_FAILURE.value
-        state["reason"] = port_outcome.reason
+        state["reason"] = verification_outcome.reason
         result = _persist_result(
             job,
             state,
@@ -1433,7 +1639,44 @@ def execute_step(
             result=result,
             output_reference={"candidate_attempt_id": str(attempt.id)},
             reason_code=EmailExecutionOutcome.TERMINAL_VERIFICATION_FAILURE.value,
-            reason=port_outcome.reason or "Verification ended without address evidence.",
+            reason=verification_outcome.reason or "Verification ended without address evidence.",
+        )
+
+    if verification_outcome.decision is None:
+        # A shared queue/control refusal can stop a child before the Verification
+        # adapter has a mailbox decision. Preserve that distinction rather than
+        # inventing REFUSED evidence.
+        attempt.status = EmailCandidateAttemptStatus.WAITING.value
+        attempt.refusal_reason = (
+            verification_outcome.reason or "The Verification dependency is paused or disabled."
+        )
+        state["blocked_outcome"] = EmailExecutionOutcome.TERMINAL_VERIFICATION_REFUSAL.value
+        state["reason"] = attempt.refusal_reason
+        dependency_code = (
+            f"verification_dependency_{verification_outcome.reason_code}"
+            if verification_outcome.reason_code
+            else EmailExecutionOutcome.TERMINAL_VERIFICATION_REFUSAL.value
+        )
+        result = _persist_result(
+            job,
+            state,
+            {
+                "domain_outcome": EmailExecutionOutcome.TERMINAL_VERIFICATION_REFUSAL.value,
+                "candidate_attempt_id": str(attempt.id),
+                "verification_dependency_reason_code": verification_outcome.reason_code,
+            },
+        )
+        session.flush()
+        return EmailExecutionStep(
+            kind=EmailExecutionStepKind.BLOCKED,
+            outcome=EmailExecutionOutcome.TERMINAL_VERIFICATION_REFUSAL,
+            result=result,
+            output_reference={
+                "candidate_attempt_id": str(attempt.id),
+                "verification_job_id": str(child.id),
+            },
+            reason_code=(dependency_code),
+            reason=attempt.refusal_reason,
         )
 
     try:
@@ -1443,7 +1686,7 @@ def execute_step(
             contact=contact,
             company=company,
             attempt=attempt,
-            port_outcome=port_outcome,
+            verification_outcome=verification_outcome,
             verification_policy=verification_policy,
             now=now,
         )

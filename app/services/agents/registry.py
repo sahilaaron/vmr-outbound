@@ -63,6 +63,12 @@ _SPECS = (
         (AgentIdentifier.RESEARCH,),
         AgentControlStatus.DISABLED,
         True,
+        # One execution may yield once per Verification child and resume after
+        # each committed decision. Three candidates therefore require four
+        # claims even without a worker restart; this budget also leaves bounded
+        # room for lease recovery without confusing candidate count with worker
+        # attempt count.
+        max_attempts=8,
     ),
     AgentSpec(
         AgentIdentifier.VERIFICATION,

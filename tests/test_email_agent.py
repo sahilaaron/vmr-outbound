@@ -40,14 +40,13 @@ from app.services.email.agent import (
     EmailExecutionOutcome,
     EmailExecutionStep,
     EmailExecutionStepKind,
-    VerificationPortDecision,
-    VerificationPortOutcome,
     enqueue_email_job,
     execute_step,
 )
 from app.services.email.candidates import generate_candidates
 from app.services.email.discovery_policy import POLICY_IDENTIFIER, POLICY_VERSION
 from app.services.suppressions import add_suppression
+from app.services.verification.decisions import VerificationDecision
 from app.services.verification.policy import VerificationPolicy, get_policy
 from app.services.verification.provider import SIMULATOR_PROVIDER_LABEL
 from fastapi.testclient import TestClient
@@ -79,71 +78,19 @@ def email_api_client(db_session: Session) -> Iterator[TestClient]:
         app.dependency_overrides.clear()
 
 
-class StoredFakeVerificationPort:
-    """Test-only port whose outcomes live entirely in shared durable rows."""
+class CommittedVerificationFixture:
+    """Test helper that commits the real Verification decision projection."""
 
-    def __init__(self) -> None:
-        self.created_children = 0
-
-    def ensure_child(
-        self,
-        session: Session,
-        *,
-        parent_job: AgentJob,
-        attempt: EmailCandidateAttempt,
-        actor: str,
-    ) -> AgentJob:
-        child, created = jobs.enqueue_job(
-            session,
-            agent_id=AgentIdentifier.VERIFICATION,
-            idempotency_key=f"test-verification:{attempt.id}",
-            task_kind="verify_email_candidate",
-            max_attempts=4,
-            campaign_id=parent_job.campaign_id,
-            campaign_contact_id=parent_job.campaign_contact_id,
-            contact_id=parent_job.contact_id,
-            company_id=parent_job.company_id,
-            entity_type="email_candidate_attempt",
-            entity_id=attempt.id,
-            input_reference={
-                "candidate_attempt_id": str(attempt.id),
-                "email": attempt.normalized_email,
-            },
-            parent_job_id=parent_job.id,
-            actor=actor,
-        )
-        child.email = attempt.normalized_email
-        child.policy_version = "ver-1"
-        if created:
-            self.created_children += 1
-        session.flush()
-        return child
-
-    def outcome_for(
-        self,
-        session: Session,
-        *,
-        child_job: AgentJob,
-        attempt: EmailCandidateAttempt,
-    ) -> VerificationPortOutcome | None:
-        del session, attempt
-        value = child_job.result
-        if not isinstance(value, dict):
-            return None
-        decision_value = value.get("decision")
-        if not isinstance(decision_value, str):
-            return None
-        verification_id = value.get("verification_id")
-        reason_value = value.get("reason")
-        reference_value = value.get("reference")
-        return VerificationPortOutcome(
-            decision=VerificationPortDecision(decision_value),
-            verification_id=(
-                uuid.UUID(verification_id) if isinstance(verification_id, str) else None
-            ),
-            production_eligible=value.get("production_eligible") is True,
-            reason=reason_value if isinstance(reason_value, str) else None,
-            reference=dict(reference_value) if isinstance(reference_value, dict) else {},
+    @staticmethod
+    def created_children(session: Session, job: AgentJob) -> int:
+        return int(
+            session.scalar(
+                select(func.count()).where(
+                    AgentJob.parent_job_id == job.id,
+                    AgentJob.agent_id == AgentIdentifier.VERIFICATION,
+                )
+            )
+            or 0
         )
 
     def resolve(
@@ -151,9 +98,10 @@ class StoredFakeVerificationPort:
         session: Session,
         *,
         job: AgentJob,
-        decision: VerificationPortDecision,
+        decision: VerificationDecision,
         reason: str | None = None,
         provider: str = "millionverifier",
+        simulated: bool = False,
     ) -> ExactEmailVerification | None:
         attempt = current_attempt(session, job)
         assert attempt.verification_job_id is not None
@@ -161,24 +109,23 @@ class StoredFakeVerificationPort:
         assert child is not None
 
         evidence: ExactEmailVerification | None = None
-        if decision in {
-            VerificationPortDecision.ACCEPT,
-            VerificationPortDecision.REJECT,
-            VerificationPortDecision.SIMULATED,
-        }:
+        if (
+            decision
+            in {
+                VerificationDecision.ACCEPT,
+                VerificationDecision.TRY_NEXT_CANDIDATE,
+            }
+            or simulated
+        ):
             result = (
                 EmailVerificationResult.INVALID
-                if decision is VerificationPortDecision.REJECT
+                if decision is VerificationDecision.TRY_NEXT_CANDIDATE
                 else EmailVerificationResult.VALID
             )
             evidence = ExactEmailVerification(
                 email=attempt.normalized_email,
                 result=result,
-                provider=(
-                    SIMULATOR_PROVIDER_LABEL
-                    if decision is VerificationPortDecision.SIMULATED
-                    else provider
-                ),
+                provider=SIMULATOR_PROVIDER_LABEL if simulated else provider,
                 policy_version="ver-1",
                 provider_reference=f"test-evidence:{attempt.id}",
                 reason=reason,
@@ -189,31 +136,50 @@ class StoredFakeVerificationPort:
             session.add(evidence)
             session.flush()
 
-        child.result = {
+        projection = {
             "decision": decision.value,
             "verification_id": str(evidence.id) if evidence is not None else None,
-            "production_eligible": decision is VerificationPortDecision.ACCEPT,
+            "reason_code": "verification_simulated" if simulated else f"test_{decision.value}",
             "reason": reason,
-            "reference": {
-                "authoritative_test_contract": True,
-                "provider": provider,
-            },
+            "authoritative_test_contract": True,
+            "provider": SIMULATOR_PROVIDER_LABEL if simulated else provider,
         }
         child.verification_id = evidence.id if evidence is not None else None
-        if decision is VerificationPortDecision.RETRYABLE:
+        if decision is VerificationDecision.ACCEPT:
+            child.result = {"domain_outcome": "exact_email_verified", **projection}
+            child.status = AgentJobStatus.SUCCEEDED
+            child.finished_at = NOW
+        elif decision is VerificationDecision.RETRY_LATER:
+            child.error = {
+                "class": "verification_transient",
+                "message": reason or "retry later",
+                "retryable": True,
+                "detail": projection,
+            }
             child.status = AgentJobStatus.RETRY_SCHEDULED
-            child.error_class = "provider_transient"
+            child.error_class = "verification_transient"
             child.last_error = reason or "retry later"
-        elif decision in {
-            VerificationPortDecision.TERMINAL,
-            VerificationPortDecision.REFUSED,
-        }:
+        elif decision is VerificationDecision.STOP_NO_RESULT:
+            child.error = {
+                "class": "verification_no_result",
+                "message": reason or "verification stopped without a result",
+                "retryable": False,
+                "detail": projection,
+            }
             child.status = AgentJobStatus.FAILED
-            child.error_class = decision.value
+            child.error_class = "verification_no_result"
             child.last_error = reason
             child.finished_at = NOW
         else:
-            child.status = AgentJobStatus.SUCCEEDED
+            child.error = {
+                "class": projection["reason_code"],
+                "message": reason or decision.value,
+                "retryable": decision is VerificationDecision.REFUSED,
+                "detail": projection,
+            }
+            child.status = AgentJobStatus.PAUSED
+            child.error_class = str(projection["reason_code"])
+            child.last_error = reason
             child.finished_at = NOW
         session.flush()
         return evidence
@@ -317,14 +283,14 @@ def verification_policy() -> VerificationPolicy:
 def run_step(
     session: Session,
     fixture: EmailFixture,
-    port: StoredFakeVerificationPort,
+    committed: CommittedVerificationFixture,
 ) -> EmailExecutionStep:
+    del committed
     return execute_step(
         session,
         job=fixture.job,
         contact=fixture.contact,
         membership=None,
-        verification_port=port,
         verification_policy=verification_policy(),
         now=NOW,
     )
@@ -354,12 +320,12 @@ def current_attempt(session: Session, job: AgentJob) -> EmailCandidateAttempt:
 def reject_current(
     session: Session,
     fixture: EmailFixture,
-    port: StoredFakeVerificationPort,
+    port: CommittedVerificationFixture,
 ) -> EmailExecutionStep:
     port.resolve(
         session,
         job=fixture.job,
-        decision=VerificationPortDecision.REJECT,
+        decision=VerificationDecision.TRY_NEXT_CANDIDATE,
         reason="definitive mailbox rejection",
     )
     return run_step(session, fixture, port)
@@ -371,7 +337,7 @@ def test_first_second_or_third_candidate_can_be_accepted(
     accepted_index: int,
 ) -> None:
     fixture = make_email_fixture(db_session)
-    port = StoredFakeVerificationPort()
+    port = CommittedVerificationFixture()
 
     step = run_step(db_session, fixture, port)
     assert step.outcome is EmailExecutionOutcome.WAITING_ON_VERIFICATION
@@ -384,7 +350,7 @@ def test_first_second_or_third_candidate_can_be_accepted(
     evidence = port.resolve(
         db_session,
         job=fixture.job,
-        decision=VerificationPortDecision.ACCEPT,
+        decision=VerificationDecision.ACCEPT,
     )
     assert evidence is not None
     step = run_step(db_session, fixture, port)
@@ -393,7 +359,7 @@ def test_first_second_or_third_candidate_can_be_accepted(
     assert step.outcome is EmailExecutionOutcome.VERIFIED_EMAIL_ACCEPTED
     assert fixture.contact.email == expected
     assert len(attempts(db_session, fixture.job)) == accepted_index + 1
-    assert port.created_children == accepted_index + 1
+    assert port.created_children(db_session, fixture.job) == accepted_index + 1
     assert attempts(db_session, fixture.job)[-1].verification_id == evidence.id
 
 
@@ -401,7 +367,7 @@ def test_all_three_rejections_finish_truthfully_without_contact_email(
     db_session: Session,
 ) -> None:
     fixture = make_email_fixture(db_session)
-    port = StoredFakeVerificationPort()
+    port = CommittedVerificationFixture()
     assert run_step(db_session, fixture, port).kind is EmailExecutionStepKind.WAITING
 
     for index in range(3):
@@ -423,12 +389,12 @@ def test_acceptance_stops_immediately_and_terminal_replay_is_write_idempotent(
     db_session: Session,
 ) -> None:
     fixture = make_email_fixture(db_session)
-    port = StoredFakeVerificationPort()
+    port = CommittedVerificationFixture()
     run_step(db_session, fixture, port)
     port.resolve(
         db_session,
         job=fixture.job,
-        decision=VerificationPortDecision.ACCEPT,
+        decision=VerificationDecision.ACCEPT,
     )
     first = run_step(db_session, fixture, port)
     audit_count = db_session.scalar(
@@ -436,7 +402,7 @@ def test_acceptance_stops_immediately_and_terminal_replay_is_write_idempotent(
     )
     assert audit_count == 1
 
-    replay = run_step(db_session, fixture, StoredFakeVerificationPort())
+    replay = run_step(db_session, fixture, CommittedVerificationFixture())
     assert replay.outcome is first.outcome
     assert replay.output_reference["replayed"] is True
     assert len(attempts(db_session, fixture.job)) == 1
@@ -453,13 +419,13 @@ def test_only_one_child_exists_while_verification_is_retryable(
     db_session: Session,
 ) -> None:
     fixture = make_email_fixture(db_session)
-    port = StoredFakeVerificationPort()
+    port = CommittedVerificationFixture()
     run_step(db_session, fixture, port)
     child_id = current_attempt(db_session, fixture.job).verification_job_id
     port.resolve(
         db_session,
         job=fixture.job,
-        decision=VerificationPortDecision.RETRYABLE,
+        decision=VerificationDecision.RETRY_LATER,
         reason="temporary provider timeout",
     )
 
@@ -468,25 +434,28 @@ def test_only_one_child_exists_while_verification_is_retryable(
     assert retryable.outcome is EmailExecutionOutcome.RETRYABLE_VERIFICATION_DEPENDENCY
     assert duplicate.outcome is EmailExecutionOutcome.RETRYABLE_VERIFICATION_DEPENDENCY
     assert current_attempt(db_session, fixture.job).verification_job_id == child_id
-    assert port.created_children == 1
+    assert port.created_children(db_session, fixture.job) == 1
     assert len(attempts(db_session, fixture.job)) == 1
 
 
 @pytest.mark.parametrize(
-    ("decision", "expected_outcome", "expected_status"),
+    ("decision", "simulated", "expected_outcome", "expected_status"),
     [
         (
-            VerificationPortDecision.TERMINAL,
+            VerificationDecision.STOP_NO_RESULT,
+            False,
             EmailExecutionOutcome.TERMINAL_VERIFICATION_FAILURE,
             EmailCandidateAttemptStatus.TERMINAL_NO_RESULT,
         ),
         (
-            VerificationPortDecision.REFUSED,
+            VerificationDecision.REFUSED,
+            False,
             EmailExecutionOutcome.TERMINAL_VERIFICATION_REFUSAL,
             EmailCandidateAttemptStatus.REFUSED,
         ),
         (
-            VerificationPortDecision.SIMULATED,
+            VerificationDecision.REFUSED,
+            True,
             EmailExecutionOutcome.SIMULATED_VERIFICATION_REFUSED,
             EmailCandidateAttemptStatus.SIMULATED,
         ),
@@ -494,14 +463,21 @@ def test_only_one_child_exists_while_verification_is_retryable(
 )
 def test_terminal_refused_and_simulated_child_outcomes_do_not_advance(
     db_session: Session,
-    decision: VerificationPortDecision,
+    decision: VerificationDecision,
+    simulated: bool,
     expected_outcome: EmailExecutionOutcome,
     expected_status: EmailCandidateAttemptStatus,
 ) -> None:
     fixture = make_email_fixture(db_session)
-    port = StoredFakeVerificationPort()
+    port = CommittedVerificationFixture()
     run_step(db_session, fixture, port)
-    port.resolve(db_session, job=fixture.job, decision=decision, reason="test outcome")
+    port.resolve(
+        db_session,
+        job=fixture.job,
+        decision=decision,
+        reason="test outcome",
+        simulated=simulated,
+    )
 
     step = run_step(db_session, fixture, port)
     assert step.outcome is expected_outcome
@@ -515,7 +491,7 @@ def test_duplicate_parent_execution_reuses_attempt_child_and_enqueue_intent(
 ) -> None:
     fixture = make_email_fixture(db_session)
     immutable_input = dict(fixture.job.input_reference)
-    port = StoredFakeVerificationPort()
+    port = CommittedVerificationFixture()
 
     assert run_step(db_session, fixture, port).kind is EmailExecutionStepKind.WAITING
     assert run_step(db_session, fixture, port).kind is EmailExecutionStepKind.WAITING
@@ -529,22 +505,22 @@ def test_duplicate_parent_execution_reuses_attempt_child_and_enqueue_intent(
     assert created is False
     assert fixture.job.input_reference == immutable_input
     assert len(attempts(db_session, fixture.job)) == 1
-    assert port.created_children == 1
+    assert port.created_children(db_session, fixture.job) == 1
 
 
 def test_new_worker_resumes_from_stored_rejection_and_creates_only_next_child(
     db_session: Session,
 ) -> None:
     fixture = make_email_fixture(db_session)
-    first_worker = StoredFakeVerificationPort()
+    first_worker = CommittedVerificationFixture()
     run_step(db_session, fixture, first_worker)
     first_worker.resolve(
         db_session,
         job=fixture.job,
-        decision=VerificationPortDecision.REJECT,
+        decision=VerificationDecision.TRY_NEXT_CANDIDATE,
     )
 
-    replacement_worker = StoredFakeVerificationPort()
+    replacement_worker = CommittedVerificationFixture()
     step = run_step(db_session, fixture, replacement_worker)
     assert step.outcome is EmailExecutionOutcome.WAITING_ON_VERIFICATION
     rows = attempts(db_session, fixture.job)
@@ -553,14 +529,14 @@ def test_new_worker_resumes_from_stored_rejection_and_creates_only_next_child(
         EmailCandidateAttemptStatus.WAITING.value,
     ]
     assert rows[0].verification_job_id != rows[1].verification_job_id
-    assert replacement_worker.created_children == 1
+    assert replacement_worker.created_children(db_session, fixture.job) == 2
 
 
 def test_lease_recovery_preserves_email_checkpoint_and_child_relationship(
     db_session: Session,
 ) -> None:
     fixture = make_email_fixture(db_session)
-    port = StoredFakeVerificationPort()
+    port = CommittedVerificationFixture()
     run_step(db_session, fixture, port)
     state_before = dict(cast(dict[str, Any], (fixture.job.result or {})[STATE_KEY]))
     child_id = current_attempt(db_session, fixture.job).verification_job_id
@@ -586,7 +562,7 @@ def test_generated_candidate_is_not_a_permanent_email_before_acceptance(
     db_session: Session,
 ) -> None:
     fixture = make_email_fixture(db_session)
-    step = run_step(db_session, fixture, StoredFakeVerificationPort())
+    step = run_step(db_session, fixture, CommittedVerificationFixture())
     assert step.kind is EmailExecutionStepKind.WAITING
     assert fixture.contact.email is None
     assert (
@@ -604,7 +580,7 @@ def test_legacy_candidate_regeneration_preserves_audited_attempt_rows(
     db_session: Session,
 ) -> None:
     fixture = make_email_fixture(db_session)
-    run_step(db_session, fixture, StoredFakeVerificationPort())
+    run_step(db_session, fixture, CommittedVerificationFixture())
     row = attempts(db_session, fixture.job)[0]
     candidate_id = row.candidate_id
 
@@ -633,7 +609,7 @@ def test_existing_fresh_accepted_email_is_reused_without_candidates_or_child(
     db_session.add(evidence)
     db_session.flush()
 
-    step = run_step(db_session, fixture, StoredFakeVerificationPort())
+    step = run_step(db_session, fixture, CommittedVerificationFixture())
     state = cast(dict[str, Any], (fixture.job.result or {})[STATE_KEY])
     assert step.outcome is EmailExecutionOutcome.EXISTING_EMAIL_REUSED
     assert step.result["verification_id"] == str(evidence.id)
@@ -651,10 +627,10 @@ def test_unknown_employee_count_blocks_then_replans_when_sourced_evidence_arrive
     db_session: Session,
 ) -> None:
     fixture = make_email_fixture(db_session, employee_count="unknown")
-    port = StoredFakeVerificationPort()
+    port = CommittedVerificationFixture()
     blocked = run_step(db_session, fixture, port)
     assert blocked.outcome is EmailExecutionOutcome.EMPLOYEE_COUNT_UNKNOWN
-    assert port.created_children == 0
+    assert port.created_children(db_session, fixture.job) == 0
 
     company_provenance.record_observation(
         db_session,
@@ -687,10 +663,10 @@ def test_stale_company_evidence_blocks_then_resumes_when_freshness_is_restored(
     db_session: Session,
 ) -> None:
     fixture = make_email_fixture(db_session, research_state=ResearchState.STALE)
-    port = StoredFakeVerificationPort()
+    port = CommittedVerificationFixture()
     blocked = run_step(db_session, fixture, port)
     assert blocked.outcome is EmailExecutionOutcome.EMPLOYEE_COUNT_STALE
-    assert port.created_children == 0
+    assert port.created_children(db_session, fixture.job) == 0
 
     fixture.company.research_state = ResearchState.COMPLETED
     db_session.flush()
@@ -702,7 +678,7 @@ def test_employee_evidence_change_during_verification_requires_scoped_refresh(
     db_session: Session,
 ) -> None:
     fixture = make_email_fixture(db_session, employee_count="51")
-    port = StoredFakeVerificationPort()
+    port = CommittedVerificationFixture()
     run_step(db_session, fixture, port)
     child_id = current_attempt(db_session, fixture.job).verification_job_id
 
@@ -727,14 +703,14 @@ def test_employee_evidence_change_during_verification_requires_scoped_refresh(
     assert blocked.outcome is EmailExecutionOutcome.EMPLOYEE_COUNT_UNKNOWN
     assert "explicitly scoped" in (blocked.reason or "")
     assert current_attempt(db_session, fixture.job).verification_job_id == child_id
-    assert port.created_children == 1
+    assert port.created_children(db_session, fixture.job) == 1
 
 
 def test_unusable_identity_blocks_then_resumes_after_observed_name_correction(
     db_session: Session,
 ) -> None:
     fixture = make_email_fixture(db_session, first_name=None)
-    port = StoredFakeVerificationPort()
+    port = CommittedVerificationFixture()
     blocked = run_step(db_session, fixture, port)
     assert blocked.outcome is EmailExecutionOutcome.MISSING_OR_UNUSABLE_IDENTITY
 
@@ -766,7 +742,7 @@ def test_forced_refresh_is_explicit_scoped_idempotent_and_does_not_reuse(
     )
     db_session.flush()
 
-    step = run_step(db_session, fixture, StoredFakeVerificationPort())
+    step = run_step(db_session, fixture, CommittedVerificationFixture())
     duplicate, created = enqueue_email_job(
         db_session,
         contact_id=fixture.contact.id,
@@ -820,7 +796,6 @@ def test_missing_company_relationship_is_blocked_before_policy_or_child(
         job=job,
         contact=contact,
         membership=None,
-        verification_port=StoredFakeVerificationPort(),
         verification_policy=verification_policy(),
         now=NOW,
     )
@@ -831,7 +806,7 @@ def test_missing_company_domain_is_blocked_before_candidate_generation(
     db_session: Session,
 ) -> None:
     fixture = make_email_fixture(db_session, domain=None)
-    step = run_step(db_session, fixture, StoredFakeVerificationPort())
+    step = run_step(db_session, fixture, CommittedVerificationFixture())
     assert step.outcome is EmailExecutionOutcome.DOMAIN_UNAVAILABLE
     assert attempts(db_session, fixture.job) == []
 
@@ -842,7 +817,7 @@ def test_contact_company_domain_boundary_mismatch_is_blocked(
     fixture = make_email_fixture(db_session)
     fixture.contact.company_domain = "different.example"
     db_session.flush()
-    step = run_step(db_session, fixture, StoredFakeVerificationPort())
+    step = run_step(db_session, fixture, CommittedVerificationFixture())
     assert step.outcome is EmailExecutionOutcome.DOMAIN_INELIGIBLE
     assert step.reason_code == "company_domain_boundary_mismatch"
 
@@ -852,11 +827,11 @@ def test_provisional_company_domain_gate_blocks_email_discovery(
 ) -> None:
     fixture = make_email_fixture(db_session)
     record_domain_state(db_session, fixture, DomainResolutionState.PROVISIONAL)
-    port = StoredFakeVerificationPort()
+    port = CommittedVerificationFixture()
     step = run_step(db_session, fixture, port)
     assert step.outcome is EmailExecutionOutcome.DOMAIN_INELIGIBLE
     assert "provisional" in (step.reason or "")
-    assert port.created_children == 0
+    assert port.created_children(db_session, fixture.job) == 0
     assert attempts(db_session, fixture.job) == []
 
 
@@ -865,7 +840,7 @@ def test_confirmed_company_domain_gate_allows_email_discovery(
 ) -> None:
     fixture = make_email_fixture(db_session)
     record_domain_state(db_session, fixture, DomainResolutionState.CONFIRMED)
-    step = run_step(db_session, fixture, StoredFakeVerificationPort())
+    step = run_step(db_session, fixture, CommittedVerificationFixture())
     assert step.outcome is EmailExecutionOutcome.WAITING_ON_VERIFICATION
 
 
@@ -884,7 +859,7 @@ def test_merged_contact_identity_is_blocked(
     db_session.flush()
     fixture.contact.merged_into_id = survivor.id
     db_session.flush()
-    step = run_step(db_session, fixture, StoredFakeVerificationPort())
+    step = run_step(db_session, fixture, CommittedVerificationFixture())
     assert step.outcome is EmailExecutionOutcome.MISSING_OR_UNUSABLE_IDENTITY
     assert step.reason_code == "identity_ambiguous"
 
@@ -900,7 +875,7 @@ def test_domain_suppression_blocks_before_any_candidate_or_child(
         reason=SuppressionReason.OPT_OUT,
         source="test",
     )
-    step = run_step(db_session, fixture, StoredFakeVerificationPort())
+    step = run_step(db_session, fixture, CommittedVerificationFixture())
     assert step.outcome is EmailExecutionOutcome.SUPPRESSED
     assert fixture.contact.email is None
     assert attempts(db_session, fixture.job) == []
@@ -917,25 +892,25 @@ def test_exact_candidate_suppression_blocks_before_child_enqueue(
         reason=SuppressionReason.OPT_OUT,
         source="test",
     )
-    port = StoredFakeVerificationPort()
+    port = CommittedVerificationFixture()
     step = run_step(db_session, fixture, port)
     assert step.outcome is EmailExecutionOutcome.SUPPRESSED
     assert len(attempts(db_session, fixture.job)) == 1
     assert attempts(db_session, fixture.job)[0].status == "refused"
-    assert port.created_children == 0
+    assert port.created_children(db_session, fixture.job) == 0
 
 
 def test_suppression_appearing_during_verification_prevents_accepted_write(
     db_session: Session,
 ) -> None:
     fixture = make_email_fixture(db_session)
-    port = StoredFakeVerificationPort()
+    port = CommittedVerificationFixture()
     run_step(db_session, fixture, port)
     candidate = current_attempt(db_session, fixture.job).normalized_email
     port.resolve(
         db_session,
         job=fixture.job,
-        decision=VerificationPortDecision.ACCEPT,
+        decision=VerificationDecision.ACCEPT,
     )
     add_suppression(
         db_session,
@@ -955,12 +930,12 @@ def test_concurrent_fresh_accepted_email_wins_without_overwrite(
     db_session: Session,
 ) -> None:
     fixture = make_email_fixture(db_session)
-    port = StoredFakeVerificationPort()
+    port = CommittedVerificationFixture()
     run_step(db_session, fixture, port)
     port.resolve(
         db_session,
         job=fixture.job,
-        decision=VerificationPortDecision.ACCEPT,
+        decision=VerificationDecision.ACCEPT,
     )
     fixture.contact.email = "other@engines.example"
     other_evidence = ExactEmailVerification(
@@ -986,12 +961,12 @@ def test_attempt_audit_references_policy_employee_and_exact_verification_evidenc
     db_session: Session,
 ) -> None:
     fixture = make_email_fixture(db_session)
-    port = StoredFakeVerificationPort()
+    port = CommittedVerificationFixture()
     run_step(db_session, fixture, port)
     evidence = port.resolve(
         db_session,
         job=fixture.job,
-        decision=VerificationPortDecision.ACCEPT,
+        decision=VerificationDecision.ACCEPT,
     )
     step = run_step(db_session, fixture, port)
     row = attempts(db_session, fixture.job)[0]
@@ -1012,7 +987,7 @@ def test_attempt_repr_and_persisted_state_expose_no_provider_secret(
     db_session: Session,
 ) -> None:
     fixture = make_email_fixture(db_session)
-    run_step(db_session, fixture, StoredFakeVerificationPort())
+    run_step(db_session, fixture, CommittedVerificationFixture())
     row = attempts(db_session, fixture.job)[0]
     combined = f"{row!r} {fixture.job.result!r}".casefold()
     assert row.normalized_email not in repr(row)
@@ -1026,7 +1001,7 @@ def test_phase2_api_exposes_authoritative_email_attempt_projection(
     email_api_client: TestClient,
 ) -> None:
     fixture = make_email_fixture(db_session)
-    run_step(db_session, fixture, StoredFakeVerificationPort())
+    run_step(db_session, fixture, CommittedVerificationFixture())
 
     response = email_api_client.get(f"/api/agent-jobs/{fixture.job.id}/email-attempts")
 
