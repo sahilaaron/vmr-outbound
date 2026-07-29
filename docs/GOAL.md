@@ -1,206 +1,168 @@
 ## Current Goal
 
-Launch one safe, measurable outbound campaign through a cohesive semi-automated
-system.
+Deliver one cohesive MVP with this defining outcome:
 
-### Architecture-validation checkpoint (2026-07-26)
+> **A user can capture 2,000 Sales Navigator contacts in the morning and begin sending AI-personalized verified emails that afternoon.**
 
-Development of the end-to-end campaign flow is **paused** while three parts of
-the product are validated separately:
+This repository now prioritizes one complete Contact-to-send pipeline over isolated feature development.
 
-1. a company-domain insights engine;
-2. a **contact-first** LinkedIn / Sales Navigator acquisition layer;
-3. a redesigned core application and data flow.
+## Canonical operating flow
 
-Part 2 is authorized and built (DAT-013). Its purpose is to make acquisition
-independently useful and stable before the final application workflow is locked
-down. The pause changes the ORDER of the remaining work, not the launch goal or
-any non-goal below.
+1. Capture a person from Sales Navigator or LinkedIn into a permanent Contact.
+2. Optionally auto-add that Contact to a selected Campaign through the extension.
+3. Apply persistent Labels, backed by reusable Collections.
+4. Resolve Contact identity and Company identity.
+5. Resolve or reuse the Company domain.
+6. Research the Company and store sourced facts.
+7. Generate and verify email candidates in the locked order.
+8. Generate AI company insights and campaign-specific scoring.
+9. Accept the Contact into the Campaign as a Campaign Contact.
+10. Generate personalized email copy using Campaign guardrails and seller context.
+11. Review and approve the exact message version.
+12. Submit approved records to the sending integration.
+13. Track execution and failures through the Workbench.
 
-**Contacts are permanent; campaigns consume saved audiences later.** Acquisition
-therefore never requires a campaign. Capture stores immutable evidence and may
-refresh an existing contact only on an exact normalized LinkedIn profile URL.
-The Phase 2 capture contract may optionally file the resulting permanent Contact
-into a selected Campaign through an isolated, idempotent Campaign Contact upsert;
-that shortcut never makes the Contact outreach-eligible or makes the Campaign
-the owner of the Contact or capture.
+## Capture and Campaign rule
 
-The first version must take an authorized contact batch from import to
-Saleshandy scheduling while preserving data provenance, deterministic
-eligibility, email-verification safety, explainable scoring, evidence-based
-personalization, and human approval.
+Contacts are permanent and campaign-independent.
 
-Success is a working vertical slice for a controlled pilot—not feature
-completeness or full autonomy.
+- A Campaign is never required to capture a Contact.
+- The extension may hold one optional active Campaign selection.
+- When present, that selection means: after Contact resolution, create or update Campaign Contact membership automatically.
+- When absent, capture still completes normally.
+- Campaign selection does not own, duplicate or alter the permanent Contact.
+- Labels remain optional and may be applied with or without a Campaign.
 
-## Launch User Journey
+## Collections and extension Labels
 
-1. Create a campaign with targeting rules, scoring threshold, offer, tone, and
-sending configuration reference.
-2. Acquire contacts — an authorized CSV/XLSX upload into a campaign, or an
-operator-driven **contact-first** capture from the extension, which always saves
-people permanently and may optionally file them into a Campaign — and see
-row-level validation errors or truthful per-person capture outcomes.
-2a. Resolve each captured person's company domain through the operator-confirmed
-logo.dev candidate flow, and promote the capture into a canonical Contact.
-3. Normalize and deduplicate contacts; match them to companies and existing
-historical records.
-4. Apply suppressions and hard eligibility gates.
-5. Generate ranked email candidates from the prospect name and company domain.
-6. Check exact-address verification history and domain-pattern observations.
-7. Call MillionVerifier for each selected new or stale exact address; safely
-represent valid, invalid, catch-all, and unknown results.
-8. Calculate an explainable Initial Fit Score.
-9. Move contacts scoring at least 85/100 into company/contact insights research.
-10. Capture evidence with sources and compute an Outreach Readiness Score.
-11. Generate a personalized email draft from approved evidence.
-12. Review, edit, and approve the exact draft version from desktop or phone.
-13. Schedule approved contacts in Saleshandy.
-14. Sync delivery, bounce, unsubscribe, reply, and campaign status back to RDS.
-15. View campaign progress, exceptions, and outcomes in the dashboard.
+The backend uses **Collections**. The extension calls them **Labels**.
 
-## Required MVP Surfaces
+- A Contact may belong to many Collections.
+- A Campaign may reference many Collections.
+- The extension autocompletes existing Campaigns and Labels from the backend.
+- Selected Labels and the optional Campaign persist across subsequent captures until deselected.
+- Selected Labels attach to each captured Contact.
+- A selected Campaign auto-adds each resolved Contact to that Campaign.
 
-Build only these dashboard surfaces:
+## Locked Agent order
 
-* Campaign list and campaign creation
-* Campaign workspace with stage counts and exception alerts
-* Contact table with import, filters, bulk stage action, and score columns
-* Contact detail with verification, evidence, scores, and audit history
-* Insights review queue
-* Draft review and approval queue optimized for mobile
-* Campaign execution and reply/outcome status
-* Minimal system health view for integration failures and stale jobs
+The frontend calls workers **Agents**. The canonical order is:
 
-Rich visual customization is secondary to clear states and safe actions.
+1. Capture Agent
+2. Identity Agent
+3. Company Agent
+4. Research Agent
+5. Email Agent
+6. Verification Agent
+7. Insights Agent
+8. Personalization Agent
+9. Sending Agent
 
-## Required Backend Capabilities
+Each Agent must support visible state, retries, failure inspection, global enablement and Campaign-level overrides.
 
-* RDS schema and migrations for campaigns, companies, contacts, identities,
-imports, suppressions, email candidates, verification evidence, domain-pattern
-observations, insights, scores, draft versions, approvals, external events,
-and audit events
-* CSV staging import with provenance, validation, normalization, deduplication,
-and identity resolution
-* Contact-first capture intake: permanent per-person capture evidence, exact-URL
-matching only, operator Collections/Labels and append-only notes, truthful
-per-capture outcomes, and an optional isolated Campaign Contact filing step
-* Capture promotion: resolving a captured company's domain through the operator-
-confirmed logo.dev candidate flow, then creating or safely matching the canonical
-Company and Contact — never fabricating a domain and never merging on weak
-evidence
-* A repeatable path for importing representative historical marketing data
-* Deterministic email-format generation and candidate ranking
-* Safe exact-address verification cache with configurable TTLs
-* MillionVerifier adapter with rate limits, retries, idempotency, and usage logs
-* Versioned hard gates and scoring rules
-* Company and contact insight service using the user's Python scripts
-* Minimal Claude MCP bridge for eligible batches, structured score
-recommendations, and draft submission
-* Immutable draft versions and exact-version approval
-* Saleshandy API adapter and webhook/event ingestion
-* Resumable background jobs and visible failure states
-* Dry-run mode that completes the workflow without scheduling real email
+## Locked email-finding policy
 
-## Launch Acceptance Criteria
+Search at most three candidates per Contact and stop after a verified address is found.
 
-The MVP is launch-ready when:
+### Company has more than 50 employees
 
-* A synthetic end-to-end dry run succeeds without any real send.
-* One authorized pilot batch of 100 contacts imports with actionable row errors.
-* Duplicate people and companies do not create duplicate outreach records.
-* Historical data ranks email candidates but cannot falsely mark a new mailbox
-valid.
-* Recent exact-address verifications are reused; stale or absent results call
-MillionVerifier according to policy.
-* Catch-all and unknown outcomes remain visibly uncertain and cannot silently
-become "valid."
-* Suppressed, opted-out, hard-bounced, invalid, and ineligible contacts cannot
-reach scheduling.
-* Every score shows components, rule version, evidence, and reason.
-* Only contacts meeting the configured threshold enter insights research.
-* Every personalization claim links to stored evidence.
-* Claude output failing schema or evidence checks is rejected or routed to human
-review.
-* Editing a draft invalidates its previous approval.
-* Saleshandy receives only currently eligible contacts with an approved draft
-version.
-* Duplicate webhook delivery does not duplicate state changes.
-* Campaign stages, failures, approvals, and outcomes are visible on desktop and
-phone.
-* Each material automated action has an audit record.
-* ChatGPT has independently reviewed the relevant GitHub build, issued a formal
-verdict, and reconciled the relevant Google Sheets phase tab with the latest
-verified evidence and current answer to: "When can we go live?"
+1. `firstname.lastname`
+2. `finitiallastname`
+3. `lastnamefinitial`
 
-After the 100-contact pilot is reviewed, scale deliberately to 250 and then 500
-contacts. A target of 5,000 contacts per month is a later operating milestone,
-not the first launch test.
+### Company has 50 or fewer employees
 
-Project tracking is delivery evidence, not application functionality. Follow
-`docs/PROJECT_TRACKING.md` for the management tracker contract; do not build
-Google Sheets integration into the product unless this goal is explicitly
-changed.
+1. `firstname`
+2. `firstname.lastname`
+3. `finitiallastname`
 
-Claude builds and maintains the product, including branches, tests, migrations,
-commits, correction commits, and factual build handoffs. When Claude cannot
-authenticate to GitHub, Sahil pushes the prepared local branch through CMD or
-GitHub Desktop. Once the branch is remote, ChatGPT operates GitHub: it creates
-and updates PRs, writes review and issue content, independently verifies the
-build, manages issue state, and merges only after a passing verdict and Sahil's
-explicit approval. ChatGPT also owns the official project-tracking Sheet.
+The strategy should be implemented through a versioned policy boundary so ordering can change later without rewriting the pipeline.
 
-## Build Order
+## Required MVP surfaces
 
-1. Repository skeleton, configuration, database schema, audit model, and app
-shell
-2. Campaign creation, CSV staging import, normalization, deduplication, and
-suppressions
-3. Historical-data import and internal email intelligence
-4. Email generation, cache policy, and MillionVerifier integration
-5. Hard gates, Initial Fit Score, and contact-stage workflow
-6. Insights services, evidence model, and Outreach Readiness Score
-7. Minimal Claude MCP tools and structured result validation
-8. Draft versioning, mobile review, and approval controls
-9. Saleshandy scheduling adapter, webhooks, and outcome sync
-10. End-to-end dry run, security review, 100-contact pilot, and launch review
+- Workbench home
+- Campaign list and creation
+- Campaign workspace
+- Contacts table and Contact detail
+- Collections management
+- Chrome extension Campaign and Label selectors
+- Jobs and Agent monitoring
+- Global Agent controls
+- Campaign-level Agent controls
+- Review queue
+- Ready-to-send queue
+- Sending and outcome status
 
-Complete and verify each step before widening the next. A thin vertical path may
-be wired early, but unfinished later phases must remain disabled. After each
-meaningful build, Claude prepares the commit and handoff, Sahil performs the
-push bridge only when required, and ChatGPT runs the remote GitHub review and
-administration loop and updates the relevant phase tab as defined in
-`docs/PROJECT_TRACKING.md`.
+## Workbench requirements
 
-## Explicitly Out of Scope
+The Workbench is the operating control room. It must show:
 
-Do not build these for the first campaign:
+- stage counts for every active Campaign;
+- all Agents and their current states;
+- queue depth, throughput and recent activity;
+- waiting, running, paused, retrying, failed and completed jobs;
+- drill-down to affected Contacts, Companies and Campaign Contacts;
+- retry and pause controls;
+- global Agent on/off controls;
+- Campaign-level Agent overrides;
+- an emergency stop for new sending work.
 
-* Fully autonomous prospect acquisition or unattended Sales Navigator scraping
-(operator-driven capture of visible pages via the extension, feeding the staged
-import pipeline, is the authorized exception)
-* CAPTCHA solving, anti-bot evasion, or terms-of-use circumvention
-* Economy verification that extrapolates one mailbox result to unverified people
-* Automatic sending or scheduling without exact-draft human approval
-* Automatic reply generation or autonomous reply sending
-* Native iOS or Android apps; the responsive web dashboard/PWA is sufficient
-* Multi-tenant SaaS, billing, white-labeling, roles beyond the small operating
-team, or a public plugin marketplace
-* A general agent platform, arbitrary workflow builder, or unrestricted MCP
-server
-* Paid LLM API integration
-* Windows VPS deployment, 24/7 autonomous routines, or a general autonomous
-multi-agent platform (the bounded durable Agent worker framework is part of the
-approved application backbone)
-* Mailbox/domain purchasing, DNS setup, or warm-up infrastructure; IT and
-Saleshandy own these
-* Advanced deliverability analytics, inbox placement testing, CRM replacement,
-calendar booking, or omnichannel outreach
-* Supporting every historical file shape before one representative import path
-works
+## Data boundaries
 
-## Scope-Change Rule
+- Contact and Company are permanent canonical records.
+- Campaign Contact owns Campaign-specific fit, acceptance, personalization, approval and send state.
+- Collection membership is reusable and does not make a Contact outreach-eligible.
+- Sourced facts remain separate from AI-derived insights.
+- Exact-address verification remains separate from email-pattern observations.
+- Suppression remains authoritative over every downstream stage.
 
-A feature enters the launch scope only when it is necessary to satisfy an
-acceptance criterion or mitigate a launch-blocking safety risk. Update this file
-before implementing any newly approved scope.
+## MVP acceptance criteria
+
+The MVP is ready when one operator can:
+
+- create and configure a Campaign;
+- capture between 100 and 2,000 Contacts from operator-opened Sales Navigator pages;
+- optionally persist a Campaign selection that auto-adds captured Contacts;
+- persist one or more Labels across captures;
+- see captures converge into permanent Contacts and Companies without duplication;
+- reuse a resolved domain across Contacts sharing the same Sales Navigator company identity;
+- run Company research, email discovery and verification automatically;
+- generate AI insights and Campaign-specific personalized email copy;
+- inspect failures and Agent state from the Workbench;
+- pause or disable Agents globally or within one Campaign;
+- review exact message versions before sending;
+- submit only approved and currently eligible Campaign Contacts to the sending integration;
+- retry completed or failed work without duplicate Contacts, Companies, memberships or messages.
+
+## Immediate build order
+
+1. Repository and planning consolidation
+2. Campaign, Collection and Campaign Contact model alignment
+3. Optional extension Campaign auto-add and persistent Labels
+4. Agent orchestration and job-state model
+5. Workbench Agent monitor and controls
+6. Company research integration
+7. Locked email-finding policy and verification sequence
+8. AI insights and Campaign-specific personalization
+9. Review and ready-to-send workflow
+10. Sending integration and outcome tracking
+11. End-to-end dry run and controlled pilot
+
+## Explicitly deferred
+
+The MVP does not require:
+
+- autonomous LinkedIn navigation;
+- CAPTCHA solving or access-control bypass;
+- a general workflow builder;
+- advanced analytics or experimentation;
+- autonomous replies;
+- omnichannel outreach;
+- CRM replacement;
+- multi-tenant SaaS;
+- public billing or administration;
+- arbitrary multi-agent orchestration outside the locked pipeline.
+
+## Scope rule
+
+A new feature belongs in the active MVP only when it materially advances a captured Contact toward a verified, personalized and approved email ready for sending, or when it provides necessary operational control over that path.

@@ -1,127 +1,180 @@
 # VMR Outbound Agent
 
-VMR Outbound Agent is an internal, single-operator outbound workflow application.
-It combines operator-controlled LinkedIn acquisition, permanent Contact and
-Company records, sourced company intelligence, deterministic qualification, email
-readiness, campaign context, and AI-assisted cadence generation.
+VMR Outbound Agent is an internal, single-operator outbound operating system.
 
-The product is deliberately evidence-first: captured facts, identity claims,
-company-domain decisions, research sources, qualification reasons, and generated
-content remain distinguishable and inspectable.
+Its MVP has one defining outcome:
 
-## Current state
+> **A user can capture 2,000 Sales Navigator contacts in the morning and begin sending AI-personalized verified emails that afternoon.**
 
-The acquisition foundation is operational on `main`:
+Every active build must move a captured person closer to a sendable, campaign-specific email. Features that do not support that path are deferred.
 
-- VM Prospector, a Chrome side-panel extension for operator-opened LinkedIn and
-  Sales Navigator pages;
-- campaign-independent capture intake with immutable snapshots;
-- permanent Contact and Company records;
-- company-domain lookup, decision history, and capture promotion;
-- cross-surface LinkedIn identity resolution using both public vanity URLs and
-  opaque Sales Navigator member IDs;
-- provenance, labels, notes, suppression, audit events, and retry-safe workflows;
-- seller-side Knowledge Base records for company profile, offerings, personas,
-  proof points, restricted claims, and campaign-offering links;
-- deterministic email candidate generation and MillionVerifier-backed exact
-  address verification behind feature flags;
-- Campaign operating context, reusable Collections, first-class Campaign
-  Contacts, a shared PostgreSQL Agent queue, and explainable pipeline history.
+## Canonical MVP workflow
 
-The authenticated operator path has been exercised end to end: Sales Navigator
-and normal LinkedIn captures can converge on one canonical Contact, domain
-resolution can create or reuse the Company, and retries remain idempotent.
+```text
+Capture permanent Contacts
+→ optionally auto-add them to a Campaign through persistent extension selection
+→ Contact and Company identity resolution
+→ Company-domain resolution
+→ Company research
+→ Email discovery
+→ Exact-address verification
+→ AI company insights and outreach scoring
+→ Campaign Contact acceptance
+→ AI personalization inside campaign guardrails
+→ Operator review
+→ Email sending integration
+```
+
+The backend continues to use jobs and workers. The operator-facing application calls them **Agents**.
 
 The Phase 2 execution backbone is documented in
 [`docs/PHASE_2_EXECUTION_MODEL.md`](docs/PHASE_2_EXECUTION_MODEL.md). The common
 worker is `scripts/run_agent_worker.py`; Research, Insights, Personalization,
 and Sending remain registered but disabled until real adapters exist.
 
-Two focused acquisition corrections remain active before the intake workflow is
-considered friction-complete:
+## Core product objects
 
-- restore a visible, explicitly derived LinkedIn resolving alias for Sales
-  Navigator rows without treating it as canonical identity;
-- remove unnecessary Confirm and Promote clicks when one deterministic domain
-  result is safe enough for the practical policy.
+- **Campaign** — owns audience criteria, seller context, messaging direction, CTA, guardrails, templates, sending configuration and per-campaign Agent controls.
+- **Collection** — a reusable grouping applied to Contacts and Campaigns. The Chrome extension presents Collections as **Labels**.
+- **Contact** — the permanent person record shared across campaigns.
+- **Company** — the permanent organization record shared across contacts and campaigns.
+- **Campaign Contact** — the campaign-specific membership record that owns fit, acceptance, generated copy, approval and send state.
+- **Agent Job** — one resumable, inspectable unit of pipeline work.
 
-## MVP
+A Contact may belong to many Collections and many Campaigns. Campaign-specific scores, messages, approvals and send outcomes must never be stored as permanent Contact facts.
 
-The MVP is one complete intelligent vertical slice:
+## Capture model
 
-```text
-Capture a real contact
-→ resolve Contact and Company identity
-→ gather sourced company facts
-→ synthesize AI insights
-→ calculate an explainable fit decision
-→ select an approved audience
-→ find and verify the contact email
-→ configure campaign context and cadence
-→ generate a personalized multi-email sequence
-```
+Capture is always campaign-independent at the Contact level.
 
-The MVP ends with a generated cadence that is ready for operator review and
-external delivery. It does not require the application itself to send email.
+- Every successful capture creates or updates a permanent Contact.
+- Campaign selection in the extension is optional.
+- If a Campaign is selected, the system auto-adds the resolved Contact to that Campaign by creating or updating Campaign Contact membership.
+- If no Campaign is selected, the Contact is still captured normally.
+- Selecting a Campaign never changes identity resolution, Contact ownership or canonical data rules.
 
-### MVP product layers
+In other words, Campaign selection is a filing shortcut, not a prerequisite for capture.
 
-**Authoritative data**
+## Campaign setup
 
-- immutable LinkedIn and Sales Navigator capture evidence;
+A functional MVP Campaign supports:
+
+- title and audience definition;
+- employee-size, geography, industry, role and seniority criteria;
+- seller Knowledge Base and company-profile context;
+- messaging angle and CTA;
+- AI guardrails;
+- reusable and HTML-uploaded templates;
+- operator preview, editing and personalization;
+- email-account or sending-provider configuration;
+- campaign-level Agent enablement and overrides;
+- stage counts, exceptions and readiness state.
+
+## Collections and extension Labels
+
+Collections are first-class backend records. The extension calls them Labels because that is the clearest operator language.
+
+The extension must:
+
+1. search Campaigns and previously used Labels from the backend as the operator types;
+2. allow multiple Labels;
+3. persist the selected Campaign and Labels across every normal LinkedIn person capture and every Sales Navigator list capture;
+4. keep them active until the operator deselects them;
+5. attach selected Labels to every captured Contact without extra clicks;
+6. when a Campaign is selected, auto-add each resolved Contact to that Campaign without changing the permanent Contact record;
+7. continue to support normal capture when no Campaign is selected.
+
+## Locked Agent order
+
+1. **Capture Agent**
+2. **Identity Agent**
+3. **Company Agent**
+4. **Research Agent**
+5. **Email Agent**
+6. **Verification Agent**
+7. **Insights Agent**
+8. **Personalization Agent**
+9. **Sending Agent**
+
+### Domain reuse
+
+When one domain is resolved for a Sales Navigator company identity, every Contact with the same company identity must reuse that result and resolve toward the same permanent Company. Repeated captures must converge on existing Contacts and Companies rather than create duplicates.
+
+### Email-discovery policy
+
+Search at most three formats per Contact and stop after a verified address is found.
+
+For companies with more than 50 employees:
+
+1. `firstname.lastname`
+2. `finitiallastname`
+3. `lastnamefinitial`
+
+For companies with 50 or fewer employees:
+
+1. `firstname`
+2. `firstname.lastname`
+3. `finitiallastname`
+
+Email discovery runs after company research and before AI insight generation. Paid AI work must not run for a Contact that has no verified email unless an operator explicitly overrides the Campaign.
+
+## Workbench
+
+The Workbench is the operating home of the application. It must show:
+
+- Campaign progress by pipeline stage;
+- queue depth and current throughput;
+- running, paused, waiting, retrying, failed and completed Agent jobs;
+- failure reasons and retry controls;
+- global Agent on/off controls;
+- Campaign-specific Agent overrides;
+- drill-down from every stage count to the affected records;
+- an immediate emergency stop for new sending work.
+
+Global Agent settings define defaults. Campaign settings may disable or override an Agent without changing another Campaign.
+
+## MVP boundary
+
+The first usable model is complete when one operator can:
+
+1. configure a Campaign;
+2. capture between 100 and 2,000 Sales Navigator contacts, with optional persistent Campaign auto-add and persistent Labels;
+3. see the captures converge into permanent Contacts and Companies;
+4. run domain resolution, research, email discovery and verification automatically;
+5. generate company insights, outreach scores and campaign-specific personalized email copy;
+6. review ready contacts and messages;
+7. hand approved records to an email sending service.
+
+The MVP does not require advanced analytics, autonomous LinkedIn navigation, CRM replacement, omnichannel outreach, automatic replies, a general workflow builder or multi-tenant SaaS.
+
+## Current foundation
+
+The repository already contains substantial parts of the foundation:
+
+- operator-controlled LinkedIn and Sales Navigator capture;
+- immutable capture evidence;
 - permanent Contact and Company records;
-- identity links and company-domain decisions;
-- sourced company facts with URLs, timestamps, warnings, and freshness;
-- suppression and verification outcomes.
+- LinkedIn identity resolution;
+- company-domain lookup and decision history;
+- provenance, notes, labels and suppression;
+- seller-side Knowledge Base records;
+- deterministic email candidate generation;
+- MillionVerifier-backed exact-address verification;
+- company evidence and insight models.
 
-**Derived decisions**
+The immediate work is to connect these capabilities into the canonical Contact-to-send pipeline rather than continue building them as isolated features.
 
-- AI-generated company insights;
-- deterministic Initial Fit scoring and eligibility;
-- audience membership;
-- email readiness;
-- personalized cadence content.
+## Operating principles
 
-Derived output may be regenerated, but it must not silently overwrite sourced
-facts or raw capture evidence.
-
-## v1 definition
-
-v1 is complete when a single operator can reliably perform the following flow in
-the application:
-
-1. Capture a prospect from LinkedIn or Sales Navigator.
-2. Resolve the prospect to one permanent Contact and the correct Company.
-3. Inspect sourced company facts and their provenance.
-4. Review AI-synthesized business insights separately from the facts.
-5. See an explainable qualification result and audience decision.
-6. Find and verify an email only when the required gates permit it.
-7. Configure a campaign using seller Knowledge Base context.
-8. Generate and inspect a personalized multi-email cadence.
-9. Retry any completed step without duplicating Contacts, Companies, identity
-   links, research records, verification work, or generated artifacts.
-
-The v1 boundary ends before delivery-provider execution. No unattended LinkedIn
-navigation, autonomous outreach, or automatic sending is enabled.
-
-## Core operating principles
-
-- **Operator-controlled acquisition.** The extension reads only pages the
-  operator has already opened and saves only after an explicit action.
-- **One person, one Contact.** Opaque Sales Navigator member IDs and observed
-  public LinkedIn URLs remain separate identity claims that can resolve to the
-  same Contact.
-- **No fabricated certainty.** Missing or ambiguous values remain blank, warned,
-  provisional, unresolved, or held for review.
-- **Permanent records, reusable audiences.** Contacts are not owned or duplicated
-  by campaigns.
-- **Evidence before interpretation.** Sourced facts and AI-generated insights are
-  stored and displayed as different layers.
-- **Deterministic gates.** Suppression, qualification, email readiness, and
-  campaign eligibility remain explainable and auditable.
-- **Idempotent execution.** Stable submission and job identities make retries safe.
-- **Features default off.** Provider calls and higher-level workflow stages are
-  activated explicitly through configuration.
+- **One person, one Contact.** Campaign membership never duplicates the permanent person.
+- **Capture never requires a Campaign.** Campaign selection only auto-adds a Contact after capture.
+- **One company, reusable research.** Domain and research work should be reused across Contacts and Campaigns.
+- **Campaign-specific output stays campaign-specific.** Scores, messages, approvals and send state belong to Campaign Contact.
+- **Evidence before interpretation.** Raw captures and sourced research remain separate from AI-derived insights.
+- **No fabricated certainty.** Missing and ambiguous values remain unresolved or reviewable.
+- **Safe retries.** Jobs are resumable and idempotent.
+- **Visible control.** Every Agent can be observed, paused and disabled.
+- **Operator-controlled sending.** Suppression and approval rules remain authoritative.
 
 ## Technology
 
@@ -131,7 +184,7 @@ navigation, autonomous outreach, or automatic sending is enabled.
 - PostgreSQL
 - Alembic
 - Pydantic Settings
-- Pytest, Ruff, and mypy
+- Pytest, Ruff and mypy
 - Manifest V3 Chrome extension using plain JavaScript
 
 ## Quick start
@@ -158,77 +211,4 @@ alembic upgrade head
 python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Create a UTF-8 PostgreSQL database named `vmr_dev` or configure another approved
-local development target in `.env`. See `docs/DEVELOPMENT.md` for database setup,
-feature flags, validation commands, and migration checks.
-
-## Chrome extension
-
-Load the unpacked extension from:
-
-```text
-extensions/salesnav-capture
-```
-
-In `chrome://extensions`:
-
-1. Enable **Developer mode**.
-2. Choose **Load unpacked**.
-3. Select the directory above.
-4. Set the extension target to the local backend:
-   `http://127.0.0.1:8000`.
-
-VM Prospector supports operator-opened:
-
-- LinkedIn person profiles;
-- LinkedIn company pages;
-- Sales Navigator people-search result pages.
-
-It does not paginate, navigate profiles automatically, store LinkedIn
-credentials, or bypass access controls.
-
-## Repository layout
-
-```text
-app/
-  core/          settings and feature switches
-  db/            SQLAlchemy base and session management
-  models/        persistent domain models
-  services/      capture, identity, research, verification, and workflow logic
-  main.py        FastAPI application
-extensions/
-  salesnav-capture/  VM Prospector Chrome extension
-migrations/      Alembic migrations
-tests/           PostgreSQL-backed backend test suite
-docs/            contracts, runbooks, ADRs, acceptance records, and engineering rules
-.github/         CI configuration
-```
-
-## Validation
-
-Before a change is accepted, the relevant suite should include:
-
-```bash
-pytest
-ruff check .
-ruff format --check .
-mypy app
-alembic heads
-alembic check
-```
-
-Extension changes also run the complete Node test suite from
-`extensions/salesnav-capture` on an LF checkout.
-
-## Safety and data handling
-
-- Secrets belong in local environment configuration, never source control.
-- Schema changes use Alembic migrations and must retain one migration head.
-- Raw captures and decision history are preserved rather than destructively
-  rewritten.
-- Suppression remains authoritative over qualification, drafting, and sending.
-- No feature may claim a value was observed when it was derived or inferred.
-- No email is scheduled or sent by the current v1 application boundary.
-
-See `docs/AGENTS.md` for engineering constraints and `docs/CLAUDE.md` for the AI
-implementation boundary.
+See `docs/GOAL.md` for the authorized MVP, `docs/ARCHITECTURE.md` for the pipeline and data boundaries, and `docs/PROJECT_TRACKING.md` for tracker ownership and reporting rules.
