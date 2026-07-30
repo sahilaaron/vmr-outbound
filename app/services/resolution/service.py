@@ -32,6 +32,7 @@ APP-003 identity conflict; nothing here folds one into the other.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -55,9 +56,10 @@ from app.models.salesnav_enrichment import SalesNavCompanyEnrichment
 from app.services.audit import record_audit_event
 from app.services.captures import promotion as capture_promotion
 from app.services.enrichment import companies as enrichment
-from app.services.enrichment import logodev
+from app.services.enrichment import logodev, model_domain
 from app.services.imports import normalization as norm
 from app.services.resolution import policy, store
+from app.services.thinking.contracts import Thinker
 
 RESOLUTION_ACTOR = "domain-resolution"
 _ENTITY_TYPE = "company_domain_resolution"
@@ -80,6 +82,10 @@ class ResolutionOutcome:
     company: Company | None = None
     contact_linked: bool = False
     provider_call_made: bool = False
+    #: True when the model fallback was asked during this resolution. Reported
+    #: separately from ``provider_call_made`` because the two cost different
+    #: things and a backfill pass is tuned by knowing which one it spent.
+    model_call_made: bool = False
     #: DAT-017A automatic promotion. Present whenever a resolved decision tried
     #: to create or reuse the Contact itself, whether or not it succeeded — a
     #: blocked promotion is an outcome to report, not an error to swallow.
@@ -113,6 +119,7 @@ class ResolutionOutcome:
             "reasons": [str(r) for r in (self.decision.reasons or [])],
             "warnings": [str(w) for w in (self.decision.warnings or [])],
             "provider_call_made": self.provider_call_made,
+            "model_call_made": self.model_call_made,
             "company_id": str(self.company.id) if self.company else None,
             "decision_number": self.decision.decision_number,
             "created": self.created,
@@ -138,6 +145,52 @@ class ProviderAccess:
     @property
     def available(self) -> bool:
         return bool(self.api_key and self.api_key.strip())
+
+
+@dataclass
+class ModelAccess:
+    """How (and whether) the model fallback may be called for this resolution.
+
+    Deliberately shaped like :class:`ProviderAccess`: absent means "not asked",
+    which the policy reports as such, rather than being mistaken for "asked and
+    found nothing". A caller with the switch off passes nothing and the behaviour
+    is exactly what it was before this fallback existed.
+
+    ``thinker_factory`` rather than a thinker, for the same reason the Agent
+    adapters take one: constructing a :class:`ClaudeCliThinker` per call keeps a
+    long backfill pass from holding one subprocess wrapper open across hundreds of
+    captures, and lets a test inject a scripted thinker without touching a
+    subprocess at all.
+    """
+
+    thinker_factory: Callable[[], Thinker] | None = None
+    timeout: float = model_domain.DEFAULT_TIMEOUT_SECONDS
+
+    @property
+    def available(self) -> bool:
+        return self.thinker_factory is not None
+
+
+#: Reason codes that mean "the deterministic path is finished and has no domain",
+#: which is the only state the model fallback is admitted in. Read from the policy
+#: rather than re-derived, so the two cannot drift.
+_MODEL_FALLBACK_REASONS: frozenset[str] = frozenset(
+    {policy.REASON_PROVIDER_NO_CANDIDATES, policy.REASON_NO_ALIGNED_CANDIDATE}
+)
+
+
+def _wants_model_fallback(decision: policy.PolicyDecision) -> bool:
+    """Whether this decision is one a model answer could legitimately improve.
+
+    Only an UNRESOLVED decision, and only for the two reasons above. Notably NOT
+    for ``multiple_plausible_candidates`` — several sources aligning and
+    disagreeing is where the policy refuses to guess, and a third opinion there
+    produces a more confident guess rather than a better one.
+    """
+
+    if decision.is_resolved:
+        return False
+    return any(reason in _MODEL_FALLBACK_REASONS for reason in decision.reasons)
 
 
 # --- Evidence gathering -------------------------------------------------------
@@ -247,6 +300,9 @@ def gather_evidence(
     candidates: tuple[dict[str, Any], ...] = ()
     lookup_status = EnrichmentLookupStatus.NOT_STARTED
     provider: str | None = None
+    model_status = EnrichmentLookupStatus.NOT_STARTED
+    model_answer: str | None = None
+    model_source: str | None = None
 
     if record is not None:
         approved = frozenset(
@@ -261,6 +317,9 @@ def gather_evidence(
         lookup_status = record.lookup_status
         provider = record.provider or (enrichment.PROVIDER if candidates else None)
         linkedin_company_id = record.company_linkedin_id or linkedin_company_id
+        model_status = record.model_lookup_status
+        model_answer = record.model_domain
+        model_source = record.model_source_url
 
     return policy.ResolutionEvidence(
         company_name=hints.name,
@@ -273,6 +332,9 @@ def gather_evidence(
         candidates=candidates,
         lookup_status=lookup_status,
         provider=provider,
+        model_domain=model_answer,
+        model_lookup_status=model_status,
+        model_source_url=model_source,
     )
 
 
@@ -284,6 +346,7 @@ def resolve(
     *,
     snapshot: LinkedInProfileSnapshot,
     access: ProviderAccess | None = None,
+    model: ModelAccess | None = None,
     actor: str = RESOLUTION_ACTOR,
     force: bool = False,
 ) -> ResolutionOutcome:
@@ -340,6 +403,32 @@ def resolve(
         provider_call_made = True
         evidence = gather_evidence(session, record=record, hints=hints)
 
+    # The model fallback, authorized on exactly one condition: the deterministic
+    # path has now run and still cannot name a domain. That question is asked by
+    # running the policy — not by inspecting the provider's status here — because
+    # the policy is the only thing entitled to say what the provider's answer
+    # meant, and "no candidates" and "candidates that all failed alignment" are
+    # both cases the fallback serves while being different provider states.
+    model_call_made = False
+    factory = model.thinker_factory if model is not None else None
+    if (
+        model is not None
+        and factory is not None
+        and record is not None
+        and record.model_lookup_status is EnrichmentLookupStatus.NOT_STARTED
+        and _wants_model_fallback(policy.evaluate(evidence))
+    ):
+        enrichment.run_model_lookup(
+            session,
+            record=record,
+            thinker=factory(),
+            actor=actor,
+            timeout_seconds=model.timeout,
+            force=False,
+        )
+        model_call_made = True
+        evidence = gather_evidence(session, record=record, hints=hints)
+
     decision = policy.evaluate(evidence)
     return _apply(
         session,
@@ -356,6 +445,7 @@ def resolve(
         ),
         actor=actor,
         provider_call_made=provider_call_made,
+        model_call_made=model_call_made,
         audit_action=RESOLVE_AUDIT_ACTION,
         # The automatic path, and only it. An operator correction is a
         # deliberate act on a decision the operator is already looking at, so it
@@ -460,6 +550,7 @@ def _apply(
     actor: str,
     provider_call_made: bool,
     audit_action: str,
+    model_call_made: bool = False,
     correction_note: str | None = None,
     auto_promote: bool = False,
 ) -> ResolutionOutcome:
@@ -527,6 +618,7 @@ def _apply(
         company=company,
         contact_linked=contact_linked,
         provider_call_made=provider_call_made,
+        model_call_made=model_call_made,
         promotion_result=promotion_result,
     )
 

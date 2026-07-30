@@ -110,6 +110,21 @@ class FeatureFlags(BaseModel):
     # operation. Turning it on does not import anything and never auto-accepts a
     # candidate: the operator still confirms every domain by hand.
     salesnav_domain_enrichment: bool = False
+    # The model fallback behind the logo.dev lookup: when the brand matcher returns
+    # nothing usable, ask the local Claude CLI — with web search — for the
+    # company's own domain, using the location already recorded on the capture to
+    # tell same-named companies apart. Off by default, and it changes nothing while
+    # off: a capture the provider could not resolve stays exactly as unresolved as
+    # it was.
+    #
+    # Turning it on spends one model call per company the provider failed on, and
+    # only for those. It cannot reach CONFIRMED — the policy caps a model answer at
+    # provisional, which authorizes company research and nothing that spends money
+    # or sends mail — it cannot overrule an approved mapping or an established
+    # Company, and it is never consulted to break a tie between candidates that
+    # aligned. It requires ``automatic_company_domain_resolution``, because it is
+    # the second half of that path rather than a route of its own.
+    model_company_domain_lookup: bool = False
     normalization: bool = False
     deduplication: bool = False
     suppressions: bool = False

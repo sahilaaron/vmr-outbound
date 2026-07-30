@@ -27,6 +27,7 @@ from app.core.config import Settings, get_settings
 from app.models.company_domain_resolution import CompanyDomainResolution
 from app.models.linkedin_profile import LinkedInProfileSnapshot
 from app.services.resolution import service as resolution_service
+from app.services.thinking.claude_cli import ClaudeCliThinker
 
 ACTOR = "resolution-backfill"
 
@@ -38,6 +39,10 @@ class BackfillResult:
     considered: int = 0
     promoted: int = 0
     provider_calls: int = 0
+    #: Model fallback calls spent. Counted apart from ``provider_calls`` because
+    #: they cost an order of magnitude more time, so a pass that looks slow is
+    #: explained by this number rather than being a mystery.
+    model_calls: int = 0
     failed: int = 0
 
     @property
@@ -52,6 +57,139 @@ def _provider_access(settings: Settings) -> resolution_service.ProviderAccess:
         search_url=settings.logo_dev_search_url,
         timeout=settings.logo_dev_timeout_seconds,
         max_candidates=settings.logo_dev_max_candidates,
+    )
+
+
+def _model_access(settings: Settings) -> resolution_service.ModelAccess:
+    """The model fallback, if it is switched on.
+
+    Available here and deliberately *not* at intake. A model call with web search
+    takes tens of seconds; intake already learned the hard way that optional work
+    inside an HTTP request can cost a whole submission, and it bounds even the
+    fast provider call to a share of its budget. This pass has no request to
+    overrun, which is the entire reason it exists.
+    """
+
+    if not settings.features.model_company_domain_lookup:
+        return resolution_service.ModelAccess()
+    return resolution_service.ModelAccess(
+        thinker_factory=lambda: ClaudeCliThinker(settings=settings),
+        timeout=settings.model_domain_lookup_timeout_seconds,
+    )
+
+
+@dataclass(frozen=True)
+class LookupBlocker:
+    """One unmet precondition: what it means, and the exact line to add.
+
+    The setting is a separate field rather than a phrase inside the sentence so a
+    page can render it as something to copy. That matters more than it sounds: an
+    environment variable buried in prose wraps mid-word in a table cell, and
+    ``FEATURES__SALESNAV_DOMAIN_ENRI`` / ``CHMENT`` across two lines is a name
+    nobody can retype correctly.
+    """
+
+    #: Why this stops resolution, in the operator's terms.
+    message: str
+    #: The .env line that fixes it, verbatim.
+    setting: str
+
+
+@dataclass(frozen=True)
+class LookupReadiness:
+    """Whether automatic domain resolution can run at all, and what is stopping it.
+
+    This exists because of a specific, avoidable failure. A capture page can show
+    ``lookup: not_started · 0 attempt(s)`` for four unrelated reasons — two feature
+    flags, a third flag, and a missing API key — and none of them was visible
+    anywhere. The status was true and useless: it reported a state the system had
+    supposedly arrived at, when in fact nothing had ever been attempted, and no page
+    said which switch to reach for.
+
+    Worse, that reading is easy to mistake for a broken pipeline, because a stream
+    of captures piles up behind it with no error to search for. The resolution path
+    is fine; it was never invited to run.
+
+    So the preconditions get named, in the order they have to be fixed, in the
+    operator's own vocabulary — including the environment variable, because "the
+    promotion flag" is not something anyone can act on without knowing its name.
+    """
+
+    #: True when a logo.dev lookup would actually be attempted for a new capture.
+    provider_ready: bool
+    #: True when the model fallback would be attempted after the provider fails.
+    model_ready: bool
+    #: One entry per unmet precondition, ordered by what to fix first. Empty means
+    #: resolution is fully configured.
+    blockers: tuple[LookupBlocker, ...] = ()
+
+    @property
+    def ready(self) -> bool:
+        return self.provider_ready
+
+
+def lookup_readiness(settings: Settings | None = None) -> LookupReadiness:
+    """Why automatic domain resolution would or would not run right now."""
+
+    settings = settings or get_settings()
+    features = settings.features
+    blockers: list[LookupBlocker] = []
+
+    if not features.contact_capture_promotion:
+        blockers.append(
+            LookupBlocker(
+                message=(
+                    "Capture promotion is switched off, so no capture is resolved automatically."
+                ),
+                setting="FEATURES__CONTACT_CAPTURE_PROMOTION=true",
+            )
+        )
+    if not features.automatic_company_domain_resolution:
+        blockers.append(
+            LookupBlocker(
+                message=(
+                    "Automatic company-domain resolution is switched off, so a capture "
+                    "waits for you to press resolve."
+                ),
+                setting="FEATURES__AUTOMATIC_COMPANY_DOMAIN_RESOLUTION=true",
+            )
+        )
+    if not features.salesnav_domain_enrichment:
+        blockers.append(
+            LookupBlocker(
+                message="The logo.dev lookup is switched off, so no provider is ever asked.",
+                setting="FEATURES__SALESNAV_DOMAIN_ENRICHMENT=true",
+            )
+        )
+    if not settings.has_logo_dev_key():
+        blockers.append(
+            LookupBlocker(
+                message=(
+                    "No logo.dev API key is configured, so the lookup is skipped rather "
+                    "than recorded as a failure — deliberately, so the capture stays "
+                    "resolvable once a key exists rather than being frozen at a decision "
+                    "nobody made."
+                ),
+                setting="LOGO_DEV_API_KEY=...",
+            )
+        )
+
+    provider_ready = not blockers
+    model_ready = provider_ready and features.model_company_domain_lookup
+    if provider_ready and not features.model_company_domain_lookup:
+        blockers.append(
+            LookupBlocker(
+                message=(
+                    "The model fallback is switched off, so companies logo.dev cannot "
+                    "match stay unresolved rather than being searched for."
+                ),
+                setting="FEATURES__MODEL_COMPANY_DOMAIN_LOOKUP=true",
+            )
+        )
+    return LookupReadiness(
+        provider_ready=provider_ready,
+        model_ready=model_ready,
+        blockers=tuple(blockers),
     )
 
 
@@ -102,15 +240,23 @@ def resolve_pending(
         return BackfillResult()
 
     access = _provider_access(settings)
+    model = _model_access(settings)
     # Same rule as intake: without a provider the policy could only conclude "the
     # lookup was not run", and recording that non-decision would permanently stop
     # the capture resolving automatically later.
+    #
+    # The model fallback does not lift this. It runs *behind* the provider — on the
+    # captures the provider looked at and could not resolve — so a pass with the
+    # fallback on and no logo.dev key would be asking a model to stand in for a
+    # lookup that never happened, and would record its answer as though the
+    # deterministic path had been exhausted. It had not been tried.
     if not access.available:
         return BackfillResult()
 
     considered = 0
     promoted = 0
     provider_calls = 0
+    model_calls = 0
     failed = 0
 
     for capture_id in pending_capture_ids(session, limit=limit):
@@ -124,6 +270,7 @@ def resolve_pending(
                     session,
                     snapshot=snapshot,
                     access=access,
+                    model=model,
                     actor=actor,
                     force=False,
                 )
@@ -132,6 +279,8 @@ def resolve_pending(
             continue
         if outcome.provider_call_made:
             provider_calls += 1
+        if outcome.model_call_made:
+            model_calls += 1
         if outcome.auto_promoted:
             promoted += 1
 
@@ -139,5 +288,6 @@ def resolve_pending(
         considered=considered,
         promoted=promoted,
         provider_calls=provider_calls,
+        model_calls=model_calls,
         failed=failed,
     )

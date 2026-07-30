@@ -44,9 +44,10 @@ from app.models.enums import (
 from app.models.import_batch import ImportBatch, ImportRow
 from app.models.salesnav_enrichment import SalesNavCompanyEnrichment
 from app.services.audit import record_audit_event
-from app.services.enrichment import logodev
+from app.services.enrichment import logodev, model_domain
 from app.services.imports import mapping as mapping_service
 from app.services.imports import normalization as norm
+from app.services.thinking.contracts import Thinker
 
 _ENTITY_TYPE = "salesnav_company_enrichment"
 
@@ -260,6 +261,79 @@ def run_lookup(
             "status": result.status.value,
             "candidate_count": len(result.candidates),
             "attempt": record.lookup_attempts,
+            "forced": force,
+        },
+    )
+    return record
+
+
+def run_model_lookup(
+    session: Session,
+    *,
+    record: SalesNavCompanyEnrichment,
+    thinker: Thinker,
+    actor: str,
+    timeout_seconds: float = model_domain.DEFAULT_TIMEOUT_SECONDS,
+    force: bool = False,
+) -> SalesNavCompanyEnrichment:
+    """Ask the model for this company's domain, at most once unless *force*.
+
+    Deliberately mirrors :func:`run_lookup` — same one-call-per-company rule, same
+    audit shape, same "the answer becomes a status, never an exception" contract —
+    so the two lookups behave the same way from every caller's point of view and
+    an operator reads one page rather than learning two vocabularies.
+
+    The caller decides *whether* this should run. This function does not re-check
+    that the provider found nothing, because the policy is the only place allowed
+    to judge what the provider's answer meant.
+    """
+
+    already = record.model_lookup_status != EnrichmentLookupStatus.NOT_STARTED
+    if already and not force:
+        return record
+
+    result = model_domain.look_up(
+        company_name=record.company_name,
+        thinker=thinker,
+        location_hint=record.location_hint,
+        linkedin_company_url=record.company_linkedin_url,
+        timeout_seconds=timeout_seconds,
+    )
+
+    record.model_lookup_status = result.status
+    record.model_domain = result.domain
+    record.model_source_url = result.source_url
+    record.model_note = result.reason
+    record.model_looked_up_at = datetime.now(UTC)
+    record.model_lookup_attempts = (record.model_lookup_attempts or 0) + 1
+    session.flush()
+
+    record_audit_event(
+        session,
+        actor=actor,
+        action="import.model_domain_lookup",
+        entity_type=_ENTITY_TYPE,
+        entity_id=str(record.id),
+        new_state=result.status.value,
+        reason="model company-domain lookup (fallback behind logo.dev)",
+        context={
+            "owner": record.owner_label,
+            "capture_id": str(record.capture_id) if record.capture_id else None,
+            "company_key": record.company_key,
+            "provider": model_domain.PROVIDER,
+            "lookup_version": model_domain.LOOKUP_VERSION,
+            "status": result.status.value,
+            "domain": result.domain,
+            # Recorded because it is the whole reason this lookup can succeed where
+            # the brand matcher could not, and because an operator reviewing a run
+            # of bad answers needs to know whether the hint was even present.
+            "identifiers_given": list(
+                model_domain.identifiers_for(
+                    location_hint=record.location_hint,
+                    linkedin_company_url=record.company_linkedin_url,
+                )
+            ),
+            "attempt": record.model_lookup_attempts,
             "forced": force,
         },
     )

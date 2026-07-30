@@ -181,7 +181,7 @@ def _resolve_pending_captures(*, limit: int) -> str | None:
     return (
         f"Resolved pending captures: considered {outcome.considered}, "
         f"promoted {outcome.promoted}, provider calls {outcome.provider_calls}, "
-        f"failed {outcome.failed}."
+        f"model calls {outcome.model_calls}, failed {outcome.failed}."
     )
 
 
