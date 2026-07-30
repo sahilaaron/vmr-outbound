@@ -471,6 +471,72 @@ def test_the_pipeline_marks_the_sending_agent_as_having_no_adapter(
     assert not AGENT_SPECS[AgentIdentifier.SENDING].implemented
 
 
+def test_the_strip_counts_how_many_got_through_not_how_many_are_standing_there(
+    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
+) -> None:
+    """The row has to read as a funnel, or it misreports an import as a no-op.
+
+    The strip originally showed how many contacts were *resting* on each Agent.
+    Capture completes the moment a contact is enrolled, and Identity and Company
+    finish in under a second — so all three permanently showed 0 while contacts sat
+    failing further down. An operator who had just imported 50 people saw "Capture 0"
+    and concluded, reasonably and wrongly, that nothing had been captured.
+
+    Asserted through the projection rather than on rendered digits: the tile numbers
+    are what the funnel is, and reading them from HTML would test the markup instead.
+    """
+
+    from app.web.v2 import routes as v2_routes
+
+    enrolled = len(scenario.memberships) - 1  # one membership is in the other campaign
+    execution = v2_routes._reader(db_session).campaign_execution(scenario.campaign.id)
+    assert execution is not None
+    tiles = v2_routes._stage_tiles(
+        execution,
+        selected=None,
+        base_href="/app/campaigns/x",
+        open_counts=v2_routes._agent_open_counts(db_session, scenario.campaign.id),
+        progress=v2_routes._stage_progress(db_session, scenario.campaign.id),
+    )
+    by_agent = {tile.agent_id: tile for tile in tiles}
+
+    # Capture is complete for everyone enrolled: the extension already did it.
+    assert by_agent["capture"].through == enrolled, (
+        "Capture must report how many arrived, not how many are queued on it"
+    )
+    # And the funnel only ever descends.
+    counts = [tile.through for tile in tiles]
+    assert counts == sorted(counts, reverse=True), "a funnel cannot widen"
+
+
+def test_the_strip_still_says_where_contacts_are_right_now(
+    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
+) -> None:
+    """The live detail is kept — it just stopped being the headline.
+
+    The fixture parks contacts on Identity, one of them under a worker lease and one
+    with a terminal failure, so "waiting", "moving" and "held" are all reachable.
+    """
+
+    body = client.get(f"/app/campaigns/{scenario.campaign.id}").text
+    assert "how many have got" in body
+    # Both must appear on the Identity tile: the fixture has one terminal failure and
+    # five contacts simply waiting. Reporting only the failure would hide the five.
+    assert "held here" in body
+    assert "waiting here" in body
+    # And the strip explains why Capture and Identity look the way they do.
+    assert "Capture completes as soon as a contact is enrolled" in body
+
+
+def test_the_run_log_shows_what_an_unexpected_error_recorded(
+    client: TestClient, scenario: workbench_scenario.Scenario
+) -> None:
+    """An opaque failure must be inspectable from the page, not only from the database."""
+
+    body = client.get("/app/agents?agent=identity").text
+    assert "What the Agent recorded" in body or "This Agent has not run" in body
+
+
 def test_a_stage_filter_narrows_the_contact_list(
     client: TestClient, scenario: workbench_scenario.Scenario
 ) -> None:

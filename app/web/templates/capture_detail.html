@@ -53,7 +53,11 @@
         <tr><th scope="row">Name</th><td>{{ detail.full_name }}</td></tr>
         <tr><th scope="row">Headline</th><td>{{ fields.get("headline") or "—" }}</td></tr>
         <tr><th scope="row">Location</th><td>{{ fields.get("displayed_location") or "—" }}</td></tr>
-        <tr><th scope="row">LinkedIn</th><td>{% if detail.capture.normalized_profile_url %}<a class="mono small" href="{{ detail.capture.normalized_profile_url }}" rel="noopener noreferrer nofollow" target="_blank">{{ detail.capture.normalized_profile_url }}</a>{% else %}—{% endif %}</td></tr>
+        {# Falls back to the Sales Navigator alias, which is the only LinkedIn address
+           a search-results capture has. Labelled when it is the alias, because only a
+           captured profile URL may match this person to a Contact automatically — an
+           alias opens the right page for a human and is not identity evidence. #}
+        <tr><th scope="row">LinkedIn</th><td>{% if detail.linkedin_url %}<a class="mono small" href="{{ detail.linkedin_url }}" rel="noopener noreferrer nofollow" target="_blank">{{ detail.linkedin_url }}</a>{% if detail.linkedin_url_is_alias %} <span class="muted small">derived from the Sales Navigator ID — not used for identity matching</span>{% endif %}{% else %}—{% endif %}</td></tr>
         <tr><th scope="row">Public identifier</th><td class="mono small">{{ detail.capture.public_identifier or "—" }}</td></tr>
         <tr><th scope="row">First captured</th><td>{{ detail.capture.captured_at | dt if detail.capture.captured_at else "—" }}</td></tr>
         <tr><th scope="row">Ingested</th><td>{{ detail.capture.ingested_at | dt }}</td></tr>

@@ -144,6 +144,34 @@ class SalesNavCompanyEnrichment(Base):
     # Count of lookups run for this company (refresh/retry increments it).
     lookup_attempts: Mapped[int] = mapped_column(nullable=False, default=0)
 
+    # --- Model fallback state (the searched answer behind the brand matcher) ---
+    # Kept in its own columns rather than folded into the fields above, because
+    # "the brand matcher found nothing" and "the model then found something" are
+    # two separate facts about this company and an operator needs to see both.
+    # Collapsing them would also make `lookup_attempts` ambiguous — a number that
+    # sometimes counts provider calls and sometimes model calls is worse than no
+    # number.
+    model_lookup_status: Mapped[EnrichmentLookupStatus] = mapped_column(
+        Enum(EnrichmentLookupStatus, name="enrichment_lookup_status"),
+        nullable=False,
+        default=EnrichmentLookupStatus.NOT_STARTED,
+    )
+    # The domain the model asserted. Stored even when the policy went on to reject
+    # it as unsuitable: what the model said is provenance, and a reviewer deciding
+    # whether to trust the fallback at all needs to see its misses too.
+    model_domain: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # A page the model says it read that shows the domain belongs to this company.
+    # The single most useful thing on this record for an operator confirming a
+    # provisional domain, and the model is asked for it explicitly.
+    model_source_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    # The model's own words for declining, or the seam's words for a failure.
+    # Operator-facing only; never an input to any decision.
+    model_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model_looked_up_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    model_lookup_attempts: Mapped[int] = mapped_column(nullable=False, default=0)
+
     # --- Operator confirmation ----------------------------------------------
     confirmation_status: Mapped[EnrichmentConfirmationStatus] = mapped_column(
         Enum(EnrichmentConfirmationStatus, name="enrichment_confirmation_status"),

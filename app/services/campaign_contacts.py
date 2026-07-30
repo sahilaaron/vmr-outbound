@@ -156,6 +156,27 @@ def _blocking_reasons(
     return reasons, suppression.blocked
 
 
+def is_terminally_blocked(session: Session, *, membership: CampaignContact) -> bool:
+    """Whether policy blocks this membership terminally, asked without writing.
+
+    :func:`refresh_eligibility` answers the same question authoritatively, but it also
+    re-projects the answer onto the row and can transition the current stage. A page
+    render must not do either, so read-only callers use this instead. The two can only
+    disagree in the operator's favour: a suppression lifted a moment ago is invisible
+    here until the next write path notices it.
+    """
+
+    contact = session.get(Contact, membership.contact_id)
+    if contact is None:  # pragma: no cover - protected by FK
+        raise CampaignContactNotFound(f"contact {membership.contact_id} does not exist")
+    if membership.state in (ContactWorkflowState.EXCLUDED, ContactWorkflowState.SUPPRESSED):
+        return True
+    _, terminal = _blocking_reasons(
+        session, contact, campaign=session.get(Campaign, membership.campaign_id)
+    )
+    return terminal
+
+
 def refresh_eligibility(
     session: Session,
     *,

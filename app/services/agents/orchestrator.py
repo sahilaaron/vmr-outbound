@@ -217,6 +217,23 @@ def _terminal_eligibility_block(membership: CampaignContact) -> str | None:
     return None
 
 
+def stage_job_key(
+    campaign_contact_id: uuid.UUID, agent_id: AgentIdentifier, *, generation: int = 1
+) -> str:
+    """The idempotency key for one Campaign Contact's turn at one Agent.
+
+    ``generation`` exists so a stage can be run *again* after the reason it failed has
+    been fixed. The key used to be a hardcoded ``v1``, which made that impossible:
+    ``enqueue_job`` is idempotent on the key, so re-queueing returned the same failed
+    job and the contact never moved. Every ordinary caller stays on generation 1, so
+    two workers scheduling the same stage concurrently still converge on one job —
+    that convergence is the whole reason the key exists and must not be weakened to
+    allow re-runs.
+    """
+
+    return f"pipeline:{campaign_contact_id}:{agent_id.value}:v{generation}"
+
+
 def schedule_next(
     session: Session,
     *,
@@ -225,8 +242,13 @@ def schedule_next(
     parent_job: AgentJob | None = None,
     priority: int = 100,
     allow_enqueue: bool = True,
+    generation: int = 1,
 ) -> AgentJob | None:
-    """Enqueue the next eligible Agent or persist why it cannot run."""
+    """Enqueue the next eligible Agent or persist why it cannot run.
+
+    ``generation`` is passed through to :func:`stage_job_key`; only an explicit
+    operator re-run ever raises it.
+    """
 
     if membership.membership_status is not CampaignMembershipStatus.ACTIVE:
         return None
@@ -379,7 +401,7 @@ def schedule_next(
         return None
 
     spec = get_agent_spec(agent_id)
-    key = f"pipeline:{membership.id}:{agent_id.value}:v1"
+    key = stage_job_key(membership.id, agent_id, generation=generation)
     job, created = jobs.enqueue_job(
         session,
         agent_id=agent_id,
@@ -1534,14 +1556,31 @@ def execute_started_job(
             actor=worker_id,
         )
     except Exception as exc:  # noqa: BLE001 - converted to a bounded retry classification
+        # Name what broke. This used to read only "an unexpected operational error":
+        # the exception type was recorded in `error_detail` but appeared in no
+        # message, so a worker log full of these was a dead end — every line
+        # identical, nothing to search for, and the one fact that identifies the
+        # cause reachable only by querying the database by hand.
+        #
+        # Deliberately still not the exception's own message: that text is
+        # unsanitized and can carry a filesystem path, a prompt fragment or a
+        # credential. The type names the fault, and the full detail continues to
+        # reach the job record where the Workbench sanitizes it on the way to a page.
         return _handle_execution_error(
             session,
             membership=membership,
             job=job,
             error=AgentRetryableError(
                 "unexpected_error",
-                "The Agent encountered an unexpected operational error.",
-                detail={"exception_type": type(exc).__name__},
+                (
+                    "The Agent encountered an unexpected operational error "
+                    f"({type(exc).__name__}). This is a defect rather than a data "
+                    "problem: the same input will fail the same way until it is fixed."
+                ),
+                detail={
+                    "exception_type": type(exc).__name__,
+                    "exception_module": type(exc).__module__,
+                },
             ),
             actor=worker_id,
         )

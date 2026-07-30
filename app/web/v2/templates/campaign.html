@@ -87,7 +87,10 @@
   <div class="v2-card clip">
     <div class="v2-card-head">
       <h2>Pipeline <span class="v2-muted">— the 9 Agents every contact passes through</span></h2>
-      <div class="v2-note push">Each Agent runs in this fixed order. Open one to see who it is holding.</div>
+      <div class="v2-note push">
+        The number is how many have got <b>past</b> that Agent, so the row reads as a funnel.
+        What is happening right now is underneath it.
+      </div>
     </div>
     <ol class="v2-pipe">
       {% for tile in tiles %}
@@ -99,19 +102,42 @@
             <span class="v2-pipe-idx">{{ tile.index }}</span>
             <span class="v2-pipe-name">{{ tile.label }}<small>{{ tile.suffix }}</small></span>
           </span>
-          <span class="v2-pipe-count">{{ tile.count | thousands }}</span>
+          <span class="v2-pipe-count">{{ tile.through | thousands }}</span>
           <span class="v2-pipe-notes">
             {% if tile.moving %}<span class="moving">{{ dot('info', true) }}{{ tile.moving }} moving now</span>{% endif %}
-            {% if tile.stuck %}<span class="stuck">{{ tile.stuck }} held here</span>{% endif %}
+            {# The re-run affordance rides on the held line rather than adding a second
+               number, because the two counts usually describe the same people and two
+               numbers read as twice the trouble. They are not the same question,
+               though: "held" is where a contact is standing *now*, while the failure
+               count comes from the per-stage ledger and still remembers a skippable
+               Agent that failed and was stepped over. That case gets its own line,
+               since nothing else on the tile would mention it.
+
+               Failures only, not every stopped contact: a hint offering a re-run must
+               not point at a stage whose only stopped contact is suppressed, which a
+               re-run cannot lift. See rerun.failure_counts. #}
+            {% set failed_here = failure_counts.get(tile.agent_id, 0) %}
+            {% if tile.held %}
+              <span class="stuck">{{ tile.held }} held here{% if failed_here and not tile.selected %} — open to run again{% endif %}</span>
+            {% elif failed_here and not tile.selected %}
+              <span class="stuck">{{ failed_here }} failed earlier — open to run again</span>
+            {% endif %}
+            {% if tile.waiting %}<span class="clear">{{ tile.waiting }} waiting here</span>{% endif %}
+            {% if tile.skipped %}<span class="clear">{{ tile.skipped }} skipped</span>{% endif %}
             {% if not tile.implemented %}<span class="clear">no adapter</span>
             {% elif tile.control_status != 'enabled' %}<span class="clear">agent {{ tile.control_status }}</span>
-            {% elif not tile.moving and not tile.stuck %}<span class="clear">all clear</span>{% endif %}
+            {% elif tile.quiet %}<span class="clear">all clear</span>{% endif %}
           </span>
           {% if tile.moving %}<span class="railtrack"><i></i></span>{% endif %}
         </a>
       </li>
       {% endfor %}
     </ol>
+    <div class="v2-card-foot plain">
+      Capture completes as soon as a contact is enrolled — the extension has already done the
+      capturing — so its number is how many arrived. Identity and Company usually finish in under a
+      second, which is why you will rarely catch anybody resting on them.
+    </div>
   </div>
 
   <div class="v2-split">
@@ -133,6 +159,77 @@
           {% endif %}
         </div>
       </div>
+
+      {# Run this Agent again. Offered only where something is actually stopped, so the
+         control never invites a click that can do nothing — which is also why a contact
+         a suppression is holding is listed but has no button: the count stays honest
+         and the reason is stated instead. #}
+      {% if rerun_candidates %}
+      {% set runnable = rerun_candidates | selectattr('runnable') | list %}
+      <div class="v2-rerun">
+        <div class="v2-rerun-head">
+          <b>{{ rerun_candidates | length }} contact{{ '' if rerun_candidates | length == 1 else 's' }} stopped here.</b>
+          {%- if runnable %}
+          Once you have fixed the cause — a setting, a domain, a website that is back —
+          run the {{ selected_tile.label }} Agent again.
+          {%- elif rerun_candidates | length == 1 %}
+          It cannot be re-run: something that outranks a re-run is holding it.
+          {%- else %}
+          None of them can be re-run: each is held by something that outranks it.
+          {%- endif %}
+        </div>
+        {% if runnable %}
+        <form class="v2-inline-form" method="post"
+              action="/app/campaigns/{{ execution.campaign_id }}/agents/{{ selected_stage }}/rerun">
+          <input type="hidden" name="back"
+                 value="/app/campaigns/{{ execution.campaign_id }}?stage={{ selected_stage }}">
+          <label class="v2-sr" for="rerun-reason">What changed</label>
+          <input class="v2-input" id="rerun-reason" name="reason" maxlength="500"
+                 placeholder="What changed? (kept on the record)">
+          <button class="v2-btn primary" type="submit">
+            {%- if runnable | length == 1 %}Run again for this contact
+            {%- else %}Run again for all {{ runnable | length }}{% endif %}
+          </button>
+        </form>
+        <div class="v2-hint">
+          Each contact starts with a fresh attempt budget and the earlier failure stays on
+          record.
+          {%- if rerun_spends %} <b>This Agent spends per contact</b> — a credit or a model
+          call each — so it will cost something to run {{ runnable | length }} again.{% endif %}
+          {%- if runnable | length >= rerun_ceiling %} At most {{ rerun_ceiling }} are
+          taken at a time.{% endif %}
+        </div>
+        {% endif %}
+        <details class="v2-sub-disclose v2-rerun-list">
+          <summary>Why each one stopped</summary>
+          <div class="v2-rerun-rows">
+            {% for candidate in rerun_candidates %}
+            <div class="v2-rerun-row">
+              <a href="/app/contacts/{{ candidate.contact_id }}?campaign={{ execution.campaign_id }}">{{ candidate.contact_label }}</a>
+              {{ tag(candidate.status.value, 'err', small=true) }}
+              {# `nice` because some recorded details are machine vocabulary — a
+                 suppression writes "email opt_out" — and this is a customer-facing
+                 page. The stored value is untouched; only its display softens. #}
+              <span class="v2-note">
+                {{ (candidate.reason_detail or candidate.reason_code or 'No reason was recorded.') | nice }}
+              </span>
+              {% if candidate.runnable %}
+              <form method="post"
+                    action="/app/campaigns/{{ execution.campaign_id }}/agents/{{ selected_stage }}/rerun">
+                <input type="hidden" name="campaign_contact_id" value="{{ candidate.campaign_contact_id }}">
+                <input type="hidden" name="back"
+                       value="/app/campaigns/{{ execution.campaign_id }}?stage={{ selected_stage }}">
+                <button class="v2-btn small" type="submit">Run again</button>
+              </form>
+              {% else %}
+              <span class="v2-rerun-held">{{ candidate.standing_block }}</span>
+              {% endif %}
+            </div>
+            {% endfor %}
+          </div>
+        </details>
+      </div>
+      {% endif %}
 
       {% if execution.contacts %}
       <div class="v2-table-wrap">

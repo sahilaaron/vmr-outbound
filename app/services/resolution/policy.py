@@ -60,6 +60,17 @@ from app.services.imports import normalization as norm
 #: by v2's reasoning.
 POLICY_VERSION = "company-domain-resolution/practical-v1"
 
+#: Recorded as the provider on a decision the model fallback produced, so a stored
+#: decision says which kind of source named the domain rather than leaving a reader
+#: to infer it from the reason codes.
+#:
+#: Duplicated as a literal rather than imported from
+#: ``app.services.enrichment.model_domain``: this module is pure and importing the
+#: enrichment package would both invert the dependency and pull a subprocess-capable
+#: seam into a module whose whole contract is that it touches nothing. A test asserts
+#: the two strings stay equal.
+MODEL_PROVIDER = "claude-cli-domain-finder"
+
 # --- Reason codes -------------------------------------------------------------
 #
 # Stable strings, stored verbatim on the decision. They are the machine-readable
@@ -83,6 +94,16 @@ REASON_RANK_IS_NOT_CONFIRMATION = "provider_rank_is_not_confirmation"
 REASON_OPERATOR_CORRECTION = "operator_correction"
 REASON_OPERATOR_MARKED_UNRESOLVED = "operator_marked_unresolved"
 
+# Model fallback (the searched answer behind the brand matcher).
+REASON_MODEL_ASSERTED_DOMAIN = "model_asserted_domain_after_provider_found_none"
+REASON_MODEL_EVIDENCE_UNCORROBORATED = "model_evidence_not_independently_corroborated"
+REASON_MODEL_NAME_ALIGNMENT_WAIVED = "model_answer_not_subject_to_name_alignment"
+REASON_MODEL_LOOKUP_NOT_RUN = "model_domain_lookup_not_run"
+REASON_MODEL_NO_ANSWER = "model_could_not_establish_a_domain"
+REASON_MODEL_UNAVAILABLE = "model_domain_lookup_unavailable"
+REASON_MODEL_ANSWER_UNUSABLE = "model_answer_could_not_be_read_as_a_domain"
+REASON_MODEL_DOMAIN_UNSUITABLE = "model_asserted_an_unsuitable_domain"
+
 # Per-candidate rejection codes.
 REJECTED_INVALID_DOMAIN = "invalid_domain"
 REJECTED_SOCIAL_DOMAIN = "social_network_domain"
@@ -96,6 +117,7 @@ REJECTED_NAME_NOT_ALIGNED = "company_name_not_aligned"
 
 WARNING_PROVISIONAL_LIMITS = "provisional_domain_authorizes_research_only"
 WARNING_CANDIDATES_REJECTED = "some_candidates_were_rejected_as_unsuitable"
+WARNING_MODEL_ANSWER_NOT_DETERMINISTIC = "domain_came_from_a_model_not_a_deterministic_source"
 WARNING_NO_LINKEDIN_COMPANY_ID = "no_linkedin_company_identifier_captured"
 WARNING_CORRECTION_SUPERSEDES = "operator_correction_supersedes_an_earlier_decision"
 WARNING_CORRECTED_DOMAIN_DIFFERS = "corrected_domain_differs_from_the_contacts_captured_domain"
@@ -141,6 +163,31 @@ REASON_TEXT: dict[str, str] = {
     REASON_PROVIDER_EVIDENCE_UNCORROBORATED: (
         "Only the domain provider supports this match; nothing has independently confirmed it."
     ),
+    REASON_MODEL_ASSERTED_DOMAIN: (
+        "The domain provider found nothing, so a model was asked and named this domain."
+    ),
+    REASON_MODEL_EVIDENCE_UNCORROBORATED: (
+        "Only a model's search supports this match; nothing deterministic has confirmed it."
+    ),
+    REASON_MODEL_NAME_ALIGNMENT_WAIVED: (
+        "The name-alignment rule was not applied: a model answers about a named "
+        "company rather than offering a list of similar names, and requiring the "
+        "domain to spell the company name would reject exactly the companies the "
+        "provider already failed on."
+    ),
+    REASON_MODEL_LOOKUP_NOT_RUN: "The model fallback is switched off, so it was not asked.",
+    REASON_MODEL_NO_ANSWER: (
+        "The model was asked and reported that it could not establish this company's domain."
+    ),
+    REASON_MODEL_UNAVAILABLE: "The model could not be reached, so no fallback answer exists.",
+    REASON_MODEL_ANSWER_UNUSABLE: (
+        "The model answered, but not with a domain that could be read. Worth trying "
+        "again — unlike an unreachable model, this usually succeeds on a second ask."
+    ),
+    REASON_MODEL_DOMAIN_UNSUITABLE: (
+        "The model named a domain that cannot be a company's own — a social network, "
+        "directory, platform or parked page."
+    ),
     REASON_RANK_IS_NOT_CONFIRMATION: (
         "The provider's ranking was recorded but was not treated as evidence."
     ),
@@ -158,6 +205,12 @@ WARNING_TEXT: dict[str, str] = {
     WARNING_CANDIDATES_REJECTED: (
         "Some candidates were rejected as unusable company domains. They are kept below "
         "with the reason."
+    ),
+    WARNING_MODEL_ANSWER_NOT_DETERMINISTIC: (
+        "This domain came from a model that searched the web, not from a deterministic "
+        "lookup. It is worth a glance before you confirm it: a model can be confidently "
+        "wrong in a way a name match cannot, and the source page it read is recorded "
+        "below when it gave one."
     ),
     WARNING_NO_LINKEDIN_COMPANY_ID: (
         "The capture carried no LinkedIn company identifier, so companies sharing a "
@@ -562,6 +615,11 @@ class ResolutionEvidence:
     candidates: tuple[dict[str, Any], ...] = ()
     lookup_status: EnrichmentLookupStatus = EnrichmentLookupStatus.NOT_STARTED
     provider: str | None = None
+    #: The domain a model asserted, and the status of having asked. Consulted only
+    #: where the deterministic path produced nothing usable — see :func:`evaluate`.
+    model_domain: str | None = None
+    model_lookup_status: EnrichmentLookupStatus = EnrichmentLookupStatus.NOT_STARTED
+    model_source_url: str | None = None
 
     @property
     def has_company_name(self) -> bool:
@@ -685,6 +743,126 @@ def evaluate_established_evidence(evidence: ResolutionEvidence) -> PolicyDecisio
     return None
 
 
+def _model_fallback(
+    evidence: ResolutionEvidence,
+    *,
+    warnings: list[str],
+    evaluated: tuple[CandidateEvaluation, ...],
+    provider_reason: str,
+) -> PolicyDecision:
+    """The answer when the deterministic path produced nothing usable.
+
+    Reached from exactly two places — the provider returned no candidates, or none
+    of its candidates aligned with the company name. Both mean "the brand matcher
+    has nothing to say about this company", which is the only situation a model
+    answer is admitted in. It is deliberately *not* reached when several candidates
+    align: sources disagreeing is where the policy refuses to guess, and adding a
+    third opinion to a two-way disagreement makes the guess more confident rather
+    than more correct.
+
+    **The name-alignment rule is waived here, and only here.** Alignment exists
+    because a brand matcher returns a ranked list of *similar names* and rank is
+    not evidence, so a candidate has to earn its place by spelling the company's
+    name. A model asked about one named company, having read a page, is making a
+    different kind of claim — and requiring its answer to spell the name would
+    reject precisely the companies the matcher already failed on, which is the
+    entire population this fallback exists to serve. ``Alphabet`` → ``abc.xyz`` is
+    the shape of the problem.
+
+    What is *not* waived: the domain must still pass the same suitability check as
+    any provider candidate, because a model asked for "the official domain" reaches
+    for ``linkedin.com`` and ``crunchbase.com`` at least as readily. And the ceiling
+    is still PROVISIONAL, so the stages that spend money and send mail stay shut.
+    """
+
+    if evidence.model_lookup_status is EnrichmentLookupStatus.NOT_STARTED:
+        return PolicyDecision(
+            state=DomainResolutionState.UNRESOLVED,
+            reasons=(provider_reason, REASON_MODEL_LOOKUP_NOT_RUN),
+            warnings=tuple(warnings),
+            candidates=evaluated,
+            provider=evidence.provider,
+        )
+    if evidence.model_lookup_status in _RETRYABLE_LOOKUP_STATUSES:
+        # "Could not reach it" and "it answered with something unreadable" are both
+        # retryable but call for different things from an operator — checking the CLI
+        # versus simply asking again — so they are not collapsed into one code.
+        return PolicyDecision(
+            state=DomainResolutionState.UNRESOLVED,
+            reasons=(
+                provider_reason,
+                REASON_MODEL_ANSWER_UNUSABLE
+                if evidence.model_lookup_status is EnrichmentLookupStatus.MALFORMED
+                else REASON_MODEL_UNAVAILABLE,
+            ),
+            warnings=tuple(warnings),
+            candidates=evaluated,
+            provider=evidence.provider,
+        )
+
+    domain = norm.collapse_whitespace(evidence.model_domain)
+    if evidence.model_lookup_status is not EnrichmentLookupStatus.OK or not domain:
+        return PolicyDecision(
+            state=DomainResolutionState.UNRESOLVED,
+            reasons=(provider_reason, REASON_MODEL_NO_ANSWER),
+            warnings=tuple(warnings),
+            candidates=evaluated,
+            provider=evidence.provider,
+        )
+
+    unsuitable = unsuitable_reason(domain)
+    if unsuitable is not None:
+        rejected = CandidateEvaluation(
+            domain=domain,
+            name=None,
+            rank=None,
+            eligible=False,
+            aligned=False,
+            alignment=None,
+            rejection_reason=unsuitable,
+        )
+        return PolicyDecision(
+            state=DomainResolutionState.UNRESOLVED,
+            reasons=(provider_reason, REASON_MODEL_DOMAIN_UNSUITABLE),
+            warnings=tuple([*warnings, WARNING_CANDIDATES_REJECTED]),
+            candidates=(*evaluated, rejected),
+            provider=evidence.provider,
+        )
+
+    chosen = CandidateEvaluation(
+        domain=domain,
+        name=None,
+        rank=None,
+        eligible=True,
+        # False, and honestly so: this candidate was never held to alignment. A
+        # reader must not be able to mistake "we waived the rule" for "it passed".
+        aligned=False,
+        alignment=None,
+        rejection_reason=None,
+    )
+    return PolicyDecision(
+        state=DomainResolutionState.PROVISIONAL,
+        selected_domain=domain,
+        selected_candidate={
+            **chosen.as_json(),
+            "provider": MODEL_PROVIDER,
+            "source_url": evidence.model_source_url,
+        },
+        provider=MODEL_PROVIDER,
+        provider_rank=None,
+        reasons=(
+            provider_reason,
+            REASON_MODEL_ASSERTED_DOMAIN,
+            REASON_MODEL_NAME_ALIGNMENT_WAIVED,
+            REASON_MODEL_EVIDENCE_UNCORROBORATED,
+        ),
+        warnings=tuple(
+            [*warnings, WARNING_MODEL_ANSWER_NOT_DETERMINISTIC, WARNING_PROVISIONAL_LIMITS]
+        ),
+        candidates=(*evaluated, chosen),
+    )
+
+
 def evaluate(evidence: ResolutionEvidence) -> PolicyDecision:
     """Decide the truthful resolution state for one captured company."""
 
@@ -723,23 +901,22 @@ def evaluate(evidence: ResolutionEvidence) -> PolicyDecision:
             provider=evidence.provider,
         )
     if not evaluated:
-        return PolicyDecision(
-            state=DomainResolutionState.UNRESOLVED,
-            reasons=(REASON_PROVIDER_NO_CANDIDATES,),
-            warnings=tuple(warnings),
-            provider=evidence.provider,
+        return _model_fallback(
+            evidence,
+            warnings=warnings,
+            evaluated=evaluated,
+            provider_reason=REASON_PROVIDER_NO_CANDIDATES,
         )
 
     survivors = [c for c in evaluated if c.eligible and c.aligned]
     distinct = {c.domain for c in survivors}
 
     if not survivors:
-        return PolicyDecision(
-            state=DomainResolutionState.UNRESOLVED,
-            reasons=(REASON_NO_ALIGNED_CANDIDATE,),
-            warnings=tuple(warnings),
-            candidates=evaluated,
-            provider=evidence.provider,
+        return _model_fallback(
+            evidence,
+            warnings=warnings,
+            evaluated=evaluated,
+            provider_reason=REASON_NO_ALIGNED_CANDIDATE,
         )
     if len(distinct) > 1:
         return PolicyDecision(

@@ -2480,3 +2480,66 @@ progress.v2-progress::-moz-progress-bar {
 .live-toggle[data-state="off"] {
   opacity: 0.8;
 }
+
+/* ---------------- Run an Agent again ----------------
+   Sits between the stage header and its contact list: the control belongs next to
+   the contacts it will act on, not in a settings screen two clicks away. */
+.v2-rerun {
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--n-100);
+  background: var(--warn-50);
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.v2-rerun-head {
+  font-size: 12.5px;
+  color: var(--warn-700);
+  text-wrap: pretty;
+}
+.v2-rerun-head b {
+  color: var(--ink);
+}
+.v2-rerun .v2-hint {
+  color: var(--n-600);
+}
+.v2-rerun-list summary {
+  color: var(--warn-700);
+}
+.v2-rerun-rows {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.v2-rerun-row {
+  display: flex;
+  gap: 9px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  padding: 7px 9px;
+  background: var(--n-0);
+  border: 1px solid var(--n-100);
+  border-radius: var(--r-sm);
+}
+.v2-rerun-row .v2-note {
+  flex: 1;
+  min-width: 180px;
+}
+.v2-rerun-row form {
+  margin-left: auto;
+}
+/* The standing reason takes the button's place for a contact a re-run cannot help.
+   Right-aligned into the button's column so the row keeps its rhythm and the eye
+   reads "no action available here" rather than hunting for a missing control. */
+.v2-rerun-row .v2-rerun-held {
+  margin-left: auto;
+  max-width: 300px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--warn-700);
+  text-align: right;
+  text-wrap: pretty;
+}

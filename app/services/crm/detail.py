@@ -46,6 +46,7 @@ from app.models.qa_evaluation import ContactQAEvaluation
 # Aliased: a bare `annotations` import would shadow `from __future__ import
 # annotations` above, and the module would silently resolve to the __future__
 # feature flag instead.
+from app.services.captures import promotion as capture_promotion
 from app.services.crm import annotations as crm_annotations
 from app.services.crm.records import current_experience
 from app.services.crm.states import (
@@ -227,6 +228,31 @@ class CaptureDetailView:
     @property
     def is_ambiguous(self) -> bool:
         return self.capture.outcome == LinkedInSnapshotOutcome.AMBIGUOUS_REVIEW
+
+    @property
+    def linkedin_url(self) -> str | None:
+        """A LinkedIn address for this person, whichever kind the capture holds.
+
+        A Sales Navigator results row exposes no public profile URL — that is why
+        ``normalized_profile_url`` is null on every SalesNav capture — but it does
+        expose a member id, from which the extension derives a resolving
+        ``/in/<member-id>`` alias and stores it as ``salesnav_alias_url``. Showing
+        "—" while that value sat on the same row was simply a page not looking.
+        """
+
+        return self.capture.normalized_profile_url or self.capture.salesnav_alias_url
+
+    @property
+    def linkedin_url_is_alias(self) -> bool:
+        """True when the address above is the derived alias, not a captured profile URL.
+
+        Surfaced rather than hidden, because the difference is load-bearing: only a
+        normalized profile URL is allowed to match a person to an existing Contact
+        automatically. An alias opens the right page for a human and is deliberately
+        not identity evidence, so the page says which one it is showing.
+        """
+
+        return self.capture.normalized_profile_url is None and bool(self.capture.salesnav_alias_url)
 
 
 def _employment_from(
@@ -457,14 +483,31 @@ def get_capture_detail(session: Session, capture_id: uuid.UUID) -> CaptureDetail
 def _company_link_for_capture(capture: LinkedInProfileSnapshot) -> CompanyLink:
     """What is known about a pending capture's employer.
 
-    By definition there is no resolved domain — that is the reason this record
-    is still a capture. The note names the actual next step rather than leaving
-    a blank, so the operator knows the queue is waiting on domain resolution and
-    not on them.
+    By definition there is no resolved domain — that is the reason this record is
+    still a capture. The note names the actual next step rather than leaving a
+    blank, so the operator knows the queue is waiting on domain resolution and not
+    on them.
+
+    Reads :func:`capture_promotion.company_hints` rather than the ``experiences``
+    relationship, and that is the whole point of this function's existence.
+
+    A Sales Navigator search-results capture has **no experience rows at all** — a
+    results row shows a person's current title and company but no employment
+    history — so the company arrives in the payload's ``current_employment_hint``
+    instead. Reading ``experiences`` directly therefore reported "no employer
+    captured" for every SalesNav import while ``/contact-captures/`` showed the
+    company name correctly, because the promotion path has always read the hint.
+    Two pages describing one record disagreed, and the one an operator was more
+    likely to open was the one that was wrong.
+
+    So both now read the same accessor. It is the resolution path's accessor
+    deliberately: whatever the resolver acts on is what an operator should be shown,
+    because a page that disagrees with the resolver is worse than a page that is
+    merely sparse.
     """
 
-    current = current_experience(capture)
-    captured_name = current.company_name if current is not None else None
+    hints = capture_promotion.company_hints(capture)
+    captured_name = hints.name
 
     if captured_name:
         note = (
@@ -482,8 +525,8 @@ def _company_link_for_capture(capture: LinkedInProfileSnapshot) -> CompanyLink:
         company=None,
         captured_name=captured_name,
         domain=None,
-        linkedin_company_url=current.company_linkedin_url if current is not None else None,
-        linkedin_company_id=current.company_linkedin_id if current is not None else None,
+        linkedin_company_url=hints.linkedin_url,
+        linkedin_company_id=hints.linkedin_id,
         is_resolved=False,
         resolution_note=note,
     )

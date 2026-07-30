@@ -126,8 +126,14 @@ def test_one_failure_does_not_stop_the_pass(
     class _Outcome:
         auto_promoted = True
         provider_call_made = True
+        model_call_made = False
 
-    def _sometimes(session, *, snapshot, access, actor, force):
+    # The stub takes `model` explicitly rather than `**kwargs`: a stub that
+    # swallows unknown keywords would keep passing after the real signature grew,
+    # and `resolve_pending` treats a TypeError as one capture failing — so a
+    # mismatch would surface as a plausible-looking `failed` count rather than an
+    # error naming the cause.
+    def _sometimes(session, *, snapshot, access, actor, force, model=None):
         seen.append(snapshot.id)
         if snapshot.id == first.id:
             raise RuntimeError("provider exploded")
@@ -156,8 +162,9 @@ def test_the_limit_is_honoured(
     class _Outcome:
         auto_promoted = False
         provider_call_made = True
+        model_call_made = False
 
-    def _count(session, *, snapshot, access, actor, force):
+    def _count(session, *, snapshot, access, actor, force, model=None):
         calls.append(snapshot.id)
         return _Outcome()
 

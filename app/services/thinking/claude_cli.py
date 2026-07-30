@@ -149,7 +149,23 @@ class ClaudeCliThinker:
                 argv,
                 input=request.prompt,
                 capture_output=True,
-                text=True,
+                # UTF-8 explicitly, in both directions, rather than `text=True`.
+                #
+                # `text=True` encodes stdin and decodes stdout with the *locale*
+                # encoding, which on Windows is a code page — typically cp1252.
+                # Everything this seam carries routinely exceeds it: a prospect
+                # named Sørensen, a company or person named in Arabic or CJK, an em
+                # dash in seller copy, the curly quotes the CLI's own output uses.
+                # Any one of those raised UnicodeEncodeError or UnicodeDecodeError
+                # from inside `subprocess.run`, which is neither an OSError nor a
+                # ThinkingError — so it escaped this module untranslated, surfaced as
+                # the worker's opaque "unexpected operational error", and retried to
+                # fail identically every time.
+                #
+                # The CLI emits UTF-8 on every platform, so this is not a
+                # workaround: it is the correct encoding, stated rather than guessed.
+                encoding="utf-8",
+                errors="strict",
                 timeout=timeout,
                 check=False,
                 cwd=self._settings.claude_cli_working_directory or None,
@@ -158,6 +174,14 @@ class ClaudeCliThinker:
             raise ThinkingTimeout(
                 f"The Claude CLI did not answer within {timeout:.0f}s.",
                 detail={"purpose": request.purpose, "timeout_seconds": timeout},
+            ) from exc
+        except UnicodeError as exc:
+            # Strict on purpose. `errors="replace"` would substitute U+FFFD and hand
+            # back an answer that parses but has been quietly altered — the partial
+            # read this module refuses to do anywhere else.
+            raise ThinkingMalformed(
+                "The Claude CLI's output was not valid UTF-8.",
+                detail={"error": str(exc)[:400]},
             ) from exc
         except OSError as exc:
             raise ThinkingUnavailable(

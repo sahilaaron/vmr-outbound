@@ -47,10 +47,12 @@ from app.models.enums import (
     PipelineStageStatus,
     ResearchState,
 )
+from app.models.pipeline import CampaignContactAgentState
 from app.models.suppression import Suppression
 from app.services import campaigns as campaign_service
 from app.services import drafts as draft_service
 from app.services import workbench_agents
+from app.services.agents import rerun as agent_rerun
 from app.services.agents.registry import AGENT_SPECS, PIPELINE_ORDER
 from app.services.campaigns import CampaignError
 from app.services.captures import labels as capture_labels
@@ -97,7 +99,9 @@ PHASES: dict[AgentIdentifier, str] = {
 AGENT_BLURBS: dict[AgentIdentifier, str] = {
     AgentIdentifier.CAPTURE: (
         "Pulls in everyone from a Sales Navigator or LinkedIn page you opened. Never "
-        "navigates on its own."
+        "navigates on its own. Capturing happens in the extension, so this stage is "
+        "already complete by the time a contact is enrolled — its number is how many "
+        "arrived."
     ),
     AgentIdentifier.IDENTITY: (
         "Ties each capture to one permanent person record, so nobody is duplicated "
@@ -400,21 +404,61 @@ def _kb_on(settings: Settings) -> bool:
 
 @dataclass(frozen=True)
 class StageTile:
-    """One Agent in the pipeline strip."""
+    """One Agent in the pipeline strip.
+
+    Two different quantities, kept apart because conflating them is what made this
+    row unreadable:
+
+    * ``through`` — how many contacts have *got past* this Agent. This is the big
+      number, and it is what makes the row a funnel: it only ever descends, and it
+      answers "did my 50 arrive, and how far did they get".
+    * ``resting`` / ``moving`` / ``held`` — where contacts are *right now*. These are
+      the live detail underneath.
+
+    The strip originally showed only ``resting``. That reads as a throughput counter
+    and is not one: Capture completes the moment a contact is enrolled, and Identity
+    and Company finish in under a second, so all three permanently showed 0 while 50
+    contacts sat failing at Research. The operator's reasonable conclusion — that
+    nothing had been captured and nothing had passed through — was wrong, and the
+    screen was the reason.
+    """
 
     agent_id: str
     index: int
     label: str
     suffix: str
     phase: str
-    count: int
+    #: Completed plus skipped: a skipped stage was passed, not failed.
+    through: int
+    completed: int
+    skipped: int
+    resting: int
     moving: int
-    stuck: int
+    held: int
     blurb: str
     href: str
     selected: bool
     control_status: str
     implemented: bool
+
+    @property
+    def waiting(self) -> int:
+        """Resting here, but neither in flight nor held.
+
+        Derived rather than queried because that is what it is: the remainder of
+        ``resting`` once the two states that have their own note are taken out. Shown
+        independently of them — an early version only showed it when nothing was
+        moving or held, so a stage with five contacts waiting and one failure reported
+        the one failure and hid the five.
+        """
+
+        return max(0, self.resting - self.moving - self.held)
+
+    @property
+    def quiet(self) -> bool:
+        """Nothing to report: nobody here now, and nothing was skipped."""
+
+        return not (self.moving or self.held or self.resting or self.skipped)
 
 
 def _stage_tiles(
@@ -423,20 +467,17 @@ def _stage_tiles(
     selected: AgentIdentifier | None,
     base_href: str,
     open_counts: dict[str, tuple[int, int]],
+    progress: dict[str, tuple[int, int]],
 ) -> tuple[StageTile, ...]:
-    """The nine-stage strip, from committed per-stage counts.
-
-    ``count`` is how many contacts currently rest on that Agent, ``moving`` is what
-    the queue is actually working on for it, and ``stuck`` is what needs a person.
-    All three come from Phase 2's own counts — none is derived from another.
-    """
+    """The nine-stage strip. Every number is a Phase 2 count, none derived."""
 
     controls = {control.agent_id: control for control in execution.controls}
     tiles: list[StageTile] = []
     for position, agent_id in enumerate(PIPELINE_ORDER, start=1):
         spec = AGENT_SPECS[agent_id]
         control = controls.get(agent_id)
-        resting = int(execution.stage_counts.get(agent_id.value, 0))
+        completed, skipped = progress.get(agent_id.value, (0, 0))
+        moving, held = open_counts.get(agent_id.value, (0, 0))
         tiles.append(
             StageTile(
                 agent_id=agent_id.value,
@@ -444,9 +485,12 @@ def _stage_tiles(
                 label=spec.display_name.replace(" Agent", ""),
                 suffix="Agent",
                 phase=PHASES[agent_id],
-                count=resting,
-                moving=open_counts.get(agent_id.value, (0, 0))[0],
-                stuck=open_counts.get(agent_id.value, (0, 0))[1],
+                through=completed + skipped,
+                completed=completed,
+                skipped=skipped,
+                resting=int(execution.stage_counts.get(agent_id.value, 0)),
+                moving=moving,
+                held=held,
                 blurb=AGENT_BLURBS[agent_id],
                 href=f"{base_href}?stage={agent_id.value}",
                 selected=selected is agent_id,
@@ -455,6 +499,44 @@ def _stage_tiles(
             )
         )
     return tuple(tiles)
+
+
+def _stage_progress(db: Session, campaign_id: uuid.UUID) -> dict[str, tuple[int, int]]:
+    """Per Agent, how many contacts completed it and how many skipped it.
+
+    Read from the durable per-stage ledger (`campaign_contact_agent_states`), which
+    is the only place that remembers a stage a contact has already left. The
+    membership's ``current_stage`` cannot answer this — it says where someone is now,
+    not where they have been.
+
+    Completed and skipped are counted separately and only summed for the headline: a
+    skipped stage was passed (an Agent that is off and skippable auto-skips), but an
+    operator reading "50 through Research" deserves to know if 50 of those were
+    skips.
+    """
+
+    rows = db.execute(
+        select(
+            CampaignContactAgentState.agent_id,
+            CampaignContactAgentState.status,
+            func.count(CampaignContactAgentState.id),
+        )
+        .join(
+            CampaignContact,
+            CampaignContact.id == CampaignContactAgentState.campaign_contact_id,
+        )
+        .where(CampaignContact.campaign_id == campaign_id)
+        .group_by(CampaignContactAgentState.agent_id, CampaignContactAgentState.status)
+    ).all()
+    built: dict[str, tuple[int, int]] = {}
+    for agent_id, status, count in rows:
+        completed, skipped = built.get(agent_id.value, (0, 0))
+        if status is PipelineStageStatus.COMPLETED:
+            completed += int(count)
+        elif status is PipelineStageStatus.SKIPPED:
+            skipped += int(count)
+        built[agent_id.value] = (completed, skipped)
+    return built
 
 
 def _agent_open_counts(db: Session, campaign_id: uuid.UUID) -> dict[str, tuple[int, int]]:
@@ -909,6 +991,7 @@ def campaign_page(
         selected=selected,
         base_href=f"/app/campaigns/{identifier}",
         open_counts=_agent_open_counts(db, identifier),
+        progress=_stage_progress(db, identifier),
     )
     counts = shell.attention_counts(db, campaign_id=identifier)
     selected_tile = next((tile for tile in tiles if tile.selected), None)
@@ -922,6 +1005,17 @@ def campaign_page(
         if campaign is not None:
             readiness = seller_readiness.campaign_report(db, campaign)
 
+    # Two different questions, so two different numbers. The strip hint asks "is a
+    # re-run likely to help here?" across all nine Agents, and answers it from
+    # failures, cheaply. The panel asks "what exactly has stopped on the Agent I am
+    # looking at?" — and since it needs the list anyway, it reads the list rather than
+    # gating on the approximate count. Gating on the count hid a stage whose only
+    # stopped contact was blocked, which is precisely the contact worth explaining.
+    failures = agent_rerun.failure_counts(db, identifier)
+    rerun_candidates: tuple[agent_rerun.RerunCandidate, ...] = ()
+    if selected is not None:
+        rerun_candidates = agent_rerun.candidates(db, campaign_id=identifier, agent_id=selected)
+
     return _render(
         request,
         db,
@@ -934,6 +1028,10 @@ def campaign_page(
             "tiles": tiles,
             "selected_tile": selected_tile,
             "selected_stage": selected.value if selected else None,
+            "failure_counts": failures,
+            "rerun_candidates": rerun_candidates,
+            "rerun_spends": (selected in agent_rerun.SPENDS_PER_CONTACT) if selected else False,
+            "rerun_ceiling": agent_rerun.MAX_PER_RERUN,
             "decisions": _decision_groups(db, counts, campaign_id=identifier),
             "attention_here": counts,
             "activity": _activity_lines(execution.recent_events),
@@ -991,6 +1089,64 @@ def campaign_execution_toggle(
         )
     )
     return _redirect(f"/app/campaigns/{identifier}", ok=message)
+
+
+@router.post("/campaigns/{campaign_id}/agents/{agent_id}/rerun")
+def campaign_agent_rerun(
+    campaign_id: str,
+    agent_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    reason: str = Form(""),
+    campaign_contact_id: str = Form(""),
+    back: str = Form(""),
+) -> RedirectResponse:
+    """Run one Agent again for the contacts it has stopped on.
+
+    The whole campaign by default, or one contact when ``campaign_contact_id`` is
+    given. Both go through the same guards, so the single-contact button cannot do
+    anything the bulk one would refuse.
+
+    Refusals are carried back as a flash rather than raised: an operator who presses
+    "run again" and sees nothing happen has been told less than nothing.
+    """
+
+    identifier = _uuid(campaign_id)
+    if identifier is None:
+        return _redirect("/app/campaigns", err="That is not a campaign id.")
+    try:
+        target = AgentIdentifier(agent_id)
+    except ValueError:
+        return _redirect(f"/app/campaigns/{identifier}", err="That is not an Agent.")
+
+    destination = back or f"/app/campaigns/{identifier}?stage={target.value}"
+    try:
+        outcome = agent_rerun.rerun_stage(
+            db,
+            campaign_id=identifier,
+            agent_id=target,
+            actor=draft_service.OPERATOR_ACTOR,
+            reason=reason or None,
+            campaign_contact_id=_uuid(campaign_contact_id) if campaign_contact_id else None,
+        )
+    except agent_rerun.RerunError as exc:
+        return _redirect(destination, err=str(exc))
+
+    db.commit()
+    message = outcome.message()
+    if outcome.refusals:
+        # Name the first few rather than a bare count: "3 were not re-run" sends the
+        # operator hunting, and the reason is already in hand.
+        shown = "; ".join(
+            f"{refusal.contact_label} — {refusal.reason}" for refusal in outcome.refusals[:3]
+        )
+        remaining = len(outcome.refusals) - 3
+        if remaining > 0:
+            shown += f"; and {remaining} more"
+        message = f"{message} {shown}"
+    if not outcome.accepted:
+        return _redirect(destination, err=message)
+    return _redirect(destination, ok=message)
 
 
 # ---------------------------------------------------------------------------
