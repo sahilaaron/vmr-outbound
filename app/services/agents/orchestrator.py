@@ -1566,6 +1566,18 @@ def execute_started_job(
         # unsanitized and can carry a filesystem path, a prompt fragment or a
         # credential. The type names the fault, and the full detail continues to
         # reach the job record where the Workbench sanitizes it on the way to a page.
+        #
+        # One exception carries its whole diagnosis in a field rather than in its
+        # message, and naming the type alone throws that away. A missing import is
+        # identified entirely by *which* module was missing: "ModuleNotFoundError"
+        # on two hundred consecutive Research jobs says only that something is
+        # unimportable, while "ModuleNotFoundError: app.services.research.website"
+        # names the subtree and points straight at the install. The module *name*
+        # is safe to print — it is a dotted import path, not a filesystem path,
+        # a prompt fragment or a credential — which is exactly why it is admitted
+        # here when the exception's own message still is not.
+        missing = getattr(exc, "name", None) if isinstance(exc, ImportError) else None
+        named = f"{type(exc).__name__}: {missing}" if missing else type(exc).__name__
         return _handle_execution_error(
             session,
             membership=membership,
@@ -1573,13 +1585,14 @@ def execute_started_job(
             error=AgentRetryableError(
                 "unexpected_error",
                 (
-                    "The Agent encountered an unexpected operational error "
-                    f"({type(exc).__name__}). This is a defect rather than a data "
-                    "problem: the same input will fail the same way until it is fixed."
+                    f"The Agent encountered an unexpected operational error ({named}). "
+                    "This is a defect rather than a data problem: the same input will "
+                    "fail the same way until it is fixed."
                 ),
                 detail={
                     "exception_type": type(exc).__name__,
                     "exception_module": type(exc).__module__,
+                    **({"missing_module": missing} if missing else {}),
                 },
             ),
             actor=worker_id,

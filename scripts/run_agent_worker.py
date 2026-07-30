@@ -38,22 +38,49 @@ import argparse
 import json
 import os
 import socket
+import sys
 import threading
 import time
 from collections.abc import Sequence
+from pathlib import Path
 
-from app.db.session import session_scope
-from app.models.enums import AgentIdentifier, AgentJobStatus
-from app.models.verification_job import AgentJob
-from app.services.agents import jobs
-from app.services.agents.orchestrator import (
+# Import the application that ships with *this* script, before anything else can
+# resolve `app` somewhere else.
+#
+# `python scripts/run_agent_worker.py` puts the *script's* directory on sys.path,
+# never the repository root, so `import app` falls through to whatever the
+# environment provides. An editable install (`pip install -e .`, which is how this
+# project is installed) records one absolute path at install time:
+#
+#     MAPPING = {'app': '/path/to/the/checkout/where/pip/ran/app'}
+#
+# Share one .venv across a git worktree — the normal way to run a UAT branch beside
+# main — and every script in the worktree silently executes the *other* checkout's
+# application code. That is not a stale-bytecode problem and no amount of
+# reinstalling inside the worktree fixes it for the original checkout; the two
+# cannot both own the mapping.
+#
+# It surfaced as a crash on a counter that one checkout had and the other did not,
+# which was luck. The same misresolution had been silently running old services,
+# old models and old migrations logic against a live database, and would have gone
+# on doing so. Anchoring to `__file__` makes the answer the same regardless of the
+# working directory, the launcher, or which checkout last ran pip.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from app.db.session import session_scope  # noqa: E402 - must follow the path anchor above
+from app.models.enums import AgentIdentifier, AgentJobStatus  # noqa: E402
+from app.models.verification_job import AgentJob  # noqa: E402
+from app.services.agents import jobs  # noqa: E402
+from app.services.agents.orchestrator import (  # noqa: E402
     WorkerExecution,
     claim_next_campaign_job,
     execute_started_job,
     prepare_leased_job,
 )
-from app.services.resolution.pending import resolve_pending
-from sqlalchemy import select
+from app.services.resolution.pending import resolve_pending  # noqa: E402
+from sqlalchemy import select  # noqa: E402
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -157,6 +184,79 @@ def _current_execution(job: AgentJob, message: str) -> WorkerExecution:
     )
 
 
+#: Counters every backfill result has had since the pass was introduced. A result
+#: missing one of these is not an older version of the contract — it is not the
+#: contract at all, and saying so is more useful than printing zeros.
+_BACKFILL_REQUIRED = ("considered", "promoted", "provider_calls", "failed")
+
+#: Counters added later. Absent means "this build does not report it", which is a
+#: different statement from "it reported zero" and is written differently.
+_BACKFILL_OPTIONAL = ("model_calls",)
+
+
+_MISSING = object()
+
+
+def _counter(outcome: object, name: str) -> object:
+    """One counter off a result, or :data:`_MISSING`.
+
+    Catches every exception rather than only ``AttributeError``, which is what
+    ``hasattr`` would do. A property that raises is not a counter this worker can
+    report, and the distinction between "absent" and "absent because reading it
+    blew up" is not one the console line needs — but it is emphatically not worth
+    ending the process over, which is the mistake being corrected here.
+    """
+
+    try:
+        return getattr(outcome, name)
+    except Exception:  # noqa: BLE001 - a reporting read must never end the worker
+        return _MISSING
+
+
+def _describe_backfill(outcome: object) -> str:
+    """One operator-readable line about a backfill pass, whatever it returned.
+
+    Never raises — see :func:`_counter`. This runs at the boundary between the
+    worker and a service it calls best-effort, and the worker's actual job is
+    draining the Agent queue, so a reporting problem must be *reported*, never
+    propagated. That is not hypothetical: a missing counter here took the whole
+    worker down with an AttributeError, and the manual re-run the operator had just
+    queued went unclaimed.
+
+    Two failure shapes, deliberately told apart rather than both swallowed:
+
+    * A result carrying every required counter but missing an optional one is an
+      **older, valid** shape. Its line simply omits what that build cannot report.
+      Printing ``model calls 0`` instead would be a quiet lie — indistinguishable
+      from a pass that genuinely spent no model calls.
+    * A result missing a required counter is **wrong**, and the line says so and
+      names the class and the file it came from. That last detail is the point: the
+      commonest cause is an import resolving to a different checkout, and a message
+      that prints the module path answers in one line what otherwise costs an
+      afternoon.
+    """
+
+    values = {name: _counter(outcome, name) for name in _BACKFILL_REQUIRED}
+    missing = [name for name, value in values.items() if value is _MISSING]
+    if missing:
+        kind = type(outcome)
+        origin = getattr(sys.modules.get(kind.__module__), "__file__", "unknown location")
+        return (
+            "Capture resolution returned an unusable result: "
+            f"{kind.__module__}.{kind.__qualname__} is missing {', '.join(missing)}. "
+            f"That class came from {origin}. If that path is not inside this checkout "
+            f"({_REPO_ROOT}), the worker is running another checkout's application "
+            "code. The Agent queue is unaffected and continues."
+        )
+
+    parts = [f"{name.replace('_', ' ')} {values[name]}" for name in _BACKFILL_REQUIRED]
+    for name in _BACKFILL_OPTIONAL:
+        value = _counter(outcome, name)
+        if value is not _MISSING:
+            parts.insert(-1, f"{name.replace('_', ' ')} {value}")
+    return "Resolved pending captures: " + ", ".join(parts) + "."
+
+
 def _resolve_pending_captures(*, limit: int) -> str | None:
     """Finish the company-domain resolution an intake request could not.
 
@@ -169,20 +269,20 @@ def _resolve_pending_captures(*, limit: int) -> str | None:
 
     Best-effort by design: a failure here must never stop the worker from draining
     the Agent queue, which is its actual job.
+
+    The guard covers reading and describing the result, not merely producing it.
+    It used to stop at the call, which left the report itself outside the promise
+    this docstring makes — and that gap is exactly where the worker died.
     """
 
     try:
         with session_scope() as session:
             outcome = resolve_pending(session, limit=limit)
+        if not getattr(outcome, "did_work", True):
+            return None
+        return _describe_backfill(outcome)
     except Exception as exc:  # noqa: BLE001 - never block the queue on a backfill
-        return f"Capture resolution pass failed: {exc}"
-    if not outcome.did_work:
-        return None
-    return (
-        f"Resolved pending captures: considered {outcome.considered}, "
-        f"promoted {outcome.promoted}, provider calls {outcome.provider_calls}, "
-        f"model calls {outcome.model_calls}, failed {outcome.failed}."
-    )
+        return f"Capture resolution pass failed: {type(exc).__name__}: {exc}"
 
 
 def _run_once(
