@@ -8,7 +8,7 @@ from urllib.parse import urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
 
 from . import USER_AGENT
-from .fetcher import HttpFetcher
+from .fetcher import HOST_POLICY_DEFERRAL, HttpFetcher
 
 log = logging.getLogger(__name__)
 
@@ -81,6 +81,18 @@ def fetch_robots(fetcher: HttpFetcher, start_url: str) -> RobotsInfo:
     if result.status_code in {404, 410}:
         log.info("no robots.txt for %s - allowing crawl", parts.netloc)
         return RobotsInfo.allow_all()
+    if result.error_kind == HOST_POLICY_DEFERRAL:
+        # This host redirects its robots.txt to its apex/www twin. Crawling is
+        # still denied here -- the policy genuinely was not read -- but the
+        # collector's variant loop is about to ask the twin directly, so this
+        # is a step in a working sequence rather than the dead end that
+        # "refusing crawl" described.
+        log.info(
+            "robots.txt for %s defers to another host (%s); trying that host next",
+            parts.netloc,
+            result.error,
+        )
+        return RobotsInfo.deny_all()
     if not result.ok or not result.html:
         log.warning(
             "robots.txt unavailable for %s (%s) - refusing crawl",
