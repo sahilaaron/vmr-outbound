@@ -87,7 +87,10 @@
   <div class="v2-card clip">
     <div class="v2-card-head">
       <h2>Pipeline <span class="v2-muted">— the 9 Agents every contact passes through</span></h2>
-      <div class="v2-note push">Each Agent runs in this fixed order. Open one to see who it is holding.</div>
+      <div class="v2-note push">
+        The number is how many have got <b>past</b> that Agent, so the row reads as a funnel.
+        What is happening right now is underneath it.
+      </div>
     </div>
     <ol class="v2-pipe">
       {% for tile in tiles %}
@@ -99,19 +102,26 @@
             <span class="v2-pipe-idx">{{ tile.index }}</span>
             <span class="v2-pipe-name">{{ tile.label }}<small>{{ tile.suffix }}</small></span>
           </span>
-          <span class="v2-pipe-count">{{ tile.count | thousands }}</span>
+          <span class="v2-pipe-count">{{ tile.through | thousands }}</span>
           <span class="v2-pipe-notes">
             {% if tile.moving %}<span class="moving">{{ dot('info', true) }}{{ tile.moving }} moving now</span>{% endif %}
-            {% if tile.stuck %}<span class="stuck">{{ tile.stuck }} held here</span>{% endif %}
+            {% if tile.held %}<span class="stuck">{{ tile.held }} held here</span>{% endif %}
+            {% if tile.waiting %}<span class="clear">{{ tile.waiting }} waiting here</span>{% endif %}
+            {% if tile.skipped %}<span class="clear">{{ tile.skipped }} skipped</span>{% endif %}
             {% if not tile.implemented %}<span class="clear">no adapter</span>
             {% elif tile.control_status != 'enabled' %}<span class="clear">agent {{ tile.control_status }}</span>
-            {% elif not tile.moving and not tile.stuck %}<span class="clear">all clear</span>{% endif %}
+            {% elif tile.quiet %}<span class="clear">all clear</span>{% endif %}
           </span>
           {% if tile.moving %}<span class="railtrack"><i></i></span>{% endif %}
         </a>
       </li>
       {% endfor %}
     </ol>
+    <div class="v2-card-foot plain">
+      Capture completes as soon as a contact is enrolled — the extension has already done the
+      capturing — so its number is how many arrived. Identity and Company usually finish in under a
+      second, which is why you will rarely catch anybody resting on them.
+    </div>
   </div>
 
   <div class="v2-split">

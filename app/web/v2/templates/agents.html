@@ -129,6 +129,14 @@
               {% elif job.next_run_at %}Retry scheduled for {{ job.next_run_at | dt }}.
               {% else %}No reason was recorded.{% endif %}
               {% if job.error_class %}<div class="v2-sub mono">{{ job.error_class }}</div>{% endif %}
+              {# The detail is where an unexpected error names itself. Withholding it
+                 made "unexpected operational error" a dead end on this page too. #}
+              {% if job.error_detail %}
+              <details class="v2-sub-disclose">
+                <summary>What the Agent recorded</summary>
+                <pre class="v2-pre">{{ job.error_detail | tojson(indent=2) }}</pre>
+              </details>
+              {% endif %}
             </div>
           </div>
           {% endfor %}

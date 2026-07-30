@@ -47,6 +47,7 @@ from app.models.enums import (
     PipelineStageStatus,
     ResearchState,
 )
+from app.models.pipeline import CampaignContactAgentState
 from app.models.suppression import Suppression
 from app.services import campaigns as campaign_service
 from app.services import drafts as draft_service
@@ -97,7 +98,9 @@ PHASES: dict[AgentIdentifier, str] = {
 AGENT_BLURBS: dict[AgentIdentifier, str] = {
     AgentIdentifier.CAPTURE: (
         "Pulls in everyone from a Sales Navigator or LinkedIn page you opened. Never "
-        "navigates on its own."
+        "navigates on its own. Capturing happens in the extension, so this stage is "
+        "already complete by the time a contact is enrolled — its number is how many "
+        "arrived."
     ),
     AgentIdentifier.IDENTITY: (
         "Ties each capture to one permanent person record, so nobody is duplicated "
@@ -400,21 +403,61 @@ def _kb_on(settings: Settings) -> bool:
 
 @dataclass(frozen=True)
 class StageTile:
-    """One Agent in the pipeline strip."""
+    """One Agent in the pipeline strip.
+
+    Two different quantities, kept apart because conflating them is what made this
+    row unreadable:
+
+    * ``through`` — how many contacts have *got past* this Agent. This is the big
+      number, and it is what makes the row a funnel: it only ever descends, and it
+      answers "did my 50 arrive, and how far did they get".
+    * ``resting`` / ``moving`` / ``held`` — where contacts are *right now*. These are
+      the live detail underneath.
+
+    The strip originally showed only ``resting``. That reads as a throughput counter
+    and is not one: Capture completes the moment a contact is enrolled, and Identity
+    and Company finish in under a second, so all three permanently showed 0 while 50
+    contacts sat failing at Research. The operator's reasonable conclusion — that
+    nothing had been captured and nothing had passed through — was wrong, and the
+    screen was the reason.
+    """
 
     agent_id: str
     index: int
     label: str
     suffix: str
     phase: str
-    count: int
+    #: Completed plus skipped: a skipped stage was passed, not failed.
+    through: int
+    completed: int
+    skipped: int
+    resting: int
     moving: int
-    stuck: int
+    held: int
     blurb: str
     href: str
     selected: bool
     control_status: str
     implemented: bool
+
+    @property
+    def waiting(self) -> int:
+        """Resting here, but neither in flight nor held.
+
+        Derived rather than queried because that is what it is: the remainder of
+        ``resting`` once the two states that have their own note are taken out. Shown
+        independently of them — an early version only showed it when nothing was
+        moving or held, so a stage with five contacts waiting and one failure reported
+        the one failure and hid the five.
+        """
+
+        return max(0, self.resting - self.moving - self.held)
+
+    @property
+    def quiet(self) -> bool:
+        """Nothing to report: nobody here now, and nothing was skipped."""
+
+        return not (self.moving or self.held or self.resting or self.skipped)
 
 
 def _stage_tiles(
@@ -423,20 +466,17 @@ def _stage_tiles(
     selected: AgentIdentifier | None,
     base_href: str,
     open_counts: dict[str, tuple[int, int]],
+    progress: dict[str, tuple[int, int]],
 ) -> tuple[StageTile, ...]:
-    """The nine-stage strip, from committed per-stage counts.
-
-    ``count`` is how many contacts currently rest on that Agent, ``moving`` is what
-    the queue is actually working on for it, and ``stuck`` is what needs a person.
-    All three come from Phase 2's own counts — none is derived from another.
-    """
+    """The nine-stage strip. Every number is a Phase 2 count, none derived."""
 
     controls = {control.agent_id: control for control in execution.controls}
     tiles: list[StageTile] = []
     for position, agent_id in enumerate(PIPELINE_ORDER, start=1):
         spec = AGENT_SPECS[agent_id]
         control = controls.get(agent_id)
-        resting = int(execution.stage_counts.get(agent_id.value, 0))
+        completed, skipped = progress.get(agent_id.value, (0, 0))
+        moving, held = open_counts.get(agent_id.value, (0, 0))
         tiles.append(
             StageTile(
                 agent_id=agent_id.value,
@@ -444,9 +484,12 @@ def _stage_tiles(
                 label=spec.display_name.replace(" Agent", ""),
                 suffix="Agent",
                 phase=PHASES[agent_id],
-                count=resting,
-                moving=open_counts.get(agent_id.value, (0, 0))[0],
-                stuck=open_counts.get(agent_id.value, (0, 0))[1],
+                through=completed + skipped,
+                completed=completed,
+                skipped=skipped,
+                resting=int(execution.stage_counts.get(agent_id.value, 0)),
+                moving=moving,
+                held=held,
                 blurb=AGENT_BLURBS[agent_id],
                 href=f"{base_href}?stage={agent_id.value}",
                 selected=selected is agent_id,
@@ -455,6 +498,44 @@ def _stage_tiles(
             )
         )
     return tuple(tiles)
+
+
+def _stage_progress(db: Session, campaign_id: uuid.UUID) -> dict[str, tuple[int, int]]:
+    """Per Agent, how many contacts completed it and how many skipped it.
+
+    Read from the durable per-stage ledger (`campaign_contact_agent_states`), which
+    is the only place that remembers a stage a contact has already left. The
+    membership's ``current_stage`` cannot answer this — it says where someone is now,
+    not where they have been.
+
+    Completed and skipped are counted separately and only summed for the headline: a
+    skipped stage was passed (an Agent that is off and skippable auto-skips), but an
+    operator reading "50 through Research" deserves to know if 50 of those were
+    skips.
+    """
+
+    rows = db.execute(
+        select(
+            CampaignContactAgentState.agent_id,
+            CampaignContactAgentState.status,
+            func.count(CampaignContactAgentState.id),
+        )
+        .join(
+            CampaignContact,
+            CampaignContact.id == CampaignContactAgentState.campaign_contact_id,
+        )
+        .where(CampaignContact.campaign_id == campaign_id)
+        .group_by(CampaignContactAgentState.agent_id, CampaignContactAgentState.status)
+    ).all()
+    built: dict[str, tuple[int, int]] = {}
+    for agent_id, status, count in rows:
+        completed, skipped = built.get(agent_id.value, (0, 0))
+        if status is PipelineStageStatus.COMPLETED:
+            completed += int(count)
+        elif status is PipelineStageStatus.SKIPPED:
+            skipped += int(count)
+        built[agent_id.value] = (completed, skipped)
+    return built
 
 
 def _agent_open_counts(db: Session, campaign_id: uuid.UUID) -> dict[str, tuple[int, int]]:
@@ -909,6 +990,7 @@ def campaign_page(
         selected=selected,
         base_href=f"/app/campaigns/{identifier}",
         open_counts=_agent_open_counts(db, identifier),
+        progress=_stage_progress(db, identifier),
     )
     counts = shell.attention_counts(db, campaign_id=identifier)
     selected_tile = next((tile for tile in tiles if tile.selected), None)
