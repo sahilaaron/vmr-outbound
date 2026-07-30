@@ -1,4 +1,10 @@
-"""Prompt construction for the three language-model Agents.
+"""Prompt construction for the language-model Agents.
+
+Two Agents use a model: **Insights**, which chooses among facts the Research Agent
+already stored, and **Personalization**, which writes copy from them. Research does
+not: it reads pages through the registered research workers and records what they
+said, so every claim it stores is checkable against the page it came from.
+``research_prompt`` below is therefore unused — see the note on it.
 
 One rule governs every prompt in this module, and it comes from
 ``docs/CLAUDE.md``: **seller context is trusted first-party material; anything
@@ -46,7 +52,19 @@ def research_prompt(
     country: str | None = None,
     company_size: str | None = None,
 ) -> str:
-    """Ask for a sourced company dossier in the nine stored sections."""
+    """Ask for a sourced company dossier in the nine stored sections.
+
+    **Nothing calls this, and nothing should.** It was written for a model-based
+    Research adapter that has been removed: the Research Agent gathers through the
+    registered research workers, which read real pages and attach a URL and a
+    retrieval time to every fact. A model asked the same question returns prose that
+    is equally plausible whether or not it read anything, and downstream the two are
+    indistinguishable.
+
+    Kept as the documented shape of a sourced dossier, not as a live path. Wiring it
+    back in would reintroduce a second Research implementation — which is the defect
+    this comment exists to prevent, so delete it rather than call it.
+    """
 
     return f"""You are researching one company so a B2B seller can decide whether,
 and how, to approach it.

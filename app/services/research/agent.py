@@ -177,6 +177,27 @@ def _sections(results: list[WorkerResult]) -> dict[str, Any]:
     return payload
 
 
+def _summary(
+    *,
+    results: list[WorkerResult],
+    facts_stored: int,
+    sources: int,
+    sufficient: bool,
+) -> str:
+    """One factual line about the run, for the operator-facing view.
+
+    Counts only — deliberately not prose. This stage reports what pages said and
+    does not paraphrase, and a generated sentence here would be the one piece of
+    unsourced language in an otherwise fully sourced record. "Read 4 pages, stored 3
+    facts" is checkable against the dossier; "Kiln Systems builds controllers" would
+    not be.
+    """
+
+    workers = ", ".join(result.worker for result in results) or "no worker"
+    verdict = "enough to describe the company" if sufficient else "not enough to describe it"
+    return f"{workers}: {sources} page(s) read, {facts_stored} sourced fact(s) stored — {verdict}."
+
+
 def _store_facts(
     session: Session,
     *,
@@ -332,17 +353,25 @@ def execute_step(
             "enough facts to describe this company"
         )
 
-    dossiers.interpret(
+    sections = _sections(results)
+    version = dossiers.interpret(
         session,
         company=company,
         submission=submission,
         interpreter=INTERPRETER,
         interpreter_version=INTERPRETER_VERSION,
-        sections=_sections(results),
+        sections=sections,
         warnings=warnings,
         created_by=actor,
         make_current=True,
     )
+
+    addressed = sorted(sections)
+    unaddressed = sorted(
+        section.value for section in DossierSection if section.value not in sections
+    )
+    source_count = len(sections.get(DossierSection.SOURCES.value) or [])
+    unknown_count = len(sections.get(DossierSection.UNKNOWNS.value) or [])
 
     output = {
         "domain": domain,
@@ -353,6 +382,23 @@ def execute_step(
         "facts_stored": stored,
         "sufficient": sufficient,
         "warning_count": len(warnings),
+        # --- the vocabulary every downstream reader projects -------------------
+        # `workbench_agents.reader._research_outcome` builds the operator-facing
+        # view from these exact keys, and a key it cannot find reads as a *zero*,
+        # not as an absence. So a run that stored a dossier and three facts would
+        # be reported as "0 of 9 sections addressed, 0 sources" — a false report on
+        # the one screen whose job is honest state. They are written here, in the
+        # stage's durable output, rather than taught to the reader: the Research
+        # stage owns what it found, and one shape is easier to keep true than two.
+        "dossier_version": version.version_number,
+        "summary": _summary(
+            results=results, facts_stored=stored, sources=source_count, sufficient=sufficient
+        ),
+        "sections_present": addressed,
+        "sections_unaddressed": unaddressed,
+        "source_count": source_count,
+        "unknown_count": unknown_count,
+        "producer": INTERPRETER,
     }
     return ResearchStep(
         kind=ResearchStepKind.COMPLETE,

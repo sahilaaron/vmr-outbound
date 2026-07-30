@@ -10,6 +10,8 @@ requires: synthetic fixtures, no live browsing in CI.
 
 from __future__ import annotations
 
+import inspect
+import pathlib
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -33,6 +35,7 @@ from app.models.insight import Insight, InsightEvidence
 from app.models.pipeline import CampaignContactAgentState
 from app.models.verification_job import AgentJob
 from app.services import campaign_contacts, pipeline
+from app.services.agents import adapters as adapters_module
 from app.services.agents import controls
 from app.services.agents.adapters import DEFAULT_ADAPTERS, ResearchAgentAdapter
 from app.services.agents.orchestrator import run_next
@@ -42,6 +45,7 @@ from app.services.research.contracts import (
     SourcedFact,
     WorkerResult,
 )
+from app.services.workbench_agents import PhaseTwoWorkbenchReader
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -206,6 +210,38 @@ def _setup(db: Session, worker: FakeWorker, **kw: object) -> tuple[CampaignConta
     return membership, job
 
 
+# --- the registered adapter --------------------------------------------------
+
+
+def test_the_registered_research_adapter_is_the_worker_based_one() -> None:
+    """The regression test for a duplicate class definition.
+
+    This module once had two `ResearchAgentAdapter` classes 460 lines apart. Python
+    rebinds the name silently, so `DEFAULT_ADAPTERS[RESEARCH]` pointed at whichever
+    came last — a model-based adapter — and the worker-based one below became
+    unreachable code with an entire red test file behind it.
+
+    Asserted on the constructor seam rather than on the class object, because that is
+    the thing that differs: only the worker-based adapter takes a worker registry.
+    """
+
+    adapter = DEFAULT_ADAPTERS[AgentIdentifier.RESEARCH]
+    assert isinstance(adapter, ResearchAgentAdapter)
+    parameters = inspect.signature(type(adapter).__init__).parameters
+    assert "workers_factory" in parameters
+    assert "thinker_factory" not in parameters, (
+        "Research must gather through the worker registry. A thinker_factory here "
+        "means a model-based Research implementation has been reintroduced."
+    )
+
+
+def test_only_one_research_adapter_is_defined() -> None:
+    """Nothing may shadow it again — checked on the source, where it happened."""
+
+    source = pathlib.Path(adapters_module.__file__ or "").read_text(encoding="utf-8")
+    assert source.count("class ResearchAgentAdapter:") == 1
+
+
 # --- the happy path ----------------------------------------------------------
 
 
@@ -253,6 +289,27 @@ def test_raw_payload_and_dossier_are_both_preserved(db_session: Session) -> None
         ResearchState.COMPLETED,
         ResearchState.COMPLETED_WITH_WARNINGS,
     }
+
+
+def test_a_section_no_fact_touched_stays_null(db_session: Session) -> None:
+    """ "Did not address it" and "looked and found nothing" are different answers.
+
+    A section with no fact mapped into it stays NULL. `sources` and `unknowns` are
+    always written, because the run genuinely did look for both — an empty list there
+    is a result, not a silence.
+    """
+
+    worker = FakeWorker(facts=(_fact("company_name", "Analytical Engines Ltd"),))
+    _setup(db_session, worker)
+
+    run_next(db_session, worker_id=WORKER, adapters=_adapters(worker))  # type: ignore[arg-type]
+
+    version = db_session.scalars(select(CompanyDossierVersion)).one()
+    assert version.overview is not None, "company_name maps into overview"
+    assert version.leadership is None, "no fact touched leadership, so it is unknown"
+    assert version.public_contacts is None
+    assert version.sources is not None, "the run did look for sources"
+    assert version.unknowns is not None, "and did record what it could not place"
 
 
 def test_the_worker_receives_the_resolved_domain(db_session: Session) -> None:
@@ -376,6 +433,99 @@ def test_a_transient_fault_is_retried(db_session: Session) -> None:
     db_session.refresh(job)
     assert job.status is AgentJobStatus.RETRY_SCHEDULED
     assert _stage(db_session, membership).status is PipelineStageStatus.RETRYING
+    # Nothing may be half-written: the retry has to start from a clean slate.
+    assert db_session.scalars(select(CompanyResearchSubmission)).all() == []
+    assert db_session.scalars(select(Insight)).all() == []
+
+
+# --- what the operator is told ------------------------------------------------
+
+
+def test_the_operator_view_reports_what_research_actually_found(db_session: Session) -> None:
+    """The stage's output must speak the vocabulary the Workbench projects.
+
+    `reader._research_outcome` builds its view from named keys, and a key it cannot
+    find becomes a zero rather than an absence — so a mismatch between the adapter
+    and the reader does not show up as a blank panel, it shows up as a confident
+    report of an empty research result. That is the failure this asserts against.
+    """
+
+    worker = FakeWorker(
+        facts=(
+            _fact("company_name", "Analytical Engines Ltd"),
+            _fact("headquarters", "London, United Kingdom", path="/contact"),
+        )
+    )
+    membership, _ = _setup(db_session, worker)
+
+    run_next(db_session, worker_id=WORKER, adapters=_adapters(worker))  # type: ignore[arg-type]
+
+    view = PhaseTwoWorkbenchReader(db_session).contact_execution(
+        membership.campaign_id, membership.id
+    )
+    assert view is not None
+    research = view.research
+    assert research is not None
+    assert research.dossier_version == 1
+    assert research.producer == "research-agent"
+    # Both facts mapped into real sections, and the run says which it addressed.
+    assert "overview" in research.sections_present
+    assert "geography" in research.sections_present
+    assert "leadership" in research.sections_unaddressed
+    assert research.source_count == 1
+    # The summary is counts, not prose: it must be checkable against the dossier.
+    assert research.summary is not None
+    assert "2 sourced fact(s) stored" in research.summary
+
+
+def test_a_thin_result_reads_as_thin_rather_than_as_nothing(db_session: Session) -> None:
+    worker = FakeWorker(facts=(_fact("company_name", "Analytical Engines Ltd"),), sufficient=False)
+    membership, _ = _setup(db_session, worker)
+
+    run_next(db_session, worker_id=WORKER, adapters=_adapters(worker))  # type: ignore[arg-type]
+
+    view = PhaseTwoWorkbenchReader(db_session).contact_execution(
+        membership.campaign_id, membership.id
+    )
+    assert view is not None and view.research is not None
+    assert "not enough to describe it" in (view.research.summary or "")
+    assert view.research.dossier_version == 1, "a thin dossier is still a stored dossier"
+
+
+# --- when the Agent itself is broken ------------------------------------------
+
+
+def test_an_unexpected_exception_names_itself(db_session: Session) -> None:
+    """A defect must be identifiable from the worker log alone.
+
+    This is the shared framework's catch-all, tested here because Research is where
+    it bit: a Claude CLI encoding fault escaped the thinking seam untranslated, and
+    every affected contact produced the same message with no type in it. A worker log
+    of a hundred identical lines, with the one distinguishing fact reachable only by
+    querying the database, is not an observable system.
+
+    The exception's own *message* is still withheld — it is unsanitized and can carry
+    a path or a prompt fragment — but the type is named, and the type is what turns
+    "something broke" into a thing you can search for.
+    """
+
+    class BrokenAdapter:
+        agent_id = AgentIdentifier.RESEARCH
+
+        def execute(self, context: object) -> None:
+            raise ZeroDivisionError("a defect, not a data problem")
+
+    membership, job = _setup(db_session, FakeWorker())
+    merged = dict(DEFAULT_ADAPTERS)
+    merged[AgentIdentifier.RESEARCH] = BrokenAdapter()  # type: ignore[assignment]
+
+    outcome = run_next(db_session, worker_id=WORKER, adapters=merged)  # type: ignore[arg-type]
+
+    assert outcome is not None
+    assert "ZeroDivisionError" in (outcome.message or "")
+    db_session.refresh(job)
+    assert job.error_class == "unexpected_error"
+    assert (job.error or {}).get("detail", {}).get("exception_type") == "ZeroDivisionError"
 
 
 # --- idempotency -------------------------------------------------------------

@@ -1,8 +1,13 @@
-"""Research, Insights and Personalization: what they store, and what they refuse.
+"""Insights and Personalization: what they store, and what they refuse.
 
 Every test here injects a scripted thinker. Nothing shells out, and nothing
 reaches a network — which is the point of the seam these Agents were built
 around.
+
+The Research Agent used to be tested here too, against a model. It is not any
+more: Research gathers through the registered research workers and is covered in
+`tests/test_research_agent.py`. What is left of it here is the boundary that
+separates gathering from reasoning.
 
 The guarantees under test are mostly *negative*, because that is where the risk
 lives. A model will always produce something plausible; the value of this layer
@@ -11,9 +16,12 @@ is what it declines to store.
 
 from __future__ import annotations
 
+import inspect
 import uuid
+from collections.abc import Iterator
 
 import pytest
+from app.core.config import get_settings
 from app.models.campaign import Campaign
 from app.models.company import Company
 from app.models.contact import Contact
@@ -23,22 +31,20 @@ from app.models.enums import (
     AgentIdentifier,
     CampaignStatus,
     InsightState,
-    PipelineStageStatus,
     SuppressionReason,
     SuppressionType,
 )
-from app.services import campaign_contacts, pipeline
+from app.services import campaign_contacts
 from app.services.agents import controls
 from app.services.agents.adapters import (
+    DEFAULT_ADAPTERS,
     AgentBlocked,
     AgentExecutionContext,
     AgentTerminalError,
     InsightsAgentAdapter,
     PersonalizationAgentAdapter,
-    ResearchAgentAdapter,
 )
 from app.services.agents.jobs import enqueue_job
-from app.services.agents.orchestrator import run_next
 from app.services.companies import dossiers
 from app.services.insights import evidence as insights_evidence
 from app.services.suppressions import add_suppression
@@ -47,6 +53,21 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 WORKER = "knowledge-test"
+
+
+@pytest.fixture(autouse=True)
+def _company_research_on(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Reach the Research Agent's *live* gate rather than its deployment gate.
+
+    The worker-based adapter checks `features.company_research` before it checks the
+    per-campaign opt-in. Without this, a test asserting "it refuses until the
+    campaign opts in" would pass for the wrong reason.
+    """
+
+    monkeypatch.setenv("FEATURES__COMPANY_RESEARCH", "true")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 class ScriptedThinker:
@@ -152,64 +173,53 @@ def _context(
     )
 
 
-# --- Research ---------------------------------------------------------------
+# --- The boundary between gathering and reasoning ---------------------------
+#
+# The Research Agent is not tested here any more, because it no longer uses a
+# language model: it reads pages through the registered research workers and
+# records what they said. Its coverage lives in `tests/test_research_agent.py`.
+#
+# What remains here is the boundary that made that split necessary — only the
+# gathering stage may reach outside, and the two Agents that do use a model may
+# only reason over what gathering already stored.
 
 
-def test_research_stores_a_dossier_and_advances_the_pipeline(db_session: Session) -> None:
-    campaign, company, contact = _records(db_session)
-    _enable(db_session, AgentIdentifier.RESEARCH)
-    thinker = ScriptedThinker(
-        {
-            "overview": {"summary": "Kiln Systems builds industrial kiln controllers."},
-            "products_services": [{"name": "KilnOS", "source_url": "https://kiln.example/os"}],
-            "sources": [{"url": "https://kiln.example", "title": "Home"}],
-            "unknowns": ["headcount"],
-        }
+def test_research_uses_no_language_model_at_all(db_session: Session) -> None:
+    """The strongest form of "later stages cannot invent a source".
+
+    This used to be a weaker claim: Research was given `allowed_tools=("WebSearch",)`
+    while Insights and Personalization were given none. It is now structural — the
+    Research adapter has no thinking seam to pass a prompt through, so there is no
+    configuration under which it could produce a fact it did not read.
+    """
+
+    research = DEFAULT_ADAPTERS[AgentIdentifier.RESEARCH]
+    parameters = inspect.signature(type(research).__init__).parameters
+    assert "thinker_factory" not in parameters
+    assert "workers_factory" in parameters, (
+        "Research must gather through the worker registry; a thinker_factory here "
+        "would mean a second, model-based Research implementation had returned"
     )
-    adapters = {AgentIdentifier.RESEARCH: ResearchAgentAdapter(thinker_factory=lambda _s: thinker)}
-
-    enrolled = campaign_contacts.enrol_contact(
-        db_session,
-        campaign_id=campaign.id,
-        contact_id=contact.id,
-        source_type="manual",
-        enqueue=True,
-        desired_stage=AgentIdentifier.RESEARCH,
-    )
-    run_next(db_session, worker_id=WORKER)  # identity
-    run_next(db_session, worker_id=WORKER)  # company
-    outcome = run_next(db_session, worker_id=WORKER, adapters=adapters)
-
-    assert outcome.public_status == "completed"
-    stored = dossiers.current_version(db_session, company_id=company.id)
-    assert stored is not None
-    assert stored.interpreter == "research-agent"
-    assert stored.overview == {"summary": "Kiln Systems builds industrial kiln controllers."}
-    # A section the answer never mentioned stays NULL: "did not address it" is
-    # not the same as "looked and found nothing".
-    assert stored.leadership is None
-    assert enrolled.membership.pipeline_status is PipelineStageStatus.COMPLETED
-
-    state = pipeline.agent_state(
-        db_session,
-        campaign_contact_id=enrolled.membership.id,
-        agent_id=AgentIdentifier.RESEARCH,
-    )
-    assert state is not None and state.output_reference is not None
-    assert state.output_reference["unknown_count"] == 1
-    assert "leadership" in state.output_reference["sections_unaddressed"]
 
 
-def test_research_may_look_things_up_and_insights_may_not(db_session: Session) -> None:
-    """Only the gathering stage gets tools; later stages reason over what it stored."""
+def test_the_two_model_agents_get_no_tools(db_session: Session) -> None:
+    """Insights and Personalization reason only over what Research stored.
+
+    Asserted on the request the adapter actually built, not on the prompt text: an
+    empty `allowed_tools` is what makes it impossible for either of them to cite a
+    page the evidence chain never gathered.
+    """
 
     campaign, company, contact = _records(db_session)
-    research_thinker = ScriptedThinker({"overview": {"summary": "s"}})
-    context = _context(
-        db_session, campaign=campaign, contact=contact, agent_id=AgentIdentifier.RESEARCH
+    dossiers.interpret(
+        db_session,
+        company=company,
+        submission=dossiers.submit(
+            db_session, company=company, producer="test", payload={"overview": {"summary": "s"}}
+        )[0],
+        interpreter="test",
+        sections={"overview": {"summary": "s"}},
     )
-    ResearchAgentAdapter(thinker_factory=lambda _s: research_thinker).execute(context)
-    assert research_thinker.requests[0].allowed_tools == ("WebSearch",)
 
     insights_thinker = ScriptedThinker(
         {"claims": [{"claim": "c", "source_url": "https://kiln.example", "evidence_summary": "e"}]}
@@ -220,44 +230,74 @@ def test_research_may_look_things_up_and_insights_may_not(db_session: Session) -
     InsightsAgentAdapter(thinker_factory=lambda _s: insights_thinker).execute(context)
     assert insights_thinker.requests[0].allowed_tools == ()
 
+    eligible = _with_eligible_insight(db_session, company)
+    draft_thinker = ScriptedThinker(
+        {
+            "subject": "s",
+            "body": "b",
+            "rationale": "r",
+            "evidence_insight_ids": [eligible],
+        }
+    )
+    context = _context(
+        db_session, campaign=campaign, contact=contact, agent_id=AgentIdentifier.PERSONALIZATION
+    )
+    PersonalizationAgentAdapter(thinker_factory=lambda _s: draft_thinker).execute(context)
+    assert draft_thinker.requests[0].allowed_tools == ()
+
 
 def test_no_agent_runs_without_explicit_live_configuration(db_session: Session) -> None:
-    """There is no simulated mode: fabricated research would reach a real email."""
+    """There is no simulated mode: fabricated research would reach a real email.
+
+    Research refuses with its own code because it refuses for its own reason — it is
+    about to read another organisation's website, not spend a model call. The
+    guarantee is identical: nothing runs until a campaign says so.
+    """
 
     campaign, _, contact = _records(db_session)
-    for agent_id, adapter in (
-        (
-            AgentIdentifier.RESEARCH,
-            ResearchAgentAdapter(thinker_factory=lambda _s: ScriptedThinker()),
-        ),
+    for agent_id, adapter, expected in (
+        (AgentIdentifier.RESEARCH, DEFAULT_ADAPTERS[AgentIdentifier.RESEARCH], "research_not_live"),
         (
             AgentIdentifier.INSIGHTS,
             InsightsAgentAdapter(thinker_factory=lambda _s: ScriptedThinker()),
+            "thinking_live_disabled",
         ),
         (
             AgentIdentifier.PERSONALIZATION,
             PersonalizationAgentAdapter(thinker_factory=lambda _s: ScriptedThinker()),
+            "thinking_live_disabled",
         ),
     ):
         context = _context(db_session, campaign=campaign, contact=contact, agent_id=agent_id)
         context.config["live"] = False
         with pytest.raises(AgentBlocked) as caught:
             adapter.execute(context)
-        assert caught.value.code == "thinking_live_disabled"
+        assert caught.value.code == expected, agent_id
 
 
 def test_a_model_timeout_is_retryable_and_stores_nothing(db_session: Session) -> None:
+    """The thinking seam's failure translation, on an Agent that still uses it."""
+
     campaign, company, contact = _records(db_session)
-    context = _context(
-        db_session, campaign=campaign, contact=contact, agent_id=AgentIdentifier.RESEARCH
+    dossiers.interpret(
+        db_session,
+        company=company,
+        submission=dossiers.submit(
+            db_session, company=company, producer="test", payload={"overview": {"summary": "s"}}
+        )[0],
+        interpreter="test",
+        sections={"overview": {"summary": "s"}},
     )
-    adapter = ResearchAgentAdapter(
+    context = _context(
+        db_session, campaign=campaign, contact=contact, agent_id=AgentIdentifier.INSIGHTS
+    )
+    adapter = InsightsAgentAdapter(
         thinker_factory=lambda _s: ScriptedThinker(error=ThinkingTimeout("too slow"))
     )
     with pytest.raises(Exception) as caught:  # noqa: PT011 - class asserted below
         adapter.execute(context)
     assert caught.value.retryable is True  # type: ignore[attr-defined]
-    assert dossiers.current_version(db_session, company_id=company.id) is None
+    assert insights_evidence.list_for_company(db_session, company_id=company.id) == []
 
 
 # --- Insights ---------------------------------------------------------------
