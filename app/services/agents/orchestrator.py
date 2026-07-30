@@ -1534,14 +1534,31 @@ def execute_started_job(
             actor=worker_id,
         )
     except Exception as exc:  # noqa: BLE001 - converted to a bounded retry classification
+        # Name what broke. This used to read only "an unexpected operational error":
+        # the exception type was recorded in `error_detail` but appeared in no
+        # message, so a worker log full of these was a dead end — every line
+        # identical, nothing to search for, and the one fact that identifies the
+        # cause reachable only by querying the database by hand.
+        #
+        # Deliberately still not the exception's own message: that text is
+        # unsanitized and can carry a filesystem path, a prompt fragment or a
+        # credential. The type names the fault, and the full detail continues to
+        # reach the job record where the Workbench sanitizes it on the way to a page.
         return _handle_execution_error(
             session,
             membership=membership,
             job=job,
             error=AgentRetryableError(
                 "unexpected_error",
-                "The Agent encountered an unexpected operational error.",
-                detail={"exception_type": type(exc).__name__},
+                (
+                    "The Agent encountered an unexpected operational error "
+                    f"({type(exc).__name__}). This is a defect rather than a data "
+                    "problem: the same input will fail the same way until it is fixed."
+                ),
+                detail={
+                    "exception_type": type(exc).__name__,
+                    "exception_module": type(exc).__module__,
+                },
             ),
             actor=worker_id,
         )

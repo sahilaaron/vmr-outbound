@@ -119,20 +119,32 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _line(execution: WorkerExecution) -> str:
-    return json.dumps(
-        {
-            "job_id": str(execution.job.id) if execution.job else None,
-            "campaign_contact_id": (
-                str(execution.campaign_contact_id)
-                if execution.campaign_contact_id is not None
-                else None
-            ),
-            "agent": execution.agent_id.value if execution.agent_id else None,
-            "status": execution.public_status,
-            "message": execution.message,
-        },
-        sort_keys=True,
-    )
+    """One job's outcome, as one line of JSON.
+
+    ``error_class`` is included because without it a failing run is unreadable: the
+    message alone repeats verbatim for every affected contact, and the code that
+    distinguishes "this company has no website" from "the Agent crashed" was only in
+    the database. A tail of this log should be enough to tell which of those it is.
+    """
+
+    job = execution.job
+    line: dict[str, object] = {
+        "job_id": str(job.id) if job else None,
+        "campaign_contact_id": (
+            str(execution.campaign_contact_id)
+            if execution.campaign_contact_id is not None
+            else None
+        ),
+        "agent": execution.agent_id.value if execution.agent_id else None,
+        "status": execution.public_status,
+        "message": execution.message,
+    }
+    if job is not None and job.error_class:
+        line["error_class"] = job.error_class
+        # Attempt/limit turns "retrying" from an open question into a countdown: an
+        # operator can see whether this is about to give up or loop for another hour.
+        line["attempt"] = f"{job.attempts}/{job.max_attempts}"
+    return json.dumps(line, sort_keys=True)
 
 
 def _current_execution(job: AgentJob, message: str) -> WorkerExecution:

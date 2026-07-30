@@ -9,6 +9,9 @@ company record is worse than none — the missing half is invisible downstream.
 
 from __future__ import annotations
 
+import subprocess
+from unittest import mock
+
 import pytest
 from app.core.config import Settings
 from app.services.thinking.claude_cli import ClaudeCliThinker, extract_json_object
@@ -94,3 +97,72 @@ def test_a_tool_permission_is_only_passed_when_the_call_allows_one() -> None:
     assert thinker._arguments(
         ThinkingRequest(prompt="x", purpose="p", allowed_tools=("WebSearch",))
     ) == ["--allowedTools", "WebSearch"]
+
+
+def test_non_ascii_survives_the_round_trip_in_both_directions() -> None:
+    """A prospect named Sørensen must not break the seam.
+
+    `cat` echoes stdin, so this exercises the encode of the prompt and the decode of
+    the output in one pass. Every character here is one that a real campaign carries
+    and that a Windows code page cannot represent: Nordic and Arabic names, an em
+    dash, the curly quotes the CLI's own output uses, a CJK company name.
+    """
+
+    payload = (
+        '{"claims": ["Ana Sørensen — Sanko Pharma \\u2018quality\\u2019 roadmap", '
+        '"شركة الخليج", "京セラ"]}'
+    )
+    settings = Settings(claude_cli_path="cat", claude_cli_arguments=())
+    thinker = ClaudeCliThinker(settings=settings)
+    result = thinker.think(ThinkingRequest(prompt=payload, purpose="test"))
+    assert result.payload["claims"][0] == "Ana Sørensen — Sanko Pharma ‘quality’ roadmap"
+    assert result.payload["claims"][1] == "شركة الخليج"
+    assert result.payload["claims"][2] == "京セラ"
+
+
+def test_the_subprocess_encoding_is_stated_rather_than_inherited() -> None:
+    """The locale must never decide how the seam talks to the CLI.
+
+    `text=True` would take the encoding from the host locale — a code page on
+    Windows, where most of the above is unrepresentable. The failure that produced
+    was a UnicodeEncodeError raised inside `subprocess.run`: not an OSError and not a
+    ThinkingError, so it escaped the seam's whole error vocabulary and surfaced as
+    the worker's opaque "unexpected operational error", retrying forever.
+
+    Asserted on the call rather than on behaviour because behaviour cannot show it:
+    on a UTF-8 host the broken version passes.
+    """
+
+    captured: dict[str, object] = {}
+    real_run = subprocess.run
+
+    def _spy(*args: object, **kwargs: object) -> object:
+        captured.update(kwargs)
+        return real_run(*args, **kwargs)  # type: ignore[arg-type]
+
+    settings = Settings(claude_cli_path="cat", claude_cli_arguments=())
+    thinker = ClaudeCliThinker(settings=settings)
+    with mock.patch.object(subprocess, "run", _spy):
+        thinker.think(ThinkingRequest(prompt='{"ok": true}', purpose="test"))
+
+    assert captured.get("encoding") == "utf-8"
+    assert captured.get("errors") == "strict", (
+        "replace would substitute U+FFFD and hand back a quietly altered answer, "
+        "which is the partial read this seam refuses to do"
+    )
+    assert "text" not in captured, "text=True is what defers to the locale"
+
+
+def test_output_that_is_not_utf8_is_malformed_not_an_unexplained_crash() -> None:
+    """A decode failure has to arrive in the seam's own vocabulary."""
+
+    settings = Settings(claude_cli_path="cat", claude_cli_arguments=())
+    thinker = ClaudeCliThinker(settings=settings)
+
+    def _bad_bytes(*_args: object, **_kwargs: object) -> object:
+        raise UnicodeDecodeError("utf-8", b"\xff\xfe", 0, 1, "invalid start byte")
+
+    with mock.patch.object(subprocess, "run", _bad_bytes):
+        with pytest.raises(ThinkingMalformed) as caught:
+            thinker.think(ThinkingRequest(prompt="x", purpose="test"))
+    assert "not valid UTF-8" in str(caught.value)
