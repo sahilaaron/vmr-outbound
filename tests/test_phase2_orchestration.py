@@ -495,6 +495,239 @@ def test_a_paused_stage_still_waits_for_an_operator_to_skip_it(
     assert enrolled.membership.next_stage is None
 
 
+def _research_in_flight(
+    db: Session,
+    campaign: Campaign,
+    contact: Contact,
+) -> tuple[campaign_contacts.EnrollmentResult, AgentJob]:
+    """Drive a Contact to a durably RUNNING Research stage with a claimed job.
+
+    Claim and Running are committed before an adapter is ever called, so this is
+    an ordinary state for the pipeline to be found in — a worker restart or an
+    expired lease leaves it behind — not a contrived one. The adapter is
+    deliberately never executed: what is under test is what the Campaign controls
+    do to a stage whose work has already started.
+    """
+
+    controls.set_global_control(
+        db,
+        agent_id=AgentIdentifier.RESEARCH,
+        status=AgentControlStatus.ENABLED,
+    )
+    enrolled = campaign_contacts.enrol_contact(
+        db,
+        campaign_id=campaign.id,
+        contact_id=contact.id,
+        source_type="manual",
+        enqueue=True,
+        desired_stage=AgentIdentifier.RESEARCH,
+    )
+    run_next(db, worker_id="phase2-test")
+    run_next(db, worker_id="phase2-test")
+    assert enrolled.membership.next_stage is AgentIdentifier.RESEARCH
+
+    claimed = claim_next_campaign_job(db, worker_id="phase2-test")
+    assert claimed is not None and claimed.agent_id is AgentIdentifier.RESEARCH
+    assert prepare_leased_job(db, job=claimed, worker_id="phase2-test") is None
+    assert _job_status(claimed) is AgentJobStatus.IN_PROGRESS
+    return enrolled, claimed
+
+
+def _research_state(
+    db: Session,
+    enrolled: campaign_contacts.EnrollmentResult,
+) -> PipelineStageStatus:
+    state = pipeline.agent_state(
+        db,
+        campaign_contact_id=enrolled.membership.id,
+        agent_id=AgentIdentifier.RESEARCH,
+    )
+    assert state is not None
+    return _pipeline_status(state)
+
+
+def test_pausing_a_campaign_does_not_skip_a_running_stage(db_session: Session) -> None:
+    """Pausing a Campaign must not rewrite work that has already started.
+
+    The master switch forces every Agent to DISABLED, and a disabled skippable
+    Agent is normally stepped over. Applied to a Research stage a worker is
+    already running, that meant asking for RUNNING -> SKIPPED: an illegal move
+    that raised out of ``transition_stage`` and reached the operator as a 500 on
+    the pause button, with the Campaign left neither paused nor running.
+    """
+
+    campaign, _, contact = _records(db_session)
+    enrolled, job = _research_in_flight(db_session, campaign, contact)
+    assert _research_state(db_session, enrolled) is PipelineStageStatus.RUNNING
+
+    campaigns.set_campaign_execution(
+        db_session,
+        campaign.id,
+        enabled=False,
+        reason="operator pressed pause",
+    )
+
+    assert _research_state(db_session, enrolled) is PipelineStageStatus.DISABLED
+    assert _job_status(job) is AgentJobStatus.PAUSED
+    assert job.error_class == "agent_disabled"
+    # The Contact is still standing at Research, not moved past it.
+    assert enrolled.membership.next_stage is AgentIdentifier.RESEARCH
+    snapshot = pipeline.pipeline_snapshot(db_session, campaign_contact_id=enrolled.membership.id)
+    assert snapshot is not None
+    assert not [
+        event
+        for event in snapshot.events
+        if event.event_type is PipelineEventType.STAGE_SKIPPED
+        and event.agent_id is AgentIdentifier.RESEARCH
+    ]
+
+
+def test_resuming_a_campaign_continues_the_same_job_rather_than_a_second_one(
+    db_session: Session,
+) -> None:
+    """Resume returns the stage to where it was, and enqueues nothing new."""
+
+    campaign, _, contact = _records(db_session)
+    enrolled, job = _research_in_flight(db_session, campaign, contact)
+    campaigns.set_campaign_execution(db_session, campaign.id, enabled=False, reason="pause")
+
+    campaigns.set_campaign_execution(db_session, campaign.id, enabled=True, reason="resume")
+
+    assert _research_state(db_session, enrolled) is PipelineStageStatus.WAITING
+    assert _job_status(job) is AgentJobStatus.PENDING
+    assert job.error_class is None
+    assert enrolled.membership.next_stage is AgentIdentifier.RESEARCH
+    research_jobs = db_session.scalar(
+        select(func.count(AgentJob.id)).where(
+            AgentJob.campaign_contact_id == enrolled.membership.id,
+            AgentJob.agent_id == AgentIdentifier.RESEARCH,
+        )
+    )
+    assert research_jobs == 1
+
+
+def test_pausing_a_campaign_does_not_step_over_a_queued_skippable_stage(
+    db_session: Session,
+) -> None:
+    """A pause is temporary; SKIPPED is terminal.
+
+    The queued case never raised, so it never announced itself — it silently
+    discarded every skippable stage of every Contact in the Campaign, and resume
+    could not undo it because no transition leads out of SKIPPED. Only a control
+    that says this Campaign *does not use* the stage may step over it.
+    """
+
+    campaign, _, contact = _records(db_session)
+    controls.set_global_control(
+        db_session,
+        agent_id=AgentIdentifier.RESEARCH,
+        status=AgentControlStatus.ENABLED,
+    )
+    enrolled = campaign_contacts.enrol_contact(
+        db_session,
+        campaign_id=campaign.id,
+        contact_id=contact.id,
+        source_type="manual",
+        enqueue=True,
+        desired_stage=AgentIdentifier.RESEARCH,
+    )
+    run_next(db_session, worker_id="phase2-test")
+    run_next(db_session, worker_id="phase2-test")
+    assert _research_state(db_session, enrolled) is PipelineStageStatus.WAITING
+
+    campaigns.set_campaign_execution(db_session, campaign.id, enabled=False, reason="pause")
+
+    assert _research_state(db_session, enrolled) is PipelineStageStatus.DISABLED
+    assert enrolled.membership.next_stage is AgentIdentifier.RESEARCH
+
+    campaigns.set_campaign_execution(db_session, campaign.id, enabled=True, reason="resume")
+
+    assert _research_state(db_session, enrolled) is PipelineStageStatus.WAITING
+    assert enrolled.membership.next_stage is AgentIdentifier.RESEARCH
+
+
+def test_disabling_one_agent_does_not_skip_its_running_stage_either(
+    db_session: Session,
+) -> None:
+    """The same illegal move is reachable from the per-Agent control.
+
+    Stepping over a disabled skippable Agent is right for a stage that has not
+    started. It is not a reason to declare a claimed, running job skipped, so the
+    guard belongs to the state of the stage and not only to the master switch.
+    """
+
+    campaign, _, contact = _records(db_session)
+    enrolled, job = _research_in_flight(db_session, campaign, contact)
+    controls.set_global_control(
+        db_session,
+        agent_id=AgentIdentifier.RESEARCH,
+        status=AgentControlStatus.DISABLED,
+        reason="switched off while the prompt is checked",
+    )
+
+    reconcile_agent_control(
+        db_session,
+        agent_id=AgentIdentifier.RESEARCH,
+        campaign_id=campaign.id,
+        actor="test",
+    )
+
+    assert _research_state(db_session, enrolled) is PipelineStageStatus.DISABLED
+    assert _job_status(job) is AgentJobStatus.PAUSED
+    assert enrolled.membership.next_stage is AgentIdentifier.RESEARCH
+
+
+class _AlwaysFailIdentity:
+    agent_id = AgentIdentifier.IDENTITY
+
+    def execute(self, context: AgentExecutionContext) -> AgentExecutionResult:
+        del context
+        raise AgentRetryableError(
+            "temporary_dependency",
+            "The dependency is temporarily unavailable.",
+        )
+
+
+def test_pausing_a_campaign_keeps_a_failed_stage_failed(db_session: Session) -> None:
+    """A Campaign containing a failed stage must still be pausable.
+
+    Nothing about FAILED leads to DISABLED — a failure is answered by a retry or
+    a re-run, not by a control — so projecting the master switch onto it raised
+    the same ``PipelineStateError`` as the running stage did. One stopped Contact
+    was enough to make the whole Campaign unpausable, which is the opposite of
+    what a safety stop is for.
+    """
+
+    campaign, _, contact = _records(db_session)
+    enrolled = campaign_contacts.enrol_contact(
+        db_session,
+        campaign_id=campaign.id,
+        contact_id=contact.id,
+        source_type="manual",
+        enqueue=True,
+        desired_stage=AgentIdentifier.IDENTITY,
+    )
+    assert enrolled.queued_job is not None
+    enrolled.queued_job.max_attempts = 1
+    db_session.flush()
+    run_next(
+        db_session,
+        worker_id="phase2-test",
+        adapters={AgentIdentifier.IDENTITY: _AlwaysFailIdentity()},
+    )
+    identity = pipeline.agent_state(
+        db_session,
+        campaign_contact_id=enrolled.membership.id,
+        agent_id=AgentIdentifier.IDENTITY,
+    )
+    assert identity is not None and _pipeline_status(identity) is PipelineStageStatus.FAILED
+
+    campaigns.set_campaign_execution(db_session, campaign.id, enabled=False, reason="pause")
+
+    assert _pipeline_status(identity) is PipelineStageStatus.FAILED
+    assert identity.reason_code == "temporary_dependency"
+
+
 def test_safety_critical_agent_cannot_be_deliberately_skipped(
     db_session: Session,
 ) -> None:

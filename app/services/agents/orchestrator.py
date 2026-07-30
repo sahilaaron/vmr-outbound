@@ -31,12 +31,13 @@ from app.services.agents.adapters import (
     AgentRetryableError,
     AgentWaiting,
 )
-from app.services.agents.controls import effective_control
+from app.services.agents.controls import CAMPAIGN_EXECUTION_SOURCE, effective_control
 from app.services.agents.registry import get_agent_spec
 from app.services.campaign_contacts import refresh_eligibility
 from app.services.pipeline import (
     agent_state,
     append_event,
+    can_transition,
     dependencies_satisfied,
     transition_stage,
 )
@@ -305,7 +306,29 @@ def schedule_next(
         # A disabled Agent that is NOT skippable still stops dead. Sending is the
         # case that matters: switching it off must mean nothing is sent, never
         # "silently proceed as though sending had happened".
-        if spec.skippable and agent_id is not AgentIdentifier.CAPTURE:
+        #
+        # Two further cases are never stepped over, because in both the skip
+        # would assert something untrue and SKIPPED is terminal — no transition
+        # leads out of it, so neither is recoverable by resuming.
+        #
+        # A Campaign whose master execution switch is off is *paused*, not
+        # configured without this stage. The operator pressed "Pause campaign";
+        # auto-skipping would answer that by permanently discarding every
+        # skippable stage of every Contact in it, and resuming would find the
+        # work gone rather than where it was left.
+        #
+        # A stage that cannot legally reach SKIPPED from where it is has work
+        # that already started — RUNNING above all. Treating a claimed, running
+        # Research job as unstarted work to step over is exactly wrong: the job
+        # exists, may still finish, and its stage is not the Campaign's to
+        # rewrite from here. This used to raise ``PipelineStateError`` out of
+        # transition_stage and surface as a 500 on the pause button.
+        if (
+            spec.skippable
+            and agent_id is not AgentIdentifier.CAPTURE
+            and control.source != CAMPAIGN_EXECUTION_SOURCE
+            and can_transition(state.status, PipelineStageStatus.SKIPPED)
+        ):
             transition_stage(
                 session,
                 membership=membership,
@@ -333,7 +356,15 @@ def schedule_next(
                 priority=priority,
                 allow_enqueue=allow_enqueue,
             )
-        if state.status is not PipelineStageStatus.DISABLED:
+        # A control projects itself onto the stage only where that is a legal
+        # move. A stage that already failed keeps its failure: "disabled" would
+        # overwrite the one durable fact an operator needs, and the control's
+        # actual effect — that nothing is queued from here — holds either way.
+        # This is the same hazard as the skip above, and the reason a pause used
+        # to be able to 500 on a Campaign that merely contained a failed stage.
+        if state.status is not PipelineStageStatus.DISABLED and can_transition(
+            state.status, PipelineStageStatus.DISABLED
+        ):
             transition_stage(
                 session,
                 membership=membership,
@@ -346,7 +377,9 @@ def schedule_next(
             )
         return None
     if control.status is AgentControlStatus.PAUSED:
-        if state.status is not PipelineStageStatus.PAUSED:
+        if state.status is not PipelineStageStatus.PAUSED and can_transition(
+            state.status, PipelineStageStatus.PAUSED
+        ):
             transition_stage(
                 session,
                 membership=membership,

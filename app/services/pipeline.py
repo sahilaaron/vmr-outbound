@@ -97,6 +97,19 @@ _ALLOWED: dict[PipelineStageStatus, frozenset[PipelineStageStatus]] = {
 }
 
 
+def can_transition(previous: PipelineStageStatus, target: PipelineStageStatus) -> bool:
+    """Whether the durable stage machine permits this move.
+
+    ``transition_stage`` raises on an illegal move, which is right when the target
+    is dictated by something that already happened. A caller that *chooses* a
+    target — a control projecting itself onto whatever state it finds — asks first
+    instead, so an illegal move becomes a different legal projection rather than
+    an exception an operator meets as a 500.
+    """
+
+    return target in _ALLOWED[previous]
+
+
 def agent_state(
     session: Session,
     *,
