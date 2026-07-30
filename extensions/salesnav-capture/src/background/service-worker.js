@@ -650,6 +650,36 @@ async function fetchLabels() {
   }
 }
 
+/**
+ * Ask the backend whether it is reachable, right now.
+ *
+ * The panel's connection badge used to be written only as a side effect of a
+ * save, which made it a record of the last save rather than a statement about the
+ * backend. A failed save latched it to "Not connected" and nothing could clear it
+ * — so the badge stayed wrong after the backend came back, on the one screen
+ * where "is it reachable?" is the question actually being asked.
+ *
+ * This reuses the label endpoint rather than adding a health route: it is
+ * read-only, loopback-only, already permitted for this origin, and already proven
+ * by the labels fetch, so a probe cannot succeed where a real request would fail.
+ * Distinguishing the failure kinds matters — a denied optional permission is not
+ * an unreachable backend, and telling an operator to start a server that is
+ * already running wastes their time.
+ */
+async function probeBackend() {
+  const result = await fetchLabels();
+  if (result.ok) return { ok: true, state: "connected" };
+  if (result.error === "permission_denied") {
+    return { ok: false, state: "not_allowed", originPattern: result.originPattern };
+  }
+  if (result.error === "origin_not_allowed") {
+    return { ok: false, state: "not_allowed" };
+  }
+  // Anything else — a timeout, a refused connection, an HTTP error — means the
+  // backend did not usefully answer.
+  return { ok: false, state: "unreachable", error: result.error };
+}
+
 /** Fetch active/draft Campaigns for the optional filing selector. */
 async function fetchCampaigns() {
   const prefs = await getPrefs();
@@ -1269,6 +1299,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         break;
       case "FETCH_LABELS":
         sendResponse(await fetchLabels());
+        break;
+      case "PROBE_BACKEND":
+        sendResponse(await probeBackend());
         break;
       case "FETCH_CAMPAIGNS":
         sendResponse(await fetchCampaigns());

@@ -166,13 +166,45 @@
   async function refreshPermissionState() {
     const pattern = self.SNCapture.permissions.originPatternForUrl(saveTargetUrl());
     if (!pattern) return;
-    if (shell.getConnection() === "connected" || shell.getConnection() === "unreachable") return;
+    // "connected" is a probed fact and is not downgraded to a permission state.
+    // "unreachable" deliberately IS re-derived: it used to be sticky, so a badge
+    // that latched on one failed save stayed wrong forever, including after the
+    // backend came back.
+    if (shell.getConnection() === "connected") return;
     try {
       const has = await chrome.permissions.contains({ origins: [pattern] });
       setConnection(has ? "allowed" : "not_allowed");
     } catch (_e) {
       /* leave the state as it is rather than claiming something untrue */
     }
+  }
+
+  /**
+   * Ask the backend whether it is reachable, and say so.
+   *
+   * The badge used to be written only as a side effect of a save, which made it a
+   * record of the last save rather than a statement about the backend. Probing is
+   * read-only and costs one request against an endpoint the panel already calls.
+   *
+   * Silent when permission has not been granted yet: an operator who has not
+   * approved loopback access has not failed at anything, and "Not allowed yet"
+   * already says the true thing.
+   */
+  async function probeConnection() {
+    const pattern = self.SNCapture.permissions.originPatternForUrl(saveTargetUrl());
+    if (!pattern) return;
+    try {
+      const granted = await chrome.permissions.contains({ origins: [pattern] });
+      if (!granted) {
+        setConnection("not_allowed");
+        return;
+      }
+    } catch (_e) {
+      return;
+    }
+    const r = await send({ type: "PROBE_BACKEND" });
+    if (!r || !r.state) return;
+    setConnection(r.state);
   }
 
   // ---- labels + note ------------------------------------------------------
@@ -1305,6 +1337,9 @@
     if (r && r.ok) {
       currentPrefs = r.prefs;
       await refreshPermissionState();
+      // The settings screen is where "can it reach the backend?" is actually
+      // being asked, and a saved URL is exactly when the answer changes.
+      await probeConnection();
       closeSettings();
     }
   }
@@ -1315,6 +1350,9 @@
     $("settings-version").textContent = version;
     $("settings-connection").textContent = $("conn-text").textContent;
     showView("settings");
+    // Re-check on open rather than mirroring a possibly stale badge. This is the
+    // one screen whose whole purpose is the connection.
+    void probeConnection();
   }
 
   function closeSettings() {
@@ -1463,6 +1501,9 @@
     refreshPermissionState();
     refreshLabelSuggestions();
     refreshCampaigns(false);
+    // On a cold open, say something true about the backend rather than "Not
+    // checked" until the operator happens to attempt a save.
+    void probeConnection();
   }
 
   document.addEventListener("DOMContentLoaded", init);
