@@ -113,16 +113,12 @@
         campaign shares.
       </div>
 
-      <div class="check-row" style="margin-top:12px">
-        <input type="checkbox" id="consult-size" name="consult_employee_size"
-               {{ "checked" if overview.campaign.consult_employee_size }}>
-        <label for="consult-size">Order email guesses by company size</label>
-      </div>
-      <div class="help">
-        On, companies over 50 employees try <span class="mono">firstname.lastname</span>
-        first and smaller ones try <span class="mono">firstname</span> first. Off,
-        every contact uses the same order. Either way an unknown company size never
-        blocks discovery — it just uses the default order.
+      <div class="help" style="margin-top:12px">
+        Email formats are fixed for every contact:
+        <span class="mono">firstname.lastname</span>,
+        <span class="mono">firstname</span>,
+        <span class="mono">finitiallastname</span> — tried in that order, stopping at
+        the first verified address.
       </div>
 
       <button class="btn small" type="submit" style="margin-top:12px">Save policy</button>

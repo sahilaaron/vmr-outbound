@@ -64,30 +64,24 @@ Each Agent must support visible state, retries, failure inspection, global enabl
 
 Search at most three candidates per Contact and stop after a verified address is found.
 
-Employee count chooses the **order** of the three formats and never how many are
-tried. An unknown or stale employee count is therefore not a refusal: it selects
-the default order below and records the classification as `unknown`. It used to
-return zero candidates, which meant a Contact at a company whose headcount nobody
-had sourced could never have an address discovered at all — and since headcount is
-only sourced by company research, which is optional, that was the ordinary case.
-
-A Campaign may switch size ordering off entirely
-(`campaigns.consult_employee_size`), in which case every Contact uses the default
-order. The default order when size is unknown or not consulted is the
-more-than-50 order, because `firstname.lastname` is the most common corporate
-pattern and so the least bad first guess when nothing is known.
-
-### Company has more than 50 employees
+One fixed order for every Contact:
 
 1. `firstname.lastname`
-2. `finitiallastname`
-3. `lastnamefinitial`
-
-### Company has 50 or fewer employees
-
-1. `firstname`
-2. `firstname.lastname`
+2. `firstname`
 3. `finitiallastname`
+
+Employee count no longer enters into it. It never chose how many candidates to
+try, only the order of the same three, and before that it was a hard refusal: an
+unknown or stale count returned zero candidates, so a Contact at a company whose
+headcount nobody had sourced could never have an address discovered at all. Since
+headcount is only sourced by optional company research, that was the ordinary
+case — and downstream it read as "no address could be found" rather than as a
+policy refusal.
+
+The classification is still derived and still recorded on each attempt, because
+what was known about a company when an attempt was made is worth keeping. It
+simply does not steer anything, which is why `campaigns.consult_employee_size` was
+removed rather than left as a switch that changes nothing.
 
 The strategy should be implemented through a versioned policy boundary so ordering can change later without rewriting the pipeline.
 

@@ -68,53 +68,87 @@
   </div>
 </div>
 
-{# --- Agent controls for this Campaign ----------------------------------- #}
+{# --- Agent controls for this Campaign -----------------------------------
+
+  A strip of one chip per Agent instead of a nine-row table of forms. The table
+  answered "what is the state of every Agent, and how do I change each one?" at
+  equal weight, all the time — which cost a screen of scrolling to answer the
+  question actually being asked, which is "what is live right now?".
+
+  The chips answer that at a glance and in pipeline order, so the strip doubles as
+  a picture of the pipeline. Changing something is one disclosure away, because
+  reading happens constantly and overriding happens rarely.
+-------------------------------------------------------------------------- #}
 <div class="card">
   <div class="card-head">
-    <h2>Agents in this Campaign</h2>
-    <span class="hint">An override changes this Campaign only. No other Campaign is affected.</span>
+    <h2>Agents</h2>
+    <span class="hint">In pipeline order. An override changes this Campaign only.</span>
   </div>
-  <div class="card-body tight">
-    <table>
-      <thead>
-        <tr><th scope="col">Agent</th><th scope="col">Effective here</th><th scope="col">Where it comes from</th><th scope="col">Change for this Campaign</th></tr>
-      </thead>
-      <tbody>
-        {% for control in execution.controls %}
-        <tr>
-          <td>
-            <a href="/workbench/agents/{{ control.agent_id.value }}?campaign={{ execution.campaign_id }}">{{ control.display_name }}</a>
-            {% if not control.implemented %}<div class="small muted-text">no adapter registered</div>{% endif %}
-          </td>
-          <td>{{ control_badge(control.status) }}</td>
-          <td class="small">
-            {{ control_source(control) }}
-            {% if control.reason %}<div class="small wrap muted-text">{{ control.reason }}</div>{% endif %}
-          </td>
-          <td>
-            <form method="post" action="/workbench/campaigns/{{ execution.campaign_id }}/agents/{{ control.agent_id.value }}/override" class="action-row">
-              <input type="hidden" name="expected_version" value="{{ control.campaign_version if control.campaign_version is not none else '' }}">
-              <label class="sr-only" for="ovr-{{ control.agent_id.value }}">Status for {{ control.display_name }} in this Campaign</label>
-              <select id="ovr-{{ control.agent_id.value }}" name="status" required>
-                <option value="enabled">enabled</option>
-                <option value="paused">paused</option>
-                <option value="disabled">disabled</option>
-              </select>
-              <label class="sr-only" for="ovr-reason-{{ control.agent_id.value }}">Reason</label>
-              <input id="ovr-reason-{{ control.agent_id.value }}" name="reason" type="text" placeholder="Why (recorded)" maxlength="500">
-              <button class="btn small secondary" type="submit">Override</button>
-            </form>
-            {% if control.campaign_scoped %}
-            <form method="post" action="/workbench/campaigns/{{ execution.campaign_id }}/agents/{{ control.agent_id.value }}/override/clear" class="action-row">
-              <input type="hidden" name="expected_version" value="{{ control.campaign_version if control.campaign_version is not none else '' }}">
-              <button class="btn small secondary" type="submit">Clear</button>
-            </form>
-            {% endif %}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+  <div class="card-body">
+    <div class="agent-strip">
+      {% for control in execution.controls %}
+      {% set tone = "ok" if control.status.value == "enabled"
+                    else ("warn" if control.status.value == "paused" else "muted") %}
+      <a class="agent-chip is-{{ tone }}{{ ' is-unbuilt' if not control.implemented }}"
+         href="/workbench/agents/{{ control.agent_id.value }}?campaign={{ execution.campaign_id }}"
+         title="{{ control.display_name }} — {{ control.status.value }}{% if control.campaign_scoped %} (overridden for this Campaign){% endif %}{% if not control.implemented %} · no adapter registered{% endif %}{% if control.reason %} · {{ control.reason }}{% endif %}">
+        <span class="agent-chip-dot" aria-hidden="true"></span>
+        <span class="agent-chip-name">{{ control.display_name.replace(" Agent", "") }}</span>
+        {% if control.campaign_scoped %}<span class="agent-chip-mark" title="Overridden for this Campaign">*</span>{% endif %}
+      </a>
+      {% endfor %}
+    </div>
+    <p class="small muted-text" style="margin-top:10px">
+      Green is running, amber is paused, grey is off. An asterisk marks an override
+      that applies to this Campaign only. A dashed outline means no adapter is
+      registered, which no control can change.
+    </p>
+
+    <details style="margin-top:12px">
+      <summary class="small">Change an Agent for this Campaign</summary>
+      <div class="table-wrap" style="margin-top:10px">
+        <table>
+          <thead>
+            <tr><th scope="col">Agent</th><th scope="col">Effective here</th><th scope="col">Where it comes from</th><th scope="col">Change</th></tr>
+          </thead>
+          <tbody>
+            {% for control in execution.controls %}
+            <tr>
+              <td>
+                <a href="/workbench/agents/{{ control.agent_id.value }}?campaign={{ execution.campaign_id }}">{{ control.display_name }}</a>
+                {% if not control.implemented %}<div class="small muted-text">no adapter registered</div>{% endif %}
+              </td>
+              <td>{{ control_badge(control.status) }}</td>
+              <td class="small">
+                {{ control_source(control) }}
+                {% if control.reason %}<div class="small wrap muted-text">{{ control.reason }}</div>{% endif %}
+              </td>
+              <td>
+                <form method="post" action="/workbench/campaigns/{{ execution.campaign_id }}/agents/{{ control.agent_id.value }}/override" class="action-row">
+                  <input type="hidden" name="expected_version" value="{{ control.campaign_version if control.campaign_version is not none else '' }}">
+                  <label class="sr-only" for="ovr-{{ control.agent_id.value }}">Status for {{ control.display_name }} in this Campaign</label>
+                  <select id="ovr-{{ control.agent_id.value }}" name="status" required>
+                    <option value="enabled">enabled</option>
+                    <option value="paused">paused</option>
+                    <option value="disabled">disabled</option>
+                  </select>
+                  <label class="sr-only" for="ovr-reason-{{ control.agent_id.value }}">Reason</label>
+                  <input id="ovr-reason-{{ control.agent_id.value }}" name="reason" type="text" placeholder="Why (recorded)" maxlength="500">
+                  <button class="btn small secondary" type="submit">Override</button>
+                </form>
+                {% if control.campaign_scoped %}
+                <form method="post" action="/workbench/campaigns/{{ execution.campaign_id }}/agents/{{ control.agent_id.value }}/override/clear" class="action-row">
+                  <input type="hidden" name="expected_version" value="{{ control.campaign_version if control.campaign_version is not none else '' }}">
+                  <button class="btn small secondary" type="submit">Clear</button>
+                </form>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </details>
   </div>
 </div>
 

@@ -82,13 +82,6 @@ class Campaign(Base):
     allow_provisional_domains: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
-    # Whether the email-format order consults the Company's employee count.
-    # When off, every Contact uses the default order regardless of company size.
-    # Unknown size is never a refusal either way — see
-    # app.services.email.discovery_policy.
-    consult_employee_size: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=True, server_default="true"
-    )
     settings_version: Mapped[int] = mapped_column(
         Integer, nullable=False, default=1, server_default="1"
     )

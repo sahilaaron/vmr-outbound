@@ -192,10 +192,13 @@ def test_campaign_email_agent_tries_one_child_at_a_time_and_accepts_second(
     assert accepted.agent_id is AgentIdentifier.EMAIL
     assert accepted.public_status == "completed"
     assert accepted.job is not None
-    assert contact.email == "alovelace@engines.example"
+    # Candidate 2 is now bare "firstname": the format order is one fixed list for
+    # every Contact — firstname.lastname, firstname, finitiallastname — rather than
+    # two orders chosen by company size.
+    assert contact.email == "ada@engines.example"
     assert provider.calls == [
         "ada.lovelace@engines.example",
-        "alovelace@engines.example",
+        "ada@engines.example",
     ]
 
     attempts = list(

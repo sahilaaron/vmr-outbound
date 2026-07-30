@@ -322,11 +322,12 @@ def test_a_campaign_can_open_every_stage_to_a_provisional_domain(
     assert gates.provisional_allows_for(campaign) == frozenset(gates.DownstreamStage)
 
 
-def test_the_settings_form_saves_both_switches(client: TestClient, db_session: Session) -> None:
+def test_the_settings_form_saves_the_switch_both_ways(
+    client: TestClient, db_session: Session
+) -> None:
     campaign, _, _ = _records(db_session)
     db_session.commit()
 
-    # An unchecked box is absent from the form body, which is how "off" arrives.
     response = client.post(
         f"/campaigns/{campaign.id}/settings",
         data={"allow_provisional_domains": "on"},
@@ -336,17 +337,13 @@ def test_the_settings_form_saves_both_switches(client: TestClient, db_session: S
     assert "accepted" in _flash(response)
     db_session.expire_all()
     assert campaign.allow_provisional_domains is True
-    assert campaign.consult_employee_size is False
 
-    response = client.post(
-        f"/campaigns/{campaign.id}/settings",
-        data={"consult_employee_size": "on"},
-        follow_redirects=False,
-    )
+    # An unchecked box is absent from the form body, which is how "off" arrives —
+    # so an empty post must turn it off rather than being read as "no change".
+    response = client.post(f"/campaigns/{campaign.id}/settings", data={}, follow_redirects=False)
     assert response.status_code == 303
     db_session.expire_all()
     assert campaign.allow_provisional_domains is False
-    assert campaign.consult_employee_size is True
 
 
 def test_saving_settings_bumps_the_settings_version(

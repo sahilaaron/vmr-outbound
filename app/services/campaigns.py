@@ -192,7 +192,6 @@ def update_campaign(
     cadence_config: dict[str, Any] | None | _Unset = UNSET,
     sending_settings: dict[str, Any] | None | _Unset = UNSET,
     allow_provisional_domains: bool | _Unset = UNSET,
-    consult_employee_size: bool | _Unset = UNSET,
     actor: str = "operator",
     reason: str | None = None,
 ) -> Campaign:
@@ -221,8 +220,6 @@ def update_campaign(
         )
     if not isinstance(allow_provisional_domains, _Unset):
         proposed["allow_provisional_domains"] = bool(allow_provisional_domains)
-    if not isinstance(consult_employee_size, _Unset):
-        proposed["consult_employee_size"] = bool(consult_employee_size)
     if not isinstance(sender_context, _Unset):
         proposed["sender_context"] = _json_object(sender_context, field_name="sender_context")
     if not isinstance(target_audience, _Unset):

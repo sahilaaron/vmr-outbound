@@ -652,10 +652,12 @@ def test_an_unknown_employee_count_proceeds_on_the_default_order(
 def test_stale_company_evidence_proceeds_and_records_the_staleness(
     db_session: Session,
 ) -> None:
-    """A stale headcount is a real observation the policy declines to act on.
+    """A stale headcount no longer withholds the stage, and is recorded as it was.
 
-    It is preserved on the attempt row as stale evidence, so the record still says
-    what was known and when — it just no longer withholds the whole stage over it.
+    Now that the classification steers nothing — one fixed format order for every
+    Contact — there is no reason to flatten a stale reading to "unknown". Keeping
+    what the evidence said *and* the fact that it is stale is strictly more
+    informative than discarding it.
     """
 
     fixture = make_email_fixture(db_session, research_state=ResearchState.STALE)
@@ -664,8 +666,13 @@ def test_stale_company_evidence_proceeds_and_records_the_staleness(
     state = cast(dict[str, Any], (fixture.job.result or {})[STATE_KEY])
 
     assert step.outcome is EmailExecutionOutcome.WAITING_ON_VERIFICATION
-    assert state["employee_count_class"] == "unknown"
+    assert state["employee_count_class"] == "more_than_50"
     assert state["employee_evidence"]["freshness"] == "stale"
+    assert state["ordered_candidate_formats"] == [
+        "firstname.lastname",
+        "firstname",
+        "finitiallastname",
+    ]
 
 
 def test_employee_evidence_change_during_verification_requires_scoped_refresh(

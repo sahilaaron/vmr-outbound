@@ -98,6 +98,14 @@ router = APIRouter(include_in_schema=False)
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
+#: Seconds between auto-refreshes on the Agent monitor pages.
+#:
+#: Only these pages opt in. They are the ones whose whole purpose is a queue that is
+#: moving, where a page that can only be correct at the moment it was requested is
+#: not much use — an operator was reloading by hand to learn what changed. Every
+#: other page keeps the no-JavaScript convention and renders without a script tag.
+LIVE_REFRESH_SECONDS = 5
+
 PAGE_SIZE = 50
 PREVIEW_ROWS_SHOWN = 50
 SAMPLE_ROWS_SHOWN = 5
@@ -389,11 +397,10 @@ def campaign_detail_page(
 async def campaign_settings_update(
     request: Request, campaign_id: str, db: Session = Depends(get_db)
 ) -> Response:
-    """Apply the two per-campaign policy switches.
+    """Apply the per-campaign policy switch.
 
-    The first campaign-settings write in the HTML UI. Both switches are submitted
-    together from one form, so an unchecked box means off — which is why they are
-    read as presence rather than as a value.
+    The first campaign-settings write in the HTML UI. An unchecked box is absent
+    from the form body, which is why it is read as presence rather than as a value.
     """
 
     parsed_id = _parse_uuid(campaign_id)
@@ -405,8 +412,7 @@ async def campaign_settings_update(
             db,
             parsed_id,
             allow_provisional_domains="allow_provisional_domains" in form,
-            consult_employee_size="consult_employee_size" in form,
-            reason="policy switches changed from the campaign page",
+            reason="policy switch changed from the campaign page",
         )
     except CampaignRecordNotFound:
         return _not_found(request, db, "That campaign does not exist.")
@@ -415,10 +421,9 @@ async def campaign_settings_update(
         return _redirect(f"/campaigns/{campaign_id}", err=str(exc))
     db.commit()
     provisional = "accepted" if campaign.allow_provisional_domains else "not accepted"
-    size = "on" if campaign.consult_employee_size else "off"
     return _redirect(
         f"/campaigns/{campaign_id}",
-        ok=f"Settings saved. Provisional domains {provisional}; employee-size ordering {size}.",
+        ok=f"Settings saved. Provisional domains {provisional}.",
     )
 
 
@@ -2169,6 +2174,7 @@ def agent_workbench_page(request: Request, db: Session = Depends(get_db)) -> HTM
         db,
         "agent_workbench.html",
         {
+            "live_seconds": LIVE_REFRESH_SECONDS,
             "overview": _reader(db).overview(),
             "agent_labels": _agent_labels(),
             "active_nav": "agent-workbench",
@@ -2210,6 +2216,7 @@ def agent_jobs_page(request: Request, db: Session = Depends(get_db)) -> HTMLResp
         db,
         "agent_jobs.html",
         {
+            "live_seconds": LIVE_REFRESH_SECONDS,
             "listing": listing,
             "agent_specs": list(AGENT_SPECS.values()),
             "job_states": list(workbench_views.PUBLIC_JOB_STATES),
@@ -2385,6 +2392,7 @@ def agent_campaign_page(
         db,
         "agent_campaign.html",
         {
+            "live_seconds": LIVE_REFRESH_SECONDS,
             "execution": execution,
             "agent_specs": list(AGENT_SPECS.values()),
             "stage_filter": stage.value if stage else None,
@@ -2478,6 +2486,7 @@ def agent_contact_execution_page(
         db,
         "agent_contact_execution.html",
         {
+            "live_seconds": LIVE_REFRESH_SECONDS,
             "execution": execution,
             "agent_labels": _agent_labels(),
             "active_nav": "agent-workbench",

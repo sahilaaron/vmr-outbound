@@ -110,26 +110,22 @@ _PLUS_RE = re.compile(rf"^(?P<low>{_NUMBER})\s*\+$")
 _GREATER_RE = re.compile(rf"^(?:>|morethan|over)\s*(?P<low>{_NUMBER})$")
 _AT_MOST_RE = re.compile(rf"^(?:<=|upto|atmost)\s*(?P<high>{_NUMBER})$")
 
-_LARGE_FORMATS = (
-    "firstname.lastname",
-    "finitiallastname",
-    "lastnamefinitial",
-)
-_SMALL_FORMATS = (
-    "firstname",
-    "firstname.lastname",
-    "finitiallastname",
-)
-#: Used when the Company's employee count is unknown, its evidence is stale, or
-#: the Campaign has switched size off.
+#: The three formats tried, in order, for every Contact.
 #:
-#: This is the large-company order, and that is a judgement rather than a
-#: fallback-by-accident: ``firstname.lastname`` is the most common corporate
-#: pattern overall, so it is the least bad first guess when nothing is known. The
-#: bare ``firstname`` that the small-company order leads with pays off at small
-#: firms and misses badly at large ones, which makes it the wrong thing to guess
-#: with.
-_DEFAULT_FORMATS = _LARGE_FORMATS
+#: One list, not one per company size. Size previously chose between two orders,
+#: which meant the plan for a Contact depended on a headcount that is only sourced
+#: by optional company research — so in practice the ordinary Contact got the
+#: fallback order anyway, and the branch bought inconsistency rather than accuracy.
+#:
+#: The order is deliberate. ``firstname.lastname`` is the most common corporate
+#: pattern and so the best first guess; bare ``firstname`` is common at smaller
+#: firms and cheap to try second; ``finitiallastname`` catches most of the rest.
+#: Three is the ceiling, enforced in the database by a CHECK on candidate_index.
+_ORDERED_FORMATS = (
+    "firstname.lastname",
+    "firstname",
+    "finitiallastname",
+)
 
 
 def _count(value: str) -> int:
@@ -250,14 +246,11 @@ def evaluate(
     domain: str | None,
     employee_evidence: EmployeeCountEvidence,
     now: datetime,
-    consult_employee_size: bool = True,
 ) -> EmailDiscoveryPolicyDecision:
     """Return the exact candidate plan or one explicit policy refusal.
 
-    ``consult_employee_size`` is the Campaign's answer to whether company size
-    should choose the format order at all. When false every Contact gets
-    :data:`_DEFAULT_FORMATS` and the recorded classification is ``unknown``,
-    which is truthful: the policy did not consult it.
+    Every Contact gets :data:`_ORDERED_FORMATS`. Nothing about the company changes
+    the plan; only the Contact's own name components and the domain can.
     """
 
     normalized_domain = normalize_domain(domain)
@@ -308,33 +301,19 @@ def evaluate(
             normalization_version=ENGINE_VERSION,
             reason="the Contact last name has no supported normalized email token",
         )
-    # Employee count picks the *order* of three formats. It never picked how many,
-    # and it is not evidence about whether a mailbox exists — so not knowing it is
-    # not a reason to refuse to look.
+    # Employee count no longer influences the plan at all.
     #
-    # It used to be. An unknown or stale count returned zero candidates, which
-    # meant a Contact at a company whose size nobody had sourced could never have
-    # an address discovered or verified at all. Since size is only sourced by
-    # company research, and research is optional, the common case silently
-    # produced nothing — a policy refusal that read, downstream, as "no address
-    # could be found". Unknown size now falls back to a default order and says so
-    # in the recorded classification.
-    if not consult_employee_size:
-        count_class = EmployeeCountClass.UNKNOWN
-        formats = _DEFAULT_FORMATS
-    elif (
-        freshness is not EmployeeEvidenceFreshness.FRESH
-        or count_class is EmployeeCountClass.UNKNOWN
-    ):
-        # Stale and unknown are recorded distinctly on the attempt row; both take
-        # the default order. A stale count is still a real observation, just not
-        # one this policy will act on.
-        count_class = EmployeeCountClass.UNKNOWN
-        formats = _DEFAULT_FORMATS
-    elif count_class is EmployeeCountClass.MORE_THAN_50:
-        formats = _LARGE_FORMATS
-    else:
-        formats = _SMALL_FORMATS
+    # It never chose how many candidates to try, only the order of the same three,
+    # and it was a hard refusal before that: an unknown or stale count returned
+    # zero candidates, so a Contact at a company whose headcount nobody had sourced
+    # could never have an address discovered. Since headcount is only sourced by
+    # optional company research, that was the ordinary case — and downstream it read
+    # as "no address could be found" rather than as a policy refusal.
+    #
+    # The classification is still derived and still recorded on the attempt row,
+    # because what was known about a company at the time of an attempt is worth
+    # keeping. It simply does not steer anything.
+    formats = _ORDERED_FORMATS
     candidates: list[PolicyCandidate] = []
     seen: set[str] = set()
     produced_formats: list[str] = []
@@ -391,7 +370,6 @@ def evaluate_existing_accepted_email_reuse(
     domain: str | None,
     employee_evidence: EmployeeCountEvidence,
     now: datetime,
-    consult_employee_size: bool = True,
 ) -> EmailDiscoveryPolicyDecision:
     """Authorize reuse without inventing a candidate-policy branch.
 
@@ -418,8 +396,7 @@ def evaluate_existing_accepted_email_reuse(
         reason = "the canonical Company domain is missing, malformed, or not normalized"
     else:
         if (
-            not consult_employee_size
-            or freshness is not EmployeeEvidenceFreshness.FRESH
+            freshness is not EmployeeEvidenceFreshness.FRESH
             or count_class is EmployeeCountClass.UNKNOWN
         ):
             count_class = EmployeeCountClass.UNKNOWN

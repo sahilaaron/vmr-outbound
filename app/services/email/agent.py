@@ -1092,11 +1092,9 @@ def execute_step(
     now = now or _now()
     verification_policy = verification_policy or get_policy(get_settings())
     force_refresh, refresh_scope = _force_settings(job)
-    # The Campaign owns two policy answers this execution needs: how far a
-    # provisional company domain reaches, and whether employee size chooses the
-    # candidate order. Read once here so both use the same Campaign row.
+    # The Campaign owns the one policy answer this execution needs: how far a
+    # provisional company domain reaches.
     campaign = session.get(Campaign, membership.campaign_id) if membership is not None else None
-    consult_employee_size = campaign.consult_employee_size if campaign is not None else True
 
     # Lock the permanent person so a competing accepted-email write serializes
     # with this decision rather than racing it.
@@ -1257,7 +1255,6 @@ def execute_step(
                     domain=company.domain,
                     employee_evidence=employee_evidence,
                     now=now,
-                    consult_employee_size=consult_employee_size,
                 )
                 state = _policy_json(reuse_decision)
                 state["force_refresh"] = False
@@ -1296,7 +1293,6 @@ def execute_step(
             domain=company.domain,
             employee_evidence=employee_evidence,
             now=now,
-            consult_employee_size=consult_employee_size,
         )
         state = _policy_json(decision)
         state["force_refresh"] = force_refresh
