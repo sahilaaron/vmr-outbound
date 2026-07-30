@@ -69,20 +69,42 @@ test("nothing that looks like a public profile URL is built from the member id",
   }
 });
 
-test("no derived_value warning is claimed for a profile URL that was not derived", () => {
+test("an absent handle backed by a resolving alias is provenance, not a fault", () => {
+  // The invariant these two tests protect is unchanged: nothing is fabricated,
+  // and linkedinProfileUrl stays null (asserted above). What changed is the
+  // classification of the absence.
+  //
+  // Reporting it as a fault made the panel contradict itself — the list showed a
+  // working LinkedIn icon for the row, and the very next screen said
+  // "missing: linkedinProfileUrl". It also meant nearly every row carried a
+  // "Needs review" badge, which is how a warning stops being read at all.
   const rec = capture("results-normal.html").records[0];
+  assert.equal(rec.linkedinProfileUrl, null, "still never fabricated");
+  assert.ok(rec.linkedinAliasUrl, "and this row does have a usable alias");
+
   const derived = (rec.warnings || []).filter(
     (w) => w.code === WARNINGS.DERIVED_VALUE && w.field === "linkedinProfileUrl"
   );
-  assert.deepEqual(derived, []);
-});
-
-test("the absent profile URL is reported as missing, not passed over in silence", () => {
-  const rec = capture("results-normal.html").records[0];
+  assert.equal(derived.length, 1, "the absence is recorded, as provenance");
   const missing = (rec.warnings || []).find(
     (w) => w.code === WARNINGS.MISSING_FIELD && w.field === "linkedinProfileUrl"
   );
-  assert.ok(missing, "an uncertain identity must be visible to the operator");
+  assert.ok(!missing, "and no longer as an operator fault");
+});
+
+test("an absent handle with no alias at all is still reported as missing", () => {
+  // The other half of the distinction. With nothing to open, the row genuinely
+  // does need an operator, and must keep saying so.
+  const rows = capture("results-normal.html").records.filter((r) => !r.linkedinAliasUrl);
+  for (const rec of rows) {
+    if (rec.linkedinProfileUrl) continue;
+    assert.ok(
+      (rec.warnings || []).some(
+        (w) => w.code === WARNINGS.MISSING_FIELD && w.field === "linkedinProfileUrl"
+      ),
+      "an uncertain identity with no navigation aid must be visible to the operator"
+    );
+  }
 });
 
 // --- 2. the member id is a first-class identifier ----------------------------

@@ -11,6 +11,7 @@ pages stay stateless (no sessions, no cookies).
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import date, datetime
 from pathlib import Path
@@ -80,10 +81,12 @@ from app.services.imports.importer import (
 from app.services.imports.preview import preview_import, preview_pending_batch
 from app.services.resolution import service as resolution_service
 from app.services.seller import campaign_offerings as seller_campaign_offerings
+from app.services.seller import generate as seller_generate
 from app.services.seller import profile as seller_profile
 from app.services.seller import readiness as seller_readiness
 from app.services.seller import records as seller_records
 from app.services.seller.common import OPERATOR_ACTOR, SellerKnowledgeError, parse_lines
+from app.services.thinking.claude_cli import ClaudeCliThinker
 from app.services.verification import console as verification_console
 from app.services.verification import queue as verification_queue
 from app.services.verification import service as verification_service
@@ -122,7 +125,29 @@ def _fmt_dt(value: datetime | date | None) -> str:
     return value.isoformat()
 
 
+def _pretty_json(value: object) -> str:
+    """Render stored JSON for reading, not for machines.
+
+    Dossier sections are JSONB written by a research producer, and until now the
+    page only reported whether a section was *present* — which told an operator a
+    section existed and nothing about what it said. This is what makes the content
+    visible.
+
+    ``sort_keys`` is deliberate: a stable key order means two versions of the same
+    section can be compared by eye. ``default=str`` keeps dates and UUIDs
+    readable rather than raising. An empty container renders as ``{}`` / ``[]``
+    rather than as nothing, because "looked and found nothing" is a real answer
+    and must not read as "did not look".
+    """
+
+    try:
+        return json.dumps(value, indent=2, sort_keys=True, default=str, ensure_ascii=False)
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        return str(value)
+
+
 templates.env.filters["dt"] = _fmt_dt
+templates.env.filters["pretty_json"] = _pretty_json
 
 
 def _database_ok(db: Session) -> bool:
@@ -3144,6 +3169,44 @@ def knowledge_base_page(request: Request, db: Session = Depends(get_db)) -> HTML
             "profile": seller_profile.get_profile(db),
         },
     )
+
+
+@router.post("/knowledge-base/generate")
+async def knowledge_base_generate(request: Request, db: Session = Depends(get_db)) -> Response:
+    """Fill the knowledge base from the seller's own website(s), via the local CLI.
+
+    Writes through the ordinary knowledge-base services, so every entry is
+    validated and audited exactly as a typed one is, and an existing profile,
+    offering or persona is never overwritten by a generated one.
+    """
+
+    if not _knowledge_base_enabled():
+        return _redirect("/", err="The Knowledge Base is not enabled.")
+
+    form = await request.form()
+    try:
+        websites = seller_generate.parse_websites(str(form.get("websites", "")))
+    except seller_generate.KnowledgeBaseGenerationError as exc:
+        return _redirect("/knowledge-base", err=str(exc))
+
+    settings = get_settings()
+    try:
+        outcome = seller_generate.generate_from_websites(
+            db,
+            websites=websites,
+            thinker=ClaudeCliThinker(settings=settings),
+        )
+    except seller_generate.KnowledgeBaseGenerationError as exc:
+        db.rollback()
+        return _redirect("/knowledge-base", err=f"Could not read those sites: {exc}")
+    db.commit()
+
+    message = outcome.summary
+    if outcome.skipped:
+        message = f"{message} First: {outcome.skipped[0]}"
+    if not outcome.created_anything:
+        return _redirect("/knowledge-base", err=message)
+    return _redirect("/knowledge-base", ok=message)
 
 
 @router.get("/knowledge-base/company", response_class=HTMLResponse)

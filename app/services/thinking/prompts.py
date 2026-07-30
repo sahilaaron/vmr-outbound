@@ -179,3 +179,74 @@ WHAT TO RETURN
 }}
 
 {_HONESTY}"""
+
+
+def knowledge_base_prompt(*, websites: tuple[str, ...]) -> str:
+    """Ask for the seller's own knowledge base, read off their own sites.
+
+    The one prompt in this module about the *seller* rather than a prospect, which
+    inverts the usual trust rule: here the websites ARE the first-party source, so
+    what they say about the company can be taken at its word. What still may not
+    be invented is anything they do not say — a customer name, a metric, an
+    outcome. Those become proof points only if the site states them, because a
+    proof point is something a salesperson will later be asked to stand behind.
+    """
+
+    listed = "\n".join(f"- {site}" for site in websites)
+    return f"""You are reading a company's own public website(s) to write down what
+they sell, in their own terms, so their sales team can use it consistently.
+
+WEBSITES (these are the company's own — first-party, authoritative about themselves)
+{listed}
+
+Read the home page, then whatever pages describe the products, services,
+industries served and customers. Prefer the company's own words over your
+paraphrase where the wording is distinctive.
+
+Two hard limits:
+- Do not invent a customer name, a number, a percentage, a case-study outcome or
+  an award. Include one only if the site states it, and put the page URL in
+  `source_reference`. These become claims a salesperson will be asked to defend.
+- If the site does not establish something, leave that field out or empty rather
+  than filling it with something plausible.
+
+WHAT TO RETURN
+{{
+  "profile": {{
+    "name": "the company's own name for itself",
+    "short_description": "one sentence",
+    "description": "2-4 sentences on what they do and for whom",
+    "positioning": "what they say makes them the right choice",
+    "communication_guidance": "how they write — formal, plain, technical, etc.",
+    "industries_served": ["..."],
+    "geographies_served": ["..."],
+    "capabilities": ["..."],
+    "differentiators": ["..."]
+  }},
+  "offerings": [{{
+    "name": "...",
+    "offering_type": "product|service|solution|subscription|research_report|
+                      research_engagement|other",
+    "short_description": "one sentence",
+    "description": "2-3 sentences",
+    "problems_addressed": ["..."],
+    "use_cases": ["..."],
+    "differentiators": ["..."]
+  }}],
+  "proof_points": [{{
+    "statement": "a specific, checkable claim the site actually makes",
+    "supporting_detail": "what the site said around it",
+    "source_reference": "the page URL it came from"
+  }}],
+  "personas": [{{
+    "name": "a role, never a real person",
+    "role_function": "...",
+    "seniority": "...",
+    "responsibilities": ["..."],
+    "challenges": ["..."],
+    "use_cases": ["..."]
+  }}],
+  "unknowns": ["what the site did not establish"]
+}}
+
+{_HONESTY}"""

@@ -377,7 +377,21 @@
       }
     }
     if (!linkedinProfileUrl) {
-      warnings.push({ code: WARNINGS.MISSING_FIELD, field: "linkedinProfileUrl" });
+      // The published handle really is absent — but if a resolving alias was
+      // built from the member id, the row still has a working way to open this
+      // person, and the panel shows it. Reporting that as a missing field made
+      // the review screen contradict the list beside it: an icon on one screen,
+      // "missing: linkedinProfileUrl" on the next, for the same row.
+      //
+      // So the two cases are now distinguished. An alias present is provenance
+      // — a note about where the link came from — not a fault. Nothing is
+      // fabricated either way, and the alias still never becomes the canonical
+      // handle.
+      warnings.push(
+        linkedinAliasUrl
+          ? { code: WARNINGS.DERIVED_VALUE, field: "linkedinProfileUrl" }
+          : { code: WARNINGS.MISSING_FIELD, field: "linkedinProfileUrl" }
+      );
     }
 
     // Company URLs — capture the raw visible link. Classify by surface; do not

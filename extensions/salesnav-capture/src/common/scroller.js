@@ -13,12 +13,14 @@
  * rate-limit evasion. It never clicks anything, never changes the URL, and never
  * runs unless the operator started it.
  *
- * On jitter: each pause carries a small bounded jitter. Its only purpose is to
- * stop the polling interval locking in phase with the page's own render cadence,
- * which otherwise causes row counts to be read mid-mount. It is not intended to
- * look human and is far too small and too regular to serve that purpose. The
- * clock and the random source are both injected, so tests are fully
- * deterministic and the pass can be verified step by step.
+ * On pacing: each pause is drawn from a small fixed range around its base
+ * rather than being a constant. Render latency varies, most increments settle
+ * well before a conservative fixed wait elapses, and a constant interval can
+ * lock in phase with the page's own render cadence so row counts read
+ * mid-mount. It is not intended to look human and is far too small and too
+ * regular to serve that purpose. The clock and the random source are both
+ * injected, so tests are fully deterministic and the pass can be verified step
+ * by step.
  *
  * UMD module -> Node CommonJS + self.SNCapture.scroller
  */
@@ -69,7 +71,8 @@
         growthSettleMs: SCROLL.GROWTH_SETTLE_MS,
         stableChecks: SCROLL.STABLE_CHECKS,
         maxSteps: SCROLL.MAX_STEPS,
-        jitterMs: SCROLL.JITTER_MS,
+        pauseMinFactor: SCROLL.PAUSE_MIN_FACTOR,
+        pauseMaxFactor: SCROLL.PAUSE_MAX_FACTOR,
         budgetMs: LIMITS.CAPTURE_SCROLL_BUDGET_MS,
         returnToTop: true,
       },
@@ -88,8 +91,15 @@
     let stable = 0;
     let stopReason = STOP.STABILIZED;
 
-    // Bounded jitter: [0, jitterMs). Documented above; deterministic in tests.
-    const pause = (base) => sleep(base + Math.floor(random() * opts.jitterMs));
+    // One draw from [base * minFactor, base * maxFactor]. A single random() call
+    // per pause keeps a given random source fully reproducible, which the suite
+    // relies on. The floor is below the base on purpose: most increments settle
+    // long before the conservative base does.
+    const pause = (base) => {
+      const lo = base * opts.pauseMinFactor;
+      const hi = base * opts.pauseMaxFactor;
+      return sleep(Math.round(lo + random() * (hi - lo)));
+    };
 
     const report = (phase) =>
       onProgress({

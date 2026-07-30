@@ -793,6 +793,22 @@ def _record_provenance(
         provenance.reconcile_field(session, contact=contact, field_name=field_name, actor=actor)
 
 
+def _displayed_location(snapshot: LinkedInProfileSnapshot) -> str | None:
+    """The person's displayed location, if the capture showed one.
+
+    Deliberately the *person's* location and not the role's: a role location is
+    where a job is, which is frequently a different place, and conflating them
+    would put a head office on a remote employee.
+    """
+
+    fields = snapshot.profile_fields or {}
+    value = fields.get("displayed_location")
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned[:255] if cleaned else None
+
+
 def promote(
     session: Session,
     *,
@@ -1061,6 +1077,10 @@ def promote(
             # Only a directly observed handle. A member id is an identifier, not
             # a published URL, and a legacy alias is not one either (DAT-019).
             linkedin_url=observed_url,
+            # The location the capture displayed. Carried across on purpose: it
+            # was visible on the pending capture and then vanished the moment the
+            # Contact existed, which looked like data loss because it was.
+            location=_displayed_location(snapshot),
             natural_key=natural_key,
         )
         session.add(contact)

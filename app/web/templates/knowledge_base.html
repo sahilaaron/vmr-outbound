@@ -13,6 +13,42 @@
   </div>
 </div>
 
+{#
+  Typing a knowledge base in is the step everyone skips, and skipping it does not
+  produce an error — it produces vague drafts, because the Personalization Agent
+  writes from this and stored evidence and nothing else. So this reads the
+  seller's own site instead. Generated entries are ordinary records afterwards:
+  editable, audited, and never overwriting anything an operator wrote.
+#}
+<div class="card">
+  <div class="card-head">
+    <h2>Generate from your website</h2>
+    <span class="hint">Uses the local Claude CLI. Nothing existing is overwritten.</span>
+  </div>
+  <div class="card-body">
+    <form method="post" action="/knowledge-base/generate">
+      <div class="field">
+        <label for="kb-websites">Website addresses</label>
+        <textarea id="kb-websites" name="websites" rows="3"
+                  placeholder="verifiedmarketresearch.com&#10;verifiedmarketresearch.com/about-us/"></textarea>
+        <div class="help">
+          One per line, up to five. Use pages that describe what you sell — a home
+          page, a products page, an about page. Several pages of the same company
+          give a better result than several different companies, which would blend
+          into one profile that describes none of them.
+        </div>
+      </div>
+      <button class="btn" type="submit">Generate</button>
+      <div class="help" style="margin-top:8px">
+        This reads the pages and can take a minute or two. It will not invent a
+        customer, a number or a case-study outcome: a proof point is only recorded
+        if the page states it, and it carries the page URL. Anything the site does
+        not establish comes back as a gap rather than a guess.
+      </div>
+    </form>
+  </div>
+</div>
+
 <div class="card">
   <div class="card-head">
     <h2>Context readiness</h2>

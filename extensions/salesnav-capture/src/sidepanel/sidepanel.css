@@ -1145,3 +1145,10 @@ textarea:focus {
   outline: 2px solid var(--brand, #0a66c2);
   outline-offset: 2px;
 }
+
+/* The LinkedIn action is the right-most element of a prospect row, with or
+   without a badge beside it. Pinning it here as well as in DOM order means a
+   future badge cannot push it back off the edge. */
+.prospect > .li-action {
+  margin-left: auto;
+}

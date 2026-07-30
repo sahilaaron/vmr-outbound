@@ -38,15 +38,22 @@ test("normal page: extracts all rows with core fields and provenance", () => {
   assert.equal(first.linkedinProfileUrlSource, null);
   assert.equal(first.linkedinMemberId, "ACwAAAB1x9k");
   assert.equal(first.salesNavLeadUrl, "https://www.linkedin.com/sales/lead/ACwAAAB1x9k");
-  assert.ok(codes(first).includes(WARNINGS.MISSING_FIELD));
-  assert.ok(!codes(first).includes(WARNINGS.DERIVED_VALUE));
-  // DAT-019 inverts what this used to assert. There is no derivation left to
-  // mislabel as an observation; instead the absent profile URL must be reported
-  // as missing, so an uncertain identity is visible rather than papered over.
+  // The published handle is genuinely absent and is never fabricated — the
+  // assertions above still hold. What changed is how that absence is REPORTED
+  // when a resolving alias exists: the row does have a working way to open this
+  // person, and the panel shows it, so calling the field missing made the review
+  // screen contradict the list beside it.
+  //
+  // Provenance rather than a fault, therefore. The distinction matters because
+  // faults drive the "Needs review" badge, and this case is most rows.
+  assert.equal(first.linkedinAliasUrl, "https://www.linkedin.com/in/ACwAAAB1x9k");
+  assert.ok(codes(first).includes(WARNINGS.DERIVED_VALUE));
+  assert.ok(!codes(first).includes(WARNINGS.MISSING_FIELD));
   assert.ok(
     first.warnings.some(
-      (w) => w.code === WARNINGS.MISSING_FIELD && w.field === "linkedinProfileUrl"
-    )
+      (w) => w.code === WARNINGS.DERIVED_VALUE && w.field === "linkedinProfileUrl"
+    ),
+    "the absence is still recorded against the field it concerns"
   );
 });
 

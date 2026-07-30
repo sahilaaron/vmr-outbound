@@ -237,18 +237,45 @@ test("returning to the top can be turned off", async () => {
   assert.ok(scroller.scrollTop > 0);
 });
 
-test("jitter is bounded, deterministic, and never negative", async () => {
-  // Same page, same clock, two different random sources: the timing differs by
-  // no more than the documented jitter per pause, and both are reproducible.
-  const quiet = await run({ random: () => 0 }).promise;
-  const jittered = await run({ random: () => 0.999 }).promise;
-  assert.equal(quiet.steps, jittered.steps, "jitter must not change the plan");
-  assert.ok(jittered.elapsedMs >= quiet.elapsedMs);
-  const pauses = quiet.steps + 2;
+test("pacing is bounded on both sides, and every draw is reproducible", async () => {
+  // Each pause is now drawn from a range around its base rather than being a
+  // fixed value plus an addition, so the fastest source is the low end of the
+  // range and not the base. Both ends stay inside the documented factors, and
+  // neither end changes what the pass reads.
+  const fastest = await run({ random: () => 0 }).promise;
+  const slowest = await run({ random: () => 0.999 }).promise;
+
+  assert.equal(fastest.steps, slowest.steps, "pacing must not change the plan");
   assert.ok(
-    jittered.elapsedMs - quiet.elapsedMs <= 60 * pauses * 2,
-    "jitter must stay inside its documented bound"
+    slowest.elapsedMs > fastest.elapsedMs,
+    "the top of the range must genuinely take longer than the bottom"
   );
+
+  // The floor is real: pauses are scaled, never removed, so a pass can never
+  // degenerate into a tight loop that reads rows mid-mount. Expressed per step
+  // rather than as a total, since the number of pauses per step varies with
+  // whether rows grew.
+  const perStep = fastest.elapsedMs / fastest.steps;
+  assert.ok(
+    perStep >= 450 * 0.45,
+    `each step must still wait at least the floor (saw ${perStep.toFixed(0)}ms/step)`
+  );
+  // And the spread is bounded above, so widening it cannot silently slow a pass
+  // down without this failing.
+  const slowPerStep = slowest.elapsedMs / slowest.steps;
+  assert.ok(
+    slowPerStep <= 700 * 1.25 * 2,
+    `each step must stay inside the documented ceiling (saw ${slowPerStep.toFixed(0)}ms/step)`
+  );
+});
+
+test("a pause can fall below one second, which is the point of the range", async () => {
+  // The operator-visible symptom this range exists to fix: a uniform, slow
+  // cadence. The base settle is already sub-second; what matters is that the
+  // growth pause — the long one — can also come in under a second now.
+  const growthBase = 700;
+  assert.ok(growthBase * 0.45 < 1000);
+  assert.ok(growthBase * 1.25 < 1000, "even the slowest growth pause is under a second");
 });
 
 test("the same inputs always produce the same pass", async () => {

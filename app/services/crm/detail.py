@@ -176,6 +176,15 @@ class ContactDetailView:
     memberships: list[tuple[CampaignContact, Campaign | None]] = field(default_factory=list)
     research_note: str = RESEARCH_NOT_BUILT
     qualification_note: str = QUALIFICATION_NOT_BUILT
+    # A LinkedIn URL to open when no published handle was ever observed.
+    #
+    # Derived from the Sales Navigator member id: LinkedIn accepts it and
+    # redirects to the person, so it opens the right profile. It is deliberately
+    # NOT ``contact.linkedin_url`` and never becomes one — that field is an
+    # identity claim, and an alias built from an opaque id is navigation and
+    # evidence. Keeping them separate is what stops two people colliding on a
+    # derived value. Shown, and labelled as derived.
+    derived_linkedin_url: str | None = None
 
     @property
     def full_name(self) -> str:
@@ -265,6 +274,25 @@ def _evidence_from(snapshot: LinkedInProfileSnapshot) -> CaptureEvidence:
     )
 
 
+def _derived_linkedin_url(session: Session, contact_id: uuid.UUID) -> str | None:
+    """The resolving alias from this contact's most recent capture, if any.
+
+    Only consulted for display, and only worth showing when no observed handle
+    exists — otherwise the page would offer two competing "this is their profile"
+    links for one person.
+    """
+
+    return session.scalars(
+        select(LinkedInProfileSnapshot.salesnav_alias_url)
+        .where(
+            LinkedInProfileSnapshot.matched_contact_id == contact_id,
+            LinkedInProfileSnapshot.salesnav_alias_url.is_not(None),
+        )
+        .order_by(LinkedInProfileSnapshot.ingested_at.desc())
+        .limit(1)
+    ).first()
+
+
 def get_contact_detail(session: Session, contact_id: uuid.UUID) -> ContactDetailView | None:
     """Assemble the contact detail page, or ``None`` when no such contact."""
 
@@ -339,6 +367,10 @@ def get_contact_detail(session: Session, contact_id: uuid.UUID) -> ContactDetail
             .order_by(CampaignContact.created_at.desc())
         ).all()
     ]
+    # Only when there is no observed handle: two competing profile links for one
+    # person is worse than one clearly-labelled derived link.
+    if not contact.linkedin_url:
+        view.derived_linkedin_url = _derived_linkedin_url(session, contact_id)
     return view
 
 

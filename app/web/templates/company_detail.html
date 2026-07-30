@@ -29,14 +29,34 @@
     <table>
       <tbody>
         <tr><th scope="row">Name</th><td>{{ detail.company.name }}</td></tr>
-        <tr><th scope="row">Canonical domain</th><td>{{ domain_badge(detail.company) }}</td></tr>
+        <tr><th scope="row">Domain</th><td>{{ domain_badge(detail.company) }}</td></tr>
         <tr>
-          <th scope="row">LinkedIn company</th>
-          <td>
-            {% if detail.company.linkedin_company_url %}
-            <a href="{{ detail.company.linkedin_company_url }}" target="_blank"
-               rel="noopener noreferrer nofollow" class="wrap">{{ detail.company.linkedin_company_url }}</a>
+          <th scope="row">LinkedIn Profile</th>
+          {#
+            The canonical column is almost always empty — nothing in the app
+            writes companies.linkedin_company_url — so the page fell back to a
+            dash even when a capture had plainly shown a company page. It now
+            reads the captured URL as well, and says which one it is showing.
+          #}
+          <td class="wrap">
+            {% set li_url = detail.company.linkedin_company_url or detail.captured_linkedin_url %}
+            {% if li_url %}
+            <a href="{{ li_url }}" target="_blank" rel="noopener noreferrer nofollow">{{ li_url }}</a>
+            {% if not detail.company.linkedin_company_url %}
+            <div class="small muted-text">From a capture, not a canonical field.</div>
+            {% endif %}
             {% else %}<span class="muted-text">—</span>{% endif %}
+          </td>
+        </tr>
+        <tr>
+          <th scope="row">Sales Navigator</th>
+          <td class="wrap">
+            {% if detail.captured_salesnav_url %}
+            <a href="{{ detail.captured_salesnav_url }}" target="_blank"
+               rel="noopener noreferrer nofollow">{{ detail.captured_salesnav_url }}</a>
+            {% else %}
+            <span class="muted-text">—</span>
+            {% endif %}
           </td>
         </tr>
         <tr>
@@ -241,6 +261,13 @@
   </div>
 </div>
 
+{#
+  Shown only when there is a disagreement. An always-present card whose entire
+  content was "No identity disagreement found." trained the eye to skip the one
+  place a real conflict would appear. The consistent state is still stated — as
+  the badge beside the company name — so its absence here is not silence.
+#}
+{% if detail.conflicts %}
 <div class="card" style="margin-top:20px">
   <div class="card-head">
     <h2>Identity conflicts</h2>
@@ -272,14 +299,10 @@
       are confirmed on the capture resolution screen, so there is one place that
       decision gets made.
     </p>
-    {% else %}
-    <div class="empty">
-      <p class="empty-title">No identity disagreement found.</p>
-      <p>The domain, the LinkedIn identity and the linked contacts all agree.</p>
-    </div>
     {% endif %}
   </div>
 </div>
+{% endif %}
 
 <div class="card" style="margin-top:20px">
   <div class="card-head">
@@ -338,13 +361,48 @@
       </thead>
       <tbody>
         {% for section in sections %}
+        {% set body = detail.current_dossier.version[section.value] %}
         <tr>
           <th scope="row">{{ section.value.replace("_", " ") }}</th>
-          <td>{{ section_badge(section.value in detail.current_dossier.sections_present) }}</td>
+          <td>
+            {{ section_badge(section.value in detail.current_dossier.sections_present) }}
+            {#
+              The content, not just its presence. The page used to stop at the
+              badge, so an operator could see that research had happened and not
+              a word of what it found.
+
+              Collapsed by default because nine expanded sections is a wall, and
+              because the badge answers the first question. NULL renders nothing —
+              the section was not addressed — while an empty object or list
+              renders as {} or [], because "looked and found nothing" is a real
+              answer that must not read as "did not look".
+            #}
+            {% if body is not none %}
+            <details style="margin-top:6px">
+              <summary class="small">Show what it says</summary>
+              <pre class="json-dump">{{ body | pretty_json }}</pre>
+            </details>
+            {% endif %}
+          </td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
+    {% if detail.current_dossier.version.warnings %}
+    <details style="margin-top:12px">
+      <summary class="small">Warnings recorded by the interpreter
+        ({{ detail.current_dossier.version.warnings | length }})</summary>
+      <pre class="json-dump">{{ detail.current_dossier.version.warnings | pretty_json }}</pre>
+    </details>
+    {% endif %}
+    <details style="margin-top:12px">
+      <summary class="small">The raw submission, exactly as the producer sent it</summary>
+      <p class="small muted-text">
+        Stored verbatim and never edited, so an interpretation can always be
+        checked against what it was interpreting.
+      </p>
+      <pre class="json-dump">{{ detail.current_dossier.submission.payload | pretty_json }}</pre>
+    </details>
     <p class="small muted-text">
       A section that was not addressed is unknown, not empty. Dossier content is
       evidence gathered from outside this system: it is displayed and cited,

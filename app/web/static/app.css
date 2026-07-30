@@ -624,3 +624,31 @@ td.err, td .err { color: var(--err); font-weight: 600; }
   border: 1px solid rgba(127, 127, 127, 0.18);
   overflow-x: auto;
 }
+
+/* Stored JSON shown for reading — dossier sections, interpreter warnings, the
+   raw research submission. Monospace on purpose: unlike a drafted email, this is
+   a payload being inspected, and the shape carries meaning. */
+.json-dump {
+  white-space: pre-wrap;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  max-height: 420px;
+  overflow: auto;
+  background: var(--muted-soft);
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(127, 127, 127, 0.18);
+}
+
+/* The disclosure rows the detail pages use. No stylesheet rule existed, so every
+   one carried an inline margin; this gives the summary an affordance. */
+summary.small {
+  cursor: pointer;
+  color: var(--text-2);
+}
+
+summary.small:hover {
+  color: var(--text);
+}

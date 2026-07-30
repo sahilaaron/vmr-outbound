@@ -93,6 +93,13 @@ class Contact(Base):
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     linkedin_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     country: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # The location a capture displayed for this person — "Greater Chicago Area",
+    # "Pune, Maharashtra, India". Distinct from ``country``, which is a normalized
+    # single value: a displayed location is free text at whatever granularity the
+    # page happened to show, and squeezing it into ``country`` would have made a
+    # region read as a nation. It was previously kept only inside the capture's
+    # JSON, so it visibly disappeared the moment a Contact was created.
+    location: Mapped[str | None] = mapped_column(String(255), nullable=True)
     industry: Mapped[str | None] = mapped_column(String(255), nullable=True)
     company_size: Mapped[str | None] = mapped_column(String(64), nullable=True)
 

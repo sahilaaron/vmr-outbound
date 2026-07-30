@@ -279,3 +279,94 @@ def test_filtering_by_research_state_works(client: TestClient, committed_session
 
 def test_an_unknown_filter_value_widens_rather_than_failing(client: TestClient) -> None:
     assert client.get("/companies?research=nonsense&view=nonsense&sort=nonsense").status_code == 200
+
+
+def test_a_dossier_section_shows_its_content_not_just_that_it_exists(
+    client: TestClient, committed_session: Session
+) -> None:
+    """The page used to prove research had happened without showing any of it.
+
+    A badge reading "present" answered "did a producer address this section?" and
+    nothing else. An operator reviewing what the system believes about a company
+    needs the words.
+    """
+
+    from app.services.companies import dossiers
+
+    company = _company(committed_session)
+    payload = {
+        "overview": {"summary": "Builds kiln controllers for cement plants."},
+        "industries": {"values": []},
+    }
+    submission, _ = dossiers.submit(
+        committed_session, company=company, producer="test-producer", payload=payload
+    )
+    dossiers.interpret(
+        committed_session,
+        company=company,
+        submission=submission,
+        interpreter="test",
+        sections={"overview": payload["overview"], "industries": payload["industries"]},
+    )
+    committed_session.commit()
+
+    body = client.get(f"/companies/{company.id}").text
+    assert "Builds kiln controllers for cement plants." in body
+    # An empty container still renders: "looked and found nothing" must not read
+    # as "did not look". Jinja escapes the quotes, so match on the shape.
+    assert "values" in body
+    assert "[]" in body
+    # And the raw submission stays available to check an interpretation against.
+    assert "test-producer" in body or "raw submission" in body
+
+
+def test_the_conflicts_card_is_absent_when_there_is_no_disagreement(
+    client: TestClient, committed_session: Session
+) -> None:
+    """An always-present card whose content was "nothing to see" trained the eye
+    to skip the one place a real conflict appears. The consistent state is still
+    reported, by the badge beside the company name."""
+
+    company = _company(committed_session)
+    body = client.get(f"/companies/{company.id}").text
+    assert "<h2>Identity conflicts</h2>" not in body
+    assert "consistent" in body
+
+
+def test_a_captured_linkedin_url_is_shown_when_the_canonical_column_is_empty(
+    client: TestClient, committed_session: Session
+) -> None:
+    """Nothing writes companies.linkedin_company_url, so the row was always a dash.
+
+    The captured URL is display-only and labelled as such — it is what was
+    observed, not a canonical field and not an identity claim.
+    """
+
+    from datetime import UTC, datetime
+
+    from app.models.enums import LinkedInSnapshotOutcome
+    from app.models.linkedin_company import LinkedInCompanySnapshot
+
+    company = _company(committed_session)
+    committed_session.add(
+        LinkedInCompanySnapshot(
+            client_capture_id=f"cap-{uuid.uuid4()}",
+            content_hash="hash",
+            schema_version="linkedin-company/1.0.0",
+            source="test",
+            normalized_company_url="https://www.linkedin.com/company/acme-systems",
+            captured_at=datetime.now(UTC),
+            ingested_at=datetime.now(UTC),
+            extraction_status="ok",
+            payload={},
+            company_fields={},
+            outcome=LinkedInSnapshotOutcome.STORED,
+            matched_company_id=company.id,
+        )
+    )
+    committed_session.commit()
+
+    body = client.get(f"/companies/{company.id}").text
+    assert "https://www.linkedin.com/company/acme-systems" in body
+    assert "From a capture, not a canonical field." in body
+    assert "LinkedIn Profile" in body

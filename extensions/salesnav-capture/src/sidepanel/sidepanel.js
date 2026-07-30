@@ -901,7 +901,7 @@
     [WARN.NO_STABLE_IDENTITY]: "no stable link",
     [WARN.PLACEHOLDER_VALUE]: "the page showed a placeholder, not a value",
     // UI-013: the value is present and usable. This says where it came from.
-    [WARN.DERIVED_VALUE]: "profile link worked out from the lead link",
+    [WARN.DERIVED_VALUE]: "LinkedIn link resolved from the Sales Navigator ID",
   };
 
   function warnLabel(code) {
@@ -944,6 +944,14 @@
           "No profile or lead URL was on the row — it can be saved, but it will be staged for review.",
       });
     }
+    // The badge stays, but it should now be rare rather than universal.
+    //
+    // It used to appear on nearly every row, which made it worthless — a badge
+    // that is always on carries no information. The cause was upstream, not
+    // here: a row whose LinkedIn link came from the resolving alias was reported
+    // as a MISSING_FIELD fault even though the panel was showing a working link
+    // for it. That is now classified as provenance (see src/common/extraction.js),
+    // so this badge is left for rows an operator genuinely has to look at.
     if (faults.length) {
       return badge("Needs review", { tone: "warning", title: faults.map(warnLabel).join(", ") });
     }
@@ -1080,8 +1088,11 @@
         [
           el("label", { class: "check stacked" }, [checkbox]),
           body,
-          linkedInAction(rec, rec.rawFullName),
           rowBadge,
+          // Last, so the icon is the right-most thing in the row whether or not
+          // a badge is present. It is the one control on the card, and a
+          // consistent position is worth more than grouping it with the text.
+          linkedInAction(rec, rec.rawFullName),
         ]
       );
       boxEl.appendChild(row);
@@ -1157,14 +1168,14 @@
           );
         }
         card.appendChild(warnRow);
-        card.appendChild(
-          paragraph(
-            faults.length
-              ? "Will be saved and flagged for review. Nothing is guessed."
-              : "Complete. The note above records where a value came from — nothing needs correcting.",
-            { tiny: true }
-          )
-        );
+        if (!faults.length) {
+          card.appendChild(
+            paragraph(
+              "Complete. The note above records where a value came from — nothing needs correcting.",
+              { tiny: true }
+            )
+          );
+        }
       }
       const links = el("div", { class: "prospect-links" });
       if (rec.linkedinProfileUrl)
@@ -1179,7 +1190,7 @@
       else if (rec.linkedinAliasUrl)
         links.appendChild(
           el("a", {
-            text: "resolving alias",
+            text: "LinkedIn",
             attrs: {
               href: rec.linkedinAliasUrl,
               target: "_blank",
@@ -1193,7 +1204,7 @@
       if (rec.salesNavLeadUrl)
         links.appendChild(
           el("a", {
-            text: "lead",
+            text: "Sales Navigator",
             attrs: { href: rec.salesNavLeadUrl, target: "_blank", rel: "noreferrer" },
           })
         );

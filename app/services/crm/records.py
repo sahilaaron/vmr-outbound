@@ -578,7 +578,10 @@ def _contact_row(session: Session, contact: Contact, labels: list[str]) -> CrmRo
         title=contact.title,
         company_name=contact.company_name,
         company_domain=contact.company_domain,
-        location=contact.country,
+        # The displayed location first: it is what the capture actually showed and
+        # what the pending-capture row above it displays, so the value no longer
+        # changes the moment a person becomes canonical.
+        location=contact.location or contact.country,
         linkedin_url=contact.linkedin_url,
         email=contact.email,
         source="capture" if _has_capture(session, contact.id) else "import",

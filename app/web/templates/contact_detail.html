@@ -49,7 +49,31 @@
         <tr><th scope="row">Title</th><td>{{ detail.contact.title or "—" }}</td></tr>
         <tr><th scope="row">Company</th><td>{{ detail.contact.company_name }} <span class="mono small muted-text">{{ detail.contact.company_domain }}</span></td></tr>
         <tr><th scope="row">Location</th><td>{{ detail.contact.country or "—" }}</td></tr>
-        <tr><th scope="row">LinkedIn</th><td>{% if detail.contact.linkedin_url %}<a class="mono small" href="{{ detail.contact.linkedin_url }}" rel="noopener noreferrer nofollow" target="_blank">{{ detail.contact.linkedin_url }}</a>{% else %}—{% endif %}</td></tr>
+        {#
+          The observed handle if there is one, otherwise the resolving alias from
+          the capture — which opens the right person even though nobody ever saw
+          their published handle. The distinction is stated rather than smoothed
+          over: the alias is navigation and evidence, and it is never written to
+          contacts.linkedin_url, because that field is an identity claim.
+        #}
+        <tr>
+          <th scope="row">Location</th>
+          <td>{{ detail.contact.location or detail.contact.country or "—" }}</td>
+        </tr>
+        <tr>
+          <th scope="row">LinkedIn Profile</th>
+          <td>
+            {% if detail.contact.linkedin_url %}
+            <a class="mono small" href="{{ detail.contact.linkedin_url }}"
+               rel="noopener noreferrer nofollow" target="_blank">{{ detail.contact.linkedin_url }}</a>
+            {% elif detail.derived_linkedin_url %}
+            <a class="mono small" href="{{ detail.derived_linkedin_url }}"
+               rel="noopener noreferrer nofollow" target="_blank"
+               title="Resolved from the Sales Navigator ID, not a published handle">{{ detail.derived_linkedin_url }}</a>
+            <div class="small muted-text">Resolved from the Sales Navigator ID — opens the profile, but is not a published handle.</div>
+            {% else %}—{% endif %}
+          </td>
+        </tr>
         <tr><th scope="row">Email</th><td class="mono">{{ detail.contact.email or "—" }}</td></tr>
         <tr><th scope="row">First seen</th><td>{{ detail.contact.created_at | dt }}</td></tr>
         <tr><th scope="row">Last updated</th><td>{{ detail.contact.updated_at | dt }}</td></tr>
@@ -136,7 +160,7 @@
         <tr><th scope="row">Canonical company</th><td>{{ detail.company.company.name if detail.company.company else "—" }}</td></tr>
         <tr><th scope="row">Captured name</th><td>{{ detail.company.captured_name or "—" }}</td></tr>
         <tr><th scope="row">Domain</th><td class="mono">{{ detail.company.domain or "—" }}</td></tr>
-        <tr><th scope="row">LinkedIn company</th><td class="mono small">{{ detail.company.linkedin_company_url or "—" }}</td></tr>
+        <tr><th scope="row">Company LinkedIn</th><td class="mono small">{{ detail.company.linkedin_company_url or "—" }}</td></tr>
         <tr><th scope="row">Domain resolution</th><td>{{ resolution_badge(detail.company.domain_resolution) }}</td></tr>
       </tbody>
     </table>

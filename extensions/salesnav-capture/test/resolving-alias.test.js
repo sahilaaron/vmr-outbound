@@ -251,8 +251,13 @@ test("the review screen offers the alias too, and says what it is", async () => 
   const link = p.document.querySelector("[data-view='listings-review'] [data-linkedin='derived']");
   assert.ok(link, "the review screen must offer the same navigation aid");
   assert.equal(link.getAttribute("href"), ALIAS);
-  assert.match(link.textContent, /resolving alias/i);
+  // The label reads "LinkedIn" now. "resolving alias" described the mechanism
+  // rather than the destination, and an operator scanning a review screen wants
+  // to know where a link goes. What it IS stays available and unambiguous: the
+  // title says so, and data-linkedin distinguishes derived from observed.
+  assert.equal(link.textContent, "LinkedIn");
   assert.match(link.getAttribute("title"), /not a published handle/i);
+  assert.equal(link.getAttribute("data-linkedin"), "derived");
 });
 
 test("the review screen prefers the observed handle over the alias", async () => {
