@@ -2,169 +2,223 @@
 
 ## Product outcome
 
-> **A user can capture 2,000 Sales Navigator contacts in the morning and begin sending AI-personalized verified emails that afternoon.**
+The current architecture moves a permanent Contact through one observable, controllable pipeline to one human-reviewed immutable email draft.
 
-The architecture exists to move permanent Contacts through one observable, controllable Contact-to-send pipeline.
+```text
+Capture
+→ Identity
+→ Company
+→ Research
+→ Email
+→ Verification
+→ Insights
+→ Personalization
+→ Human review
+```
 
-## Operator-facing Agents
+Sending is a registered future stage but is not implemented in the current MVP.
 
-The frontend calls all backend workers **Agents**:
+See [`CURRENT_MVP.md`](CURRENT_MVP.md) for current delivery and acceptance status.
 
-1. Capture Agent
-2. Identity Agent
-3. Company Agent
-4. Research Agent
-5. Email Agent
-6. Verification Agent
-7. Insights Agent
-8. Personalization Agent
-9. Sending Agent
+## Presentation architecture
 
-The backend may implement these through queues, workers, services and scheduled jobs. The operator sees Agents, their states and their output.
+The product has two server-rendered presentation layers over the same services and models.
+
+### Customer application
+
+- Route prefix: `/app`; `/` redirects here.
+- Workflow-oriented views for Today, Campaigns, Review, Contacts, Companies, Knowledge Base, Agents, Capture and Suppressions.
+- Own router, templates and `v2.css`.
+- Unsupported features are displayed as unavailable rather than populated with invented data.
+
+### Operator/admin Workbench
+
+- Route: `/admin` and existing implementation routes.
+- Exhaustive surface for job inspection, controls, retries and authoritative write paths.
+- Own templates and `app.css`.
+
+The customer interface is not a Workbench reskin. The two surfaces share domain services, not presentation code.
 
 ## Core entities
 
 ### Contact
 
-The permanent canonical person record. Capture never requires a Campaign.
+Permanent canonical person. Capture never requires a Campaign.
 
 ### Company
 
-The permanent canonical organization record. Domain and research results are shared across Contacts and Campaigns.
+Permanent canonical organization. Domain and research results are reusable across Contacts and Campaigns.
 
 ### Campaign
 
-The operational context for outreach. It owns audience configuration, seller context, messaging, CTA, guardrails, templates, sending settings and Campaign-level Agent overrides.
+Campaign-specific operating context and execution controls.
 
 ### Campaign Contact
 
-The many-to-many membership between Campaign and Contact. It owns Campaign-specific state:
+The Campaign membership and execution boundary. It owns:
 
-- acceptance and exclusion reasons;
-- fit and readiness decisions;
-- personalized copy;
-- immutable message versions;
-- approval state;
-- sending state and outcomes.
+- Campaign-specific pipeline state;
+- blocking and exclusion reasons;
+- generated draft references;
+- exact-version human decision;
+- future sending state and outcomes when a provider adapter exists.
 
 ### Collection
 
-A reusable grouping of Contacts. The Chrome extension presents Collections as Labels. Collections may also be referenced by Campaigns.
+Reusable grouping of Contacts. The extension may display Collections as Labels.
 
 ### Agent Job
 
-One resumable unit of work with a stable identity, state, attempt history, error visibility and audit trail.
+One resumable unit of work with stable identity, lease, attempts, structured inputs/results/errors and audit history.
 
-## Capture contract
+### Company dossier and evidence
 
-```text
-Operator capture
-    ↓
-Permanent Contact resolution
-    ↓
-Apply selected Labels / Collections
-    ↓
-Optional Campaign selected?
-    ├─ No → capture completes without Campaign membership
-    └─ Yes → create or update Campaign Contact membership
-```
+Versioned research output. Raw submissions and sourced evidence remain separate from AI-derived Insights.
 
-Campaign selection is an optional persistent shortcut. It does not alter Contact identity, ownership or canonical data.
+### DraftVersion and DraftApproval
 
-## Pipeline
+`DraftVersion` is immutable. `DraftApproval` records a human approve/discard decision against one exact version. Approval is not sending authority by itself.
 
-```text
-Capture Agent
-→ Identity Agent
-→ Company Agent
-→ Research Agent
-→ Email Agent
-→ Verification Agent
-→ Insights Agent
-→ Personalization Agent
-→ Sending Agent
-```
+## Agent pipeline
 
-### Stage rules
+| Order | Agent | Authority |
+| ---: | --- | --- |
+| 0 | Capture | Preserve authorized intake and permanent Contact evidence |
+| 1 | Identity | Converge repeated captures on the correct Contact |
+| 2 | Company | Link the permanent Company and usable domain |
+| 3 | Research | Gather and persist sourced Company evidence |
+| 4 | Email | Generate approved candidates in deterministic order |
+| 5 | Verification | Commit exact-address provider evidence |
+| 6 | Insights | Derive cited interpretation from persisted evidence |
+| 7 | Personalization | Generate one immutable Campaign-specific draft |
+| 8 | Sending | Disabled contract; post-MVP provider extension |
 
-- Identity work must converge repeated captures on the same Contact.
-- Company resolution must reuse a resolved domain across Contacts sharing the same Sales Navigator company identity.
-- Research output must retain provenance and remain separate from AI interpretation.
-- Email discovery must stop after the first verified candidate and attempt no more than three formats.
-- AI insight generation follows verification by default to avoid spending model work on Contacts without a verified address.
-- Campaign-specific output is stored on Campaign Contact, not Contact.
-- Sending remains blocked by suppression, eligibility and exact-version approval.
+## Research boundary
 
-## Email policy
+Research uses registered deterministic workers, not a language model.
 
-### More than 50 employees
+It preserves:
+
+- raw worker output;
+- versioned dossier structure;
+- source URLs and normalized evidence;
+- partial/thin, insufficient-evidence and failure outcomes;
+- operator-facing counts and gaps derived from the committed result.
+
+Research does not silently promote gathered text into canonical Company truth.
+
+## AI boundary
+
+Insights and Personalization use one provider-neutral thinking seam whose current transport is the operator's local Claude CLI.
+
+Both run with `allowed_tools=()`.
+
+The model may:
+
+- interpret persisted evidence;
+- identify insufficient evidence;
+- generate bounded Campaign-specific language.
+
+The model may not:
+
+- browse independently inside these stages;
+- verify an email;
+- change identity, Company or suppression state;
+- alter Agent controls;
+- approve its own draft;
+- send.
+
+## Email and Verification policy
+
+The Email Agent tries no more than three candidate formats:
 
 1. `firstname.lastname`
-2. `finitiallastname`
-3. `lastnamefinitial`
-
-### 50 or fewer employees
-
-1. `firstname`
-2. `firstname.lastname`
+2. `firstname`
 3. `finitiallastname`
 
-The policy must be versioned and configurable behind a stable service boundary.
+It enqueues one child Verification Agent Job at a time and stops immediately after the first verified result.
 
-## Agent controls
+Verification is the authority for exact-address provider truth. Live completion requires the feature switch, provider credentials and effective `{"live": true}` Agent configuration. Simulated evidence cannot complete a live Campaign stage.
 
-Every Agent has a global default state and optional Campaign override.
+## Control and execution model
 
-Global states:
+Every Agent has a registry default, stored global control and optional Campaign override.
 
-- enabled;
-- paused;
-- disabled.
+Precedence:
 
-Job states:
+1. Campaign execution master switch;
+2. Campaign Agent override;
+3. stored global control;
+4. registry default.
 
-- waiting;
-- running;
-- paused;
-- retrying;
-- failed;
-- completed;
-- cancelled.
+Control writes are versioned. Suppression, identity blocks and other domain reasons cannot be bypassed by toggling an Agent.
 
-Campaign overrides may disable or pause an Agent for one Campaign without changing another Campaign.
+The PostgreSQL queue claims work with `FOR UPDATE SKIP LOCKED`, supports lease expiry recovery and can run parallel Agent-scoped worker pools.
 
-## Workbench
+## Explainable state
 
-The Workbench is the application control room. It must provide:
+Campaign Contact pipeline state is a domain projection, not a restatement of queue status.
 
-- Campaign stage counts;
-- Agent health and current state;
-- queue depth and throughput;
-- recent failures and retry controls;
-- global Agent controls;
-- Campaign-level Agent overrides;
-- record-level drill-down;
-- emergency stop for new sending work.
+It records:
 
-## Idempotency and reuse
+- current, next and latest completed stage;
+- waiting, running, paused, retrying, failed, completed, disabled, skipped or blocked status;
+- reason, dependency and retryability;
+- linked jobs and attempts;
+- output references;
+- append-only pipeline events.
 
-- Capture submissions use stable submission identities.
-- Contact and Company resolution must be retry-safe.
-- Campaign auto-add must upsert Campaign Contact membership.
-- Company research is reusable by Company and version.
-- Verification evidence is reusable under freshness policy.
-- AI outputs are regenerable but versioned.
-- Sending events use stable provider identifiers and duplicate-event rejection.
+The application must be able to explain what happened and what should happen next without reconstructing truth from process logs.
 
-## Trust boundaries
+## Current write-path choices
+
+To preserve one authoritative implementation per high-risk action:
+
+- Campaign enrolment is explicit through the Workbench, including bulk enrolment.
+- Knowledge Base editing remains on `/admin`.
+- Capture-domain decisions remain on the existing admin flow.
+- Suppression creation remains on the admin surface.
+- The customer application reads these records and links to the authoritative action where needed.
+
+## Review contract
+
+The customer Review surface:
+
+- reads current immutable draft versions;
+- shows relevant Research, Verification and Insight evidence;
+- refuses approval of a superseded version;
+- records approve/discard with audit history;
+- performs no send.
+
+## Trust and safety boundaries
 
 - Operator instructions and approved seller Knowledge Base content are trusted configuration.
-- LinkedIn text, website text and other third-party content are untrusted evidence.
-- Sourced facts never become system instructions.
-- AI output may not bypass deterministic eligibility, suppression or approval rules.
+- LinkedIn, website and provider text are evidence, not instructions.
+- Sourced evidence remains separate from derived model output.
+- Suppression, identity, verification and human approval are deterministic authority.
+- Missing evidence remains missing; unknown is not false and provisional is not confirmed.
+- Historical jobs, evidence and draft versions remain readable after retries or regeneration.
 
-## MVP boundary
+## Current MVP boundary
 
-The MVP includes capture, optional Campaign auto-add, Collections, identity and Company resolution, research, email discovery, verification, insights, personalization, review, sending integration and Jobs monitoring.
+Included:
 
-Advanced analytics, autonomous replies, arbitrary workflow construction, omnichannel outreach and multi-tenant SaaS remain deferred.
+- authorized Contact capture and permanent records;
+- identity and Company/domain convergence;
+- Campaign Contacts and explicit enrolment;
+- durable Agents, jobs, controls, retries and history;
+- sourced Company research;
+- ordered email discovery and live exact-address verification;
+- evidence-backed Insights and Personalization;
+- customer-facing v2 application;
+- exact-version human approve/discard.
+
+Post-MVP:
+
+- provider sending and outcome synchronization;
+- scoring and Saved Audience criteria;
+- extension Campaign auto-add;
+- multi-email cadence generation;
+- replies, sequences and analytics;
+- arbitrary workflow construction;
+- multi-tenant SaaS.
