@@ -31,7 +31,6 @@ from app.services import identity_links
 from app.services.audit import record_audit_event
 from app.services.companies import conflicts as company_conflicts
 from app.services.companies import dossiers
-from app.services.companies.dossiers import DossierError
 from app.services.imports.normalization import is_valid_email, normalize_email
 from app.services.insights import evidence as insights_evidence
 from app.services.insights.evidence import InsightError
@@ -355,6 +354,26 @@ class ResearchAgentAdapter:
     only logic here is the two framework-level gates -- the feature switch
     and the per-campaign ``live`` opt-in -- and translating the resulting
     step into the shared error vocabulary.
+
+    **This is the only Research implementation, and Research uses no language
+    model.** A second, model-based adapter used to live further down this file and
+    shadowed this one. Removing it is a decision, not a cleanup:
+
+    * Research's job is to *read pages and record what they said*, with a URL and a
+      retrieval time on every fact. Every claim it stores has to be checkable
+      against the page it came from. A model asked to research a company returns
+      prose that is plausible whether or not it read anything, and the difference
+      is invisible downstream — which is precisely the failure the whole evidence
+      chain exists to prevent.
+    * The worker path writes all three artefacts the pipeline depends on: the raw
+      worker payload verbatim, one versioned dossier interpreting it, and one
+      INS-001 insight per sourced fact. The model path wrote a submission and a
+      dossier but no insights, so the Insights Agent downstream had nothing sourced
+      to gate on.
+    * The thinking seam is kept and still used where language understanding is the
+      actual work: Insights chooses among facts *already stored*, Personalization
+      writes copy from them. Both run with ``allowed_tools=()`` so neither can
+      reach outside and cite something this stage never gathered.
     """
 
     agent_id = AgentIdentifier.RESEARCH
@@ -810,131 +829,6 @@ def _restricted_claims_block(seller: SellerContext) -> str:
     return "\n".join(dict.fromkeys(claims))
 
 
-class ResearchAgentAdapter:
-    """Research one company and store the answer as an immutable dossier version.
-
-    The Agent produces no canonical Company fields as a side effect. It writes a
-    submission (the raw answer, verbatim) and one interpretation of it, which is
-    the storage contract ``app/services/companies/dossiers.py`` was built for and
-    which APP-003 documented for exactly this producer.
-    """
-
-    agent_id = AgentIdentifier.RESEARCH
-
-    def __init__(self, *, thinker_factory: Callable[[Settings], Thinker] | None = None) -> None:
-        # The same constructor seam the Verification Agent uses for its provider.
-        self._thinker_factory = thinker_factory or (
-            lambda settings: ClaudeCliThinker(settings=settings)
-        )
-
-    def execute(self, context: AgentExecutionContext) -> AgentExecutionResult:
-        _live_or_blocked(context, "Research")
-        contact = context.contact
-        company = (
-            context.session.get(Company, contact.company_id)
-            if contact.company_id is not None
-            else None
-        )
-        if company is None:
-            raise AgentBlocked(
-                "company_missing",
-                "Research needs the permanent Company the Company Agent resolves.",
-            )
-
-        settings = get_settings()
-        thinker = self._thinker_factory(settings)
-        request = ThinkingRequest(
-            prompt=prompts.research_prompt(
-                company_name=company.name,
-                domain=company.domain,
-                industry=company.industry,
-                country=company.country,
-                company_size=company.company_size,
-            ),
-            purpose="company_research",
-            timeout_seconds=float(context.config.get("timeout_seconds", 300.0)),
-            # Research is the one stage that may look things up. Insights and
-            # Personalization reason only over what this stage already stored.
-            allowed_tools=tuple(context.config.get("allowed_tools", ("WebSearch",))),
-        )
-        try:
-            answer = thinker.think(request)
-        except ThinkingError as exc:
-            raise _translate_thinking_error(exc) from exc
-
-        payload = answer.payload
-        sections = {name: payload[name] for name in dossiers.SECTION_COLUMNS if name in payload}
-        if not sections:
-            raise AgentTerminalError(
-                "research_empty",
-                "The research answer addressed none of the nine dossier sections.",
-                detail={"returned_keys": sorted(payload)[:20]},
-            )
-
-        warnings: list[Any] = []
-        unaddressed = [name for name in dossiers.SECTION_COLUMNS if name not in sections]
-        if unaddressed:
-            warnings.append({"unaddressed_sections": unaddressed})
-
-        try:
-            submission, submission_created = dossiers.submit(
-                context.session,
-                company=company,
-                producer=answer.producer,
-                payload=payload,
-                producer_version=answer.producer_version,
-                submitted_by=context.worker_id,
-                request_context={
-                    "agent_id": self.agent_id.value,
-                    "job_id": str(context.job.id),
-                    "campaign_id": str(context.campaign.id),
-                    "purpose": request.purpose,
-                    "duration_seconds": round(answer.duration_seconds, 2),
-                },
-            )
-            version = dossiers.interpret(
-                context.session,
-                company=company,
-                submission=submission,
-                interpreter="research-agent",
-                interpreter_version=answer.producer_version,
-                sections=sections,
-                warnings=warnings or None,
-                created_by=context.worker_id,
-                make_current=True,
-            )
-        except DossierError as exc:
-            # The answer arrived but will not store. Terminal, not retryable:
-            # asking again produces the same shape.
-            raise AgentTerminalError(
-                "research_unstorable",
-                str(exc),
-                detail={"sections": sorted(sections)},
-            ) from exc
-
-        overview = sections.get("overview")
-        summary = None
-        if isinstance(overview, dict):
-            summary = _text(overview.get("summary"), limit=2000)
-        output = {
-            "company_id": str(company.id),
-            "dossier_version": version.version_number,
-            "submission_created": submission_created,
-            "summary": summary,
-            "sections_present": sorted(sections),
-            "sections_unaddressed": unaddressed,
-            "source_count": len(sections.get("sources") or []),
-            "unknown_count": len(sections.get("unknowns") or []),
-            "producer": answer.producer,
-            "producer_version": answer.producer_version,
-        }
-        return AgentExecutionResult(
-            outcome_committed=True,
-            result={"domain_outcome": "company_researched", **output},
-            output_reference=output,
-        )
-
-
 class InsightsAgentAdapter:
     """Turn the stored dossier into a few evidence-backed, seller-relevant claims.
 
@@ -1287,6 +1181,19 @@ class PersonalizationAgentAdapter:
         )
 
 
+#: The adapter that runs for each Agent, unless a caller passes its own.
+#:
+#: **Exactly one adapter per Agent.** This module once defined
+#: ``ResearchAgentAdapter`` twice — a worker-based one and, 460 lines later, a
+#: model-based one that silently shadowed it. Python rebinds the name without
+#: complaint, so the mapping below pointed at whichever definition came last and
+#: the other became unreachable. The mapping is not a place a mistake like that
+#: shows up: it reads correctly either way. It cost a red test suite and an
+#: unreachable research implementation to notice.
+#:
+#: Two things now catch it. ``ruff``/``mypy`` report the redefinition (they always
+#: did — the error was tolerated), and ``tests/test_research_agent.py`` asserts
+#: this entry is the worker-based adapter by the seam only it has.
 DEFAULT_ADAPTERS: dict[AgentIdentifier, AgentAdapter] = {
     AgentIdentifier.IDENTITY: IdentityAgentAdapter(),
     AgentIdentifier.COMPANY: CompanyAgentAdapter(),
