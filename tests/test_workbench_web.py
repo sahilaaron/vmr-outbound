@@ -84,12 +84,22 @@ def disabled_client(db_session: Session) -> Iterator[TestClient]:
 
 
 def test_workbench_disabled_by_default(disabled_client: TestClient) -> None:
-    assert disabled_client.get("/").status_code == 404
+    # `/admin` is the Workbench overview's address: `/` now redirects to the
+    # customer-facing interface, which is gated by the same switch.
+    assert disabled_client.get("/admin").status_code == 404
+    assert disabled_client.get("/", follow_redirects=False).status_code == 404
     assert disabled_client.get("/contacts").status_code == 404
 
 
 def test_functional_pages_render(client: TestClient) -> None:
-    for path in ("/", "/campaigns", "/imports", "/imports/new", "/contacts", "/local-tools"):
+    for path in (
+        "/admin",
+        "/campaigns",
+        "/imports",
+        "/imports/new",
+        "/contacts",
+        "/local-tools",
+    ):
         response = client.get(path)
         assert response.status_code == 200, path
         assert "VMR Outbound" in response.text
@@ -396,8 +406,10 @@ def test_workbench_enabled_outside_local_refuses_startup(
 
 def test_workbench_enabled_locally_mounts_ui(client: TestClient) -> None:
     # The `client` fixture is APP_ENV=local (default) + workbench enabled.
-    assert client.get("/").status_code == 200
+    assert client.get("/admin").status_code == 200
     assert client.get("/contacts").status_code == 200
+    # And `/` is the front door onto the customer-facing interface.
+    assert client.get("/", follow_redirects=False).status_code == 307
 
 
 def test_workbench_disabled_never_raises_regardless_of_env(
@@ -414,7 +426,8 @@ def test_workbench_disabled_never_raises_regardless_of_env(
 
         app.dependency_overrides[get_db] = _override
         with TestClient(app) as staging_client:
-            assert staging_client.get("/").status_code == 404
+            assert staging_client.get("/admin").status_code == 404
+            assert staging_client.get("/", follow_redirects=False).status_code == 404
             assert staging_client.get("/local-tools").status_code == 404
     finally:
         app.dependency_overrides.clear()

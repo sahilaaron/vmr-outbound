@@ -762,9 +762,15 @@ def test_nothing_outside_the_knowledge_base_consults_readiness() -> None:
     )
     root = pathlib.Path(__file__).resolve().parents[1] / "app"
     seller_package = root / "services" / "seller"
-    # The Knowledge Base may read its own readiness, and the workbench renders
-    # it. Anything else consulting it would make it a gate.
-    allowed = {root / "web" / "routes.py"}
+    # The Knowledge Base may read its own readiness, and a *presentation* surface
+    # may render it. Anything else consulting it would make it a gate, which is the
+    # thing this test exists to prevent. Both page routers are allowed for the same
+    # reason and neither branches on the result: the admin Workbench and the
+    # customer-facing v2 interface each display readiness and nothing more.
+    allowed = {
+        root / "web" / "routes.py",
+        root / "web" / "v2" / "routes.py",
+    }
     importers = sorted(
         str(path.relative_to(root))
         for path in root.rglob("*.py")

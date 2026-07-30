@@ -122,7 +122,7 @@ def test_the_offering_detail_page_is_absent_while_the_switch_is_off(
 
 
 def test_the_nav_entry_appears_when_the_switch_is_on(client: TestClient) -> None:
-    page = client.get("/").text
+    page = client.get("/admin").text
     assert 'href="/knowledge-base"' in page
     assert "Seller context" in page
 
@@ -131,7 +131,7 @@ def test_the_nav_entry_is_absent_when_the_switch_is_off(workbench_only: TestClie
     # The two clients are deliberately in separate tests: both fixtures drive the
     # same cached settings object, so holding one of each at once would leave
     # whichever fixture resolved last speaking for both.
-    page = workbench_only.get("/").text
+    page = workbench_only.get("/admin").text
     assert 'href="/knowledge-base"' not in page
     assert "Seller context" not in page
 

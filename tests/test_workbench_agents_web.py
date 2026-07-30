@@ -114,7 +114,7 @@ def test_while_the_feature_is_off_commands_refuse(
 
 
 def test_the_navigation_offers_the_workbench_when_it_is_on(client: TestClient) -> None:
-    response = client.get("/")
+    response = client.get("/admin")
     assert response.status_code == 200
     assert 'href="/workbench"' in response.text
 
