@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% from "_ui.html" import tag, empty %}
+{% block content %}
+<div class="v2-page">
+  {% include "_kb_head.html" %}
+
+  <div class="v2-card clip v2-mt">
+    <div class="v2-card-head">
+      <h2>Proof points</h2>
+      <span class="v2-note">
+        First-party statements you are prepared to stand behind. A number that is not here cannot
+        appear in a draft.
+      </span>
+      <a class="v2-btn small push" href="/knowledge-base/proof-points">Edit in admin</a>
+    </div>
+    {% if records %}
+    <div class="v2-table-wrap">
+      <table>
+        <thead><tr><th>Statement</th><th>Reference</th><th>Offerings</th><th></th></tr></thead>
+        <tbody>
+          {% for record in records %}
+          <tr>
+            <td class="v2-cell-wide">
+              <div class="v2-kb-value">{{ record.statement }}</div>
+              <div class="v2-note">{{ record.supporting_detail or '' }}</div>
+              {% if record.state.value == 'archived' %}<div class="v2-chipline">{{ tag('archived', '', small=true) }}</div>{% endif %}
+            </td>
+            <td class="v2-note">
+              {% if record.source_reference %}{{ record.source_reference }}
+              {% else %}<span class="v2-warn-text">no reference stored — a draft may still state it, but you cannot show a prospect where it came from</span>{% endif %}
+            </td>
+            <td class="v2-note">
+              {% set linked = offerings_by_record.get(record.id, []) %}
+              {% if linked %}{{ linked | map(attribute='name') | join(', ') }}
+              {% else %}<span class="v2-hint">not linked to an offering</span>{% endif %}
+            </td>
+            <td class="num"><a class="v2-btn small" href="/knowledge-base/proof-points">Edit</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="v2-card-foot plain">
+      Proof points are global and referenced, not copied — editing one changes every offering and
+      every future draft that uses it. Drafts you already approved never change.
+    </div>
+    {% else %}
+      {{ empty('No proof point is stored', 'Until one is, a draft cannot state a single number: the Personalization Agent has nothing it is authorised to quote.') }}
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

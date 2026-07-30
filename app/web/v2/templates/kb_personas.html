@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% from "_ui.html" import tag, empty %}
+{% block content %}
+<div class="v2-page">
+  {% include "_kb_head.html" %}
+
+  <div class="v2-callout v2-mt">
+    <strong>A persona is a role you sell to, not a person.</strong> Real people live under Contacts,
+    carry provenance and suppression state, and can be written to. Nobody is ever contacted because
+    of a persona, and nothing here creates or changes a contact.
+  </div>
+
+  {% if records %}
+    {% for record in records %}
+    <div class="v2-card v2-mt">
+      <div class="v2-card-head">
+        <h2>{{ record.name }}</h2>
+        <span class="v2-note">
+          {{ record.role_function or 'no function entered' }} · {{ record.seniority or 'no seniority entered' }}
+        </span>
+        {% set linked = offerings_by_record.get(record.id, []) %}
+        {% if not linked %}{{ tag('not associated with any offering — never reaches a draft', 'warn') }}{% endif %}
+        {% if record.state.value == 'archived' %}{{ tag('archived', '') }}{% endif %}
+        <a class="v2-btn small push" href="/knowledge-base/personas">Edit in admin</a>
+      </div>
+      <div class="v2-persona-grid">
+        {% for label, values in [
+            ('Responsibilities', record.responsibilities),
+            ('Typical challenges', record.challenges),
+            ('Relevant use cases', record.use_cases)
+          ] %}
+        <div>
+          <div class="v2-eyebrow">{{ label }}</div>
+          {% if values %}
+          <div class="v2-blockquote-list">
+            {% for value in values %}<div>{{ value }}</div>{% endfor %}
+          </div>
+          {% else %}
+          <p class="v2-note">{{ 'Not entered.' if values is none else 'Recorded as none.' }}</p>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      <div class="v2-card-body">
+        <div class="v2-eyebrow">How to write to them</div>
+        <div class="v2-kb-prose">{{ record.messaging_notes or 'Not entered.' }}</div>
+      </div>
+      <div class="v2-card-foot">
+        <span class="v2-hint">Offerings</span>
+        <div class="v2-pillset">
+          {% for offering in linked %}<span class="v2-entry">{{ offering.name }}</span>{% endfor %}
+          {% if not linked %}<span class="v2-hint">none</span>{% endif %}
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  {% else %}
+  <div class="v2-card v2-mt">
+    {{ empty('No persona is stored', 'Personas shape how a draft is written for a role. Without any, the Personalization Agent writes from the offering and the sourced facts alone.') }}
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

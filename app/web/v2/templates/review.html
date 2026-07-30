@@ -1,0 +1,213 @@
+{% extends "base.html" %}
+{% from "_ui.html" import tag, unbuilt, dot, empty, stage_status %}
+{% block content %}
+
+{% if not queue.rows and not selected %}
+<div class="v2-page narrow">
+  <h1 class="v2-h1">Review</h1>
+  <p class="v2-lede">
+    Every finished draft waits here for you to read it. Nothing is sent without this step —
+    there is no auto-send in this product and no sending adapter behind it.
+  </p>
+  <div class="v2-card v2-mt">
+    {{ empty('No draft has been written yet',
+      'The Personalization Agent writes a draft only for a contact whose mailbox has been confirmed, and only from sourced facts and your Knowledge Base. When it finishes one, it appears here.') }}
+  </div>
+  <div class="v2-btn-row v2-page-actions">
+    <a class="v2-btn" href="/app/campaigns">Open a campaign</a>
+    <a class="v2-btn" href="/app/agents?agent=personalization">Check the Personalization Agent</a>
+  </div>
+</div>
+{% else %}
+
+<div class="v2-review">
+
+  <div class="v2-rq">
+    <div class="v2-rq-head">
+      <h1>Review queue</h1>
+      <div class="v2-note">
+        <span class="m">{{ queue.counts.decided }}</span> of
+        <span class="m">{{ queue.counts.total }}</span> decided
+        {%- if campaign_id %} · this campaign{% endif %}
+      </div>
+      <progress class="v2-progress" max="{{ queue.counts.total }}" value="{{ queue.counts.decided }}">{{ queue.counts.progress_percent }}%</progress>
+      <div class="v2-chips v2-mt-sm">
+        {% for key, label in views %}
+        <a class="v2-chip sm {{ 'on' if queue.view == key }}"
+           href="/app/review?view={{ key }}{% if campaign_id %}&campaign={{ campaign_id }}{% endif %}">{{ label }}<span class="count">{% if key == 'awaiting' %}{{ queue.counts.awaiting }}{% elif key == 'approved' %}{{ queue.counts.approved }}{% elif key == 'discarded' %}{{ queue.counts.discarded }}{% else %}{{ queue.counts.total }}{% endif %}</span></a>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="v2-rq-list">
+      {% for row in queue.rows %}
+      <a class="v2-rq-item {{ 'on' if selected and row.draft_version_id == selected.draft_version_id }}"
+         href="/app/review?draft={{ row.draft_version_id }}&view={{ queue.view }}{% if campaign_id %}&campaign={{ campaign_id }}{% endif %}">
+        <div class="v2-rq-top">
+          <span class="v2-rq-name">{{ row.contact_name }}</span>
+          <span class="v2-rq-flag m">v{{ row.version_number }}</span>
+        </div>
+        <div class="v2-rq-company">{{ row.company_name or 'no company on file' }}</div>
+        <div class="v2-rq-subject">{{ row.subject }}</div>
+        <div class="v2-chipline">
+          {% if row.approved %}{{ tag('approved', 'ok', small=true) }}
+          {% elif row.discarded %}{{ tag('discarded', 'err', small=true) }}
+          {% else %}{{ tag('waiting for you', 'brand', small=true) }}{% endif %}
+          {% if not row.is_current %}{{ tag('superseded', 'warn', small=true) }}{% endif %}
+        </div>
+      </a>
+      {% endfor %}
+      {% if not queue.rows %}
+        {{ empty('Nothing in this view', 'Switch the filter above to see drafts in another state.') }}
+      {% endif %}
+    </div>
+    <div class="v2-rq-foot">
+      <div>There is no auto-send: every draft waits for your approval.</div>
+      <div>Approving records your decision against this exact version.</div>
+      <div>An approved draft is still not sent — no sending adapter exists.</div>
+    </div>
+  </div>
+
+  <div class="v2-rc">
+    {% if selected %}
+    <div class="v2-rc-inner">
+      <div class="v2-title-line">
+        <h1 class="v2-h1">{{ selected.contact_name }}</h1>
+        <span class="v2-note">
+          {{ selected.contact_title or 'no title on file' }} · {{ selected.company_name or 'no company' }}
+        </span>
+        <a class="v2-note push" href="/app/contacts/{{ selected.contact_id }}?campaign={{ selected.campaign_id }}">Open full contact →</a>
+      </div>
+
+      <div class="v2-chipline">
+        {% if execution and execution.verification and execution.verification.accepted %}
+          <span class="v2-fact ok">{{ selected.email }} · delivery confirmed</span>
+        {% elif execution and execution.verification and execution.verification.simulated %}
+          <span class="v2-fact warn">{{ selected.email }} · simulated result, not real verification</span>
+        {% elif selected.email %}
+          <span class="v2-fact warn">{{ selected.email }} · delivery not confirmed</span>
+        {% else %}
+          <span class="v2-fact err">no address on file</span>
+        {% endif %}
+        <span class="v2-fact">{{ selected.word_count }} words</span>
+        <span class="v2-fact">version {{ selected.version_number }}{{ '' if selected.is_current else ' · superseded' }}</span>
+        <span class="v2-fact" title="There is no scoring service in this product, so no draft carries a confidence number.">Confidence {{ unbuilt('not scored') }}</span>
+        {% if selected.approved %}<span class="v2-fact ok">approved {{ selected.decided_at | dt }}</span>{% endif %}
+        {% if selected.discarded %}<span class="v2-fact err">discarded {{ selected.decided_at | dt }}</span>{% endif %}
+      </div>
+
+      <div class="v2-mail">
+        <div class="v2-mail-head">
+          <div class="v2-mail-line"><span>To</span><span class="m">{{ selected.email or 'no address' }}</span></div>
+          <div class="v2-mail-line"><span>From</span><span class="v2-muted">Not set — no sending account can be connected yet</span></div>
+          <div class="v2-mail-line"><span>Subject</span><b>{{ selected.subject }}</b></div>
+        </div>
+        <pre class="v2-mail-body">{{ selected.body }}</pre>
+        <div class="v2-mail-foot">
+          {% if selected.is_current %}
+          <form method="post" action="/app/review/{{ selected.draft_version_id }}/approve">
+            <input type="hidden" name="back" value="/app/review?draft={{ selected.draft_version_id }}&view={{ queue.view }}{% if campaign_id %}&campaign={{ campaign_id }}{% endif %}">
+            <label class="v2-sr" for="approve-reason">Note</label>
+            <input class="v2-sr" id="approve-reason" name="reason" value="">
+            <button class="v2-btn primary big" type="submit">
+              {{ 'Re-approve' if selected.discarded else 'Approve' }}
+            </button>
+          </form>
+          <form method="post" action="/app/review/{{ selected.draft_version_id }}/discard">
+            <input type="hidden" name="back" value="/app/review?draft={{ selected.draft_version_id }}&view={{ queue.view }}{% if campaign_id %}&campaign={{ campaign_id }}{% endif %}">
+            <label class="v2-sr" for="discard-reason">Reason</label>
+            <input class="v2-sr" id="discard-reason" name="reason" value="">
+            <button class="v2-btn danger big" type="submit">Discard</button>
+          </form>
+          {% else %}
+          <span class="v2-btn is-disabled" title="A newer version exists. Decide on the current draft instead.">Approve</span>
+          {% endif %}
+          <span class="v2-btn is-disabled" title="A draft is immutable by design. Editing would mean writing a new version, and nothing here writes drafts.">Edit</span>
+          <span class="why">
+            {% if selected.is_current %}
+              Approving records your decision against this exact text. Nothing is sent — no
+              sending adapter is registered, so an approved draft waits for one.
+            {% else %}
+              This version has been superseded by a newer draft. Open the current one to decide.
+            {% endif %}
+          </span>
+        </div>
+      </div>
+
+      {% if selected.decision_reason %}
+      <div class="v2-card v2-mt">
+        <div class="v2-card-head tight"><h2>Your note on this decision</h2></div>
+        <div class="v2-card-body">{{ selected.decision_reason }}</div>
+      </div>
+      {% endif %}
+
+      <div class="v2-card v2-mt">
+        <div class="v2-card-head tight">
+          <h2>How this draft came to exist</h2>
+        </div>
+        <dl class="v2-dl">
+          <div class="v2-kv"><dt>Campaign</dt><dd><a href="/app/campaigns/{{ selected.campaign_id }}">{{ selected.campaign_name }}</a></dd></div>
+          <div class="v2-kv"><dt>Written</dt><dd class="m">{{ selected.created_at | dt }}</dd></div>
+          <div class="v2-kv"><dt>Written by</dt><dd>{{ selected.created_by or 'Personalization Agent' }}</dd></div>
+          <div class="v2-kv"><dt>Version</dt><dd class="m">{{ selected.version_number }}{{ ' · current' if selected.is_current else ' · superseded' }}</dd></div>
+          <div class="v2-kv"><dt>Decision</dt><dd>
+            {% if selected.approved %}Approved by {{ selected.decided_by }} on {{ selected.decided_at | dt }}
+            {% elif selected.discarded %}Discarded by {{ selected.decided_by }} on {{ selected.decided_at | dt }}
+            {% else %}Nobody has decided yet.{% endif %}
+          </dd></div>
+        </dl>
+        <div class="v2-card-foot plain">
+          A draft is immutable. If the Agent rewrites it, that is a new version and this one
+          stays on record with whatever you decided about it.
+        </div>
+      </div>
+    </div>
+    {% else %}
+    <div class="v2-rc-inner">
+      {{ empty('Pick a draft', 'Choose one from the queue on the left.') }}
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="v2-ra">
+    <div class="v2-ra-head">
+      <h2>Why this email says what it says</h2>
+      <p>Every item traces to something the pipeline committed. Nothing here was inferred.</p>
+    </div>
+    {% for item in evidence %}
+    <div class="v2-ev">
+      <div class="v2-eyebrow find">{{ item.kind }}</div>
+      <div class="v2-ev-fact">{{ item.fact }}</div>
+      <div class="v2-ev-source">{{ item.source }}</div>
+      {% if item.quote %}<div class="v2-quote">{{ item.quote }}</div>{% endif %}
+    </div>
+    {% endfor %}
+    {% if not evidence %}
+    <div class="v2-ev">
+      <div class="v2-eyebrow">No evidence is linked</div>
+      <div class="v2-ev-fact">
+        {% if not agent_workbench_on %}
+          The Agent monitor is switched off in this environment, so the per-contact evidence the
+          pipeline recorded cannot be read here.
+        {% else %}
+          No Insights claim, verification decision or research dossier is linked to this draft. That
+          is worth knowing before approving it.
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+    {% if execution %}
+    <div class="v2-ev">
+      <div class="v2-eyebrow">Where the contact stands</div>
+      <div class="v2-ev-fact">
+        {{ execution.next_action }}
+      </div>
+      <div class="v2-ev-source">
+        Pipeline status {{ execution.pipeline_status.value | nice }}
+        {%- if execution.current_stage %} · at the {{ execution.current_stage.value | nice }} Agent{% endif %}
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+{% endblock %}

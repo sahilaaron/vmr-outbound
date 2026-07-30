@@ -1,0 +1,167 @@
+{#
+  v2 presentation macros.
+
+  Every macro here renders a *state the backend committed* — none of them derives
+  one. Where the design shows a figure this product does not yet produce (a send
+  count, a reply, a confidence score), the macro renders `unbuilt()` rather than a
+  number, so the layout survives without the page telling the operator something
+  untrue.
+#}
+
+{# ---------- dots, tags ---------- #}
+{% macro dot(tone, live=false) %}<span class="v2-dot {{ tone }}{{ ' live' if live else '' }}"></span>{% endmacro %}
+
+{% macro tag(text, tone='', live=false, small=false) %}
+<span class="v2-tag {{ tone }}{{ ' small' if small else '' }}">{% if live %}<span class="v2-dot live"></span>{% endif %}{{ text }}</span>
+{%- endmacro %}
+
+{# The one honest answer for anything the product cannot yet measure. #}
+{% macro unbuilt(label='not built yet') %}<span class="v2-unbuilt" title="This product does not produce this figure yet. It is shown as unavailable rather than as a number.">{{ label }}</span>{% endmacro %}
+
+{# ---------- state vocabularies (all read straight from Phase 2 enums) ---------- #}
+
+{% macro stage_status(status) %}
+  {%- set s = status.value if status is not string else status -%}
+  {%- if s == 'completed' -%}{{ tag('completed', 'ok', small=true) }}
+  {%- elif s == 'running' -%}{{ tag('running', 'info', live=true, small=true) }}
+  {%- elif s == 'retrying' -%}{{ tag('retrying', 'warn', small=true) }}
+  {%- elif s == 'paused' -%}{{ tag('paused', 'warn', small=true) }}
+  {%- elif s == 'failed' -%}{{ tag('failed', 'err', small=true) }}
+  {%- elif s == 'blocked' -%}{{ tag('blocked', 'err', small=true) }}
+  {%- elif s == 'skipped' -%}{{ tag('skipped', '', small=true) }}
+  {%- elif s == 'disabled' -%}{{ tag('agent off', '', small=true) }}
+  {%- else -%}{{ tag('waiting', '', small=true) }}
+  {%- endif -%}
+{% endmacro %}
+
+{% macro stage_tone(status) %}
+  {%- set s = status.value if status is not string else status -%}
+  {%- if s == 'completed' -%}ok
+  {%- elif s in ('running',) -%}info
+  {%- elif s in ('retrying', 'paused', 'skipped') -%}warn
+  {%- elif s in ('failed', 'blocked') -%}err
+  {%- else -%}{{ '' }}
+  {%- endif -%}
+{% endmacro %}
+
+{% macro control_state(status) %}
+  {%- set s = status.value if status is not string else status -%}
+  {%- if s == 'enabled' -%}{{ tag('enabled', 'ok', small=true) }}
+  {%- elif s == 'paused' -%}{{ tag('paused', 'warn', small=true) }}
+  {%- else -%}{{ tag('disabled', 'err', small=true) }}
+  {%- endif -%}
+{% endmacro %}
+
+{% macro email_state(status) %}
+  {%- if status is none -%}{{ tag('no address yet', '', small=true) }}
+  {%- else -%}
+    {%- set v = status.visual.value if status.visual is not string else status.visual -%}
+    {%- if v == 'successful' -%}{{ tag(status.label, 'ok', small=true) }}
+    {%- elif v == 'warning' -%}{{ tag(status.label, 'warn', small=true) }}
+    {%- elif v == 'failure' -%}{{ tag(status.label, 'err', small=true) }}
+    {%- else -%}{{ tag(status.label, '', small=true) }}
+    {%- endif -%}
+  {%- endif -%}
+{% endmacro %}
+
+{% macro research_state(state) %}
+  {%- set s = state.value if state is not string else state -%}
+  {%- if s == 'completed' -%}{{ tag('researched', 'ok', small=true) }}
+  {%- elif s == 'completed_with_warnings' -%}{{ tag('completed with warnings', 'warn', small=true) }}
+  {%- elif s == 'running' -%}{{ tag('running', 'info', live=true, small=true) }}
+  {%- elif s == 'queued' -%}{{ tag('queued', 'info', small=true) }}
+  {%- elif s == 'failed' -%}{{ tag('failed', 'err', small=true) }}
+  {%- elif s == 'stale' -%}{{ tag('stale', 'warn', small=true) }}
+  {%- else -%}{{ tag('not requested', '', small=true) }}
+  {%- endif -%}
+{% endmacro %}
+
+{% macro campaign_state(status, execution_enabled) %}
+  {%- set s = status.value if status is not string else status -%}
+  {%- if s == 'active' and execution_enabled -%}
+    <span class="v2-state-pill ok"><span class="v2-dot live"></span>Running</span>
+  {%- elif s == 'active' -%}
+    <span class="v2-state-pill warn">Execution paused</span>
+  {%- elif s == 'archived' -%}
+    <span class="v2-state-pill">Archived</span>
+  {%- else -%}
+    <span class="v2-state-pill">Draft</span>
+  {%- endif -%}
+{% endmacro %}
+
+{% macro readiness_state(state) %}
+  {%- set s = state.value if state is not string else state -%}
+  {%- if s == 'configured' -%}{{ tag('entered', 'ok') }}
+  {%- elif s == 'incomplete' -%}{{ tag('needs attention', 'warn') }}
+  {%- elif s == 'not_applicable' -%}{{ tag('not applicable', '') }}
+  {%- else -%}{{ tag('not entered', 'err') }}
+  {%- endif -%}
+{% endmacro %}
+
+{# ---------- structure ---------- #}
+
+{% macro stat(label, value, note='', tone='') %}
+<div class="v2-stat">
+  <div class="v2-stat-label {{ tone }}">{{ label }}</div>
+  <div class="v2-stat-figure">
+    <span class="v2-stat-value">{{ value }}</span>
+    {% if note %}<span class="v2-stat-note">{{ note }}</span>{% endif %}
+  </div>
+</div>
+{%- endmacro %}
+
+{# A stat the product cannot measure yet. Same slot, same rhythm, no number. #}
+{% macro stat_unbuilt(label, note) %}
+<div class="v2-stat">
+  <div class="v2-stat-label">{{ label }}</div>
+  <div class="v2-stat-figure">
+    <span class="v2-stat-value unbuilt">—</span>
+    <span class="v2-stat-note">{{ note }}</span>
+  </div>
+</div>
+{%- endmacro %}
+
+{% macro kv(key, wide=false) %}
+<div class="v2-kv{{ '' if wide else ' tight' }}">
+  <div class="v2-kv-k">{{ key }}</div>
+  <div class="v2-kv-v">{{ caller() }}</div>
+</div>
+{%- endmacro %}
+
+{% macro empty(title, detail) %}
+<div class="v2-empty">
+  <b>{{ title }}</b>
+  {{ detail }}
+</div>
+{%- endmacro %}
+
+{% macro pager(page, pages, total, base_url, label='records') %}
+<div class="v2-pager">
+  <span>{{ total }} {{ label }} · page <span class="m">{{ page }}</span> of <span class="m">{{ pages }}</span></span>
+  <span>
+    {% if page > 1 %}<a href="{{ base_url }}{{ '&' if '?' in base_url else '?' }}page={{ page - 1 }}">← previous</a>{% endif %}
+    {% if page < pages %}<a href="{{ base_url }}{{ '&' if '?' in base_url else '?' }}page={{ page + 1 }}">next →</a>{% endif %}
+  </span>
+</div>
+{%- endmacro %}
+
+{# A future-feature surface. Carries the shape of the screen and no data. #}
+{% macro soon(title, lede, tiles=[], note='') %}
+<div class="v2-soon">
+  {{ unbuilt('not available yet') }}
+  {% if title %}<h2>{{ title }}</h2>{% endif %}
+  <p>{{ lede }}</p>
+  {% if tiles %}
+  <div class="v2-soon-grid">
+    {% for t in tiles %}
+    <div class="v2-soon-tile">
+      <div class="v2-stat-label">{{ t[0] }}</div>
+      <div class="v2-stat-value">—</div>
+      <p>{{ t[1] }}</p>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% if note %}<p class="v2-soon-note">{{ note }}</p>{% endif %}
+</div>
+{%- endmacro %}

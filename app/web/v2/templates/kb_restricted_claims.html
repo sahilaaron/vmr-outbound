@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% from "_ui.html" import tag, empty %}
+{% block content %}
+<div class="v2-page">
+  {% include "_kb_head.html" %}
+
+  <div class="v2-card v2-mt">
+    <div class="v2-card-head">
+      <h2>Restricted claims</h2>
+      <span class="v2-note">Hard limits. A draft that breaks one is rewritten before it reaches you.</span>
+      <a class="v2-btn small push" href="/knowledge-base/restricted-claims">Edit in admin</a>
+    </div>
+    {% if records %}
+      {% for record in records %}
+      <div class="v2-row">
+        <div class="v2-sidelist-top">
+          <b>{{ record.title }}</b>
+          {% if record.scope.value == 'global' %}{{ tag('global', 'brand', small=true) }}
+          {% else %}{{ tag('offering-scoped', 'accent', small=true) }}{% endif %}
+          {% if record.state.value == 'archived' %}{{ tag('withdrawn', '', small=true) }}{% endif %}
+        </div>
+        <div class="v2-note">{{ record.explanation or 'No explanation was entered.' }}</div>
+        {% if record.examples %}
+        <div class="v2-blockquote-list">
+          {% for example in record.examples %}<div>{{ example }}</div>{% endfor %}
+        </div>
+        {% endif %}
+        {% set linked = offerings_by_record.get(record.id, []) %}
+        {% if linked %}
+        <div class="v2-hint">Applies to: {{ linked | map(attribute='name') | join(', ') }}</div>
+        {% elif record.scope.value != 'global' %}
+        <div class="v2-hint">Scoped to an offering but linked to none, so it currently limits nothing.</div>
+        {% endif %}
+      </div>
+      {% endfor %}
+      <div class="v2-card-foot plain">
+        Withdrawing a limit applies from the next draft onward. It never reopens a message you
+        already approved.
+      </div>
+    {% else %}
+      {{ empty('No limit is stored', 'The Personalization Agent still refuses to state a figure that is not a proof point, but nothing else is constrained. Add the limits you want enforced.') }}
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

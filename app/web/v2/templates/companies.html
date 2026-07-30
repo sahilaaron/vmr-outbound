@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% from "_ui.html" import tag, dot, empty, pager, research_state %}
+{% block content %}
+<div class="v2-page">
+
+  <div class="v2-head">
+    <div>
+      <h1 class="v2-h1">Companies</h1>
+      <p class="v2-lede">
+        {{ total | thousands }} compan{{ 'y' if total == 1 else 'ies' }} in this view. A website is
+        resolved once and reused for everyone who works there, so research and address discovery
+        are never paid for twice.
+        {%- if provisional %} {{ provisional }} currently run on a domain the policy accepted only
+        provisionally.{% endif %}
+      </p>
+    </div>
+  </div>
+
+  <div class="v2-card clip v2-mt">
+    <form class="v2-toolbar" method="get" action="/app/companies">
+      <label class="v2-sr" for="company-q">Search</label>
+      <input class="v2-input sm" id="company-q" name="q" value="{{ filters.search or '' }}"
+             placeholder="Search company or website">
+      <input type="hidden" name="view" value="{{ filters.view }}">
+      <input type="hidden" name="sort" value="{{ filters.sort }}">
+      <button class="v2-btn small" type="submit">Search</button>
+      {% if filters.search %}<a class="v2-btn small" href="/app/companies?view={{ filters.view }}">Clear</a>{% endif %}
+    </form>
+
+    <div class="v2-toolbar">
+      <div class="v2-chips">
+        {% for key, label in views %}
+        <a class="v2-chip sm {{ 'on' if filters.view == key }}"
+           href="/app/companies?view={{ key }}{% if filters.search %}&q={{ filters.search }}{% endif %}">{{ label }}</a>
+        {% endfor %}
+      </div>
+      <div class="v2-chips push">
+        {% for key, label in sorts %}
+        <a class="v2-chip sm {{ 'on' if filters.sort == key }}"
+           href="/app/companies?view={{ filters.view }}&sort={{ key }}{% if filters.search %}&q={{ filters.search }}{% endif %}">{{ label }}</a>
+        {% endfor %}
+      </div>
+    </div>
+
+    {% if rows %}
+    <div class="v2-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Company</th>
+            <th>Website</th>
+            <th class="num">Contacts</th>
+            <th>Research on file</th>
+            <th>Records disagree</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr>
+            <td>
+              <div class="v2-cell-state">
+                {{ dot('err' if not row.has_domain else ('warn' if row.conflict_count else 'ok')) }}
+                <a href="/app/companies/{{ row.company.id }}">{{ row.company.name }}</a>
+              </div>
+              <div class="v2-sub">
+                {{ row.company.industry or 'industry unknown' }}
+                {%- if row.company.country %} · {{ row.company.country }}{% endif %}
+              </div>
+            </td>
+            <td>
+              <div class="m">{{ row.company.domain or '—' }}</div>
+              <div class="v2-sub">
+                {% if row.has_domain %}Resolved once and reused for every contact here.
+                {% else %}No website could be established, so no address can be built here at all.{% endif %}
+              </div>
+            </td>
+            <td class="num m">{{ row.contact_count }}</td>
+            <td class="v2-note">
+              {{ research_state(row.company.research_state) }}
+              <div class="v2-sub">
+                {% if row.dossier_count %}{{ row.dossier_count }} dossier version(s) · last researched {{ row.company.last_researched_at | dt }}
+                {% else %}No dossier on file.{% endif %}
+              </div>
+            </td>
+            <td>
+              {% if row.conflict_count %}{{ tag(row.conflict_count ~ ' disagreement(s)', 'warn', small=true) }}
+              {% else %}<span class="v2-hint">consistent</span>{% endif %}
+            </td>
+            <td class="num">
+              <a class="v2-btn small" href="/app/companies/{{ row.company.id }}">Open</a>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="v2-cardlist">
+      {% for row in rows %}
+      <div class="v2-item">
+        <div class="v2-item-top">
+          <a href="/app/companies/{{ row.company.id }}">{{ row.company.name }}</a>
+          <span class="when">{{ row.contact_count }} people</span>
+        </div>
+        <div class="m v2-sub">{{ row.company.domain or 'no website' }}</div>
+        <div class="v2-chipline">
+          {{ research_state(row.company.research_state) }}
+          {% if row.conflict_count %}{{ tag(row.conflict_count ~ ' disagreement(s)', 'warn', small=true) }}{% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="v2-card-foot">
+      {{ pager(page, pages, total, filter_url, 'companies') }}
+    </div>
+    {% else %}
+      {{ empty('Nothing in this view', 'Companies appear as captured contacts are resolved to them. Clear the filters, or capture more people.') }}
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

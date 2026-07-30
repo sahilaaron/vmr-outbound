@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% from "_ui.html" import unbuilt %}
+{% block content %}
+<div class="v2-page narrow">
+  <h1 class="v2-h1">Knowledge Base</h1>
+  <p class="v2-lede">
+    The seller Knowledge Base is switched off in this environment, so there is nothing to show. It
+    is not empty — it is not loaded. Turn on <span class="m">FEATURES__SELLER_KNOWLEDGE_BASE</span>
+    and reload.
+  </p>
+  <div class="v2-callout v2-mt">
+    <strong>Why this matters.</strong> The Personalization Agent writes from this and from sourced
+    prospect research, and from nothing else. With the Knowledge Base off, a draft has nothing it is
+    authorised to offer and no proof point it is allowed to state.
+  </div>
+</div>
+{% endblock %}

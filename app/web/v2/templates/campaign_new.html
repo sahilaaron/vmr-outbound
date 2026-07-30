@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% from "_ui.html" import unbuilt %}
+{% block content %}
+<div class="v2-page wiz">
+  <h1 class="v2-h1">New campaign</h1>
+  <p class="v2-lede">
+    A campaign is a named nine-Agent run over a set of people. Two of the five steps the finished
+    product will have exist today; the rest are shown so the shape is legible, and they are
+    explicitly not available yet.
+  </p>
+
+  <div class="v2-chips v2-mt">
+    <span class="v2-chip solid on"><span class="m">1</span> Name it</span>
+    <span class="v2-chip on"><span class="m">2</span> Knowledge</span>
+    <span class="v2-chip is-disabled"><span class="m">3</span> Audience rules</span>
+    <span class="v2-chip is-disabled"><span class="m">4</span> Message shape</span>
+    <span class="v2-chip is-disabled"><span class="m">5</span> Sending</span>
+  </div>
+
+  <div class="v2-split wiz">
+    <div class="v2-card">
+      <div class="v2-card-body roomy">
+        <form class="v2-form-stack" method="post" action="/app/campaigns/new">
+          <div class="v2-field">
+            <label for="campaign-name">Campaign name</label>
+            <div class="v2-hint">Only you see this. It must be unique.</div>
+            <input class="v2-input" id="campaign-name" name="name" maxlength="255" required
+                   placeholder="Q3 Pharma QA Directors">
+          </div>
+          <div class="v2-field">
+            <label for="campaign-description">What it is for</label>
+            <div class="v2-hint">A sentence for your own memory. No draft reads this.</div>
+            <textarea class="v2-textarea" id="campaign-description" name="description" maxlength="4000"></textarea>
+          </div>
+          <div class="v2-field">
+            <label for="campaign-offering">Offering to lead with</label>
+            <div class="v2-hint">
+              A draft may only offer something in your Knowledge Base. Attaching one here is what
+              authorises it, and it inherits that offering's proof points and limits.
+            </div>
+            {% if kb_on and offerings %}
+            <select class="v2-select" id="campaign-offering" name="offering_id">
+              <option value="">Choose later</option>
+              {% for offering in offerings %}
+              <option value="{{ offering.id }}">{{ offering.name }}</option>
+              {% endfor %}
+            </select>
+            {% elif kb_on %}
+            <p class="v2-note">
+              No offering is stored yet. Create one in the Knowledge Base, then attach it — until
+              then no draft can be written for this campaign.
+            </p>
+            {% else %}
+            <p class="v2-note">The Knowledge Base is switched off in this environment.</p>
+            {% endif %}
+          </div>
+          <div class="v2-btn-row">
+            <button class="v2-btn primary big" type="submit">Create the campaign</button>
+            <a class="v2-btn big" href="/app/campaigns">Cancel</a>
+          </div>
+          <p class="v2-hint">
+            It is created as a draft with execution off, so no Agent claims work until you turn it
+            on. Nothing here is irreversible.
+          </p>
+        </form>
+      </div>
+    </div>
+
+    <div class="v2-card">
+      <div class="v2-card-head tight"><h2>The three later steps</h2></div>
+      <div class="v2-row tight">
+        <div class="v2-sidelist-top"><b>Audience rules</b>{{ unbuilt() }}</div>
+        <div class="v2-hint">
+          Role, industry, geography and size criteria that decide who a capture may join. There is
+          no rules engine yet — you enrol contacts from the Contacts screen instead, which is
+          explicit and reversible.
+        </div>
+      </div>
+      <div class="v2-row tight">
+        <div class="v2-sidelist-top"><b>Message shape</b>{{ unbuilt() }}</div>
+        <div class="v2-hint">
+          The ask, the tone and the length cap. Today the Personalization Agent works from your
+          Knowledge Base guardrails, which are set once and apply everywhere.
+        </div>
+      </div>
+      <div class="v2-row tight">
+        <div class="v2-sidelist-top"><b>Sending</b>{{ unbuilt() }}</div>
+        <div class="v2-hint">
+          Mailboxes, a daily cap, a send window and an auto-send threshold. None exists: there is no
+          sending adapter, so every draft waits for your approval and goes no further.
+        </div>
+      </div>
+      <div class="v2-card-foot plain">
+        Showing these as steps rather than hiding them is deliberate. You should be able to see what
+        the product will ask for, without a form implying it will act on the answer.
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
