@@ -52,6 +52,7 @@ from app.models.suppression import Suppression
 from app.services import campaigns as campaign_service
 from app.services import drafts as draft_service
 from app.services import workbench_agents
+from app.services.agents import rerun as agent_rerun
 from app.services.agents.registry import AGENT_SPECS, PIPELINE_ORDER
 from app.services.campaigns import CampaignError
 from app.services.captures import labels as capture_labels
@@ -1004,6 +1005,17 @@ def campaign_page(
         if campaign is not None:
             readiness = seller_readiness.campaign_report(db, campaign)
 
+    # Two different questions, so two different numbers. The strip hint asks "is a
+    # re-run likely to help here?" across all nine Agents, and answers it from
+    # failures, cheaply. The panel asks "what exactly has stopped on the Agent I am
+    # looking at?" — and since it needs the list anyway, it reads the list rather than
+    # gating on the approximate count. Gating on the count hid a stage whose only
+    # stopped contact was blocked, which is precisely the contact worth explaining.
+    failures = agent_rerun.failure_counts(db, identifier)
+    rerun_candidates: tuple[agent_rerun.RerunCandidate, ...] = ()
+    if selected is not None:
+        rerun_candidates = agent_rerun.candidates(db, campaign_id=identifier, agent_id=selected)
+
     return _render(
         request,
         db,
@@ -1016,6 +1028,10 @@ def campaign_page(
             "tiles": tiles,
             "selected_tile": selected_tile,
             "selected_stage": selected.value if selected else None,
+            "failure_counts": failures,
+            "rerun_candidates": rerun_candidates,
+            "rerun_spends": (selected in agent_rerun.SPENDS_PER_CONTACT) if selected else False,
+            "rerun_ceiling": agent_rerun.MAX_PER_RERUN,
             "decisions": _decision_groups(db, counts, campaign_id=identifier),
             "attention_here": counts,
             "activity": _activity_lines(execution.recent_events),
@@ -1073,6 +1089,64 @@ def campaign_execution_toggle(
         )
     )
     return _redirect(f"/app/campaigns/{identifier}", ok=message)
+
+
+@router.post("/campaigns/{campaign_id}/agents/{agent_id}/rerun")
+def campaign_agent_rerun(
+    campaign_id: str,
+    agent_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    reason: str = Form(""),
+    campaign_contact_id: str = Form(""),
+    back: str = Form(""),
+) -> RedirectResponse:
+    """Run one Agent again for the contacts it has stopped on.
+
+    The whole campaign by default, or one contact when ``campaign_contact_id`` is
+    given. Both go through the same guards, so the single-contact button cannot do
+    anything the bulk one would refuse.
+
+    Refusals are carried back as a flash rather than raised: an operator who presses
+    "run again" and sees nothing happen has been told less than nothing.
+    """
+
+    identifier = _uuid(campaign_id)
+    if identifier is None:
+        return _redirect("/app/campaigns", err="That is not a campaign id.")
+    try:
+        target = AgentIdentifier(agent_id)
+    except ValueError:
+        return _redirect(f"/app/campaigns/{identifier}", err="That is not an Agent.")
+
+    destination = back or f"/app/campaigns/{identifier}?stage={target.value}"
+    try:
+        outcome = agent_rerun.rerun_stage(
+            db,
+            campaign_id=identifier,
+            agent_id=target,
+            actor=draft_service.OPERATOR_ACTOR,
+            reason=reason or None,
+            campaign_contact_id=_uuid(campaign_contact_id) if campaign_contact_id else None,
+        )
+    except agent_rerun.RerunError as exc:
+        return _redirect(destination, err=str(exc))
+
+    db.commit()
+    message = outcome.message()
+    if outcome.refusals:
+        # Name the first few rather than a bare count: "3 were not re-run" sends the
+        # operator hunting, and the reason is already in hand.
+        shown = "; ".join(
+            f"{refusal.contact_label} — {refusal.reason}" for refusal in outcome.refusals[:3]
+        )
+        remaining = len(outcome.refusals) - 3
+        if remaining > 0:
+            shown += f"; and {remaining} more"
+        message = f"{message} {shown}"
+    if not outcome.accepted:
+        return _redirect(destination, err=message)
+    return _redirect(destination, ok=message)
 
 
 # ---------------------------------------------------------------------------

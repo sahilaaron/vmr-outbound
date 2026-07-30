@@ -217,6 +217,23 @@ def _terminal_eligibility_block(membership: CampaignContact) -> str | None:
     return None
 
 
+def stage_job_key(
+    campaign_contact_id: uuid.UUID, agent_id: AgentIdentifier, *, generation: int = 1
+) -> str:
+    """The idempotency key for one Campaign Contact's turn at one Agent.
+
+    ``generation`` exists so a stage can be run *again* after the reason it failed has
+    been fixed. The key used to be a hardcoded ``v1``, which made that impossible:
+    ``enqueue_job`` is idempotent on the key, so re-queueing returned the same failed
+    job and the contact never moved. Every ordinary caller stays on generation 1, so
+    two workers scheduling the same stage concurrently still converge on one job —
+    that convergence is the whole reason the key exists and must not be weakened to
+    allow re-runs.
+    """
+
+    return f"pipeline:{campaign_contact_id}:{agent_id.value}:v{generation}"
+
+
 def schedule_next(
     session: Session,
     *,
@@ -225,8 +242,13 @@ def schedule_next(
     parent_job: AgentJob | None = None,
     priority: int = 100,
     allow_enqueue: bool = True,
+    generation: int = 1,
 ) -> AgentJob | None:
-    """Enqueue the next eligible Agent or persist why it cannot run."""
+    """Enqueue the next eligible Agent or persist why it cannot run.
+
+    ``generation`` is passed through to :func:`stage_job_key`; only an explicit
+    operator re-run ever raises it.
+    """
 
     if membership.membership_status is not CampaignMembershipStatus.ACTIVE:
         return None
@@ -379,7 +401,7 @@ def schedule_next(
         return None
 
     spec = get_agent_spec(agent_id)
-    key = f"pipeline:{membership.id}:{agent_id.value}:v1"
+    key = stage_job_key(membership.id, agent_id, generation=generation)
     job, created = jobs.enqueue_job(
         session,
         agent_id=agent_id,
