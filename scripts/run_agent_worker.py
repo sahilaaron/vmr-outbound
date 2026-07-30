@@ -25,6 +25,7 @@ from app.services.agents.orchestrator import (
     execute_started_job,
     prepare_leased_job,
 )
+from app.services.resolution.pending import resolve_pending
 from sqlalchemy import select
 
 
@@ -64,6 +65,20 @@ def _parser() -> argparse.ArgumentParser:
         type=int,
         help="Exit after this many claimed jobs; useful for controlled deployments",
     )
+    parser.add_argument(
+        "--resolve-limit",
+        type=int,
+        default=25,
+        help=(
+            "Pending captures to resolve per pass before claiming Agent work "
+            "(default 25). Each may cost one provider lookup."
+        ),
+    )
+    parser.add_argument(
+        "--skip-capture-resolution",
+        action="store_true",
+        help="Drain the Agent queue only; do not resolve pending captures",
+    )
     return parser
 
 
@@ -91,6 +106,34 @@ def _current_execution(job: AgentJob, message: str) -> WorkerExecution:
         agent_id=job.agent_id,
         campaign_contact_id=job.campaign_contact_id,
         message=message,
+    )
+
+
+def _resolve_pending_captures(*, limit: int) -> str | None:
+    """Finish the company-domain resolution an intake request could not.
+
+    Intake resolves what it can inside a hard share of its own request budget and
+    leaves the rest untouched, because a hundred-capture submission would otherwise
+    spend a hundred provider lookups inside one HTTP request. This is where the
+    remainder gets done — before claiming Agent work, because a capture that is not
+    yet a Contact has no Agent Job to claim, so resolving first is what puts those
+    people into the pipeline at all.
+
+    Best-effort by design: a failure here must never stop the worker from draining
+    the Agent queue, which is its actual job.
+    """
+
+    try:
+        with session_scope() as session:
+            outcome = resolve_pending(session, limit=limit)
+    except Exception as exc:  # noqa: BLE001 - never block the queue on a backfill
+        return f"Capture resolution pass failed: {exc}"
+    if not outcome.did_work:
+        return None
+    return (
+        f"Resolved pending captures: considered {outcome.considered}, "
+        f"promoted {outcome.promoted}, provider calls {outcome.provider_calls}, "
+        f"failed {outcome.failed}."
     )
 
 
@@ -155,6 +198,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     agent_ids = tuple(AgentIdentifier(value) for value in args.agents) if args.agents else None
     processed = 0
     while True:
+        # Before claiming Agent work: a capture that is not yet a Contact has no
+        # Agent Job to claim, so resolving these first is what puts those people
+        # into the pipeline at all. Skipped when the operator narrowed the worker
+        # to specific Agents, since that is a request to do one thing only.
+        if not args.skip_capture_resolution and agent_ids is None:
+            note = _resolve_pending_captures(limit=args.resolve_limit)
+            if note:
+                print(note, flush=True)
+
         execution = _run_once(
             worker_id=args.worker_id,
             lease_seconds=args.lease_seconds,

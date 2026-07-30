@@ -188,6 +188,14 @@ class IntakeTimeoutError(ContactCaptureError):
 
 # --- Results -----------------------------------------------------------------
 
+# Bounds on the optional automatic-resolution pass inside an intake request.
+# A submission's whole budget belongs to staging; resolution may use a share of
+# whatever is left and no more. The provider cap matters independently of the
+# clock: a fast provider should not turn one submission into 500 outbound lookups.
+_RESOLUTION_BUDGET_SHARE = 0.4
+_RESOLUTION_MAX_SECONDS = 15.0
+_RESOLUTION_MAX_PROVIDER_CALLS = 10
+
 _COUNT_KEYS = (
     "submitted",
     "created",
@@ -529,6 +537,17 @@ class _Deadline:
     def check(self) -> None:
         if _now() >= self._end:
             raise IntakeTimeoutError("contact capture intake exceeded its time budget")
+
+    def remaining_seconds(self) -> float:
+        """How much budget is left, for work that must yield rather than fail.
+
+        Staging is the valuable part of a submission and it is finished by the time
+        anything optional runs. Optional work therefore asks how much time it has
+        and stops, instead of calling :meth:`check` and converting "we ran out of
+        time on an extra" into "discard everything that already succeeded".
+        """
+
+        return max(0.0, self._end - _now())
 
 
 def _is_query_canceled(exc: OperationalError) -> bool:
@@ -1072,9 +1091,30 @@ def _auto_resolve_captures(
     if not access.available:
         return 0
 
+    # Bounded, and it yields rather than failing. Both halves were learned the
+    # hard way: a 100-capture submission spent one logo.dev lookup per unresolved
+    # company, blew the submission's 60s budget, and the IntakeTimeoutError that
+    # raised is a ContactCaptureError — whose handler rolls the transaction back.
+    # So an *optional improvement* destroyed 100 successfully staged people.
+    #
+    # Two rules follow. Optional work never calls deadline.check(), because that
+    # converts "ran out of time on an extra" into "discard everything". And it
+    # gets a hard share of the remaining budget, so a slow provider cannot reach
+    # the submission's limit at all.
+    #
+    # What is left unresolved is left *untouched* — no decision recorded, so the
+    # capture stays exactly as resolvable as it was. The agent worker finishes
+    # them on its next pass, where time is not bounded by an HTTP request.
+    budget = min(deadline.remaining_seconds() * _RESOLUTION_BUDGET_SHARE, _RESOLUTION_MAX_SECONDS)
+    started = _now()
     resolved = 0
+    provider_calls = 0
+
     for snapshot in snapshots:
-        deadline.check()
+        if provider_calls >= _RESOLUTION_MAX_PROVIDER_CALLS:
+            break
+        if _now() - started >= budget:
+            break
         try:
             with session.begin_nested():
                 outcome = resolution_service.resolve(
@@ -1088,6 +1128,8 @@ def _auto_resolve_captures(
                 )
         except Exception:  # noqa: BLE001 - one capture must not fail the batch
             continue
+        if outcome.provider_call_made:
+            provider_calls += 1
         if outcome.auto_promoted:
             resolved += 1
     return resolved
