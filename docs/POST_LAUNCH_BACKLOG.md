@@ -80,3 +80,13 @@ the truthful-extraction standard if forced in.
 | Idea | Why deferred |
 | --- | --- |
 | **DAT-020B — cross-tab redirect provenance** | Attaching a redirected vanity capture to the Contact created from a member id needs evidence the extension currently discards: that it opened alias for member `X` in tab `T`, and the capture happened in `T` after that redirect. Without it there is no deterministic link, and name/company bridging is forbidden. Full paste-ready issue in [`DAT_020B_FOLLOW_UP.md`](DAT_020B_FOLLOW_UP.md). |
+
+## Deferred by RES-001 (Research Agent)
+
+| Idea | Why deferred |
+| --- | --- |
+| **Script workers — plug `.py` collectors into the Research Agent** | The worker seam ships in RES-001, so a new source is already a module rather than a pipeline change. Running *arbitrary registered scripts* as workers is the v2 step. Design, mapping table and the three blocking questions are in [`RESEARCH_WORKERS.md`](RESEARCH_WORKERS.md#planned-script-workers-v2-not-built). The blockers are real: both candidate scripts invoke the Claude CLI, which makes their output an untrusted AI *interpretation* rather than a sourced fact, and that belongs behind AIC-002 / #181 in MVP-02, not inside a deterministic research stage. |
+| Playwright / JS-rendered site fallback | A headless browser is a heavyweight dependency and was not needed to read the first sites. A JS-only site currently reports insufficient evidence, truthfully, rather than silently escalating. Revisit only if real pilot data shows it blocking usable companies. |
+| Contact-level research | RES-001 researches the permanent Company, which is where reuse across Contacts and Campaigns comes from. Per-person research has no demonstrated need before the first campaign. |
+| Promoting sourced facts onto canonical Company fields | Research stores claims with evidence; it does not overwrite canonical values. Turning a sourced fact into a canonical field is a separate, reviewable decision with its own provenance rules (`CompanyFieldSource.RESEARCH_DOSSIER` already exists for it). |
+| Generalised Agent parent/child jobs | The orchestrator's parent/child machinery is hard-coded to the EMAIL to VERIFICATION pair. RES-001 needs no children, so generalising it stays unbuilt until a second Agent actually needs one. |

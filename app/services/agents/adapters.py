@@ -347,6 +347,86 @@ class EmailAgentAdapter:
         )
 
 
+class ResearchAgentAdapter:
+    """Gather sourced company facts through the enabled research workers.
+
+    Thin on purpose: the state machine in ``app.services.research.agent``
+    owns the decision, and the worker registry owns which sources run. The
+    only logic here is the two framework-level gates -- the feature switch
+    and the per-campaign ``live`` opt-in -- and translating the resulting
+    step into the shared error vocabulary.
+    """
+
+    agent_id = AgentIdentifier.RESEARCH
+
+    def __init__(self, *, workers_factory: Callable[..., Any] | None = None) -> None:
+        # Injection seam for tests, mirroring VerificationAgentAdapter: the
+        # suite must be able to run the real worker loop with a fake source.
+        self._workers_factory = workers_factory
+
+    def execute(self, context: AgentExecutionContext) -> AgentExecutionResult:
+        from app.services.research.agent import ResearchStepKind, execute_step
+        from app.services.research.workers import WorkerNotRegistered, build_workers
+
+        settings = get_settings()
+        if not settings.features.company_research:
+            raise AgentBlocked(
+                "feature_disabled",
+                "Company research is switched off for this deployment.",
+            )
+        # Nothing reaches another organisation's website until a campaign
+        # explicitly opts in, exactly as verification refuses to spend before
+        # an operator asks it to.
+        if context.config.get("live") is not True:
+            raise AgentBlocked(
+                "research_not_live",
+                "This campaign has not enabled live company research.",
+            )
+
+        factory = self._workers_factory or build_workers
+        requested = context.config.get("workers")
+        try:
+            workers = factory(requested)
+        except WorkerNotRegistered as exc:
+            raise AgentTerminalError("worker_not_registered", str(exc)) from exc
+
+        step = execute_step(
+            context.session,
+            job=context.job,
+            contact=context.contact,
+            workers=workers,
+            options=context.config.get("worker_options") or {},
+            actor=context.worker_id,
+        )
+
+        if step.kind is ResearchStepKind.COMPLETE:
+            return AgentExecutionResult(
+                outcome_committed=True,
+                result=step.result,
+                output_reference=step.output_reference,
+            )
+        if step.kind is ResearchStepKind.RETRY:
+            raise AgentRetryableError(
+                step.reason_code or "research_retry",
+                step.reason or "Company research hit a transient fault.",
+                detail=step.result,
+                preserve_outcome=step.committed,
+            )
+        if step.kind is ResearchStepKind.BLOCKED:
+            raise AgentBlocked(
+                step.reason_code or "research_blocked",
+                step.reason or "Company research cannot run for this contact.",
+                detail=step.result,
+                preserve_outcome=step.committed,
+            )
+        raise AgentTerminalError(
+            step.reason_code or "research_failed",
+            step.reason or "Company research produced no usable result.",
+            detail=step.result,
+            preserve_outcome=step.committed,
+        )
+
+
 class VerificationAgentAdapter:
     """Verify one exact address through the existing MillionVerifier service.
 
