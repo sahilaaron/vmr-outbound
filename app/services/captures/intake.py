@@ -50,6 +50,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.models.contact import Contact
 from app.models.contact_capture import (
     NOTE_SCOPE_CONTACT,
@@ -201,6 +202,8 @@ _COUNT_KEYS = (
     "campaign_filings_applied",
     "campaign_filings_pending",
     "campaign_filings_failed",
+    # Captures the automatic company-domain policy finished without an operator.
+    "auto_resolved",
 )
 
 # Truthful outcome -> the response counter it increments.
@@ -1007,6 +1010,89 @@ def _replay(submission: ContactCaptureSubmission) -> SubmissionResult:
     )
 
 
+def _auto_resolve_captures(
+    session: Session,
+    *,
+    snapshots: list[LinkedInProfileSnapshot],
+    actor: str,
+    deadline: Any,
+) -> int:
+    """Let the company-domain policy finish the captures it can, unattended.
+
+    Every capture arriving without a permanent Contact used to wait for an
+    operator to open it and press "resolve automatically" — a button that carried
+    no judgement, because the policy behind it decides on evidence and the
+    operator could neither see nor improve on that evidence. For a batch of a
+    hundred that was a hundred clicks standing between a saved person and the
+    Contact they already implied.
+
+    So it runs here. What the policy cannot decide it still leaves alone: an
+    ambiguous, conflicting or unresolvable company produces ``UNRESOLVED``, no
+    Contact, and the manual controls the operator genuinely needs. Nothing is
+    loosened — ``resolve()`` applies exactly the rules it always did, including
+    the guards that keep an uncorroborated guess out of the approved-mapping
+    store.
+
+    Each capture is isolated in its own SAVEPOINT. A provider failure, a policy
+    error or an operator-correction conflict on one person must not roll back the
+    submission that saved all of them; the capture stays staged and resolvable by
+    hand, which is exactly where it would have been anyway.
+    """
+
+    settings = get_settings()
+    if not (
+        settings.features.contact_capture_promotion
+        and settings.features.automatic_company_domain_resolution
+    ):
+        return 0
+
+    # Imported here rather than at module scope: intake is the staging boundary
+    # and must not acquire a hard dependency on the resolution package for the
+    # common case where the switch is off.
+    from app.services.resolution import service as resolution_service
+
+    usable = settings.features.salesnav_domain_enrichment and settings.has_logo_dev_key()
+    access = resolution_service.ProviderAccess(
+        api_key=settings.logo_dev_api_key if usable else None,
+        search_url=settings.logo_dev_search_url,
+        timeout=settings.logo_dev_timeout_seconds,
+        max_candidates=settings.logo_dev_max_candidates,
+    )
+    # Without a usable provider, an attempt here cannot decide anything it could
+    # not decide later — and it is actively harmful. The policy would record
+    # UNRESOLVED for the reason "the provider lookup was not run", which is not a
+    # decision but the absence of one; and because a recorded decision is not
+    # recalculated without an explicit force, that non-decision would stop the
+    # capture ever being resolved automatically again. So the capture stays staged,
+    # exactly as it did before this automation existed.
+    #
+    # Nothing valuable is lost. With a key configured, established evidence — an
+    # approved mapping from an earlier confirmation at the same company — is still
+    # checked first and still resolves without a provider call.
+    if not access.available:
+        return 0
+
+    resolved = 0
+    for snapshot in snapshots:
+        deadline.check()
+        try:
+            with session.begin_nested():
+                outcome = resolution_service.resolve(
+                    session,
+                    snapshot=snapshot,
+                    access=access,
+                    actor=actor,
+                    # Never force: an operator correction already on this capture
+                    # is a decision, and recalculating over it would discard it.
+                    force=False,
+                )
+        except Exception:  # noqa: BLE001 - one capture must not fail the batch
+            continue
+        if outcome.auto_promoted:
+            resolved += 1
+    return resolved
+
+
 def stage_contact_captures(
     session: Session,
     *,
@@ -1106,6 +1192,11 @@ def stage_contact_captures(
         counts["submitted"] = len(contacts)
         results: list[CaptureOutcome] = []
         seen_keys: dict[str, uuid.UUID] = {}
+        # Captures that reached no permanent Contact. These are the ones automatic
+        # company-domain resolution can finish, and it runs after the loop rather
+        # than inside it so a slow provider call cannot lengthen the transaction
+        # that is holding the staged rows.
+        awaiting_company: list[LinkedInProfileSnapshot] = []
 
         for capture in contacts:
             deadline.check()
@@ -1241,6 +1332,9 @@ def stage_contact_captures(
 
                 evaluate_contact_snapshot(session, snapshot=snapshot, contact=matched_contact)
 
+            if matched_contact is None and duplicate_of is None:
+                awaiting_company.append(snapshot)
+
             counts[_OUTCOME_COUNTER[snapshot.outcome]] += 1
             counts["labels_applied"] += len(applied)
             results.append(
@@ -1263,6 +1357,10 @@ def stage_contact_captures(
                     warnings=list(person.get("warnings") or []),
                 )
             )
+
+        counts["auto_resolved"] = _auto_resolve_captures(
+            session, snapshots=awaiting_company, actor=actor, deadline=deadline
+        )
 
         result = SubmissionResult(
             submission_id=str(submission.id),

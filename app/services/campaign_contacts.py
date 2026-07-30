@@ -98,7 +98,16 @@ def _source_key(
     return f"sha256:{hashlib.sha256(raw.encode('utf-8')).hexdigest()}"
 
 
-def _blocking_reasons(session: Session, contact: Contact) -> tuple[list[dict[str, Any]], bool]:
+def _blocking_reasons(
+    session: Session, contact: Contact, *, campaign: Campaign | None = None
+) -> tuple[list[dict[str, Any]], bool]:
+    """Why this Contact cannot be worked, and whether the reason is terminal.
+
+    ``campaign`` decides how a provisional company domain is read. It is optional
+    so a caller without one still gets the strict answer rather than the most
+    permissive campaign's.
+    """
+
     reasons: list[dict[str, Any]] = []
     suppression = evaluate_suppression(
         session,
@@ -134,6 +143,7 @@ def _blocking_reasons(session: Session, contact: Contact) -> tuple[list[dict[str
         session,
         contact=contact,
         stage=DownstreamStage.CAMPAIGN_ELIGIBILITY,
+        campaign=campaign,
     )
     if gate.blocked:
         reasons.append(
@@ -162,7 +172,9 @@ def refresh_eligibility(
     contact = session.get(Contact, membership.contact_id)
     if contact is None:  # pragma: no cover - protected by FK
         raise CampaignContactNotFound(f"contact {membership.contact_id} does not exist")
-    reasons, terminal_block = _blocking_reasons(session, contact)
+    reasons, terminal_block = _blocking_reasons(
+        session, contact, campaign=session.get(Campaign, membership.campaign_id)
+    )
     if membership.state is ContactWorkflowState.EXCLUDED:
         reasons.insert(
             0,
@@ -532,7 +544,7 @@ def enrol_contact(
         )
     ).one_or_none()
     created = False
-    reasons, suppression_blocked = _blocking_reasons(session, contact)
+    reasons, suppression_blocked = _blocking_reasons(session, contact, campaign=campaign)
     if membership is None:
         membership = CampaignContact(
             campaign_id=campaign_id,

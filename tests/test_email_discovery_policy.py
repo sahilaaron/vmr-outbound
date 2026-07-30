@@ -113,15 +113,41 @@ def test_smaller_company_uses_locked_order() -> None:
 
 
 @pytest.mark.parametrize("raw_value", [None, "", "unknown", "1-200", "50+"])
-def test_unknown_employee_count_is_explicit(raw_value: str | None) -> None:
+def test_an_unknown_employee_count_falls_back_instead_of_refusing(
+    raw_value: str | None,
+) -> None:
+    """Not knowing a company's size is not a reason to refuse to look.
+
+    This used to return zero candidates, which meant a Contact at a company whose
+    headcount nobody had sourced could never have an address discovered or
+    verified at all. Since size is only sourced by company research, and research
+    is optional, the ordinary case silently produced nothing — and downstream that
+    read as "no address could be found" rather than as a policy refusal.
+
+    Size only ever chose the ORDER of three formats; it never chose how many. So
+    the honest behaviour is to use a default order and record the classification
+    as unknown, which is what the attempt row now shows.
+    """
+
     result = decision(raw_value)
-    assert result.outcome is EmailPolicyOutcome.EMPLOYEE_COUNT_UNKNOWN
+    assert result.outcome is EmailPolicyOutcome.READY
     assert result.employee_count_class is EmployeeCountClass.UNKNOWN
-    assert result.candidates == ()
-    assert result.ordered_formats == ()
+    assert result.ordered_formats == (
+        "firstname.lastname",
+        "finitiallastname",
+        "lastnamefinitial",
+    )
+    assert len(result.candidates) == 3
 
 
-def test_stale_employee_count_evidence_is_blocked() -> None:
+def test_stale_employee_count_evidence_falls_back_and_is_recorded_as_unknown() -> None:
+    """A stale count is a real observation the policy declines to act on.
+
+    It still does not block: the freshness is preserved on the decision so the
+    attempt row can say the evidence was stale, while the classification reads
+    unknown because that is what the policy actually used.
+    """
+
     result = evaluate(
         first_name="Ada",
         last_name="Lovelace",
@@ -129,9 +155,41 @@ def test_stale_employee_count_evidence_is_blocked() -> None:
         employee_evidence=evidence("51", marked_stale=True),
         now=NOW,
     )
-    assert result.outcome is EmailPolicyOutcome.EMPLOYEE_COUNT_STALE
+    assert result.outcome is EmailPolicyOutcome.READY
     assert result.evidence_freshness is EmployeeEvidenceFreshness.STALE
-    assert result.candidates == ()
+    assert result.employee_count_class is EmployeeCountClass.UNKNOWN
+    assert len(result.candidates) == 3
+
+
+def test_a_campaign_can_switch_size_ordering_off_entirely() -> None:
+    """Off means one order for everyone, and the record says size was not consulted."""
+
+    result = evaluate(
+        first_name="Ada",
+        last_name="Lovelace",
+        domain="analytical.example",
+        employee_evidence=evidence("12"),
+        now=NOW,
+        consult_employee_size=False,
+    )
+    assert result.outcome is EmailPolicyOutcome.READY
+    # A sourced count of 12 would otherwise have led with bare "firstname".
+    assert result.ordered_formats[0] == "firstname.lastname"
+    assert result.employee_count_class is EmployeeCountClass.UNKNOWN
+
+
+def test_a_known_size_still_chooses_its_order_when_consulted() -> None:
+    """Dropping the refusal must not quietly drop the ordering benefit too."""
+
+    small = evaluate(
+        first_name="Ada",
+        last_name="Lovelace",
+        domain="analytical.example",
+        employee_evidence=evidence("12"),
+        now=NOW,
+    )
+    assert small.ordered_formats[0] == "firstname"
+    assert small.employee_count_class is EmployeeCountClass.FIFTY_OR_FEWER
 
 
 def test_current_winner_is_not_expired_by_an_email_specific_age_rule() -> None:

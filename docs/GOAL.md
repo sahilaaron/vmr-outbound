@@ -64,6 +64,19 @@ Each Agent must support visible state, retries, failure inspection, global enabl
 
 Search at most three candidates per Contact and stop after a verified address is found.
 
+Employee count chooses the **order** of the three formats and never how many are
+tried. An unknown or stale employee count is therefore not a refusal: it selects
+the default order below and records the classification as `unknown`. It used to
+return zero candidates, which meant a Contact at a company whose headcount nobody
+had sourced could never have an address discovered at all — and since headcount is
+only sourced by company research, which is optional, that was the ordinary case.
+
+A Campaign may switch size ordering off entirely
+(`campaigns.consult_employee_size`), in which case every Contact uses the default
+order. The default order when size is unknown or not consulted is the
+more-than-50 order, because `firstname.lastname` is the most common corporate
+pattern and so the least bad first guess when nothing is known.
+
 ### Company has more than 50 employees
 
 1. `firstname.lastname`

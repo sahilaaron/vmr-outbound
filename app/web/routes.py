@@ -24,7 +24,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.models.contact import Contact
 from app.models.contact_capture import ContactCaptureNote, ContactCaptureSubmission
 from app.models.enums import (
@@ -55,6 +55,10 @@ from app.services.campaigns import (
     create_campaign,
     get_campaign_overview,
     list_campaigns,
+    update_campaign,
+)
+from app.services.campaigns import (
+    CampaignNotFound as CampaignRecordNotFound,
 )
 from app.services.captures import promotion as capture_promotion
 from app.services.companies import detail as company_detail
@@ -84,6 +88,7 @@ from app.services.verification import console as verification_console
 from app.services.verification import queue as verification_queue
 from app.services.verification import service as verification_service
 from app.services.verification import usage as verification_usage
+from app.services.verification.provider import VerificationProvider
 from app.services.workbench_agents import views as workbench_views
 
 router = APIRouter(include_in_schema=False)
@@ -353,6 +358,43 @@ def campaign_detail_page(
 
 
 # --- Imports: list + upload --------------------------------------------------
+
+
+@router.post("/campaigns/{campaign_id}/settings")
+async def campaign_settings_update(
+    request: Request, campaign_id: str, db: Session = Depends(get_db)
+) -> Response:
+    """Apply the two per-campaign policy switches.
+
+    The first campaign-settings write in the HTML UI. Both switches are submitted
+    together from one form, so an unchecked box means off — which is why they are
+    read as presence rather than as a value.
+    """
+
+    parsed_id = _parse_uuid(campaign_id)
+    if parsed_id is None:
+        return _not_found(request, db, "That campaign does not exist.")
+    form = await request.form()
+    try:
+        campaign = update_campaign(
+            db,
+            parsed_id,
+            allow_provisional_domains="allow_provisional_domains" in form,
+            consult_employee_size="consult_employee_size" in form,
+            reason="policy switches changed from the campaign page",
+        )
+    except CampaignRecordNotFound:
+        return _not_found(request, db, "That campaign does not exist.")
+    except CampaignError as exc:
+        db.rollback()
+        return _redirect(f"/campaigns/{campaign_id}", err=str(exc))
+    db.commit()
+    provisional = "accepted" if campaign.allow_provisional_domains else "not accepted"
+    size = "on" if campaign.consult_employee_size else "off"
+    return _redirect(
+        f"/campaigns/{campaign_id}",
+        ok=f"Settings saved. Provisional domains {provisional}; employee-size ordering {size}.",
+    )
 
 
 @router.get("/imports", response_class=HTMLResponse)
@@ -1868,7 +1910,7 @@ def contact_verify(contact_id: str, db: Session = Depends(get_db)) -> Response:
     if outcome.needs_review:
         db.commit()
         return _redirect(f"/contacts/{contact_id}", err=f"Needs review: {outcome.review_reason}")
-    provider = verification_service.get_provider(settings)
+    provider = _verification_provider(settings)
     verification_service.run_worker(db, provider=provider, settings=settings, worker_id=WORKER_ID)
     db.commit()
     if outcome.reused_evidence is not None:
@@ -1908,17 +1950,36 @@ def verification_page(request: Request, db: Session = Depends(get_db)) -> HTMLRe
     )
 
 
+def _verification_provider(settings: Settings) -> VerificationProvider:
+    """The provider the workbench should actually use.
+
+    These three routes asked for ``get_provider(settings)``, whose default is
+    ``live=False`` — so every verification an operator triggered from the
+    workbench was simulated, while the Verification Agent verified the same
+    addresses for real. Two paths quietly disagreeing about whether a result came
+    from MillionVerifier is worse than either answer on its own: it makes the
+    evidence table untrustworthy without looking wrong.
+
+    Asking for live is safe by construction. ``build_provider`` still returns the
+    simulator unless a real, non-test key is configured, so an installation
+    without credentials keeps behaving exactly as before.
+    """
+
+    return verification_service.get_provider(settings, live=True)
+
+
 @router.post("/verification/run")
 def verification_run(db: Session = Depends(get_db)) -> Response:
     settings = get_settings()
     if not settings.features.millionverifier:
         return _redirect("/verification", err="MillionVerifier is disabled.")
-    provider = verification_service.get_provider(settings)
+    provider = _verification_provider(settings)
     processed = verification_service.run_worker(
         db, provider=provider, settings=settings, worker_id=WORKER_ID
     )
     db.commit()
-    return _redirect("/verification", ok=f"Processed {len(processed)} job(s).")
+    label = "simulator" if provider.simulated else provider.name
+    return _redirect("/verification", ok=f"Processed {len(processed)} job(s) via {label}.")
 
 
 @router.post("/verification/recover")
@@ -1970,7 +2031,7 @@ async def verification_bulk(request: Request, db: Session = Depends(get_db)) -> 
             reused += 1
         elif outcome.job is not None:
             enqueued += 1
-    provider = verification_service.get_provider(settings)
+    provider = _verification_provider(settings)
     verification_service.run_worker(
         db, provider=provider, settings=settings, max_jobs=1000, worker_id=WORKER_ID
     )

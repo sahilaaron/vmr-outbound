@@ -294,3 +294,74 @@ def test_a_company_with_no_research_shows_no_research_card(
     assert page.status_code == 200
     assert "Company research" not in page.text
     assert "Drafted email" not in page.text
+
+
+# --- per-campaign policy switches -------------------------------------------
+
+
+def test_a_campaign_can_open_every_stage_to_a_provisional_domain(
+    db_session: Session,
+) -> None:
+    """The switch is what makes provisional actionable, and only per campaign.
+
+    The guards that stop a guess becoming certainty are untouched by this: they
+    live in the resolution service and no campaign setting reaches them. What this
+    changes is only whether a campaign is willing to act on a domain it knows is
+    a guess.
+    """
+
+    from app.services.resolution import gates
+
+    campaign, _, _ = _records(db_session)
+    assert campaign.allow_provisional_domains is False
+    strict = gates.provisional_allows_for(campaign)
+    assert strict == frozenset({gates.DownstreamStage.COMPANY_RESEARCH})
+
+    campaign.allow_provisional_domains = True
+    db_session.flush()
+    assert gates.provisional_allows_for(campaign) == frozenset(gates.DownstreamStage)
+
+
+def test_the_settings_form_saves_both_switches(client: TestClient, db_session: Session) -> None:
+    campaign, _, _ = _records(db_session)
+    db_session.commit()
+
+    # An unchecked box is absent from the form body, which is how "off" arrives.
+    response = client.post(
+        f"/campaigns/{campaign.id}/settings",
+        data={"allow_provisional_domains": "on"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert "accepted" in _flash(response)
+    db_session.expire_all()
+    assert campaign.allow_provisional_domains is True
+    assert campaign.consult_employee_size is False
+
+    response = client.post(
+        f"/campaigns/{campaign.id}/settings",
+        data={"consult_employee_size": "on"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    db_session.expire_all()
+    assert campaign.allow_provisional_domains is False
+    assert campaign.consult_employee_size is True
+
+
+def test_saving_settings_bumps_the_settings_version(
+    client: TestClient, db_session: Session
+) -> None:
+    """A policy change is a settings change and must be visible as one."""
+
+    campaign, _, _ = _records(db_session)
+    before = campaign.settings_version
+    db_session.commit()
+
+    client.post(
+        f"/campaigns/{campaign.id}/settings",
+        data={"allow_provisional_domains": "on"},
+        follow_redirects=False,
+    )
+    db_session.expire_all()
+    assert campaign.settings_version > before

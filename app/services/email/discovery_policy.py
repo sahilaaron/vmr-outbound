@@ -120,6 +120,16 @@ _SMALL_FORMATS = (
     "firstname.lastname",
     "finitiallastname",
 )
+#: Used when the Company's employee count is unknown, its evidence is stale, or
+#: the Campaign has switched size off.
+#:
+#: This is the large-company order, and that is a judgement rather than a
+#: fallback-by-accident: ``firstname.lastname`` is the most common corporate
+#: pattern overall, so it is the least bad first guess when nothing is known. The
+#: bare ``firstname`` that the small-company order leads with pays off at small
+#: firms and misses badly at large ones, which makes it the wrong thing to guess
+#: with.
+_DEFAULT_FORMATS = _LARGE_FORMATS
 
 
 def _count(value: str) -> int:
@@ -240,8 +250,15 @@ def evaluate(
     domain: str | None,
     employee_evidence: EmployeeCountEvidence,
     now: datetime,
+    consult_employee_size: bool = True,
 ) -> EmailDiscoveryPolicyDecision:
-    """Return the exact candidate plan or one explicit policy refusal."""
+    """Return the exact candidate plan or one explicit policy refusal.
+
+    ``consult_employee_size`` is the Campaign's answer to whether company size
+    should choose the format order at all. When false every Contact gets
+    :data:`_DEFAULT_FORMATS` and the recorded classification is ``unknown``,
+    which is truthful: the policy did not consult it.
+    """
 
     normalized_domain = normalize_domain(domain)
     count_class = classify_employee_count(employee_evidence.raw_value)
@@ -291,35 +308,33 @@ def evaluate(
             normalization_version=ENGINE_VERSION,
             reason="the Contact last name has no supported normalized email token",
         )
-    if freshness is EmployeeEvidenceFreshness.STALE:
-        return EmailDiscoveryPolicyDecision(
-            outcome=EmailPolicyOutcome.EMPLOYEE_COUNT_STALE,
-            employee_count_class=count_class,
-            evidence=employee_evidence,
-            evidence_freshness=freshness,
-            normalized_domain=normalized_domain,
-            ordered_formats=empty_formats,
-            candidates=empty_candidates,
-            normalization_version=ENGINE_VERSION,
-            reason="the sourced Company employee-count evidence is stale",
-        )
-    if (
+    # Employee count picks the *order* of three formats. It never picked how many,
+    # and it is not evidence about whether a mailbox exists — so not knowing it is
+    # not a reason to refuse to look.
+    #
+    # It used to be. An unknown or stale count returned zero candidates, which
+    # meant a Contact at a company whose size nobody had sourced could never have
+    # an address discovered or verified at all. Since size is only sourced by
+    # company research, and research is optional, the common case silently
+    # produced nothing — a policy refusal that read, downstream, as "no address
+    # could be found". Unknown size now falls back to a default order and says so
+    # in the recorded classification.
+    if not consult_employee_size:
+        count_class = EmployeeCountClass.UNKNOWN
+        formats = _DEFAULT_FORMATS
+    elif (
         freshness is not EmployeeEvidenceFreshness.FRESH
         or count_class is EmployeeCountClass.UNKNOWN
     ):
-        return EmailDiscoveryPolicyDecision(
-            outcome=EmailPolicyOutcome.EMPLOYEE_COUNT_UNKNOWN,
-            employee_count_class=EmployeeCountClass.UNKNOWN,
-            evidence=employee_evidence,
-            evidence_freshness=freshness,
-            normalized_domain=normalized_domain,
-            ordered_formats=empty_formats,
-            candidates=empty_candidates,
-            normalization_version=ENGINE_VERSION,
-            reason="the sourced Company employee count does not settle the 50-employee boundary",
-        )
-
-    formats = _LARGE_FORMATS if count_class is EmployeeCountClass.MORE_THAN_50 else _SMALL_FORMATS
+        # Stale and unknown are recorded distinctly on the attempt row; both take
+        # the default order. A stale count is still a real observation, just not
+        # one this policy will act on.
+        count_class = EmployeeCountClass.UNKNOWN
+        formats = _DEFAULT_FORMATS
+    elif count_class is EmployeeCountClass.MORE_THAN_50:
+        formats = _LARGE_FORMATS
+    else:
+        formats = _SMALL_FORMATS
     candidates: list[PolicyCandidate] = []
     seen: set[str] = set()
     produced_formats: list[str] = []
@@ -376,13 +391,16 @@ def evaluate_existing_accepted_email_reuse(
     domain: str | None,
     employee_evidence: EmployeeCountEvidence,
     now: datetime,
+    consult_employee_size: bool = True,
 ) -> EmailDiscoveryPolicyDecision:
     """Authorize reuse without inventing a candidate-policy branch.
 
     A fresh, accepted exact address does not need name components or candidate
-    formats, but the Email execution still records a sourced, current Company
-    classification. Unknown and stale employee evidence remain explicit blocks;
-    neither is silently classified as a small Company.
+    formats. It also does not need a company size: the address is already
+    verified, so refusing to reuse it because nobody sourced a headcount would
+    discard evidence that has been paid for. Unknown and stale size are recorded
+    truthfully as ``unknown`` and do not block. A malformed domain still does —
+    that one is about whether the address means anything at all.
     """
 
     normalized_domain = normalize_domain(domain)
@@ -398,17 +416,13 @@ def evaluate_existing_accepted_email_reuse(
     ):
         outcome = EmailPolicyOutcome.DOMAIN_INELIGIBLE
         reason = "the canonical Company domain is missing, malformed, or not normalized"
-    elif freshness is EmployeeEvidenceFreshness.STALE:
-        outcome = EmailPolicyOutcome.EMPLOYEE_COUNT_STALE
-        reason = "the sourced Company employee-count evidence is stale"
-    elif (
-        freshness is not EmployeeEvidenceFreshness.FRESH
-        or count_class is EmployeeCountClass.UNKNOWN
-    ):
-        outcome = EmailPolicyOutcome.EMPLOYEE_COUNT_UNKNOWN
-        count_class = EmployeeCountClass.UNKNOWN
-        reason = "the sourced Company employee count does not settle the 50-employee boundary"
     else:
+        if (
+            not consult_employee_size
+            or freshness is not EmployeeEvidenceFreshness.FRESH
+            or count_class is EmployeeCountClass.UNKNOWN
+        ):
+            count_class = EmployeeCountClass.UNKNOWN
         outcome = EmailPolicyOutcome.EXISTING_ACCEPTED_EMAIL_REUSE
         reason = "fresh production-eligible exact-address evidence makes discovery unnecessary"
 
