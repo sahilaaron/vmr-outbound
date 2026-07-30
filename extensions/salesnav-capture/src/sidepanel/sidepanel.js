@@ -166,13 +166,45 @@
   async function refreshPermissionState() {
     const pattern = self.SNCapture.permissions.originPatternForUrl(saveTargetUrl());
     if (!pattern) return;
-    if (shell.getConnection() === "connected" || shell.getConnection() === "unreachable") return;
+    // "connected" is a probed fact and is not downgraded to a permission state.
+    // "unreachable" deliberately IS re-derived: it used to be sticky, so a badge
+    // that latched on one failed save stayed wrong forever, including after the
+    // backend came back.
+    if (shell.getConnection() === "connected") return;
     try {
       const has = await chrome.permissions.contains({ origins: [pattern] });
       setConnection(has ? "allowed" : "not_allowed");
     } catch (_e) {
       /* leave the state as it is rather than claiming something untrue */
     }
+  }
+
+  /**
+   * Ask the backend whether it is reachable, and say so.
+   *
+   * The badge used to be written only as a side effect of a save, which made it a
+   * record of the last save rather than a statement about the backend. Probing is
+   * read-only and costs one request against an endpoint the panel already calls.
+   *
+   * Silent when permission has not been granted yet: an operator who has not
+   * approved loopback access has not failed at anything, and "Not allowed yet"
+   * already says the true thing.
+   */
+  async function probeConnection() {
+    const pattern = self.SNCapture.permissions.originPatternForUrl(saveTargetUrl());
+    if (!pattern) return;
+    try {
+      const granted = await chrome.permissions.contains({ origins: [pattern] });
+      if (!granted) {
+        setConnection("not_allowed");
+        return;
+      }
+    } catch (_e) {
+      return;
+    }
+    const r = await send({ type: "PROBE_BACKEND" });
+    if (!r || !r.state) return;
+    setConnection(r.state);
   }
 
   // ---- labels + note ------------------------------------------------------
@@ -901,7 +933,7 @@
     [WARN.NO_STABLE_IDENTITY]: "no stable link",
     [WARN.PLACEHOLDER_VALUE]: "the page showed a placeholder, not a value",
     // UI-013: the value is present and usable. This says where it came from.
-    [WARN.DERIVED_VALUE]: "profile link worked out from the lead link",
+    [WARN.DERIVED_VALUE]: "LinkedIn link resolved from the Sales Navigator ID",
   };
 
   function warnLabel(code) {
@@ -944,6 +976,14 @@
           "No profile or lead URL was on the row — it can be saved, but it will be staged for review.",
       });
     }
+    // The badge stays, but it should now be rare rather than universal.
+    //
+    // It used to appear on nearly every row, which made it worthless — a badge
+    // that is always on carries no information. The cause was upstream, not
+    // here: a row whose LinkedIn link came from the resolving alias was reported
+    // as a MISSING_FIELD fault even though the panel was showing a working link
+    // for it. That is now classified as provenance (see src/common/extraction.js),
+    // so this badge is left for rows an operator genuinely has to look at.
     if (faults.length) {
       return badge("Needs review", { tone: "warning", title: faults.map(warnLabel).join(", ") });
     }
@@ -1080,8 +1120,11 @@
         [
           el("label", { class: "check stacked" }, [checkbox]),
           body,
-          linkedInAction(rec, rec.rawFullName),
           rowBadge,
+          // Last, so the icon is the right-most thing in the row whether or not
+          // a badge is present. It is the one control on the card, and a
+          // consistent position is worth more than grouping it with the text.
+          linkedInAction(rec, rec.rawFullName),
         ]
       );
       boxEl.appendChild(row);
@@ -1157,14 +1200,14 @@
           );
         }
         card.appendChild(warnRow);
-        card.appendChild(
-          paragraph(
-            faults.length
-              ? "Will be saved and flagged for review. Nothing is guessed."
-              : "Complete. The note above records where a value came from — nothing needs correcting.",
-            { tiny: true }
-          )
-        );
+        if (!faults.length) {
+          card.appendChild(
+            paragraph(
+              "Complete. The note above records where a value came from — nothing needs correcting.",
+              { tiny: true }
+            )
+          );
+        }
       }
       const links = el("div", { class: "prospect-links" });
       if (rec.linkedinProfileUrl)
@@ -1179,7 +1222,7 @@
       else if (rec.linkedinAliasUrl)
         links.appendChild(
           el("a", {
-            text: "resolving alias",
+            text: "LinkedIn",
             attrs: {
               href: rec.linkedinAliasUrl,
               target: "_blank",
@@ -1193,7 +1236,7 @@
       if (rec.salesNavLeadUrl)
         links.appendChild(
           el("a", {
-            text: "lead",
+            text: "Sales Navigator",
             attrs: { href: rec.salesNavLeadUrl, target: "_blank", rel: "noreferrer" },
           })
         );
@@ -1294,6 +1337,9 @@
     if (r && r.ok) {
       currentPrefs = r.prefs;
       await refreshPermissionState();
+      // The settings screen is where "can it reach the backend?" is actually
+      // being asked, and a saved URL is exactly when the answer changes.
+      await probeConnection();
       closeSettings();
     }
   }
@@ -1304,6 +1350,9 @@
     $("settings-version").textContent = version;
     $("settings-connection").textContent = $("conn-text").textContent;
     showView("settings");
+    // Re-check on open rather than mirroring a possibly stale badge. This is the
+    // one screen whose whole purpose is the connection.
+    void probeConnection();
   }
 
   function closeSettings() {
@@ -1452,6 +1501,9 @@
     refreshPermissionState();
     refreshLabelSuggestions();
     refreshCampaigns(false);
+    // On a cold open, say something true about the backend rather than "Not
+    // checked" until the operator happens to attempt a save.
+    void probeConnection();
   }
 
   document.addEventListener("DOMContentLoaded", init);

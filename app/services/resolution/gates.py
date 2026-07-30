@@ -32,6 +32,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
+from app.models.campaign import Campaign
 from app.models.contact import Contact
 from app.models.enums import DomainResolutionState
 from app.services.resolution import store
@@ -60,8 +61,38 @@ class DownstreamStage(enum.StrEnum):
     SENDING = "sending"
 
 
-#: The only stage a provisional domain opens.
+#: The stages a provisional domain opens when nothing says otherwise.
+#:
+#: This stays the default because the permissive reading has to be asked for, not
+#: inherited: the stages it withholds are the ones that spend money and send mail
+#: on the strength of the domain being right. A caller that knows which Campaign
+#: it is acting for may widen it — see :func:`provisional_allows_for`.
 _PROVISIONAL_ALLOWS = frozenset({DownstreamStage.COMPANY_RESEARCH})
+
+#: Every stage, for a Campaign that has accepted provisional domains.
+_ALL_STAGES = frozenset(DownstreamStage)
+
+
+def provisional_allows_for(campaign: Campaign | None) -> frozenset[DownstreamStage]:
+    """What a provisional domain opens for one Campaign.
+
+    A Campaign with ``allow_provisional_domains`` set has decided that an
+    uncorroborated provider candidate is good enough to act on, and this returns
+    every stage accordingly. ``None`` — a caller with no Campaign in scope, such
+    as the contact-scoped candidate generator or the company workspace — gets the
+    strict default, so an un-campaigned path fails closed rather than silently
+    inheriting the most permissive campaign's answer.
+
+    What this never affects: a provisional decision still writes nothing to the
+    approved-mapping store, and a Company standing on a provisional decision is
+    still not established evidence. Those two guards are what stop a guess
+    upgrading itself into certainty, and no Campaign setting reaches them.
+    """
+
+    if campaign is not None and campaign.allow_provisional_domains:
+        return _ALL_STAGES
+    return _PROVISIONAL_ALLOWS
+
 
 _STAGE_TEXT: dict[DownstreamStage, str] = {
     DownstreamStage.COMPANY_RESEARCH: "company research",
@@ -92,23 +123,34 @@ class GateDecision:
         return not self.allowed
 
 
-def evaluate_state(state: DomainResolutionState | None, stage: DownstreamStage) -> GateDecision:
-    """The gate rule itself, over a state alone. Pure and directly testable."""
+def evaluate_state(
+    state: DomainResolutionState | None,
+    stage: DownstreamStage,
+    *,
+    provisional_allows: frozenset[DownstreamStage] = _PROVISIONAL_ALLOWS,
+) -> GateDecision:
+    """The gate rule itself, over a state alone. Pure and directly testable.
+
+    ``provisional_allows`` is the Campaign's answer to "how far do we trust an
+    uncorroborated candidate?", supplied by :func:`provisional_allows_for`. It is
+    a parameter rather than a lookup so this function stays pure, and so a caller
+    that has no Campaign cannot accidentally get the permissive answer.
+    """
 
     if state is None or state is DomainResolutionState.CONFIRMED:
         return GateDecision(stage=stage, allowed=True, state=state)
 
     label = _STAGE_TEXT[stage]
     if state is DomainResolutionState.PROVISIONAL:
-        if stage in _PROVISIONAL_ALLOWS:
+        if stage in provisional_allows:
             return GateDecision(stage=stage, allowed=True, state=state)
         return GateDecision(
             stage=stage,
             allowed=False,
             state=state,
             reason=(
-                f"the company domain is provisional, which allows company research only — "
-                f"{label} needs a confirmed company identity first"
+                f"the company domain is provisional and this Campaign has not accepted "
+                f"provisional domains, so {label} needs a confirmed company identity first"
             ),
         )
 
@@ -123,17 +165,29 @@ def evaluate_state(state: DomainResolutionState | None, stage: DownstreamStage) 
 
 
 def authorize_company(
-    session: Session, *, company_id: uuid.UUID | None, stage: DownstreamStage
+    session: Session,
+    *,
+    company_id: uuid.UUID | None,
+    stage: DownstreamStage,
+    campaign: Campaign | None = None,
 ) -> GateDecision:
     """Whether *stage* may proceed for a permanent company."""
 
     if company_id is None:
         return GateDecision(stage=stage, allowed=True, state=None)
-    return evaluate_state(store.company_state(session, company_id), stage)
+    return evaluate_state(
+        store.company_state(session, company_id),
+        stage,
+        provisional_allows=provisional_allows_for(campaign),
+    )
 
 
 def authorize_contact(
-    session: Session, *, contact: Contact, stage: DownstreamStage
+    session: Session,
+    *,
+    contact: Contact,
+    stage: DownstreamStage,
+    campaign: Campaign | None = None,
 ) -> GateDecision:
     """Whether *stage* may proceed for one contact.
 
@@ -143,13 +197,19 @@ def authorize_contact(
     here — same reasoning as an unresolved-by-this-policy company above.
     """
 
-    return authorize_company(session, company_id=contact.company_id, stage=stage)
+    return authorize_company(session, company_id=contact.company_id, stage=stage, campaign=campaign)
 
 
-def require(session: Session, *, contact: Contact, stage: DownstreamStage) -> None:
+def require(
+    session: Session,
+    *,
+    contact: Contact,
+    stage: DownstreamStage,
+    campaign: Campaign | None = None,
+) -> None:
     """Raise :class:`DownstreamBlocked` unless *stage* may proceed for *contact*."""
 
-    decision = authorize_contact(session, contact=contact, stage=stage)
+    decision = authorize_contact(session, contact=contact, stage=stage, campaign=campaign)
     if decision.blocked:
         raise DownstreamBlocked(decision.reason or "this stage is not authorized")
 

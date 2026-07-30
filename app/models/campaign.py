@@ -65,6 +65,23 @@ class Campaign(Base):
     execution_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    # --- Per-campaign policy switches ---
+    #
+    # Both loosen a rule that is strict by default, and both are per-campaign
+    # rather than global because the right answer differs by audience: a campaign
+    # into a well-known industry can afford to wait for confirmed domains, and a
+    # campaign into a long tail of small firms mostly cannot.
+    #
+    # A provisional domain is a single provider candidate that nothing has
+    # independently corroborated. Opening it authorizes real spend and real
+    # outreach on a domain nobody confirmed, so it is off unless asked for. Note
+    # what this does NOT change: a provisional decision still never writes itself
+    # into the approved-mapping store and a provisional-backed Company is still
+    # not treated as established evidence. Those two guards are what stop a guess
+    # upgrading itself to certainty, and they are independent of this switch.
+    allow_provisional_domains: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     settings_version: Mapped[int] = mapped_column(
         Integer, nullable=False, default=1, server_default="1"
     )

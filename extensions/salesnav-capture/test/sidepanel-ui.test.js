@@ -492,3 +492,67 @@ test("no remote font or stylesheet is referenced from the panel", () => {
     assert.ok(!/@import/.test(src), `${name} uses @import`);
   }
 });
+
+// --- the connection badge -----------------------------------------------------
+//
+// It used to be written only as a side effect of a save, which made it a record of
+// the last save rather than a statement about the backend. A failed save latched it
+// to "Not connected" and nothing could clear it — so it stayed wrong after the
+// backend came back, on the one screen whose whole purpose is the connection.
+
+test("a cold open probes the backend instead of reporting Not checked", async () => {
+  const p = await panelOn(SURFACES.SALESNAV_SEARCH, {
+    PROBE_BACKEND: { ok: true, state: "connected" },
+  });
+  await p.flush();
+  await p.flush();
+  assert.equal(p.$("conn-text").textContent, "Connected");
+});
+
+test("an unreachable backend is reported as such, not as Ready", async () => {
+  const p = await panelOn(SURFACES.SALESNAV_SEARCH, {
+    PROBE_BACKEND: { ok: false, state: "unreachable", error: "timeout" },
+  });
+  await p.flush();
+  await p.flush();
+  assert.equal(p.$("conn-text").textContent, "Not connected");
+});
+
+test("a recovered backend clears the badge rather than staying stuck", async () => {
+  // The exact defect: one failed save latched "Not connected", and
+  // refreshPermissionState() returned early for that state forever after.
+  let reachable = false;
+  const p = await panelOn(SURFACES.SALESNAV_SEARCH, {
+    PROBE_BACKEND: () =>
+      reachable ? { ok: true, state: "connected" } : { ok: false, state: "unreachable" },
+  });
+  await p.flush();
+  await p.flush();
+  assert.equal(p.$("conn-text").textContent, "Not connected");
+
+  // The backend comes back, and the operator opens settings to check.
+  reachable = true;
+  p.click("settings-toggle");
+  await p.flush();
+  await p.flush();
+  assert.equal(
+    p.$("conn-text").textContent,
+    "Connected",
+    "a probe on open must be able to clear a latched failure"
+  );
+});
+
+test("a denied loopback permission is not reported as an unreachable backend", async () => {
+  // Two different problems with two different fixes. Telling an operator to start
+  // a server that is already running wastes their time.
+  const p = await createPanel({
+    responses: Object.assign({}, BASE, {
+      DETECT_SURFACE: { ok: true, surface: SURFACES.SALESNAV_SEARCH, url: "https://www.linkedin.com/" },
+      PROBE_BACKEND: { ok: false, state: "unreachable" },
+    }),
+    permission: { granted: false },
+  });
+  await p.flush();
+  await p.flush();
+  assert.equal(p.$("conn-text").textContent, "Not allowed yet");
+});

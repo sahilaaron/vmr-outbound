@@ -141,17 +141,12 @@ def _enrol_to_email(
     )
     membership = enrolled.membership
 
-    # Identity and Company use their real adapters. Research is intentionally
-    # outside this vertical path and is skipped through the shared contract.
+    # Identity and Company use their real adapters. Research is outside this
+    # vertical path: it is disabled by default and skippable, so the orchestrator
+    # steps over it automatically and the Contact arrives at Email.
     run_next(db_session, worker_id=WORKER)
     run_next(db_session, worker_id=WORKER)
-    pipeline.skip_current_stage(
-        db_session,
-        membership=membership,
-        agent_id=AgentIdentifier.RESEARCH,
-        reason="Email integration test supplies sourced company evidence directly.",
-        actor="test",
-    )
+    assert membership.next_stage is AgentIdentifier.EMAIL
     return campaign, contact, membership
 
 
@@ -197,10 +192,13 @@ def test_campaign_email_agent_tries_one_child_at_a_time_and_accepts_second(
     assert accepted.agent_id is AgentIdentifier.EMAIL
     assert accepted.public_status == "completed"
     assert accepted.job is not None
-    assert contact.email == "alovelace@engines.example"
+    # Candidate 2 is now bare "firstname": the format order is one fixed list for
+    # every Contact — firstname.lastname, firstname, finitiallastname — rather than
+    # two orders chosen by company size.
+    assert contact.email == "ada@engines.example"
     assert provider.calls == [
         "ada.lovelace@engines.example",
-        "alovelace@engines.example",
+        "ada@engines.example",
     ]
 
     attempts = list(

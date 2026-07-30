@@ -85,9 +85,19 @@
   </div>
 
   {% if rows %}
+  {#
+    The table is wrapped in one form so a selection can be enrolled into a
+    campaign without leaving the page. Only canonical contacts get a checkbox:
+    a pending capture has no permanent contact id to enrol, and offering a
+    disabled-looking control for it would imply the absence is a problem to
+    work around rather than the state of the record.
+  #}
+  <form method="post" action="/contacts/add-to-campaign" id="enrol-form">
+  <input type="hidden" name="back" value="{{ filter_url }}">
   <table>
     <thead>
       <tr>
+        <th><span class="sr-only">Select</span></th>
         <th>Name</th>
         <th>Company</th>
         <th>Identity</th>
@@ -102,6 +112,12 @@
     <tbody>
       {% for row in rows %}
       <tr>
+        <td>
+          {% if row.kind == "contact" %}
+          <input type="checkbox" name="contact_ids" value="{{ row.record_id }}"
+                 aria-label="Select {{ row.full_name }}">
+          {% endif %}
+        </td>
         <td>
           <a href="{{ row.detail_url }}">{{ row.full_name }}</a>
           {% if row.kind == "pending_capture" %}<span class="badge muted" title="Saved from a capture; not a canonical contact yet.">capture</span>{% endif %}
@@ -133,6 +149,28 @@
       {% endfor %}
     </tbody>
   </table>
+
+  {% if campaigns %}
+  <div class="toolbar" style="gap:8px">
+    <label class="sr-only" for="enrol-campaign">Campaign</label>
+    <select id="enrol-campaign" name="campaign_id" required>
+      <option value="">Add selected contacts to…</option>
+      {% for overview in campaigns %}
+      <option value="{{ overview.campaign.id }}">{{ overview.campaign.name }}</option>
+      {% endfor %}
+    </select>
+    <button class="btn small" type="submit">Add to campaign</button>
+    <span class="small muted-text">
+      Enrolling queues the first Agent for each contact. It sends nothing, and a
+      suppressed or ineligible contact is refused rather than quietly enrolled.
+    </span>
+  </div>
+  {% else %}
+  <div class="toolbar">
+    <span class="small muted-text">Create a campaign to enrol contacts into one.</span>
+  </div>
+  {% endif %}
+  </form>
   {{ pager(page, pages, total, filter_url, "contacts") }}
   {% else %}
   <div class="empty">

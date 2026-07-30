@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Final
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -77,18 +77,30 @@ class EffectiveAgentControl:
         }
 
 
+# Distinguishes "leave the stored config alone" from "set it to empty".
+# The Workbench changes an Agent's status without knowing anything about its
+# config; before this existed, every pause or resume from the UI silently reset
+# the config to {} — which for the Verification and language-model Agents meant
+# quietly dropping ``{"live": true}`` and falling back to a refusal mid-Campaign.
+_KEEP_CONFIG: Final = object()
+
+
 def set_global_control(
     session: Session,
     *,
     agent_id: AgentIdentifier,
     status: AgentControlStatus,
-    config: dict[str, Any] | None = None,
+    config: dict[str, Any] | None | Any = _KEEP_CONFIG,
     actor: str = "operator",
     reason: str | None = None,
 ) -> AgentControl:
     _ensure_implemented(agent_id, status)
-    clean_config = _config(config)
     control = session.get(AgentControl, agent_id)
+    clean_config = (
+        dict(control.config or {})
+        if config is _KEEP_CONFIG and control is not None
+        else _config(None if config is _KEEP_CONFIG else config)
+    )
     previous = None
     created = False
     if control is None:
@@ -140,20 +152,24 @@ def set_campaign_override(
     campaign_id: uuid.UUID,
     agent_id: AgentIdentifier,
     status: AgentControlStatus,
-    config: dict[str, Any] | None = None,
+    config: dict[str, Any] | None | Any = _KEEP_CONFIG,
     actor: str = "operator",
     reason: str | None = None,
 ) -> CampaignAgentOverride:
     _ensure_implemented(agent_id, status)
     if session.get(Campaign, campaign_id) is None:
         raise AgentControlError(f"campaign {campaign_id} does not exist")
-    clean_config = _config(config)
     override = session.scalars(
         select(CampaignAgentOverride).where(
             CampaignAgentOverride.campaign_id == campaign_id,
             CampaignAgentOverride.agent_id == agent_id,
         )
     ).one_or_none()
+    clean_config = (
+        dict(override.config or {})
+        if config is _KEEP_CONFIG and override is not None
+        else _config(None if config is _KEEP_CONFIG else config)
+    )
     previous = None
     created = False
     if override is None:

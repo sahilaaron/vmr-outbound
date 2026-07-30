@@ -27,7 +27,7 @@ The fix is not "decide more"; it is "say how sure you are, and mean it".
 | State | Means | Authorizes |
 |---|---|---|
 | `confirmed` | Evidence that was **already established** names this domain | Everything downstream |
-| `provisional` | A provider-backed candidate, uncorroborated | Company research, and nothing else |
+| `provisional` | A provider-backed candidate, uncorroborated | Company research; everything else only for a Campaign that has accepted provisional domains |
 | `unresolved` | Missing, ambiguous, conflicting, invalid, or the provider failed | Nothing; no domain is selected |
 
 A fourth situation is deliberately *not* one of these: a company whose domain
@@ -166,10 +166,35 @@ the correction instead.
 
 ## Downstream gates
 
-`app/services/resolution/gates.py`. A provisional domain opens
+`app/services/resolution/gates.py`. **By default** a provisional domain opens
 `COMPANY_RESEARCH` and refuses `FINAL_QUALIFICATION`,
 `PERSONALIZED_DRAFTING`, `EMAIL_DISCOVERY`, `CAMPAIGN_ELIGIBILITY` and `SENDING`.
 `unresolved` refuses all six. `confirmed`, and no-decision-at-all, allow all six.
+
+**A Campaign may widen this.** `campaigns.allow_provisional_domains` (default
+false) opens every stage to a provisional domain for that Campaign only, via
+`gates.provisional_allows_for`. This is a product decision the operator makes per
+audience: a campaign into a long tail of small firms will resolve very few domains
+to `confirmed`, and waiting for corroboration that this release cannot produce
+means never contacting them. Accepting a provisional domain means accepting that
+some addresses are guessed at a guessed domain, and that bounces cost sending
+reputation.
+
+The switch is all-or-nothing across stages on purpose. A Campaign that verified
+addresses on a guessed domain but then refused to draft from it would have already
+spent the money the strict rule exists to protect.
+
+Two things the switch does **not** reach. `unresolved` stays closed under it —
+there is no domain to act on, so no setting can authorize acting on one. And
+neither anti-laundering guard is affected: a provisional decision still writes
+nothing to the approved-mapping store, and a provisional-backed Company is still
+not established evidence. Those keep a guess from *becoming* certainty, which is a
+different question from whether one Campaign is willing to act on a known guess.
+
+A caller with no Campaign in scope — `generate_candidates`, the company workspace
+— always gets the strict rule. A Contact can belong to several Campaigns, so
+"the campaign's setting" is not a well-defined question there, and the permissive
+answer must never be inherited by default.
 
 The gate is enforced in the **service** that would otherwise act — today that is
 `generate_candidates`, which is the single door to a paid MillionVerifier call

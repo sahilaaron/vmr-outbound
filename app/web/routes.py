@@ -11,6 +11,7 @@ pages stay stateless (no sessions, no cookies).
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import date, datetime
 from pathlib import Path
@@ -24,7 +25,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.models.contact import Contact
 from app.models.contact_capture import ContactCaptureNote, ContactCaptureSubmission
 from app.models.enums import (
@@ -45,8 +46,9 @@ from app.models.enums import (
 )
 from app.models.linkedin_company import LinkedInCompanySnapshot
 from app.models.linkedin_profile import LinkedInProfileSnapshot
-from app.services import devtools, identity, workbench, workbench_agents
+from app.services import campaign_contacts, devtools, identity, workbench, workbench_agents
 from app.services.agents.registry import AGENT_SPECS
+from app.services.campaign_contacts import CampaignContactError
 from app.services.campaigns import (
     CampaignError,
     campaign_imports,
@@ -54,6 +56,10 @@ from app.services.campaigns import (
     create_campaign,
     get_campaign_overview,
     list_campaigns,
+    update_campaign,
+)
+from app.services.campaigns import (
+    CampaignNotFound as CampaignRecordNotFound,
 )
 from app.services.captures import promotion as capture_promotion
 from app.services.companies import detail as company_detail
@@ -75,19 +81,30 @@ from app.services.imports.importer import (
 from app.services.imports.preview import preview_import, preview_pending_batch
 from app.services.resolution import service as resolution_service
 from app.services.seller import campaign_offerings as seller_campaign_offerings
+from app.services.seller import generate as seller_generate
 from app.services.seller import profile as seller_profile
 from app.services.seller import readiness as seller_readiness
 from app.services.seller import records as seller_records
 from app.services.seller.common import OPERATOR_ACTOR, SellerKnowledgeError, parse_lines
+from app.services.thinking.claude_cli import ClaudeCliThinker
 from app.services.verification import console as verification_console
 from app.services.verification import queue as verification_queue
 from app.services.verification import service as verification_service
 from app.services.verification import usage as verification_usage
+from app.services.verification.provider import VerificationProvider
 from app.services.workbench_agents import views as workbench_views
 
 router = APIRouter(include_in_schema=False)
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+
+#: Seconds between auto-refreshes on the Agent monitor pages.
+#:
+#: Only these pages opt in. They are the ones whose whole purpose is a queue that is
+#: moving, where a page that can only be correct at the moment it was requested is
+#: not much use — an operator was reloading by hand to learn what changed. Every
+#: other page keeps the no-JavaScript convention and renders without a script tag.
+LIVE_REFRESH_SECONDS = 5
 
 PAGE_SIZE = 50
 PREVIEW_ROWS_SHOWN = 50
@@ -116,7 +133,29 @@ def _fmt_dt(value: datetime | date | None) -> str:
     return value.isoformat()
 
 
+def _pretty_json(value: object) -> str:
+    """Render stored JSON for reading, not for machines.
+
+    Dossier sections are JSONB written by a research producer, and until now the
+    page only reported whether a section was *present* — which told an operator a
+    section existed and nothing about what it said. This is what makes the content
+    visible.
+
+    ``sort_keys`` is deliberate: a stable key order means two versions of the same
+    section can be compared by eye. ``default=str`` keeps dates and UUIDs
+    readable rather than raising. An empty container renders as ``{}`` / ``[]``
+    rather than as nothing, because "looked and found nothing" is a real answer
+    and must not read as "did not look".
+    """
+
+    try:
+        return json.dumps(value, indent=2, sort_keys=True, default=str, ensure_ascii=False)
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        return str(value)
+
+
 templates.env.filters["dt"] = _fmt_dt
+templates.env.filters["pretty_json"] = _pretty_json
 
 
 def _database_ok(db: Session) -> bool:
@@ -352,6 +391,40 @@ def campaign_detail_page(
 
 
 # --- Imports: list + upload --------------------------------------------------
+
+
+@router.post("/campaigns/{campaign_id}/settings")
+async def campaign_settings_update(
+    request: Request, campaign_id: str, db: Session = Depends(get_db)
+) -> Response:
+    """Apply the per-campaign policy switch.
+
+    The first campaign-settings write in the HTML UI. An unchecked box is absent
+    from the form body, which is why it is read as presence rather than as a value.
+    """
+
+    parsed_id = _parse_uuid(campaign_id)
+    if parsed_id is None:
+        return _not_found(request, db, "That campaign does not exist.")
+    form = await request.form()
+    try:
+        campaign = update_campaign(
+            db,
+            parsed_id,
+            allow_provisional_domains="allow_provisional_domains" in form,
+            reason="policy switch changed from the campaign page",
+        )
+    except CampaignRecordNotFound:
+        return _not_found(request, db, "That campaign does not exist.")
+    except CampaignError as exc:
+        db.rollback()
+        return _redirect(f"/campaigns/{campaign_id}", err=str(exc))
+    db.commit()
+    provisional = "accepted" if campaign.allow_provisional_domains else "not accepted"
+    return _redirect(
+        f"/campaigns/{campaign_id}",
+        ok=f"Settings saved. Provisional domains {provisional}.",
+    )
 
 
 @router.get("/imports", response_class=HTMLResponse)
@@ -1500,10 +1573,61 @@ def contacts_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespon
             "views": crm_records.VIEWS,
             "sorts": crm_records.SORTS,
             "labels": crm_annotations.all_labels(db),
+            # Offered so a selection made here can be enrolled without leaving
+            # the page. The list is still not required to view a contact: an
+            # empty list simply hides the enrolment bar.
+            "campaigns": list_campaigns(db),
             "active_nav": "contacts",
             "page_title": "Contacts",
         },
     )
+
+
+@router.post("/contacts/add-to-campaign")
+async def contacts_add_to_campaign(request: Request, db: Session = Depends(get_db)) -> Response:
+    """Enrol the selected permanent Contacts into one Campaign.
+
+    Enrolment is the existing single-contact service in a loop, deliberately: it
+    carries eligibility evaluation, source provenance, pipeline initialisation
+    and the first queued Agent Job, none of which is safe to shortcut for speed.
+
+    The flash reports refusals as well as successes. Silently enrolling 87 of 90
+    and reporting "done" would hide exactly the three contacts that need a
+    decision.
+    """
+
+    form = await request.form()
+    campaign_id = _parse_uuid(str(form.get("campaign_id", "")))
+    if campaign_id is None:
+        return _redirect("/contacts", err="Choose a campaign to add the selected contacts to.")
+
+    selected: list[uuid.UUID] = []
+    for raw in form.getlist("contact_ids"):
+        parsed = _parse_uuid(str(raw))
+        if parsed is not None:
+            selected.append(parsed)
+    if not selected:
+        return _redirect("/contacts", err="Select at least one contact first.")
+
+    back = str(form.get("back") or "/contacts")
+    try:
+        outcome = campaign_contacts.enrol_contacts(
+            db,
+            campaign_id=campaign_id,
+            contact_ids=selected,
+            source_type="manual",
+            source_reference="contacts-page-selection",
+        )
+    except CampaignContactError as exc:
+        db.rollback()
+        return _redirect(back, err=str(exc))
+    db.commit()
+
+    message = outcome.summary
+    if outcome.refused:
+        first_reason = outcome.refused[0][1]
+        message = f"{message} First refusal: {first_reason}"
+    return _redirect(back, ok=message)
 
 
 @router.get("/contacts/{contact_id}", response_class=HTMLResponse)
@@ -1816,7 +1940,7 @@ def contact_verify(contact_id: str, db: Session = Depends(get_db)) -> Response:
     if outcome.needs_review:
         db.commit()
         return _redirect(f"/contacts/{contact_id}", err=f"Needs review: {outcome.review_reason}")
-    provider = verification_service.get_provider(settings)
+    provider = _verification_provider(settings)
     verification_service.run_worker(db, provider=provider, settings=settings, worker_id=WORKER_ID)
     db.commit()
     if outcome.reused_evidence is not None:
@@ -1856,17 +1980,36 @@ def verification_page(request: Request, db: Session = Depends(get_db)) -> HTMLRe
     )
 
 
+def _verification_provider(settings: Settings) -> VerificationProvider:
+    """The provider the workbench should actually use.
+
+    These three routes asked for ``get_provider(settings)``, whose default is
+    ``live=False`` — so every verification an operator triggered from the
+    workbench was simulated, while the Verification Agent verified the same
+    addresses for real. Two paths quietly disagreeing about whether a result came
+    from MillionVerifier is worse than either answer on its own: it makes the
+    evidence table untrustworthy without looking wrong.
+
+    Asking for live is safe by construction. ``build_provider`` still returns the
+    simulator unless a real, non-test key is configured, so an installation
+    without credentials keeps behaving exactly as before.
+    """
+
+    return verification_service.get_provider(settings, live=True)
+
+
 @router.post("/verification/run")
 def verification_run(db: Session = Depends(get_db)) -> Response:
     settings = get_settings()
     if not settings.features.millionverifier:
         return _redirect("/verification", err="MillionVerifier is disabled.")
-    provider = verification_service.get_provider(settings)
+    provider = _verification_provider(settings)
     processed = verification_service.run_worker(
         db, provider=provider, settings=settings, worker_id=WORKER_ID
     )
     db.commit()
-    return _redirect("/verification", ok=f"Processed {len(processed)} job(s).")
+    label = "simulator" if provider.simulated else provider.name
+    return _redirect("/verification", ok=f"Processed {len(processed)} job(s) via {label}.")
 
 
 @router.post("/verification/recover")
@@ -1918,7 +2061,7 @@ async def verification_bulk(request: Request, db: Session = Depends(get_db)) -> 
             reused += 1
         elif outcome.job is not None:
             enqueued += 1
-    provider = verification_service.get_provider(settings)
+    provider = _verification_provider(settings)
     verification_service.run_worker(
         db, provider=provider, settings=settings, max_jobs=1000, worker_id=WORKER_ID
     )
@@ -2031,6 +2174,7 @@ def agent_workbench_page(request: Request, db: Session = Depends(get_db)) -> HTM
         db,
         "agent_workbench.html",
         {
+            "live_seconds": LIVE_REFRESH_SECONDS,
             "overview": _reader(db).overview(),
             "agent_labels": _agent_labels(),
             "active_nav": "agent-workbench",
@@ -2072,6 +2216,7 @@ def agent_jobs_page(request: Request, db: Session = Depends(get_db)) -> HTMLResp
         db,
         "agent_jobs.html",
         {
+            "live_seconds": LIVE_REFRESH_SECONDS,
             "listing": listing,
             "agent_specs": list(AGENT_SPECS.values()),
             "job_states": list(workbench_views.PUBLIC_JOB_STATES),
@@ -2247,6 +2392,7 @@ def agent_campaign_page(
         db,
         "agent_campaign.html",
         {
+            "live_seconds": LIVE_REFRESH_SECONDS,
             "execution": execution,
             "agent_specs": list(AGENT_SPECS.values()),
             "stage_filter": stage.value if stage else None,
@@ -2340,6 +2486,7 @@ def agent_contact_execution_page(
         db,
         "agent_contact_execution.html",
         {
+            "live_seconds": LIVE_REFRESH_SECONDS,
             "execution": execution,
             "agent_labels": _agent_labels(),
             "active_nav": "agent-workbench",
@@ -3031,6 +3178,44 @@ def knowledge_base_page(request: Request, db: Session = Depends(get_db)) -> HTML
             "profile": seller_profile.get_profile(db),
         },
     )
+
+
+@router.post("/knowledge-base/generate")
+async def knowledge_base_generate(request: Request, db: Session = Depends(get_db)) -> Response:
+    """Fill the knowledge base from the seller's own website(s), via the local CLI.
+
+    Writes through the ordinary knowledge-base services, so every entry is
+    validated and audited exactly as a typed one is, and an existing profile,
+    offering or persona is never overwritten by a generated one.
+    """
+
+    if not _knowledge_base_enabled():
+        return _redirect("/", err="The Knowledge Base is not enabled.")
+
+    form = await request.form()
+    try:
+        websites = seller_generate.parse_websites(str(form.get("websites", "")))
+    except seller_generate.KnowledgeBaseGenerationError as exc:
+        return _redirect("/knowledge-base", err=str(exc))
+
+    settings = get_settings()
+    try:
+        outcome = seller_generate.generate_from_websites(
+            db,
+            websites=websites,
+            thinker=ClaudeCliThinker(settings=settings),
+        )
+    except seller_generate.KnowledgeBaseGenerationError as exc:
+        db.rollback()
+        return _redirect("/knowledge-base", err=f"Could not read those sites: {exc}")
+    db.commit()
+
+    message = outcome.summary
+    if outcome.skipped:
+        message = f"{message} First: {outcome.skipped[0]}"
+    if not outcome.created_anything:
+        return _redirect("/knowledge-base", err=message)
+    return _redirect("/knowledge-base", ok=message)
 
 
 @router.get("/knowledge-base/company", response_class=HTMLResponse)

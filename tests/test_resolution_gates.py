@@ -18,6 +18,7 @@ import copy
 import json
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from app.core.config import get_settings
@@ -122,7 +123,14 @@ def _plain_contact(db: Session) -> Contact:
 
 
 class TestTheRule:
-    def test_a_provisional_domain_opens_research_and_nothing_else(self) -> None:
+    def test_by_default_a_provisional_domain_opens_research_and_nothing_else(self) -> None:
+        """The strict reading is still what a caller gets for free.
+
+        A Campaign may now widen this, but nothing inherits the permissive answer:
+        a caller that passes no policy — including every path with no Campaign in
+        scope — gets the original rule.
+        """
+
         research = gates.evaluate_state(
             DomainResolutionState.PROVISIONAL, gates.DownstreamStage.COMPANY_RESEARCH
         )
@@ -132,6 +140,51 @@ class TestTheRule:
             decision = gates.evaluate_state(DomainResolutionState.PROVISIONAL, stage)
             assert decision.blocked, f"{stage.value} must not proceed on a provisional domain"
             assert decision.reason and "provisional" in decision.reason
+
+    def test_a_campaign_that_accepts_provisional_domains_opens_every_stage(self) -> None:
+        """The switch is all-or-nothing on purpose.
+
+        A per-stage matrix would let a Campaign verify addresses on a guessed
+        domain while refusing to draft from it, which is an incoherent position:
+        the money is already spent by then. One decision, applied consistently.
+        """
+
+        permissive = gates.provisional_allows_for(SimpleNamespace(allow_provisional_domains=True))
+        for stage in gates.DownstreamStage:
+            decision = gates.evaluate_state(
+                DomainResolutionState.PROVISIONAL, stage, provisional_allows=permissive
+            )
+            assert decision.allowed, f"{stage.value} must proceed once the Campaign accepts it"
+
+    def test_an_absent_campaign_never_gets_the_permissive_answer(self) -> None:
+        """A path with no Campaign must fail closed, not pick one arbitrarily.
+
+        A Contact can belong to several Campaigns, so "the campaign's setting" is
+        not a well-defined question from a contact-scoped or company-scoped call
+        site. Those callers keep the strict rule rather than inheriting the most
+        permissive answer in the database.
+        """
+
+        assert gates.provisional_allows_for(None) == frozenset(
+            {gates.DownstreamStage.COMPANY_RESEARCH}
+        )
+        assert gates.provisional_allows_for(
+            SimpleNamespace(allow_provisional_domains=False)
+        ) == frozenset({gates.DownstreamStage.COMPANY_RESEARCH})
+
+    def test_an_unresolved_domain_is_not_opened_by_the_campaign_switch(self) -> None:
+        """The switch is about acting on a guess, not about inventing one.
+
+        ``unresolved`` means no domain was selected at all. There is nothing to
+        act on, so no Campaign setting can authorize acting on it.
+        """
+
+        permissive = gates.provisional_allows_for(SimpleNamespace(allow_provisional_domains=True))
+        for stage in gates.DownstreamStage:
+            decision = gates.evaluate_state(
+                DomainResolutionState.UNRESOLVED, stage, provisional_allows=permissive
+            )
+            assert decision.blocked, f"{stage.value} must not proceed with no domain at all"
 
     def test_every_stage_in_the_enum_has_a_decided_answer(self) -> None:
         """No stage may be added without deciding what provisional allows it."""

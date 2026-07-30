@@ -138,12 +138,21 @@
     STABLE_CHECKS: 3,
     // Hard ceiling on increments, independent of the time budget.
     MAX_STEPS: 120,
-    // Bounded jitter added to each pause. This exists to stop the polling
-    // interval locking in phase with the page's own render cadence, which makes
-    // row counts read mid-mount. It is NOT detection avoidance and NOT
-    // human-mimicking: the range is tiny, fixed, documented, and driven by an
-    // injected random source so tests are deterministic.
-    JITTER_MS: 60,
+    // Each pause is drawn from a range around its base rather than being a
+    // fixed value plus a small addition. Two reasons, both about the page:
+    //
+    //  - Render latency genuinely varies. A fixed wait is either too short for
+    //    the slow case or wasteful for the fast one, and most increments do not
+    //    need a full settle window at all — hence a floor well below the base.
+    //  - A constant interval can lock in phase with the page's own render
+    //    cadence, which makes row counts read mid-mount.
+    //
+    // It is NOT detection avoidance and NOT human-mimicking: the range is
+    // small, fixed, documented, and driven by an injected random source so
+    // tests stay deterministic. The pass remains operator-initiated, bounded
+    // and cancellable; nothing here changes what is read or how much.
+    PAUSE_MIN_FACTOR: 0.45,
+    PAUSE_MAX_FACTOR: 1.25,
   };
 
   // Record-level warning codes (stable strings for UI + backend).

@@ -627,6 +627,72 @@ class VerificationOutcomeView:
 
 
 @dataclass(frozen=True)
+class ResearchOutcomeView:
+    """What the Research Agent established about the Contact's company.
+
+    A summary the operator can read, plus the honest shape of the answer: which
+    of the nine dossier sections the run addressed, which it left alone, and how
+    many gaps it named. A thin dossier is supposed to look thin here.
+    """
+
+    dossier_version: int | None
+    summary: str | None
+    sections_present: tuple[str, ...]
+    sections_unaddressed: tuple[str, ...]
+    source_count: int
+    unknown_count: int
+    producer: str | None
+
+
+@dataclass(frozen=True)
+class InsightClaimView:
+    """One stored claim, with the source that admitted it."""
+
+    insight_id: str | None
+    claim: str
+    kind: str | None
+    source_url: str | None
+    relevance: str | None
+
+
+@dataclass(frozen=True)
+class InsightsOutcomeView:
+    """The claims that survived the evidence gate, and the count that did not.
+
+    ``claims_dropped`` is shown deliberately. An answer where four of five claims
+    were dropped for having no usable source says something an operator needs to
+    know about the research underneath it, and hiding that would make a thin
+    result look like a confident one.
+    """
+
+    claims: tuple[InsightClaimView, ...]
+    claims_dropped: int
+    unknowns_recorded: int
+    dossier_version: int | None
+    producer: str | None
+
+
+@dataclass(frozen=True)
+class DraftOutcomeView:
+    """The drafted email, and the fact that nobody has approved it.
+
+    ``approved`` is always False here. The Workbench renders drafts; it has no
+    command that approves one, and showing the flag keeps that visible rather
+    than implied.
+    """
+
+    draft_version_id: str | None
+    version_number: int | None
+    subject: str
+    body: str
+    rationale: str | None
+    evidence_insight_ids: tuple[str, ...]
+    evidence_supplied: int
+    approved: bool
+    producer: str | None
+
+
+@dataclass(frozen=True)
 class ContactExecutionView:
     """How one Campaign is working on one permanent Contact.
 
@@ -655,6 +721,9 @@ class ContactExecutionView:
     events: tuple[PipelineEventView, ...]
     email: EmailOutcomeView | None = None
     verification: VerificationOutcomeView | None = None
+    research: ResearchOutcomeView | None = None
+    insights: InsightsOutcomeView | None = None
+    draft: DraftOutcomeView | None = None
     enrolled_at: datetime | None = None
     updated_at: datetime | None = None
     review_state: str = ""

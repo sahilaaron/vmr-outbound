@@ -169,7 +169,7 @@ test("the raw derived_value code never reaches the operator", async () => {
     .join(" ");
   assert.match(
     badgeTitles,
-    /worked out from the lead link/,
+    /resolved from the Sales Navigator ID/,
     "the operator-facing wording must be present"
   );
 });

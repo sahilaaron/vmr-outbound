@@ -283,6 +283,41 @@ class Settings(BaseSettings):
 
         return bool(self.millionverifier_api_key and self.millionverifier_api_key.strip())
 
+    # --- Local Claude CLI (Research, Insights and Personalization Agents) ---
+    #
+    # These Agents call the operator's own ``claude`` executable under their
+    # existing subscription. No key is stored here and no paid API is involved,
+    # which is the reason this path was chosen over an SDK.
+    claude_cli_path: str = Field(
+        default="claude",
+        description="Executable name or absolute path for the local Claude CLI.",
+    )
+    # The CLI's flags have changed between releases. Keeping argv in settings
+    # means a CLI upgrade is an .env edit rather than a code change. The literal
+    # token "{allowed_tools}" is replaced per call, and drops out entirely when
+    # the call permits no tools.
+    claude_cli_arguments: tuple[str, ...] = Field(
+        default=("-p", "--output-format", "json", "{allowed_tools}"),
+        description="Argument template passed to the Claude CLI; the prompt arrives on stdin.",
+    )
+    # Wall-clock ceiling for one call. A hung CLI must fail the stage, not hold
+    # a job lease until it expires and the work is silently retried.
+    claude_cli_timeout_seconds: float = Field(
+        default=300.0,
+        gt=0,
+        description="Maximum wall-clock seconds for one local Claude CLI call.",
+    )
+    claude_cli_working_directory: str | None = Field(
+        default=None,
+        description="Optional working directory for the Claude CLI subprocess.",
+    )
+    # Recorded verbatim on every dossier and draft this producer writes, so a
+    # stored artefact can always answer "what produced this?".
+    claude_cli_version_label: str = Field(
+        default="claude-cli/v1",
+        description="Producer version recorded alongside anything the CLI produces.",
+    )
+
     features: FeatureFlags = Field(default_factory=FeatureFlags)
 
     @property

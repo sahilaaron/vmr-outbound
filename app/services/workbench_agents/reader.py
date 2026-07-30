@@ -58,12 +58,16 @@ from app.services.workbench_agents.views import (
     ContactExecutionView,
     ContactRowView,
     ControlView,
+    DraftOutcomeView,
     EmailCandidateAttemptView,
     EmailOutcomeView,
+    InsightClaimView,
+    InsightsOutcomeView,
     JobListView,
     JobView,
     PipelineEventView,
     QueueCounts,
+    ResearchOutcomeView,
     StageView,
     VerificationAttemptView,
     VerificationEvidenceView,
@@ -831,10 +835,145 @@ class PhaseTwoWorkbenchReader:
             ),
             email=email,
             verification=verification,
+            research=self._research_outcome(stages=tuple(snapshot.stages)),
+            insights=self._insights_outcome(stages=tuple(snapshot.stages)),
+            draft=self._draft_outcome(stages=tuple(snapshot.stages)),
             enrolled_at=membership.enrolled_at,
             updated_at=membership.updated_at,
             review_state=membership.review_state,
             sending_state=membership.sending_state,
+        )
+
+    # --- research, insights and drafting ----------------------------------
+    #
+    # These three read the stage's committed ``output_reference`` rather than
+    # re-deriving anything. The adapter that produced it is the authority on what
+    # it did; this layer only makes it readable.
+    #
+    # One deliberate departure from the sanitizer's defaults: prose is sanitized
+    # with a much larger limit than the 1,000-character default. A drafted email
+    # truncated mid-sentence with "… (truncated)" would look like a model failure
+    # rather than a display limit, and an operator would review the wrong thing.
+
+    # Long enough for any realistic first-touch email and research summary, short
+    # enough that a runaway answer still cannot flood the page.
+    PROSE_LIMIT = 12_000
+
+    @staticmethod
+    def _stage_output(
+        stages: tuple[CampaignContactAgentState, ...], agent_id: AgentIdentifier
+    ) -> dict[str, Any] | None:
+        stage = next((row for row in stages if row.agent_id is agent_id), None)
+        if stage is None or not stage.output_reference:
+            return None
+        return sanitize_mapping(dict(stage.output_reference))
+
+    @staticmethod
+    def _string_tuple(value: Any) -> tuple[str, ...]:
+        if not isinstance(value, list):
+            return ()
+        return tuple(str(item) for item in value if isinstance(item, str))
+
+    @staticmethod
+    def _count(value: Any) -> int:
+        return value if isinstance(value, int) and value >= 0 else 0
+
+    def _research_outcome(
+        self, *, stages: tuple[CampaignContactAgentState, ...]
+    ) -> ResearchOutcomeView | None:
+        payload = self._stage_output(stages, AgentIdentifier.RESEARCH)
+        if payload is None:
+            return None
+        version = payload.get("dossier_version")
+        return ResearchOutcomeView(
+            dossier_version=version if isinstance(version, int) else None,
+            summary=sanitize_text(payload.get("summary"), limit=self.PROSE_LIMIT)
+            if isinstance(payload.get("summary"), str)
+            else None,
+            sections_present=self._string_tuple(payload.get("sections_present")),
+            sections_unaddressed=self._string_tuple(payload.get("sections_unaddressed")),
+            source_count=self._count(payload.get("source_count")),
+            unknown_count=self._count(payload.get("unknown_count")),
+            producer=sanitize_text(payload.get("producer"), limit=120)
+            if isinstance(payload.get("producer"), str)
+            else None,
+        )
+
+    def _insights_outcome(
+        self, *, stages: tuple[CampaignContactAgentState, ...]
+    ) -> InsightsOutcomeView | None:
+        payload = self._stage_output(stages, AgentIdentifier.INSIGHTS)
+        if payload is None:
+            return None
+        raw = payload.get("insights")
+        claims: list[InsightClaimView] = []
+        for item in raw if isinstance(raw, list) else []:
+            if not isinstance(item, dict):
+                continue
+            claim = sanitize_text(item.get("claim"), limit=self.PROSE_LIMIT)
+            if not claim:
+                continue
+            claims.append(
+                InsightClaimView(
+                    insight_id=(
+                        str(item["insight_id"]) if isinstance(item.get("insight_id"), str) else None
+                    ),
+                    claim=claim,
+                    kind=str(item["kind"]) if isinstance(item.get("kind"), str) else None,
+                    source_url=(
+                        sanitize_text(item.get("source_url"), limit=1024)
+                        if isinstance(item.get("source_url"), str)
+                        else None
+                    ),
+                    relevance=(
+                        sanitize_text(item.get("relevance"), limit=1200)
+                        if isinstance(item.get("relevance"), str)
+                        else None
+                    ),
+                )
+            )
+        version = payload.get("dossier_version")
+        return InsightsOutcomeView(
+            claims=tuple(claims),
+            claims_dropped=self._count(payload.get("claims_dropped")),
+            unknowns_recorded=self._count(payload.get("unknowns_recorded")),
+            dossier_version=version if isinstance(version, int) else None,
+            producer=sanitize_text(payload.get("producer"), limit=120)
+            if isinstance(payload.get("producer"), str)
+            else None,
+        )
+
+    def _draft_outcome(
+        self, *, stages: tuple[CampaignContactAgentState, ...]
+    ) -> DraftOutcomeView | None:
+        payload = self._stage_output(stages, AgentIdentifier.PERSONALIZATION)
+        if payload is None:
+            return None
+        subject = sanitize_text(payload.get("subject"), limit=600) or ""
+        body = sanitize_text(payload.get("body"), limit=self.PROSE_LIMIT) or ""
+        if not subject and not body:
+            return None
+        version = payload.get("version_number")
+        return DraftOutcomeView(
+            draft_version_id=(
+                str(payload["draft_version_id"])
+                if isinstance(payload.get("draft_version_id"), str)
+                else None
+            ),
+            version_number=version if isinstance(version, int) else None,
+            subject=subject,
+            body=body,
+            rationale=sanitize_text(payload.get("rationale"), limit=2400)
+            if isinstance(payload.get("rationale"), str)
+            else None,
+            evidence_insight_ids=self._string_tuple(payload.get("evidence_insight_ids")),
+            evidence_supplied=self._count(payload.get("evidence_supplied")),
+            # Never inferred as True: only an explicit True from the adapter, and
+            # the adapter never sets one.
+            approved=payload.get("approved") is True,
+            producer=sanitize_text(payload.get("producer"), limit=120)
+            if isinstance(payload.get("producer"), str)
+            else None,
         )
 
     # --- email ------------------------------------------------------------

@@ -1153,7 +1153,7 @@ def test_the_refusal_stays_cleared_when_the_page_is_reloaded(
     """``build_view`` re-evaluates on every visit, so it is where copy comes back."""
 
     run_lookup(db_session, capture, transport_returning(*TWO_BRANDS))
-    _confirm(db_session, capture)
+    _stage_and_confirm(db_session, capture)
 
     for _ in range(3):
         view = promo.build_view(db_session, capture)
@@ -1234,7 +1234,7 @@ def test_promotion_still_succeeds_after_the_refusal_is_cleared(
     """The gate itself was never wrong, and must stay exactly as strict."""
 
     run_lookup(db_session, capture, transport_returning(*TWO_BRANDS))
-    _confirm(db_session, capture)
+    _stage_and_confirm(db_session, capture)
 
     result = promo.promote(db_session, snapshot=capture, actor="test")
 
@@ -1289,3 +1289,39 @@ def test_the_outcome_phrase_falls_back_to_the_outcome_when_it_cannot_narrow_it(
         )
         == "domain candidate confirmed"
     )
+
+
+def test_the_displayed_location_survives_promotion(
+    db_session: Session, capture: LinkedInProfileSnapshot
+) -> None:
+    """A capture's location used to vanish the moment the Contact existed.
+
+    The value lived only in the capture's ``profile_fields`` JSON, and the CRM row
+    for a promoted contact read ``contacts.country`` — which nothing writes. So the
+    pending capture showed a location and the contact beside it showed nothing,
+    which reads as data loss because it was.
+    """
+
+    capture.profile_fields = dict(capture.profile_fields or {})
+    capture.profile_fields["displayed_location"] = "Greater Chicago Area"
+    db_session.flush()
+
+    _stage_and_confirm(db_session, capture)
+    result = promo.promote(db_session, snapshot=capture)
+    assert result.contact is not None
+    assert result.contact.location == "Greater Chicago Area"
+
+
+def test_a_capture_with_no_location_carries_none_rather_than_an_empty_string(
+    db_session: Session, capture: LinkedInProfileSnapshot
+) -> None:
+    """A page that showed no location must stay distinguishable from a blank one."""
+
+    capture.profile_fields = dict(capture.profile_fields or {})
+    capture.profile_fields["displayed_location"] = "   "
+    db_session.flush()
+
+    _stage_and_confirm(db_session, capture)
+    result = promo.promote(db_session, snapshot=capture)
+    assert result.contact is not None
+    assert result.contact.location is None

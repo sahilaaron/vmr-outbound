@@ -64,17 +64,24 @@ Each Agent must support visible state, retries, failure inspection, global enabl
 
 Search at most three candidates per Contact and stop after a verified address is found.
 
-### Company has more than 50 employees
+One fixed order for every Contact:
 
 1. `firstname.lastname`
-2. `finitiallastname`
-3. `lastnamefinitial`
-
-### Company has 50 or fewer employees
-
-1. `firstname`
-2. `firstname.lastname`
+2. `firstname`
 3. `finitiallastname`
+
+Employee count no longer enters into it. It never chose how many candidates to
+try, only the order of the same three, and before that it was a hard refusal: an
+unknown or stale count returned zero candidates, so a Contact at a company whose
+headcount nobody had sourced could never have an address discovered at all. Since
+headcount is only sourced by optional company research, that was the ordinary
+case — and downstream it read as "no address could be found" rather than as a
+policy refusal.
+
+The classification is still derived and still recorded on each attempt, because
+what was known about a company when an attempt was made is worth keeping. It
+simply does not steer anything, which is why `campaigns.consult_employee_size` was
+removed rather than left as a switch that changes nothing.
 
 The strategy should be implemented through a versioned policy boundary so ordering can change later without rewriting the pipeline.
 

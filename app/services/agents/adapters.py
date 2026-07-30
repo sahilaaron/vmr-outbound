@@ -5,20 +5,24 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
 from app.models.campaign import Campaign, CampaignContact
 from app.models.company import Company
 from app.models.contact import Contact
+from app.models.draft import DraftVersion
 from app.models.email_candidate import EmailCandidate
 from app.models.enums import (
     AgentIdentifier,
     EmailPreciseStatus,
     IdentityLinkState,
+    InsightKind,
+    InsightState,
     LinkedInIdentifierKind,
 )
 from app.models.linkedin_profile import LinkedInProfileSnapshot
@@ -26,9 +30,17 @@ from app.models.verification_job import AgentJob
 from app.services import identity_links
 from app.services.audit import record_audit_event
 from app.services.companies import conflicts as company_conflicts
+from app.services.companies import dossiers
 from app.services.imports.normalization import is_valid_email, normalize_email
+from app.services.insights import evidence as insights_evidence
+from app.services.insights.evidence import InsightError
 from app.services.resolution import store as resolution_store
+from app.services.seller import context as seller_context
+from app.services.seller.context import SellerContext
 from app.services.suppressions import evaluate_suppression
+from app.services.thinking import prompts
+from app.services.thinking.claude_cli import ClaudeCliThinker
+from app.services.thinking.contracts import Thinker, ThinkingError, ThinkingRequest
 from app.services.verification import service as verification_service
 from app.services.verification import status as verification_status
 from app.services.verification.decisions import (
@@ -342,6 +354,26 @@ class ResearchAgentAdapter:
     only logic here is the two framework-level gates -- the feature switch
     and the per-campaign ``live`` opt-in -- and translating the resulting
     step into the shared error vocabulary.
+
+    **This is the only Research implementation, and Research uses no language
+    model.** A second, model-based adapter used to live further down this file and
+    shadowed this one. Removing it is a decision, not a cleanup:
+
+    * Research's job is to *read pages and record what they said*, with a URL and a
+      retrieval time on every fact. Every claim it stores has to be checkable
+      against the page it came from. A model asked to research a company returns
+      prose that is plausible whether or not it read anything, and the difference
+      is invisible downstream — which is precisely the failure the whole evidence
+      chain exists to prevent.
+    * The worker path writes all three artefacts the pipeline depends on: the raw
+      worker payload verbatim, one versioned dossier interpreting it, and one
+      INS-001 insight per sourced fact. The model path wrote a submission and a
+      dossier but no insights, so the Insights Agent downstream had nothing sourced
+      to gate on.
+    * The thinking seam is kept and still used where language understanding is the
+      actual work: Insights chooses among facts *already stored*, Personalization
+      writes copy from them. Both run with ``allowed_tools=()`` so neither can
+      reach outside and cite something this stage never gathered.
     """
 
     agent_id = AgentIdentifier.RESEARCH
@@ -689,10 +721,485 @@ class VerificationAgentAdapter:
         )
 
 
+# --- Research, Insights and Personalization: the language-model Agents ---
+#
+# These three differ from Identity, Company, Email and Verification in one way
+# that shapes every line below: their input is a judgement, not a lookup. The
+# structure that follows exists to keep that judgement bounded.
+#
+# * The model is reached through an injected seam, so no test ever shells out.
+# * Every answer is validated against the shape this code will store, and a
+#   malformed answer is a failure rather than a partial write.
+# * ``config["live"]`` must be exactly True, mirroring the Verification Agent.
+#   There is deliberately no simulated mode: fabricated research would flow
+#   downstream into a real email, and a fake insight is far more dangerous than
+#   an absent one.
+# * Anything the model could not establish is stored as an explicit unknown
+#   rather than omitted, so a thin answer is visible instead of silently empty.
+
+
+def _live_or_blocked(context: AgentExecutionContext, agent_label: str) -> None:
+    """Refuse to run unless this Campaign explicitly enabled live execution."""
+
+    if context.config.get("live") is not True:
+        raise AgentBlocked(
+            "thinking_live_disabled",
+            f"Live execution is not enabled for the {agent_label} Agent on this Campaign. "
+            'Set the Agent config to {"live": true} to allow it to run.',
+        )
+
+
+def _translate_thinking_error(error: ThinkingError) -> AgentExecutionError:
+    """Map a model failure onto the worker's retry contract."""
+
+    if error.retryable:
+        return AgentRetryableError(error.code, error.message, detail=error.detail)
+    return AgentTerminalError(error.code, error.message, detail=error.detail)
+
+
+def _text(value: Any, *, limit: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned[:limit] if cleaned else None
+
+
+def _url(value: Any) -> str | None:
+    """Accept only an absolute http(s) URL — the insight store requires one."""
+
+    candidate = _text(value, limit=1024)
+    if candidate is None:
+        return None
+    lowered = candidate.lower()
+    if lowered.startswith("http://") or lowered.startswith("https://"):
+        return candidate
+    return None
+
+
+def _confidence(value: Any) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.5
+    return min(1.0, max(0.0, number))
+
+
+def _seller_summary(seller: SellerContext) -> str:
+    """Flatten trusted seller context into the prompt's first block."""
+
+    lines: list[str] = []
+    profile = seller.profile
+    if profile is not None:
+        lines.append(f"Company: {profile.name}")
+        for label, value in (
+            ("What we do", profile.short_description or profile.description),
+            ("Positioning", profile.positioning),
+            ("How we communicate", profile.communication_guidance),
+        ):
+            if value:
+                lines.append(f"{label}: {value}")
+        for label, values in (
+            ("Industries served", profile.industries_served),
+            ("Geographies served", profile.geographies_served),
+            ("Capabilities", profile.capabilities),
+            ("Differentiators", profile.differentiators),
+        ):
+            if values:
+                lines.append(f"{label}: {', '.join(str(item) for item in values)}")
+    for entry in seller.offerings:
+        offering = entry.offering
+        suffix = " (ARCHIVED — no longer offered)" if entry.is_archived else ""
+        lines.append(f"\nOffering — {offering.name}{suffix}")
+        if offering.short_description or offering.description:
+            lines.append(f"  {offering.short_description or offering.description}")
+        for proof in entry.proof_points:
+            lines.append(f"  Proof point: {proof.statement}")
+    return "\n".join(lines) if lines else "(no seller knowledge base has been entered yet)"
+
+
+def _restricted_claims_block(seller: SellerContext) -> str:
+    claims: list[str] = []
+    for claim in seller.global_restricted_claims:
+        claims.append(f"- {claim.title}: {claim.explanation}")
+    for entry in seller.offerings:
+        for claim in entry.restricted_claims:
+            claims.append(f"- {claim.title}: {claim.explanation}")
+    if not claims:
+        return "- (none recorded — still do not invent numbers, customers or outcomes)"
+    return "\n".join(dict.fromkeys(claims))
+
+
+class InsightsAgentAdapter:
+    """Turn the stored dossier into a few evidence-backed, seller-relevant claims.
+
+    Every claim is written through ``insights.create_insight``, which refuses a
+    supported claim that has no traceable source. A claim the model offered
+    without a usable URL is therefore not stored as a weaker fact — it is
+    dropped and counted, and the gaps the model named are stored as explicit
+    unknowns. That asymmetry is the point: this stage may reduce what is
+    asserted, never expand it.
+    """
+
+    agent_id = AgentIdentifier.INSIGHTS
+
+    def __init__(self, *, thinker_factory: Callable[[Settings], Thinker] | None = None) -> None:
+        self._thinker_factory = thinker_factory or (
+            lambda settings: ClaudeCliThinker(settings=settings)
+        )
+
+    def execute(self, context: AgentExecutionContext) -> AgentExecutionResult:
+        _live_or_blocked(context, "Insights")
+        contact = context.contact
+        company = (
+            context.session.get(Company, contact.company_id)
+            if contact.company_id is not None
+            else None
+        )
+        if company is None:
+            raise AgentBlocked(
+                "company_missing",
+                "Insights needs the permanent Company the Company Agent resolves.",
+            )
+        current = dossiers.current_version(context.session, company_id=company.id)
+        if current is None:
+            raise AgentBlocked(
+                "research_missing",
+                "Insights needs a current company dossier. Run the Research Agent first, "
+                "or skip Insights for this Contact.",
+            )
+
+        dossier = {
+            name: getattr(current, name)
+            for name in dossiers.SECTION_COLUMNS
+            if getattr(current, name) is not None
+        }
+        seller = seller_context.assemble(context.session, campaign_id=context.campaign.id)
+
+        settings = get_settings()
+        thinker = self._thinker_factory(settings)
+        request = ThinkingRequest(
+            prompt=prompts.insights_prompt(
+                seller_summary=_seller_summary(seller),
+                company_name=company.name,
+                dossier=dossier,
+                contact_title=contact.title,
+            ),
+            purpose="company_insights",
+            timeout_seconds=float(context.config.get("timeout_seconds", 240.0)),
+            # No tools: this stage reasons over evidence already gathered. A new
+            # lookup here would produce a claim whose source never entered the
+            # dossier, and so could never be shown next to it.
+            allowed_tools=(),
+        )
+        try:
+            answer = thinker.think(request)
+        except ThinkingError as exc:
+            raise _translate_thinking_error(exc) from exc
+
+        raw_claims = answer.payload.get("claims")
+        raw_claims = raw_claims if isinstance(raw_claims, list) else []
+        retrieved_at = datetime.now(UTC)
+        stored: list[dict[str, Any]] = []
+        dropped: list[dict[str, Any]] = []
+        max_claims = int(context.config.get("max_claims", 5))
+
+        for index, item in enumerate(raw_claims[:max_claims]):
+            if not isinstance(item, dict):
+                dropped.append({"index": index, "reason": "not_an_object"})
+                continue
+            claim = _text(item.get("claim"), limit=2000)
+            source_url = _url(item.get("source_url"))
+            evidence_summary = _text(item.get("evidence_summary"), limit=2000)
+            if claim is None:
+                dropped.append({"index": index, "reason": "empty_claim"})
+                continue
+            if source_url is None or evidence_summary is None:
+                # Unsourced is not stored as a lesser fact. It is not stored.
+                dropped.append({"index": index, "reason": "unsourced", "claim": claim[:200]})
+                continue
+            kind = (
+                InsightKind.INTERPRETATION
+                if str(item.get("kind", "")).strip().lower() == "interpretation"
+                else InsightKind.FACT
+            )
+            try:
+                insight = insights_evidence.create_insight(
+                    context.session,
+                    claim=claim,
+                    kind=kind,
+                    state=InsightState.SUPPORTED,
+                    evidence=[
+                        insights_evidence.EvidenceInput(
+                            source_url=source_url,
+                            retrieved_at=retrieved_at,
+                            evidence_summary=evidence_summary,
+                            confidence=_confidence(item.get("confidence")),
+                            extraction_method=f"{answer.producer}/{answer.producer_version}",
+                            source_record_type="company_dossier_version",
+                            source_record_id=current.id,
+                        )
+                    ],
+                    company_id=company.id,
+                    # Stable per job and position, so a retried job re-uses the
+                    # same records rather than duplicating them.
+                    idempotency_key=f"insights-agent:{context.job.id}:{index}",
+                    actor=context.worker_id,
+                )
+            except InsightError as exc:
+                dropped.append({"index": index, "reason": "rejected", "detail": str(exc)[:200]})
+                continue
+            stored.append(
+                {
+                    "insight_id": str(insight.id),
+                    "claim": claim,
+                    "kind": kind.value,
+                    "source_url": source_url,
+                    "relevance": _text(item.get("relevance"), limit=600),
+                }
+            )
+
+        unknowns = answer.payload.get("unknowns")
+        unknown_texts = [
+            text
+            for text in (
+                _text(entry, limit=1000)
+                for entry in (unknowns if isinstance(unknowns, list) else [])
+            )
+            if text
+        ][: int(context.config.get("max_unknowns", 5))]
+        for index, unknown in enumerate(unknown_texts):
+            try:
+                insights_evidence.create_insight(
+                    context.session,
+                    claim=unknown,
+                    kind=InsightKind.INTERPRETATION,
+                    state=InsightState.UNKNOWN,
+                    evidence=[],
+                    company_id=company.id,
+                    idempotency_key=f"insights-agent:{context.job.id}:unknown:{index}",
+                    actor=context.worker_id,
+                )
+            except InsightError:
+                # A gap that will not store is not worth failing the stage over.
+                continue
+
+        if not stored:
+            raise AgentBlocked(
+                "insufficient_evidence",
+                "No claim in the answer carried a usable source, so nothing was stored. "
+                "The Contact cannot be personalized from evidence that does not exist.",
+                detail={"dropped": dropped[:10], "unknowns_recorded": len(unknown_texts)},
+                # The unknown records above are real writes worth keeping.
+                preserve_outcome=True,
+            )
+
+        output = {
+            "company_id": str(company.id),
+            "dossier_version": current.version_number,
+            "insights_stored": len(stored),
+            "claims_dropped": len(dropped),
+            "unknowns_recorded": len(unknown_texts),
+            "insights": stored,
+            "dropped": dropped[:10],
+            "producer": answer.producer,
+        }
+        return AgentExecutionResult(
+            outcome_committed=True,
+            result={"domain_outcome": "insights_recorded", **output},
+            output_reference=output,
+        )
+
+
+class PersonalizationAgentAdapter:
+    """Draft one email from stored evidence, and store it as an unapproved version.
+
+    Three things this Agent deliberately does not do. It does not approve
+    anything — a ``DraftVersion`` carries no authority and the separate
+    ``DraftApproval`` remains a human act. It does not personalize from anything
+    except insights that already passed the eligibility gate, so an unsourced
+    sentence cannot reach an email through this path. And it re-checks the
+    suppression ledger immediately before drafting, because an entry added while
+    the job waited in the queue must still stop it: writing to someone is what
+    suppression exists to prevent, and drafting is the first step of writing.
+    """
+
+    agent_id = AgentIdentifier.PERSONALIZATION
+
+    def __init__(self, *, thinker_factory: Callable[[Settings], Thinker] | None = None) -> None:
+        self._thinker_factory = thinker_factory or (
+            lambda settings: ClaudeCliThinker(settings=settings)
+        )
+
+    def execute(self, context: AgentExecutionContext) -> AgentExecutionResult:
+        _live_or_blocked(context, "Personalization")
+        session = context.session
+        contact = context.contact
+
+        suppression = evaluate_suppression(
+            session, email=contact.email, domain=contact.company_domain
+        )
+        if suppression.blocked:
+            raise AgentBlocked(
+                "suppression",
+                suppression.blocked_reason or "The suppression ledger blocks this Contact.",
+            )
+
+        company = session.get(Company, contact.company_id) if contact.company_id else None
+        if company is None:
+            raise AgentBlocked(
+                "company_missing",
+                "Drafting needs the permanent Company the Company Agent resolves.",
+            )
+
+        eligible = [
+            insight
+            for insight in insights_evidence.list_for_company(session, company_id=company.id)
+            if insights_evidence.is_personalization_eligible(session, insight=insight)
+        ]
+        eligible.extend(
+            insight
+            for insight in insights_evidence.list_for_contact(session, contact_id=contact.id)
+            if insights_evidence.is_personalization_eligible(session, insight=insight)
+        )
+        if not eligible:
+            raise AgentBlocked(
+                "no_eligible_evidence",
+                "No insight has passed the personalization eligibility gate for this Contact, "
+                "so there is nothing specific to write about.",
+            )
+
+        allowed_ids = {str(insight.id) for insight in eligible}
+        evidence_block = "\n".join(
+            f"[{insight.id}] ({insight.kind.value}) {insight.claim}" for insight in eligible
+        )
+        seller = seller_context.assemble(session, campaign_id=context.campaign.id)
+
+        settings = get_settings()
+        thinker = self._thinker_factory(settings)
+        request = ThinkingRequest(
+            prompt=prompts.personalization_prompt(
+                seller_summary=_seller_summary(seller),
+                restricted_claims=_restricted_claims_block(seller),
+                evidence_block=evidence_block,
+                first_name=contact.first_name,
+                title=contact.title,
+                company_name=company.name,
+                max_words=int(context.config.get("max_words", 150)),
+            ),
+            purpose="email_personalization",
+            timeout_seconds=float(context.config.get("timeout_seconds", 240.0)),
+            allowed_tools=(),
+        )
+        try:
+            answer = thinker.think(request)
+        except ThinkingError as exc:
+            raise _translate_thinking_error(exc) from exc
+
+        subject = _text(answer.payload.get("subject"), limit=300)
+        body = _text(answer.payload.get("body"), limit=20000)
+        rationale = _text(answer.payload.get("rationale"), limit=2000)
+        if subject is None or body is None:
+            # The prompt explicitly permits this as an answer, and it is a
+            # better one than a generic email would have been.
+            raise AgentBlocked(
+                "evidence_too_thin",
+                rationale
+                or "The evidence was too thin to write anything specific, so no draft was made.",
+            )
+
+        cited_raw = answer.payload.get("evidence_insight_ids")
+        cited = [
+            value
+            for value in (cited_raw if isinstance(cited_raw, list) else [])
+            if isinstance(value, str) and value in allowed_ids
+        ]
+        invented = [
+            value
+            for value in (cited_raw if isinstance(cited_raw, list) else [])
+            if isinstance(value, str) and value not in allowed_ids
+        ]
+        if invented:
+            # A citation to something that was never supplied means the draft is
+            # not traceable to its evidence, which is the one property that makes
+            # it reviewable at all.
+            raise AgentTerminalError(
+                "citation_not_supplied",
+                "The draft cited evidence that was never supplied to it.",
+                detail={"invented_ids": invented[:10]},
+            )
+
+        next_number = (
+            session.scalar(
+                select(func.coalesce(func.max(DraftVersion.version_number), 0)).where(
+                    DraftVersion.contact_id == contact.id,
+                    DraftVersion.campaign_id == context.campaign.id,
+                )
+            )
+            or 0
+        ) + 1
+        draft = DraftVersion(
+            contact_id=contact.id,
+            campaign_id=context.campaign.id,
+            version_number=next_number,
+            subject=subject,
+            body=body,
+            rationale=rationale,
+            created_by=f"{answer.producer}/{answer.producer_version}",
+        )
+        session.add(draft)
+        session.flush()
+        record_audit_event(
+            session,
+            actor=context.worker_id,
+            action="draft.version_created",
+            entity_type="draft_version",
+            entity_id=str(draft.id),
+            new_state=f"v{next_number}",
+            reason="drafted by the Personalization Agent; not approved",
+            context={
+                "contact_id": str(contact.id),
+                "campaign_id": str(context.campaign.id),
+                "evidence_insight_ids": cited,
+            },
+        )
+
+        output = {
+            "draft_version_id": str(draft.id),
+            "version_number": next_number,
+            "subject": subject,
+            "body": body,
+            "rationale": rationale,
+            "evidence_insight_ids": cited,
+            "evidence_supplied": len(eligible),
+            "approved": False,
+            "producer": answer.producer,
+        }
+        return AgentExecutionResult(
+            outcome_committed=True,
+            result={"domain_outcome": "draft_created", **output},
+            output_reference=output,
+        )
+
+
+#: The adapter that runs for each Agent, unless a caller passes its own.
+#:
+#: **Exactly one adapter per Agent.** This module once defined
+#: ``ResearchAgentAdapter`` twice — a worker-based one and, 460 lines later, a
+#: model-based one that silently shadowed it. Python rebinds the name without
+#: complaint, so the mapping below pointed at whichever definition came last and
+#: the other became unreachable. The mapping is not a place a mistake like that
+#: shows up: it reads correctly either way. It cost a red test suite and an
+#: unreachable research implementation to notice.
+#:
+#: Two things now catch it. ``ruff``/``mypy`` report the redefinition (they always
+#: did — the error was tolerated), and ``tests/test_research_agent.py`` asserts
+#: this entry is the worker-based adapter by the seam only it has.
 DEFAULT_ADAPTERS: dict[AgentIdentifier, AgentAdapter] = {
     AgentIdentifier.IDENTITY: IdentityAgentAdapter(),
     AgentIdentifier.COMPANY: CompanyAgentAdapter(),
     AgentIdentifier.RESEARCH: ResearchAgentAdapter(),
     AgentIdentifier.EMAIL: EmailAgentAdapter(),
     AgentIdentifier.VERIFICATION: VerificationAgentAdapter(),
+    AgentIdentifier.INSIGHTS: InsightsAgentAdapter(),
+    AgentIdentifier.PERSONALIZATION: PersonalizationAgentAdapter(),
 }

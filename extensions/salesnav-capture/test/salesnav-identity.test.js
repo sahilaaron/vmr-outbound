@@ -114,9 +114,18 @@ test("with no visible link there is no profile URL, only the member id", () => {
   assert.equal(rec.linkedinProfileUrlSource, null);
   assert.match(rec.linkedinMemberId, /^[A-Za-z0-9_-]{3,128}$/);
   assert.ok(rec.salesNavLeadUrl.includes("/sales/lead/"));
-  assert.ok(
-    !rec.warnings.some((w) => w.code === WARNINGS.DERIVED_VALUE),
-    "nothing was derived, so nothing may be reported as derived"
+  // The rule this test exists for is that no VALUE is derived: the profile URL
+  // and its source both stay null, asserted above. The resolving alias is a
+  // separate field and a separate claim.
+  //
+  // The absence of the handle is now reported as provenance rather than as a
+  // fault, precisely because an alias exists for this row — so a derived_value
+  // warning here is expected, and it is attached to the field it explains.
+  const derived = rec.warnings.filter((w) => w.code === WARNINGS.DERIVED_VALUE);
+  assert.deepEqual(
+    derived.map((w) => w.field),
+    ["linkedinProfileUrl"],
+    "the only derivation claim is about the absent handle, not about a value"
   );
 });
 

@@ -110,14 +110,20 @@ _PLUS_RE = re.compile(rf"^(?P<low>{_NUMBER})\s*\+$")
 _GREATER_RE = re.compile(rf"^(?:>|morethan|over)\s*(?P<low>{_NUMBER})$")
 _AT_MOST_RE = re.compile(rf"^(?:<=|upto|atmost)\s*(?P<high>{_NUMBER})$")
 
-_LARGE_FORMATS = (
+#: The three formats tried, in order, for every Contact.
+#:
+#: One list, not one per company size. Size previously chose between two orders,
+#: which meant the plan for a Contact depended on a headcount that is only sourced
+#: by optional company research — so in practice the ordinary Contact got the
+#: fallback order anyway, and the branch bought inconsistency rather than accuracy.
+#:
+#: The order is deliberate. ``firstname.lastname`` is the most common corporate
+#: pattern and so the best first guess; bare ``firstname`` is common at smaller
+#: firms and cheap to try second; ``finitiallastname`` catches most of the rest.
+#: Three is the ceiling, enforced in the database by a CHECK on candidate_index.
+_ORDERED_FORMATS = (
     "firstname.lastname",
-    "finitiallastname",
-    "lastnamefinitial",
-)
-_SMALL_FORMATS = (
     "firstname",
-    "firstname.lastname",
     "finitiallastname",
 )
 
@@ -241,7 +247,11 @@ def evaluate(
     employee_evidence: EmployeeCountEvidence,
     now: datetime,
 ) -> EmailDiscoveryPolicyDecision:
-    """Return the exact candidate plan or one explicit policy refusal."""
+    """Return the exact candidate plan or one explicit policy refusal.
+
+    Every Contact gets :data:`_ORDERED_FORMATS`. Nothing about the company changes
+    the plan; only the Contact's own name components and the domain can.
+    """
 
     normalized_domain = normalize_domain(domain)
     count_class = classify_employee_count(employee_evidence.raw_value)
@@ -291,35 +301,19 @@ def evaluate(
             normalization_version=ENGINE_VERSION,
             reason="the Contact last name has no supported normalized email token",
         )
-    if freshness is EmployeeEvidenceFreshness.STALE:
-        return EmailDiscoveryPolicyDecision(
-            outcome=EmailPolicyOutcome.EMPLOYEE_COUNT_STALE,
-            employee_count_class=count_class,
-            evidence=employee_evidence,
-            evidence_freshness=freshness,
-            normalized_domain=normalized_domain,
-            ordered_formats=empty_formats,
-            candidates=empty_candidates,
-            normalization_version=ENGINE_VERSION,
-            reason="the sourced Company employee-count evidence is stale",
-        )
-    if (
-        freshness is not EmployeeEvidenceFreshness.FRESH
-        or count_class is EmployeeCountClass.UNKNOWN
-    ):
-        return EmailDiscoveryPolicyDecision(
-            outcome=EmailPolicyOutcome.EMPLOYEE_COUNT_UNKNOWN,
-            employee_count_class=EmployeeCountClass.UNKNOWN,
-            evidence=employee_evidence,
-            evidence_freshness=freshness,
-            normalized_domain=normalized_domain,
-            ordered_formats=empty_formats,
-            candidates=empty_candidates,
-            normalization_version=ENGINE_VERSION,
-            reason="the sourced Company employee count does not settle the 50-employee boundary",
-        )
-
-    formats = _LARGE_FORMATS if count_class is EmployeeCountClass.MORE_THAN_50 else _SMALL_FORMATS
+    # Employee count no longer influences the plan at all.
+    #
+    # It never chose how many candidates to try, only the order of the same three,
+    # and it was a hard refusal before that: an unknown or stale count returned
+    # zero candidates, so a Contact at a company whose headcount nobody had sourced
+    # could never have an address discovered. Since headcount is only sourced by
+    # optional company research, that was the ordinary case — and downstream it read
+    # as "no address could be found" rather than as a policy refusal.
+    #
+    # The classification is still derived and still recorded on the attempt row,
+    # because what was known about a company at the time of an attempt is worth
+    # keeping. It simply does not steer anything.
+    formats = _ORDERED_FORMATS
     candidates: list[PolicyCandidate] = []
     seen: set[str] = set()
     produced_formats: list[str] = []
@@ -380,9 +374,11 @@ def evaluate_existing_accepted_email_reuse(
     """Authorize reuse without inventing a candidate-policy branch.
 
     A fresh, accepted exact address does not need name components or candidate
-    formats, but the Email execution still records a sourced, current Company
-    classification. Unknown and stale employee evidence remain explicit blocks;
-    neither is silently classified as a small Company.
+    formats. It also does not need a company size: the address is already
+    verified, so refusing to reuse it because nobody sourced a headcount would
+    discard evidence that has been paid for. Unknown and stale size are recorded
+    truthfully as ``unknown`` and do not block. A malformed domain still does —
+    that one is about whether the address means anything at all.
     """
 
     normalized_domain = normalize_domain(domain)
@@ -398,17 +394,12 @@ def evaluate_existing_accepted_email_reuse(
     ):
         outcome = EmailPolicyOutcome.DOMAIN_INELIGIBLE
         reason = "the canonical Company domain is missing, malformed, or not normalized"
-    elif freshness is EmployeeEvidenceFreshness.STALE:
-        outcome = EmailPolicyOutcome.EMPLOYEE_COUNT_STALE
-        reason = "the sourced Company employee-count evidence is stale"
-    elif (
-        freshness is not EmployeeEvidenceFreshness.FRESH
-        or count_class is EmployeeCountClass.UNKNOWN
-    ):
-        outcome = EmailPolicyOutcome.EMPLOYEE_COUNT_UNKNOWN
-        count_class = EmployeeCountClass.UNKNOWN
-        reason = "the sourced Company employee count does not settle the 50-employee boundary"
     else:
+        if (
+            freshness is not EmployeeEvidenceFreshness.FRESH
+            or count_class is EmployeeCountClass.UNKNOWN
+        ):
+            count_class = EmployeeCountClass.UNKNOWN
         outcome = EmailPolicyOutcome.EXISTING_ACCEPTED_EMAIL_REUSE
         reason = "fresh production-eligible exact-address evidence makes discovery unnecessary"
 

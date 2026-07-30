@@ -54,9 +54,12 @@ _SPECS = (
         (AgentIdentifier.COMPANY,),
         AgentControlStatus.DISABLED,
         True,
-        # Still skippable: a company whose site cannot be read must not hold
-        # the pipeline, and the operator escape hatch stays available.
         skippable=True,
+        # A language-model call is slow and occasionally flaky. Two retries is
+        # generous enough to ride out a transient failure and mean enough that a
+        # genuinely stuck Contact stops rather than looping.
+        max_attempts=3,
+        retry_base_seconds=60.0,
     ),
     AgentSpec(
         AgentIdentifier.EMAIL,
@@ -86,8 +89,10 @@ _SPECS = (
         6,
         (AgentIdentifier.VERIFICATION,),
         AgentControlStatus.DISABLED,
-        False,
+        True,
         skippable=True,
+        max_attempts=3,
+        retry_base_seconds=60.0,
     ),
     AgentSpec(
         AgentIdentifier.PERSONALIZATION,
@@ -95,7 +100,14 @@ _SPECS = (
         7,
         (AgentIdentifier.INSIGHTS,),
         AgentControlStatus.DISABLED,
-        False,
+        True,
+        # Skippable so a Contact with thin evidence can be moved past drafting
+        # by an operator instead of wedging the Campaign. Skipping it means no
+        # draft exists, which the Sending Agent must continue to treat as "do
+        # not send" rather than "send something generic".
+        skippable=True,
+        max_attempts=3,
+        retry_base_seconds=60.0,
     ),
     AgentSpec(
         AgentIdentifier.SENDING,

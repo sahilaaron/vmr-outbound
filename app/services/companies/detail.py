@@ -24,9 +24,13 @@ from dataclasses import dataclass
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.models.capture_promotion import ContactCapturePromotion
 from app.models.company import Company
 from app.models.contact import Contact
 from app.models.enums import ResearchState
+from app.models.linkedin_company import LinkedInCompanySnapshot
+from app.models.linkedin_profile import LinkedInProfileSnapshot
+from app.models.salesnav_enrichment import SalesNavCompanyEnrichment
 from app.services.companies import conflicts as company_conflicts
 from app.services.companies import dossiers as company_dossiers
 from app.services.companies import provenance as company_provenance
@@ -81,6 +85,15 @@ class CompanyDetailView:
     # "resolved and uncertain" and is shown as one.
     domain_resolution: resolution_service.DecisionView | None = None
     research_readiness: resolution_gates.ResearchReadiness | None = None
+    # Display-only LinkedIn URLs, recovered from what a capture actually showed.
+    #
+    # ``companies.linkedin_company_url`` is a canonical column that nothing in
+    # this application writes, so the workspace showed a dash for every company
+    # even when a capture had plainly recorded the company page. These two are not
+    # promoted to canonical fields and carry no identity claim: they are what was
+    # observed, shown so an operator can open it.
+    captured_linkedin_url: str | None = None
+    captured_salesnav_url: str | None = None
 
     @property
     def linked_count(self) -> int:
@@ -131,6 +144,58 @@ def _transitional(session: Session, company: Company, *, limit: int = 200) -> li
     return [LinkedContact(contact=c, is_permanent_link=False) for c in rows]
 
 
+def _captured_urls(session: Session, company: Company) -> tuple[str | None, str | None]:
+    """The LinkedIn and Sales Navigator URLs a capture recorded for this company.
+
+    Two different sources, in confidence order. A captured company page yields an
+    already-normalized public URL and is preferred. Otherwise the Sales Navigator
+    enrichment holds the public URL a profile capture read off a person's current
+    role.
+
+    The Sales Navigator URL itself is never promoted to a column — it lives in the
+    verbatim capture payload — so it is read from there. That is why it is
+    returned as a display string and not treated as identity: a
+    ``/sales/company/<id>`` URL identifies a page, not a company, and deriving a
+    public URL from its numeric id is exactly the kind of guess the resolution
+    policy refuses to make.
+    """
+
+    snapshot_url = session.scalars(
+        select(LinkedInCompanySnapshot.normalized_company_url)
+        .where(
+            LinkedInCompanySnapshot.matched_company_id == company.id,
+            LinkedInCompanySnapshot.normalized_company_url.is_not(None),
+        )
+        .order_by(LinkedInCompanySnapshot.ingested_at.desc())
+        .limit(1)
+    ).first()
+
+    enrichment = session.scalars(
+        select(SalesNavCompanyEnrichment)
+        .join(
+            ContactCapturePromotion,
+            ContactCapturePromotion.capture_id == SalesNavCompanyEnrichment.capture_id,
+        )
+        .where(ContactCapturePromotion.resolved_company_id == company.id)
+        .order_by(SalesNavCompanyEnrichment.updated_at.desc())
+        .limit(1)
+    ).first()
+
+    linkedin_url = snapshot_url or (enrichment.company_linkedin_url if enrichment else None)
+
+    salesnav_url: str | None = None
+    if enrichment is not None:
+        capture = session.get(LinkedInProfileSnapshot, enrichment.capture_id)
+        payload = capture.payload if capture is not None else None
+        if isinstance(payload, dict):
+            raw = payload.get("raw_snapshot")
+            candidate = raw.get("salesNavCompanyUrl") if isinstance(raw, dict) else None
+            if isinstance(candidate, str) and candidate.strip():
+                salesnav_url = candidate.strip()
+
+    return linkedin_url, salesnav_url
+
+
 def get_company_detail(session: Session, company_id: uuid.UUID) -> CompanyDetailView | None:
     """The full workspace view, or None when the company does not exist."""
 
@@ -140,6 +205,8 @@ def get_company_detail(session: Session, company_id: uuid.UUID) -> CompanyDetail
 
     versions = company_dossiers.list_versions(session, company_id=company.id)
     current = next((s for s in versions if s.version.is_current), None)
+
+    captured_linkedin_url, captured_salesnav_url = _captured_urls(session, company)
 
     return CompanyDetailView(
         company=company,
@@ -154,4 +221,6 @@ def get_company_detail(session: Session, company_id: uuid.UUID) -> CompanyDetail
         research_readiness=resolution_gates.research_readiness(
             session, company_id=company.id, domain=company.domain
         ),
+        captured_linkedin_url=captured_linkedin_url,
+        captured_salesnav_url=captured_salesnav_url,
     )

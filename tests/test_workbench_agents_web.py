@@ -158,8 +158,16 @@ def test_the_campaign_page_shows_the_pipeline_and_the_controls(
     response = client.get(f"/workbench/campaigns/{scenario.campaign.id}")
     assert response.status_code == 200
     assert "Pipeline distribution" in response.text
-    assert "Agents in this Campaign" in response.text
     assert "Campaign Contacts" in response.text
+
+    # The Agent controls are now a compact strip with the override forms behind a
+    # disclosure, rather than a nine-row table always expanded. Both halves must
+    # still be present and reachable without JavaScript.
+    assert "agent-strip" in response.text
+    assert "Change an Agent for this Campaign" in response.text
+    assert "/agents/identity/override" in response.text
+    # In pipeline order, with the name readable at a glance.
+    assert response.text.index("agent-chip") < response.text.index("Change an Agent")
 
 
 def test_an_unknown_campaign_is_a_clean_not_found(client: TestClient) -> None:
@@ -604,3 +612,41 @@ def test_the_overview_template_renders_from_the_port_alone(
     assert "Sending Agent" in response.text
     assert "Sending is stopped" in response.text
     assert "No Campaigns exist yet" in response.text
+
+
+# --- auto-update --------------------------------------------------------------
+
+
+def test_the_monitor_pages_opt_into_auto_update(
+    client: TestClient, scenario: workbench_scenario.Scenario
+) -> None:
+    """These are the pages whose whole point is a queue that is moving.
+
+    An operator was reloading by hand to learn what changed. The refresh swaps only
+    the main content, so the nav and any flash message stay put and scroll position
+    survives.
+    """
+
+    for path in (
+        "/workbench",
+        f"/workbench/campaigns/{scenario.campaign.id}",
+        "/workbench/jobs",
+    ):
+        body = client.get(path).text
+        assert 'data-live="5"' in body, f"{path} must opt in"
+        assert "live.js" in body, f"{path} must load the refresher"
+
+
+def test_every_other_page_still_renders_without_any_script(
+    client: TestClient, scenario: workbench_scenario.Scenario
+) -> None:
+    """The no-JavaScript convention still holds everywhere it can.
+
+    Auto-update is a considered exception on the monitor pages, not a general
+    licence — so a page that did not ask for it must contain no script tag at all.
+    """
+
+    for path in ("/campaigns", "/contacts", "/companies", "/knowledge-base"):
+        body = client.get(path).text
+        assert "<script" not in body.lower(), f"{path} must stay script-free"
+        assert "data-live" not in body, f"{path} must not opt in"

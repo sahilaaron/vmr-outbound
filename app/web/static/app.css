@@ -608,3 +608,136 @@ td .progress-track { margin: 4px 0 2px; min-width: 120px; }
 .chip-count { font-variant-numeric: tabular-nums; opacity: .75; margin-left: 2px; }
 tr.row-failure { background: var(--err-soft); }
 td.err, td .err { color: var(--err); font-weight: 600; }
+
+/* The drafted email body. Preserves the model's line breaks without inheriting
+   the monospace look of a payload dump — an operator is reviewing prose here,
+   not inspecting a value. */
+.draft-body {
+  white-space: pre-wrap;
+  font-family: var(--font);
+  font-size: 0.95rem;
+  line-height: 1.55;
+  margin: 8px 0 12px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(127, 127, 127, 0.18);
+  overflow-x: auto;
+}
+
+/* Stored JSON shown for reading — dossier sections, interpreter warnings, the
+   raw research submission. Monospace on purpose: unlike a drafted email, this is
+   a payload being inspected, and the shape carries meaning. */
+.json-dump {
+  white-space: pre-wrap;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  max-height: 420px;
+  overflow: auto;
+  background: var(--muted-soft);
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(127, 127, 127, 0.18);
+}
+
+/* The disclosure rows the detail pages use. No stylesheet rule existed, so every
+   one carried an inline margin; this gives the summary an affordance. */
+summary.small {
+  cursor: pointer;
+  color: var(--text-2);
+}
+
+summary.small:hover {
+  color: var(--text);
+}
+
+/* The Agent strip on a Campaign's execution page.
+   One chip per Agent in pipeline order, so the row doubles as a picture of the
+   pipeline. It replaced a nine-row table of override forms that cost a screen of
+   scrolling to answer "what is live right now?". */
+.agent-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.agent-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 12px;
+  line-height: 1;
+  text-decoration: none;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.agent-chip:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.agent-chip-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--muted);
+}
+
+.agent-chip.is-ok .agent-chip-dot { background: var(--ok); }
+.agent-chip.is-warn .agent-chip-dot { background: var(--warn); }
+.agent-chip.is-ok { color: var(--text); }
+
+/* No adapter registered — a registry fact, not a control state, so it reads as
+   "not built" rather than "switched off". */
+.agent-chip.is-unbuilt {
+  border-style: dashed;
+  opacity: 0.75;
+}
+
+.agent-chip-mark {
+  font-weight: 700;
+  color: var(--accent);
+}
+
+/* The auto-update control on the Agent monitor pages.
+   Deliberately visible and deliberately switchable: a page that changes under an
+   operator without saying so is worse than one they have to reload. Fixed to the
+   corner so it does not move as content is swapped. */
+.live-toggle {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 20;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-2);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+}
+
+.live-toggle:hover { color: var(--text); border-color: var(--accent); }
+
+.live-toggle[data-state="on"]::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+.live-toggle[data-state="off"] { opacity: 0.8; }

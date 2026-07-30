@@ -9,7 +9,12 @@
   <title>{% block title %}{{ page_title | default("Workbench") }}{% endblock %} — VMR Outbound</title>
   <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}">
 </head>
-<body>
+{#
+  live_seconds is set only by the monitor pages. Every other page renders exactly
+  as before, with no script tag at all — the no-JavaScript convention still holds
+  for the whole application except where watching a queue makes it untenable.
+#}
+<body{% if live_seconds %} data-live="{{ live_seconds }}"{% endif %}>
 <div class="layout">
   <nav class="rail" aria-label="Primary">
     <div class="rail-brand">
@@ -126,5 +131,6 @@
     </div>
   </main>
 </div>
+{% if live_seconds %}<script src="{{ url_for('static', path='live.js') }}" defer></script>{% endif %}
 </body>
 </html>

@@ -623,55 +623,56 @@ def test_existing_fresh_accepted_email_is_reused_without_candidates_or_child(
     )
 
 
-def test_unknown_employee_count_blocks_then_replans_when_sourced_evidence_arrives(
+def test_an_unknown_employee_count_proceeds_on_the_default_order(
     db_session: Session,
 ) -> None:
+    """Not knowing the headcount no longer stops discovery.
+
+    This test previously asserted the opposite. The refusal was the single
+    biggest silent killer of email discovery in practice: employee count is only
+    sourced by company research, research is optional, so the ordinary Contact
+    had no headcount and produced zero candidates — which downstream read as "no
+    address could be found" rather than as a policy refusal.
+
+    Size chooses the order of three formats and never how many, so an unknown
+    count now takes the default order and records itself honestly as unknown.
+    """
+
     fixture = make_email_fixture(db_session, employee_count="unknown")
     port = CommittedVerificationFixture()
-    blocked = run_step(db_session, fixture, port)
-    assert blocked.outcome is EmailExecutionOutcome.EMPLOYEE_COUNT_UNKNOWN
-    assert port.created_children(db_session, fixture.job) == 0
-
-    company_provenance.record_observation(
-        db_session,
-        company=fixture.company,
-        field_name="company_size",
-        value="51",
-        source_kind=CompanyFieldSource.IMPORT,
-        source_reference="new-employee-count-source",
-        observed_at=NOW + timedelta(seconds=1),
-        created_by="test",
-    )
-    company_provenance.reconcile_field(
-        db_session,
-        company=fixture.company,
-        field_name="company_size",
-        actor="test",
-    )
-    resumed = run_step(db_session, fixture, port)
+    step = run_step(db_session, fixture, port)
     state = cast(dict[str, Any], (fixture.job.result or {})[STATE_KEY])
 
-    assert resumed.outcome is EmailExecutionOutcome.WAITING_ON_VERIFICATION
-    assert state["employee_count_class"] == "more_than_50"
-    assert len(state["prior_policy_outcomes"]) == 1
-    assert state["prior_policy_outcomes"][0]["domain_outcome"] == (
-        EmailExecutionOutcome.EMPLOYEE_COUNT_UNKNOWN.value
-    )
+    assert step.outcome is EmailExecutionOutcome.WAITING_ON_VERIFICATION
+    assert state["employee_count_class"] == "unknown"
+    assert state["ordered_candidate_formats"][0] == "firstname.lastname"
+    assert port.created_children(db_session, fixture.job) == 1
 
 
-def test_stale_company_evidence_blocks_then_resumes_when_freshness_is_restored(
+def test_stale_company_evidence_proceeds_and_records_the_staleness(
     db_session: Session,
 ) -> None:
+    """A stale headcount no longer withholds the stage, and is recorded as it was.
+
+    Now that the classification steers nothing — one fixed format order for every
+    Contact — there is no reason to flatten a stale reading to "unknown". Keeping
+    what the evidence said *and* the fact that it is stale is strictly more
+    informative than discarding it.
+    """
+
     fixture = make_email_fixture(db_session, research_state=ResearchState.STALE)
     port = CommittedVerificationFixture()
-    blocked = run_step(db_session, fixture, port)
-    assert blocked.outcome is EmailExecutionOutcome.EMPLOYEE_COUNT_STALE
-    assert port.created_children(db_session, fixture.job) == 0
+    step = run_step(db_session, fixture, port)
+    state = cast(dict[str, Any], (fixture.job.result or {})[STATE_KEY])
 
-    fixture.company.research_state = ResearchState.COMPLETED
-    db_session.flush()
-    resumed = run_step(db_session, fixture, port)
-    assert resumed.outcome is EmailExecutionOutcome.WAITING_ON_VERIFICATION
+    assert step.outcome is EmailExecutionOutcome.WAITING_ON_VERIFICATION
+    assert state["employee_count_class"] == "more_than_50"
+    assert state["employee_evidence"]["freshness"] == "stale"
+    assert state["ordered_candidate_formats"] == [
+        "firstname.lastname",
+        "firstname",
+        "finitiallastname",
+    ]
 
 
 def test_employee_evidence_change_during_verification_requires_scoped_refresh(

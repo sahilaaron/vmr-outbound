@@ -50,6 +50,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.models.contact import Contact
 from app.models.contact_capture import (
     NOTE_SCOPE_CONTACT,
@@ -187,6 +188,14 @@ class IntakeTimeoutError(ContactCaptureError):
 
 # --- Results -----------------------------------------------------------------
 
+# Bounds on the optional automatic-resolution pass inside an intake request.
+# A submission's whole budget belongs to staging; resolution may use a share of
+# whatever is left and no more. The provider cap matters independently of the
+# clock: a fast provider should not turn one submission into 500 outbound lookups.
+_RESOLUTION_BUDGET_SHARE = 0.4
+_RESOLUTION_MAX_SECONDS = 15.0
+_RESOLUTION_MAX_PROVIDER_CALLS = 10
+
 _COUNT_KEYS = (
     "submitted",
     "created",
@@ -201,6 +210,8 @@ _COUNT_KEYS = (
     "campaign_filings_applied",
     "campaign_filings_pending",
     "campaign_filings_failed",
+    # Captures the automatic company-domain policy finished without an operator.
+    "auto_resolved",
 )
 
 # Truthful outcome -> the response counter it increments.
@@ -526,6 +537,17 @@ class _Deadline:
     def check(self) -> None:
         if _now() >= self._end:
             raise IntakeTimeoutError("contact capture intake exceeded its time budget")
+
+    def remaining_seconds(self) -> float:
+        """How much budget is left, for work that must yield rather than fail.
+
+        Staging is the valuable part of a submission and it is finished by the time
+        anything optional runs. Optional work therefore asks how much time it has
+        and stops, instead of calling :meth:`check` and converting "we ran out of
+        time on an extra" into "discard everything that already succeeded".
+        """
+
+        return max(0.0, self._end - _now())
 
 
 def _is_query_canceled(exc: OperationalError) -> bool:
@@ -1007,6 +1029,112 @@ def _replay(submission: ContactCaptureSubmission) -> SubmissionResult:
     )
 
 
+def _auto_resolve_captures(
+    session: Session,
+    *,
+    snapshots: list[LinkedInProfileSnapshot],
+    actor: str,
+    deadline: Any,
+) -> int:
+    """Let the company-domain policy finish the captures it can, unattended.
+
+    Every capture arriving without a permanent Contact used to wait for an
+    operator to open it and press "resolve automatically" — a button that carried
+    no judgement, because the policy behind it decides on evidence and the
+    operator could neither see nor improve on that evidence. For a batch of a
+    hundred that was a hundred clicks standing between a saved person and the
+    Contact they already implied.
+
+    So it runs here. What the policy cannot decide it still leaves alone: an
+    ambiguous, conflicting or unresolvable company produces ``UNRESOLVED``, no
+    Contact, and the manual controls the operator genuinely needs. Nothing is
+    loosened — ``resolve()`` applies exactly the rules it always did, including
+    the guards that keep an uncorroborated guess out of the approved-mapping
+    store.
+
+    Each capture is isolated in its own SAVEPOINT. A provider failure, a policy
+    error or an operator-correction conflict on one person must not roll back the
+    submission that saved all of them; the capture stays staged and resolvable by
+    hand, which is exactly where it would have been anyway.
+    """
+
+    settings = get_settings()
+    if not (
+        settings.features.contact_capture_promotion
+        and settings.features.automatic_company_domain_resolution
+    ):
+        return 0
+
+    # Imported here rather than at module scope: intake is the staging boundary
+    # and must not acquire a hard dependency on the resolution package for the
+    # common case where the switch is off.
+    from app.services.resolution import service as resolution_service
+
+    usable = settings.features.salesnav_domain_enrichment and settings.has_logo_dev_key()
+    access = resolution_service.ProviderAccess(
+        api_key=settings.logo_dev_api_key if usable else None,
+        search_url=settings.logo_dev_search_url,
+        timeout=settings.logo_dev_timeout_seconds,
+        max_candidates=settings.logo_dev_max_candidates,
+    )
+    # Without a usable provider, an attempt here cannot decide anything it could
+    # not decide later — and it is actively harmful. The policy would record
+    # UNRESOLVED for the reason "the provider lookup was not run", which is not a
+    # decision but the absence of one; and because a recorded decision is not
+    # recalculated without an explicit force, that non-decision would stop the
+    # capture ever being resolved automatically again. So the capture stays staged,
+    # exactly as it did before this automation existed.
+    #
+    # Nothing valuable is lost. With a key configured, established evidence — an
+    # approved mapping from an earlier confirmation at the same company — is still
+    # checked first and still resolves without a provider call.
+    if not access.available:
+        return 0
+
+    # Bounded, and it yields rather than failing. Both halves were learned the
+    # hard way: a 100-capture submission spent one logo.dev lookup per unresolved
+    # company, blew the submission's 60s budget, and the IntakeTimeoutError that
+    # raised is a ContactCaptureError — whose handler rolls the transaction back.
+    # So an *optional improvement* destroyed 100 successfully staged people.
+    #
+    # Two rules follow. Optional work never calls deadline.check(), because that
+    # converts "ran out of time on an extra" into "discard everything". And it
+    # gets a hard share of the remaining budget, so a slow provider cannot reach
+    # the submission's limit at all.
+    #
+    # What is left unresolved is left *untouched* — no decision recorded, so the
+    # capture stays exactly as resolvable as it was. The agent worker finishes
+    # them on its next pass, where time is not bounded by an HTTP request.
+    budget = min(deadline.remaining_seconds() * _RESOLUTION_BUDGET_SHARE, _RESOLUTION_MAX_SECONDS)
+    started = _now()
+    resolved = 0
+    provider_calls = 0
+
+    for snapshot in snapshots:
+        if provider_calls >= _RESOLUTION_MAX_PROVIDER_CALLS:
+            break
+        if _now() - started >= budget:
+            break
+        try:
+            with session.begin_nested():
+                outcome = resolution_service.resolve(
+                    session,
+                    snapshot=snapshot,
+                    access=access,
+                    actor=actor,
+                    # Never force: an operator correction already on this capture
+                    # is a decision, and recalculating over it would discard it.
+                    force=False,
+                )
+        except Exception:  # noqa: BLE001 - one capture must not fail the batch
+            continue
+        if outcome.provider_call_made:
+            provider_calls += 1
+        if outcome.auto_promoted:
+            resolved += 1
+    return resolved
+
+
 def stage_contact_captures(
     session: Session,
     *,
@@ -1106,6 +1234,11 @@ def stage_contact_captures(
         counts["submitted"] = len(contacts)
         results: list[CaptureOutcome] = []
         seen_keys: dict[str, uuid.UUID] = {}
+        # Captures that reached no permanent Contact. These are the ones automatic
+        # company-domain resolution can finish, and it runs after the loop rather
+        # than inside it so a slow provider call cannot lengthen the transaction
+        # that is holding the staged rows.
+        awaiting_company: list[LinkedInProfileSnapshot] = []
 
         for capture in contacts:
             deadline.check()
@@ -1241,6 +1374,9 @@ def stage_contact_captures(
 
                 evaluate_contact_snapshot(session, snapshot=snapshot, contact=matched_contact)
 
+            if matched_contact is None and duplicate_of is None:
+                awaiting_company.append(snapshot)
+
             counts[_OUTCOME_COUNTER[snapshot.outcome]] += 1
             counts["labels_applied"] += len(applied)
             results.append(
@@ -1263,6 +1399,10 @@ def stage_contact_captures(
                     warnings=list(person.get("warnings") or []),
                 )
             )
+
+        counts["auto_resolved"] = _auto_resolve_captures(
+            session, snapshots=awaiting_company, actor=actor, deadline=deadline
+        )
 
         result = SubmissionResult(
             submission_id=str(submission.id),

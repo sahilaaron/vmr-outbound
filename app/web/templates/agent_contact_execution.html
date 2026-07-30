@@ -274,6 +274,133 @@
 </div>
 {% endif %}
 
+{% if execution.research %}
+{#
+  What Research established. The unaddressed sections and the gap count are
+  shown next to the summary on purpose: a dossier that only answered two of
+  nine questions should look that way here, rather than reading as a confident
+  answer because the summary happened to be fluent.
+#}
+<div class="card">
+  <div class="card-head">
+    <h2>Company research</h2>
+    <span class="hint">
+      Stored as dossier version {{ execution.research.dossier_version or "—" }}
+      {% if execution.research.producer %} · produced by {{ execution.research.producer }}{% endif %}
+    </span>
+  </div>
+  <div class="card-body">
+    {% if execution.research.summary %}
+    <p class="wrap">{{ execution.research.summary }}</p>
+    {% else %}
+    <p class="small muted-text mt-0">This run stored no overview summary.</p>
+    {% endif %}
+    <dl class="kv">
+      <dt>Sections addressed</dt>
+      <dd class="small">
+        {% for name in execution.research.sections_present %}<span class="chip">{{ name.replace("_", " ") }}</span>{% else %}—{% endfor %}
+      </dd>
+      <dt>Not addressed</dt>
+      <dd class="small">
+        {% for name in execution.research.sections_unaddressed %}<span class="chip">{{ name.replace("_", " ") }}</span>{% else %}
+        <span class="muted-text">none — every section was addressed</span>{% endfor %}
+      </dd>
+      <dt>Sources</dt>
+      <dd>{{ execution.research.source_count }}</dd>
+      <dt>Gaps it named</dt>
+      <dd>
+        {{ execution.research.unknown_count }}
+        <span class="small muted-text">recorded as explicit unknowns, not omitted</span>
+      </dd>
+    </dl>
+  </div>
+</div>
+{% endif %}
+
+{% if execution.insights %}
+{#
+  Only claims that carried a usable source were stored. The dropped count is
+  deliberately visible: four dropped out of five says something about the
+  research underneath, and hiding it would make a thin result look strong.
+#}
+<div class="card">
+  <div class="card-head">
+    <h2>Insights</h2>
+    <span class="hint">
+      {{ execution.insights.claims | length }} stored with evidence
+      {% if execution.insights.claims_dropped %} · {{ execution.insights.claims_dropped }} dropped for having no usable source{% endif %}
+      {% if execution.insights.unknowns_recorded %} · {{ execution.insights.unknowns_recorded }} gap{{ "" if execution.insights.unknowns_recorded == 1 else "s" }} recorded{% endif %}
+    </span>
+  </div>
+  <div class="card-body tight">
+    {% if execution.insights.claims %}
+    <table>
+      <thead>
+        <tr><th>Claim</th><th>Kind</th><th>Why it matters</th><th>Source</th></tr>
+      </thead>
+      <tbody>
+        {% for claim in execution.insights.claims %}
+        <tr>
+          <td class="wrap">{{ claim.claim }}</td>
+          <td class="small">{% if claim.kind %}<span class="badge {{ "info" if claim.kind == "interpretation" else "muted" }}">{{ claim.kind }}</span>{% else %}—{% endif %}</td>
+          <td class="small wrap">{{ claim.relevance or "—" }}</td>
+          <td class="small wrap">
+            {% if claim.source_url %}<span class="mono">{{ claim.source_url }}</span>{% else %}—{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="small muted-text mt-0">No claim survived the evidence gate.</p>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{% if execution.draft %}
+{#
+  The drafted email. Rendered as text, never as markup, and always labelled
+  unapproved: this screen has no command that approves a draft, and saying so
+  is better than leaving it implied.
+#}
+<div class="card">
+  <div class="card-head">
+    <h2>Drafted email</h2>
+    <span class="hint">
+      Version {{ execution.draft.version_number or "—" }}
+      {% if execution.draft.approved %}
+      <span class="badge ok">approved</span>
+      {% else %}
+      <span class="badge warn" title="A draft carries no authority. Approval is a separate, human act.">not approved</span>
+      {% endif %}
+      {% if execution.draft.producer %} · drafted by {{ execution.draft.producer }}{% endif %}
+    </span>
+  </div>
+  <div class="card-body">
+    <dl class="kv">
+      <dt>Subject</dt>
+      <dd class="wrap"><strong>{{ execution.draft.subject }}</strong></dd>
+    </dl>
+    <pre class="draft-body wrap">{{ execution.draft.body }}</pre>
+    <dl class="kv">
+      <dt>Evidence used</dt>
+      <dd class="small">
+        {{ execution.draft.evidence_insight_ids | length }} of
+        {{ execution.draft.evidence_supplied }} supplied insight{{ "" if execution.draft.evidence_supplied == 1 else "s" }}
+        {% for insight_id in execution.draft.evidence_insight_ids %}
+        <div class="mono small muted-text">{{ insight_id }}</div>
+        {% endfor %}
+      </dd>
+      {% if execution.draft.rationale %}
+      <dt>Why this angle</dt>
+      <dd class="small wrap">{{ execution.draft.rationale }}</dd>
+      {% endif %}
+    </dl>
+  </div>
+</div>
+{% endif %}
+
 <div class="card">
   <div class="card-head">
     <h2>Pipeline</h2>

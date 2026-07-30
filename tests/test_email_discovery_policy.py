@@ -82,46 +82,67 @@ def test_employee_count_classification_never_guesses_across_threshold(
     assert classify_employee_count(raw_value) is expected
 
 
-def test_larger_company_uses_locked_order() -> None:
+def test_the_locked_order_and_the_addresses_it_produces() -> None:
+    """The three formats, in order, and exactly the addresses they render.
+
+    Replaces a pair of tests that asserted a different order per company size.
+    ``lastnamefinitial`` is no longer tried at all — three is the ceiling and these
+    three are the ones worth spending a verification credit on.
+    """
+
     result = decision("51")
     assert result.outcome is EmailPolicyOutcome.READY
     assert result.ordered_formats == (
         "firstname.lastname",
-        "finitiallastname",
-        "lastnamefinitial",
-    )
-    assert [candidate.email for candidate in result.candidates] == [
-        "ada.lovelace@analytical.example",
-        "alovelace@analytical.example",
-        "lovelacea@analytical.example",
-    ]
-
-
-def test_smaller_company_uses_locked_order() -> None:
-    result = decision("50")
-    assert result.outcome is EmailPolicyOutcome.READY
-    assert result.ordered_formats == (
         "firstname",
-        "firstname.lastname",
         "finitiallastname",
     )
     assert [candidate.email for candidate in result.candidates] == [
-        "ada@analytical.example",
         "ada.lovelace@analytical.example",
+        "ada@analytical.example",
         "alovelace@analytical.example",
     ]
+    # Same plan for a small company; size does not enter into it.
+    assert decision("50").ordered_formats == result.ordered_formats
 
 
 @pytest.mark.parametrize("raw_value", [None, "", "unknown", "1-200", "50+"])
-def test_unknown_employee_count_is_explicit(raw_value: str | None) -> None:
+def test_an_unknown_employee_count_falls_back_instead_of_refusing(
+    raw_value: str | None,
+) -> None:
+    """Not knowing a company's size is not a reason to refuse to look.
+
+    This used to return zero candidates, which meant a Contact at a company whose
+    headcount nobody had sourced could never have an address discovered or
+    verified at all. Since size is only sourced by company research, and research
+    is optional, the ordinary case silently produced nothing — and downstream that
+    read as "no address could be found" rather than as a policy refusal.
+
+    Size only ever chose the ORDER of three formats; it never chose how many. So
+    the honest behaviour is to use a default order and record the classification
+    as unknown, which is what the attempt row now shows.
+    """
+
     result = decision(raw_value)
-    assert result.outcome is EmailPolicyOutcome.EMPLOYEE_COUNT_UNKNOWN
+    assert result.outcome is EmailPolicyOutcome.READY
     assert result.employee_count_class is EmployeeCountClass.UNKNOWN
-    assert result.candidates == ()
-    assert result.ordered_formats == ()
+    assert result.ordered_formats == (
+        "firstname.lastname",
+        "firstname",
+        "finitiallastname",
+    )
+    assert len(result.candidates) == 3
 
 
-def test_stale_employee_count_evidence_is_blocked() -> None:
+def test_stale_employee_count_evidence_falls_back_and_is_recorded_as_unknown() -> None:
+    """A stale count is a real observation the policy declines to act on.
+
+    It does not block, and it no longer has to be flattened to "unknown" either.
+    Now that the classification steers nothing, recording what the evidence said
+    alongside the fact that it is stale is strictly more informative than
+    discarding it — the attempt row keeps both.
+    """
+
     result = evaluate(
         first_name="Ada",
         last_name="Lovelace",
@@ -129,9 +150,40 @@ def test_stale_employee_count_evidence_is_blocked() -> None:
         employee_evidence=evidence("51", marked_stale=True),
         now=NOW,
     )
-    assert result.outcome is EmailPolicyOutcome.EMPLOYEE_COUNT_STALE
+    assert result.outcome is EmailPolicyOutcome.READY
     assert result.evidence_freshness is EmployeeEvidenceFreshness.STALE
-    assert result.candidates == ()
+    assert result.employee_count_class is EmployeeCountClass.MORE_THAN_50
+    assert len(result.candidates) == 3
+
+
+def test_every_contact_gets_the_same_three_formats_in_the_same_order() -> None:
+    """One order for everyone, whatever is or is not known about the company.
+
+    Size used to choose between two orders. Because headcount is only sourced by
+    optional company research, the ordinary Contact got the fallback order anyway —
+    so the branch bought inconsistency rather than accuracy.
+    """
+
+    for raw in ("12", "5000", None, "unknown", "1-200"):
+        result = decision(raw)
+        assert result.outcome is EmailPolicyOutcome.READY
+        assert result.ordered_formats == (
+            "firstname.lastname",
+            "firstname",
+            "finitiallastname",
+        ), f"employee count {raw!r} must not change the plan"
+
+
+def test_the_size_classification_is_still_recorded_even_though_it_steers_nothing() -> None:
+    """What was known about a company when an attempt was made is worth keeping.
+
+    That it no longer influences the plan is not a reason to stop recording it.
+    """
+
+    small = decision("12")
+    assert small.employee_count_class is EmployeeCountClass.FIFTY_OR_FEWER
+    large = decision("5000")
+    assert large.employee_count_class is EmployeeCountClass.MORE_THAN_50
 
 
 def test_current_winner_is_not_expired_by_an_email_specific_age_rule() -> None:
@@ -165,8 +217,8 @@ def test_candidate_normalization_is_deterministic() -> None:
     assert first == second
     assert [candidate.email for candidate in first.candidates] == [
         "jose.obrien@example.com",
+        "jose@example.com",
         "jobrien@example.com",
-        "obrienj@example.com",
     ]
 
 
@@ -178,9 +230,13 @@ def test_equivalent_candidates_are_deduplicated_preserving_first_occurrence() ->
         employee_evidence=evidence("51"),
         now=NOW,
     )
-    assert result.ordered_formats == ("firstname.lastname", "finitiallastname")
+    # "firstname" and "finitiallastname" both render "ada" / "aa" distinctly here,
+    # so nothing collapses; the surname of a single letter is what makes the last
+    # two differ only by a dot.
+    assert result.ordered_formats == ("firstname.lastname", "firstname", "finitiallastname")
     assert [candidate.email for candidate in result.candidates] == [
         "ada.a@example.com",
+        "ada@example.com",
         "aa@example.com",
     ]
 

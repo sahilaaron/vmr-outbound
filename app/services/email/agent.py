@@ -24,7 +24,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.models.campaign import CampaignContact
+from app.models.campaign import Campaign, CampaignContact
 from app.models.company import Company
 from app.models.company_field_value import CompanyFieldValue
 from app.models.contact import Contact
@@ -657,19 +657,14 @@ def _persisted_evidence_block(
         raise EmailAgentStateError("stored Email policy has no employee evidence object")
     freshness = evidence_freshness(current, now=now)
     classification = classify_employee_count(current.raw_value)
-    if freshness is EmployeeEvidenceFreshness.STALE:
-        return (
-            EmailExecutionOutcome.EMPLOYEE_COUNT_STALE,
-            "the persisted employee-count evidence became stale during Email execution",
-        )
-    if (
-        freshness is not EmployeeEvidenceFreshness.FRESH
-        or classification is EmployeeCountClass.UNKNOWN
-    ):
-        return (
-            EmailExecutionOutcome.EMPLOYEE_COUNT_UNKNOWN,
-            "the current employee-count evidence no longer settles the 50-employee boundary",
-        )
+    if freshness is not EmployeeEvidenceFreshness.FRESH:
+        classification = EmployeeCountClass.UNKNOWN
+    # Size becoming unknown or stale mid-execution no longer stops the run: the
+    # candidate order was already chosen and re-deriving it would only reshuffle
+    # three formats. What still stops it is the evidence being *different* from
+    # what the order was chosen against — that means the plan in flight was built
+    # on a fact that has since changed, and finishing it would silently attribute
+    # results to a classification nobody made.
     if (
         stored.get("id") != current.evidence_id
         or state.get("employee_count_class") != classification.value
@@ -1097,6 +1092,9 @@ def execute_step(
     now = now or _now()
     verification_policy = verification_policy or get_policy(get_settings())
     force_refresh, refresh_scope = _force_settings(job)
+    # The Campaign owns the one policy answer this execution needs: how far a
+    # provisional company domain reaches.
+    campaign = session.get(Campaign, membership.campaign_id) if membership is not None else None
 
     # Lock the permanent person so a competing accepted-email write serializes
     # with this decision rather than racing it.
@@ -1180,10 +1178,15 @@ def execute_step(
             reason_code="company_domain_boundary_mismatch",
             reason="The Contact and canonical Company domains disagree.",
         )
+    # The Campaign decides how far a provisional company domain reaches. This is
+    # one of only two places that can honour that, because it is one of the only
+    # two with a Campaign in scope; the contact-scoped candidate generator has no
+    # Campaign and deliberately keeps the strict default.
     domain_gate = authorize_contact(
         session,
         contact=contact,
         stage=DownstreamStage.EMAIL_DISCOVERY,
+        campaign=campaign,
     )
     if domain_gate.blocked:
         return EmailExecutionStep(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -97,7 +98,16 @@ def _source_key(
     return f"sha256:{hashlib.sha256(raw.encode('utf-8')).hexdigest()}"
 
 
-def _blocking_reasons(session: Session, contact: Contact) -> tuple[list[dict[str, Any]], bool]:
+def _blocking_reasons(
+    session: Session, contact: Contact, *, campaign: Campaign | None = None
+) -> tuple[list[dict[str, Any]], bool]:
+    """Why this Contact cannot be worked, and whether the reason is terminal.
+
+    ``campaign`` decides how a provisional company domain is read. It is optional
+    so a caller without one still gets the strict answer rather than the most
+    permissive campaign's.
+    """
+
     reasons: list[dict[str, Any]] = []
     suppression = evaluate_suppression(
         session,
@@ -133,6 +143,7 @@ def _blocking_reasons(session: Session, contact: Contact) -> tuple[list[dict[str
         session,
         contact=contact,
         stage=DownstreamStage.CAMPAIGN_ELIGIBILITY,
+        campaign=campaign,
     )
     if gate.blocked:
         reasons.append(
@@ -161,7 +172,9 @@ def refresh_eligibility(
     contact = session.get(Contact, membership.contact_id)
     if contact is None:  # pragma: no cover - protected by FK
         raise CampaignContactNotFound(f"contact {membership.contact_id} does not exist")
-    reasons, terminal_block = _blocking_reasons(session, contact)
+    reasons, terminal_block = _blocking_reasons(
+        session, contact, campaign=session.get(Campaign, membership.campaign_id)
+    )
     if membership.state is ContactWorkflowState.EXCLUDED:
         reasons.insert(
             0,
@@ -531,7 +544,7 @@ def enrol_contact(
         )
     ).one_or_none()
     created = False
-    reasons, suppression_blocked = _blocking_reasons(session, contact)
+    reasons, suppression_blocked = _blocking_reasons(session, contact, campaign=campaign)
     if membership is None:
         membership = CampaignContact(
             campaign_id=campaign_id,
@@ -874,3 +887,91 @@ def resume_membership(
         )
     schedule_next(session, membership=membership, actor=actor)
     return membership
+
+
+@dataclass(frozen=True)
+class BulkEnrollmentResult:
+    """What a bulk enrolment actually did, contact by contact.
+
+    Deliberately not a bare count. An operator selecting ninety contacts needs
+    to know which ones were already there and which were refused, because
+    "eighty-seven enrolled" and "eighty-seven enrolled, three suppressed" call
+    for different next actions.
+    """
+
+    enrolled: tuple[uuid.UUID, ...] = ()
+    already_present: tuple[uuid.UUID, ...] = ()
+    refused: tuple[tuple[uuid.UUID, str], ...] = ()
+    queued_jobs: int = 0
+
+    @property
+    def attempted(self) -> int:
+        return len(self.enrolled) + len(self.already_present) + len(self.refused)
+
+    @property
+    def summary(self) -> str:
+        parts = [f"{len(self.enrolled)} enrolled"]
+        if self.already_present:
+            parts.append(f"{len(self.already_present)} already in this Campaign")
+        if self.refused:
+            parts.append(f"{len(self.refused)} refused")
+        return ", ".join(parts) + "."
+
+
+def enrol_contacts(
+    session: Session,
+    *,
+    campaign_id: uuid.UUID,
+    contact_ids: Sequence[uuid.UUID],
+    source_type: str = "manual",
+    source_reference: str | None = None,
+    actor: str = "operator",
+    enqueue: bool = True,
+    desired_stage: AgentIdentifier = AgentIdentifier.SENDING,
+) -> BulkEnrollmentResult:
+    """Enrol many existing permanent Contacts into one Campaign.
+
+    A thin loop over :func:`enrol_contact`, and thin on purpose: enrolment
+    carries eligibility evaluation, source provenance, pipeline initialisation
+    and the first queued job, and none of that is safe to shortcut for speed.
+
+    One refusal does not abandon the rest. Each contact is enrolled inside its
+    own SAVEPOINT so that a contact the domain layer rejects rolls back alone,
+    leaving the successful enrolments and the caller's transaction intact. The
+    caller still owns the commit.
+    """
+
+    enrolled: list[uuid.UUID] = []
+    already: list[uuid.UUID] = []
+    refused: list[tuple[uuid.UUID, str]] = []
+    queued = 0
+
+    for contact_id in dict.fromkeys(contact_ids):
+        try:
+            with session.begin_nested():
+                outcome = enrol_contact(
+                    session,
+                    campaign_id=campaign_id,
+                    contact_id=contact_id,
+                    source_type=source_type,
+                    source_reference=source_reference,
+                    actor=actor,
+                    enqueue=enqueue,
+                    desired_stage=desired_stage,
+                )
+        except (CampaignContactError, IntegrityError) as exc:
+            refused.append((contact_id, str(exc)[:200]))
+            continue
+        if outcome.created:
+            enrolled.append(contact_id)
+        else:
+            already.append(contact_id)
+        if outcome.queued_job is not None:
+            queued += 1
+
+    return BulkEnrollmentResult(
+        enrolled=tuple(enrolled),
+        already_present=tuple(already),
+        refused=tuple(refused),
+        queued_jobs=queued,
+    )
