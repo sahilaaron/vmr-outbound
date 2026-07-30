@@ -1,175 +1,124 @@
-## Current Goal
+# Current Goal
 
-Deliver one cohesive MVP with this defining outcome:
+Deliver and accept one cohesive Contact-to-approved-draft MVP.
 
-> **A user can capture 2,000 Sales Navigator contacts in the morning and begin sending AI-personalized verified emails that afternoon.**
+## Defining outcome
 
-This repository now prioritizes one complete Contact-to-send pipeline over isolated feature development.
+> **An operator can capture an authorized LinkedIn or Sales Navigator prospect, enrol the permanent Contact into a Campaign, run sourced research, exact-address verification, evidence-backed Insights and Personalization, and approve or discard one exact immutable draft version.**
+
+The current MVP ends at a trustworthy human-approved draft. It does not include sending-provider submission or outcome synchronization.
 
 ## Canonical operating flow
 
-1. Capture a person from Sales Navigator or LinkedIn into a permanent Contact.
-2. Optionally auto-add that Contact to a selected Campaign through the extension.
-3. Apply persistent Labels, backed by reusable Collections.
-4. Resolve Contact identity and Company identity.
-5. Resolve or reuse the Company domain.
-6. Research the Company and store sourced facts.
-7. Generate and verify email candidates in the locked order.
-8. Generate AI company insights and campaign-specific scoring.
-9. Accept the Contact into the Campaign as a Campaign Contact.
-10. Generate personalized email copy using Campaign guardrails and seller context.
-11. Review and approve the exact message version.
-12. Submit approved records to the sending integration.
-13. Track execution and failures through the Workbench.
+1. Capture a person into a permanent Contact without requiring a Campaign.
+2. Resolve Contact identity, Company identity and Company domain honestly.
+3. Enrol the permanent Contact into a Campaign explicitly and idempotently.
+4. Run deterministic Company research and persist the raw submission, versioned dossier and sourced facts.
+5. Generate email candidates in the fixed policy order.
+6. Verify one exact address through the durable Verification Agent.
+7. Generate derived Insights from persisted evidence through the bounded Claude CLI seam.
+8. Generate one Campaign-specific immutable draft through Personalization.
+9. Present the evidence and exact draft in the customer Review surface.
+10. Record a human approve or discard decision against that exact version.
 
-## Capture and Campaign rule
+## Product surfaces
 
-Contacts are permanent and campaign-independent.
+- `/` and `/app` — customer-facing application.
+- `/app/review` — exact-version draft review and decision.
+- `/admin` — Workbench for low-level jobs, controls, retries and authoritative write paths.
 
-- A Campaign is never required to capture a Contact.
-- The extension may hold one optional active Campaign selection.
-- When present, that selection means: after Contact resolution, create or update Campaign Contact membership automatically.
-- When absent, capture still completes normally.
-- Campaign selection does not own, duplicate or alter the permanent Contact.
-- Labels remain optional and may be applied with or without a Campaign.
-
-## Collections and extension Labels
-
-The backend uses **Collections**. The extension calls them **Labels**.
-
-- A Contact may belong to many Collections.
-- A Campaign may reference many Collections.
-- The extension autocompletes existing Campaigns and Labels from the backend.
-- Selected Labels and the optional Campaign persist across subsequent captures until deselected.
-- Selected Labels attach to each captured Contact.
-- A selected Campaign auto-adds each resolved Contact to that Campaign.
+The customer application and Workbench share services and models but keep separate presentation layers.
 
 ## Locked Agent order
 
-The frontend calls workers **Agents**. The canonical order is:
+1. Capture
+2. Identity
+3. Company
+4. Research
+5. Email
+6. Verification
+7. Insights
+8. Personalization
+9. Sending
 
-1. Capture Agent
-2. Identity Agent
-3. Company Agent
-4. Research Agent
-5. Email Agent
-6. Verification Agent
-7. Insights Agent
-8. Personalization Agent
-9. Sending Agent
+Sending is registered for compatibility with the durable pipeline but has no production adapter and remains disabled.
 
-Each Agent must support visible state, retries, failure inspection, global enablement and Campaign-level overrides.
+## Agent boundaries
 
-## Locked email-finding policy
+- Capture, identity, Company linking, suppression, verification, job state and approval are deterministic authority.
+- Research gathers evidence through registered workers and does not use Claude.
+- Insights and Personalization use the bounded thinking seam with `allowed_tools=()`.
+- No model may verify an address, override suppression, change Agent controls, approve its own draft or send.
+- Missing, provisional and insufficient-evidence states remain explicit.
 
-Search at most three candidates per Contact and stop after a verified address is found.
+## Email policy
 
-One fixed order for every Contact:
+Attempt at most three candidates in this order and stop after the first verified result:
 
 1. `firstname.lastname`
 2. `firstname`
 3. `finitiallastname`
 
-Employee count no longer enters into it. It never chose how many candidates to
-try, only the order of the same three, and before that it was a hard refusal: an
-unknown or stale count returned zero candidates, so a Contact at a company whose
-headcount nobody had sourced could never have an address discovered at all. Since
-headcount is only sourced by optional company research, that was the ordinary
-case — and downstream it read as "no address could be found" rather than as a
-policy refusal.
+The Email Agent enqueues one child Verification Agent Job at a time and resumes from the committed Verification outcome.
 
-The classification is still derived and still recorded on each attempt, because
-what was known about a company when an attempt was made is worth keeping. It
-simply does not steer anything, which is why `campaigns.consult_employee_size` was
-removed rather than left as a switch that changes nothing.
+## Data ownership
 
-The strategy should be implemented through a versioned policy boundary so ordering can change later without rewriting the pipeline.
+- **Contact** and **Company** are permanent canonical records.
+- **Campaign Contact** owns Campaign-specific pipeline state and draft output.
+- **Company research** is reusable by permanent Company.
+- **Sourced facts** remain separate from derived Insights.
+- **DraftVersion** is immutable.
+- **Approval** is a human decision against one exact DraftVersion.
+- **Suppression** remains authoritative over every downstream stage.
 
-## Required MVP surfaces
+## Current operating choices
 
-- Workbench home
-- Campaign list and creation
-- Campaign workspace
-- Contacts table and Contact detail
-- Collections management
-- Chrome extension Campaign and Label selectors
-- Jobs and Agent monitoring
-- Global Agent controls
-- Campaign-level Agent controls
-- Review queue
-- Ready-to-send queue
-- Sending and outcome status
+The MVP deliberately uses the shortest truthful operating path:
 
-## Workbench requirements
-
-The Workbench is the operating control room. It must show:
-
-- stage counts for every active Campaign;
-- all Agents and their current states;
-- queue depth, throughput and recent activity;
-- waiting, running, paused, retrying, failed and completed jobs;
-- drill-down to affected Contacts, Companies and Campaign Contacts;
-- retry and pause controls;
-- global Agent on/off controls;
-- Campaign-level Agent overrides;
-- an emergency stop for new sending work.
-
-## Data boundaries
-
-- Contact and Company are permanent canonical records.
-- Campaign Contact owns Campaign-specific fit, acceptance, personalization, approval and send state.
-- Collection membership is reusable and does not make a Contact outreach-eligible.
-- Sourced facts remain separate from AI-derived insights.
-- Exact-address verification remains separate from email-pattern observations.
-- Suppression remains authoritative over every downstream stage.
+- Campaign enrolment is explicit and reversible through the Workbench, including bulk enrolment.
+- Knowledge Base editing remains on `/admin`; the customer interface reads it.
+- Capture-domain decisions and suppression creation retain one authoritative admin write path.
+- Unsupported features are marked unavailable rather than represented with fake values or controls.
 
 ## MVP acceptance criteria
 
-The MVP is ready when one operator can:
+The product is accepted when one operator can:
 
-- create and configure a Campaign;
-- capture between 100 and 2,000 Contacts from operator-opened Sales Navigator pages;
-- optionally persist a Campaign selection that auto-adds captured Contacts;
-- persist one or more Labels across captures;
-- see captures converge into permanent Contacts and Companies without duplication;
-- reuse a resolved domain across Contacts sharing the same Sales Navigator company identity;
-- run Company research, email discovery and verification automatically;
-- generate AI insights and Campaign-specific personalized email copy;
-- inspect failures and Agent state from the Workbench;
-- pause or disable Agents globally or within one Campaign;
-- review exact message versions before sending;
-- submit only approved and currently eligible Campaign Contacts to the sending integration;
-- retry completed or failed work without duplicate Contacts, Companies, memberships or messages.
+- merge and run the customer application on top of the Campaign pipeline;
+- process one authorized real Contact using real website research, live MillionVerifier and real Claude CLI calls;
+- inspect the Company dossier, source evidence, Verification decision and derived Insights;
+- see one exact immutable draft in `/app/review`;
+- approve or discard it and confirm the audit record;
+- confirm that no sending side effect exists;
+- process a controlled 10–20 Contact batch with understandable retries, failures, blocks and partial outcomes;
+- operate `/app` and `/admin` without duplicate canonical records or hidden pipeline state.
 
-## Immediate build order
+Green CI alone does not meet this acceptance gate.
 
-1. Repository and planning consolidation
-2. Campaign, Collection and Campaign Contact model alignment
-3. Optional extension Campaign auto-add and persistent Labels
-4. Agent orchestration and job-state model
-5. Workbench Agent monitor and controls
-6. Company research integration
-7. Locked email-finding policy and verification sequence
-8. AI insights and Campaign-specific personalization
-9. Review and ready-to-send workflow
-10. Sending integration and outcome tracking
-11. End-to-end dry run and controlled pilot
+## Explicitly post-MVP
 
-## Explicitly deferred
+The current MVP does not require:
 
-The MVP does not require:
-
+- SalesHandy or another sending-provider adapter;
+- delivery, reply, bounce or opt-out synchronization;
+- sending, replies, sequences or analytics backends;
+- deterministic fit/confidence scoring;
+- Saved Audience criteria and snapshots;
+- extension Campaign auto-add;
+- multi-email cadence generation;
+- draft editing or auto-send;
 - autonomous LinkedIn navigation;
-- CAPTCHA solving or access-control bypass;
 - a general workflow builder;
-- advanced analytics or experimentation;
-- autonomous replies;
-- omnichannel outreach;
-- CRM replacement;
-- multi-tenant SaaS;
-- public billing or administration;
-- arbitrary multi-agent orchestration outside the locked pipeline.
+- multi-tenant SaaS.
 
-## Scope rule
+Post-MVP work must be activated from measured operating evidence rather than allowed to obscure whether the assembled draft-producing product is usable.
 
-A new feature belongs in the active MVP only when it materially advances a captured Contact toward a verified, personalized and approved email ready for sending, or when it provides necessary operational control over that path.
+## Immediate sequence
+
+1. Merge PR #233 after CI and local route checks.
+2. Complete the one-Contact live acceptance.
+3. Complete the controlled 10–20 Contact batch.
+4. Record an explicit MVP verdict.
+5. Only then begin provider sending under #174 and the controlled send-capable pilot under #96.
+
+See [`CURRENT_MVP.md`](CURRENT_MVP.md) for the current implementation map and traceability.
