@@ -741,3 +741,16 @@ summary.small:hover {
 }
 
 .live-toggle[data-state="off"] { opacity: 0.8; }
+
+/* ---- Way back to the customer-facing interface (the default experience) ---- */
+.rail-exit {
+  display: block;
+  margin-bottom: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--rail-text-strong);
+  text-decoration: none;
+}
+.rail-exit:hover {
+  text-decoration: underline;
+}

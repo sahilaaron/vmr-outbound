@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
@@ -85,17 +86,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(phase2_router)
     app.include_router(api_router)
 
-    # Operator workbench (server-rendered pages). Mounted only when the feature
-    # switch is on, so the UI stays fully disabled until deliberately enabled
-    # for local operation (FND-007 pattern).
+    # Server-rendered UI. Two surfaces share one feature switch and one static
+    # mount, because they are the same application seen by two audiences:
+    #
+    # * `/app` — the customer-facing interface. This is the default application
+    #   experience, so `/` redirects to it.
+    # * `/admin` and everything under it — the operator Workbench, unchanged.
+    #
+    # Both stay behind `features.workbench`, which is what keeps the whole UI
+    # disabled unless deliberately enabled for local operation (FND-007 pattern)
+    # and is guarded above against any non-local APP_ENV.
     if settings.features.workbench:
         from app.web.routes import router as web_router
+        from app.web.v2.routes import router as v2_router
 
         app.mount(
             "/static",
             StaticFiles(directory=str(Path(__file__).parent / "web" / "static")),
             name="static",
         )
+
+        @app.get("/", include_in_schema=False)
+        def root() -> RedirectResponse:
+            """Land on the customer-facing interface.
+
+            A redirect rather than a second copy of the page: there is exactly one
+            Today screen, and the admin overview keeps its own address at `/admin`.
+            """
+
+            return RedirectResponse("/app", status_code=307)
+
+        # The v2 router is included first so its `/app/...` paths are matched
+        # before any broader admin pattern can shadow them.
+        app.include_router(v2_router)
         app.include_router(web_router)
 
     return app

@@ -275,7 +275,10 @@ def _parse_uuid(value: str | None) -> uuid.UUID | None:
 # --- Overview ----------------------------------------------------------------
 
 
-@router.get("/", response_class=HTMLResponse)
+# The admin Workbench root is `/admin`. `/` now belongs to the customer-facing
+# interface, which is the default application experience; this page, its template
+# and its context are otherwise unchanged.
+@router.get("/admin", response_class=HTMLResponse)
 def overview_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     stats = workbench.load_overview(db)
     return _render(

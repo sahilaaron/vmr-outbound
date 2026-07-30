@@ -23,7 +23,7 @@
     </div>
     <div class="rail-nav">
       <div class="rail-section">Operate</div>
-      <a href="/" class="{{ 'active' if active_nav == 'overview' else '' }}">
+      <a href="/admin" class="{{ 'active' if active_nav == 'overview' else '' }}">
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
         Overview
       </a>
@@ -115,6 +115,9 @@
       </a>
     </div>
     <div class="rail-foot">
+      {# The customer-facing interface is the default application experience and
+         lives at /app. This is the way back to it from the admin surface. #}
+      <a href="/app" class="rail-exit">← Customer interface</a>
       <span class="env-chip">
         <span class="db-dot {{ 'db-ok' if database_ok else 'db-bad' }}" aria-hidden="true"></span>
         {{ app_env | upper }} · {{ "DB connected" if database_ok else "DB unavailable" }}
