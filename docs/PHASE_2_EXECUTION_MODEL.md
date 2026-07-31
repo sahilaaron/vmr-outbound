@@ -114,6 +114,92 @@ Controls use versioned writes. A stale control update is refused rather than sil
 
 Re-enabling work resumes only records paused by that control. It does not remove a suppression, identity block, domain block or other authoritative domain reason.
 
+## Concurrency and Campaign pause contract
+
+`AgentJob` is mapped to the physical PostgreSQL table `verification_jobs`.
+The name is historical: Identity, Company, Research, Email, Verification,
+Insights, Personalization and Sending jobs all share this table. An
+`agent_id = 'research'` row in `verification_jobs` is therefore expected.
+
+### Authoritative lock order
+
+Any transaction that may touch more than one execution object must acquire row
+locks in this order:
+
+1. the `campaigns` execution gate in shared mode, ordered by `campaigns.id`,
+   when a transaction may create or recover a lease;
+2. permanent `contacts`, ordered by `contacts.id`, when Contact domain state is
+   written;
+3. `campaign_contacts`, ordered by `campaign_contacts.id`;
+4. `verification_jobs`, ordered by `campaign_contact_id NULLS LAST`, `agent_id`,
+   `created_at`, then `id`;
+5. pipeline stage rows and other state owned by the already-locked Campaign
+   Contact.
+
+A control projection begins at step 3 after the master-switch transaction has
+committed. Prepare and completion begin at step 2 because they preserve an
+existing lease rather than creating one. A queue-only transaction may lock
+an unrelated job directly only if it never reaches backwards into a Contact,
+Campaign Contact or pipeline row. A worker discovers immutable foreign-key
+references without locking, then re-reads every mutable value after acquiring
+the complete ordered lock context. Email child Verification work includes its
+parent job in that context. If `SKIP LOCKED` cannot acquire every required row,
+the worker skips the candidate instead of operating on a partial context.
+
+This order is mandatory because the former production paths were inverse:
+
+| Path | Before | After |
+| --- | --- | --- |
+| Campaign pause/resume and Agent-control reconciliation | Campaign Contact → Agent Job, with jobs locked inside a Contact loop | ordered Campaign Contacts → ordered Agent Jobs → stage projection |
+| Worker prepare, completion and failure | Agent Job → Campaign Contact/pipeline; Email could also reach Contact and parent job later | Contact → Campaign Contact → ordered job and parent → stage/domain projection |
+| Job claim and direct claim | Agent Job only, followed by later related-object work | shared Campaign gate → Contact → Campaign Contact → complete ordered job context; eligibility revalidated under the locks |
+| Lease recovery, retry, stage skip and manual re-run | mixed direct job locks and later membership writes | shared Campaign gate for recovery, then ordered Campaign Contacts → ordered Agent Jobs → stage projection; retry/re-run starts at Campaign Contact |
+| Capture promotion and membership reconciliation | Contact write → Campaign Contact → jobs | unchanged in direction, with deterministic Campaign Contact and job ordering |
+
+The old Campaign Contact → Agent Job versus Agent Job → Campaign Contact cycle
+could deadlock. Using the same direction is more important than which row type
+comes first. Stable database `ORDER BY` clauses are also required whenever more
+than one row is locked; Python collection order and PostgreSQL's unspecified
+return order are not lock-order guarantees.
+
+### Worker and Campaign-control transactions
+
+Worker claim, prepare and completion remain separate durable transactions.
+Claims read the Campaign master switch as a lease eligibility predicate, acquire
+a shared row lock on the Campaign as an execution gate, then acquire the ordered
+context with `FOR UPDATE SKIP LOCKED`. The Campaign switch and membership are
+revalidated before leasing. Shared locks let eight or more workers claim in
+parallel, but conflict with the switch update. The gate exists only for the
+short claim transaction; prepare and completion acquire the Contact, membership
+and job context without it, then verify lease ownership before writing domain or
+pipeline state.
+
+A Pause or Resume request first locks and commits the Campaign row and its
+versioned master switch. That commit is the authoritative execution boundary:
+after it, no worker may lease newly prohibited work. Projection then reconciles
+Campaign Contacts in ordered batches of at most 100, with one transaction per
+batch. A newer Pause or Resume version supersedes any remaining batches from an
+older request, so short projection transactions do not let an earlier request
+overwrite the latest master state.
+
+Projection preserves durable history and worker ownership. Pending and
+retry-scheduled work may be projected to a control-owned Pause. Leased or
+Running work retains its lease and is allowed to finish safely, or it observes
+the disabled control at its next prepare gate. Reconciliation does not project
+Running work to Skipped, a terminal Failed stage to Disabled, or a dependency or
+domain Pause to a control Pause. Resume restores only jobs whose recorded pause
+reason belongs to the applicable control.
+
+### Deadlock recovery boundary
+
+The Campaign-control request boundary has a secondary, bounded retry defence.
+Only PostgreSQL SQLSTATE `40P01` is classified as a deadlock. Each failed
+transaction is rolled back before retry, at most three attempts are made, and a
+brief jittered backoff separates attempts. Other `OperationalError` values are
+not retried. Exhaustion becomes a controlled Campaign concurrency error that the
+v2 route reports without exposing a database traceback. Retrying does not
+replace the lock-order contract; a persistent collision remains visible.
+
 ## Durable job queue
 
 `AgentJob` extends the proven PostgreSQL verification queue in place. Every job stores:
