@@ -23,7 +23,7 @@
 {% endif %}
 
 <div class="card">
-  <div class="card-head"><h2>Preview against persisted Campaign context</h2><span class="hint">Uses Contact, Company, Research, Insights, Campaign and Knowledge Base records.</span></div>
+  <div class="card-head"><h2>Side-effect-free preview</h2><span class="hint">Uses persisted Contact, Company, Research, Insights, Campaign and Knowledge Base records without changing production state.</span></div>
   <div class="card-body"><form method="post" action="/admin/agents/studio/personalization/preview" class="stack-form"><label for="preview-contact">Campaign Contact</label><select id="preview-contact" name="campaign_contact_id" required><option value="">Select…</option>{% for row in campaign_contacts %}<option value="{{ row.membership.id }}">{{ row.campaign.name }} · {{ row.contact.first_name or '' }} {{ row.contact.last_name or '' }} · {{ row.contact.company_name or 'Company unknown' }}</option>{% endfor %}</select><label for="preview-policy">Policy version</label><select id="preview-policy" name="policy_version_id" required>{% for version in versions %}<option value="{{ version.id }}" {{ 'selected' if active_policy and version.id == active_policy.id else '' }}>v{{ version.version_number }} — {{ version.name }}{{ ' (active)' if active_policy and version.id == active_policy.id else '' }}</option>{% endfor %}</select><button class="btn" type="submit" {{ 'disabled' if not versions else '' }}>Generate preview</button></form></div>
 </div>
 
