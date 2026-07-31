@@ -27,6 +27,7 @@ from app.main import create_app
 from app.models.audit_event import AuditEvent
 from app.models.draft import DraftApproval, DraftVersion
 from app.models.enums import AgentIdentifier, ApprovalStatus, SellerOfferingType
+from app.services import campaigns as campaign_service
 from app.services import drafts as draft_service
 from app.services.agents.registry import AGENT_SPECS, PIPELINE_ORDER
 from app.services.seller import profile as seller_profile
@@ -583,6 +584,28 @@ def test_resuming_a_campaign_turns_execution_back_on(
     client.post(f"/app/campaigns/{scenario.campaign.id}/execution", data={"enabled": "1"})
     db_session.expire_all()
     assert scenario.campaign.execution_enabled is True
+
+
+def test_exhausted_pause_deadlocks_return_a_controlled_route_error(
+    client: TestClient,
+    scenario: workbench_scenario.Scenario,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise campaign_service.CampaignConcurrencyError(
+            "Campaign pause is still contending; try again."
+        )
+
+    monkeypatch.setattr(campaign_service, "apply_campaign_execution", fail)
+    response = client.post(
+        f"/app/campaigns/{scenario.campaign.id}/execution",
+        data={"enabled": "0"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert "err=" in response.headers["location"]
+    assert "try+again" in response.headers["location"]
 
 
 def test_the_campaign_screen_is_the_only_page_that_auto_refreshes(
