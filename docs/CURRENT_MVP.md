@@ -20,6 +20,7 @@ SalesHandy/provider submission, delivery events, replies, bounces, opt-outs, seq
 | `/` and `/app` | Customer-facing application and daily operating surface |
 | `/app/review` | Exact-version draft review, approve/discard and evidence inspection |
 | `/admin` | Operator/admin Workbench for low-level controls, jobs, retries and authoritative write paths |
+| `/admin/agents/studio` | Global Agent inspection plus Agent-specific Admin modules; never exposed in `/app` |
 
 The customer interface and Workbench share the existing service and model layers. They use separate routers, templates and stylesheets.
 
@@ -50,7 +51,7 @@ Capture
 | Email | Deterministic candidate policy | Operational |
 | Verification | Durable exact-address verification using the existing MillionVerifier boundary | Operational; live authority required |
 | Insights | Claude CLI through the bounded thinking seam, `allowed_tools=()` | Operational; live acceptance pending |
-| Personalization | Claude CLI through the bounded thinking seam, `allowed_tools=()` | Operational; live acceptance pending |
+| Personalization | Claude CLI through the bounded thinking seam, `allowed_tools=()` and immutable Personalization Policy versions | Operational; live acceptance pending |
 | Sending | Contract only | Disabled; post-MVP |
 
 ## Research authority

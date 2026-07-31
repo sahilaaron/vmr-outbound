@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% from "_agent_macros.html" import control_badge, job_status_badge %}
+{% block content %}
+<div class="page-head">
+  <div class="crumbs"><a href="/admin">Admin</a><span>/</span><a href="/admin/agents/studio">Agent Studio</a><span>/</span>{{ item.card.display_name }}</div>
+  <h1>{{ item.card.display_name }} {{ control_badge(item.effective_control.status) }}</h1>
+  <div class="sub">Common operational inspection with truthful Agent-specific availability.</div>
+</div>
+
+{% if not item.card.control.implemented %}<div class="notice warn"><div><strong>Execution unavailable.</strong> No production adapter is registered for this Agent.</div></div>{% endif %}
+
+<div class="stat-grid">
+  <div class="stat accent"><div class="label">Open jobs</div><div class="value">{{ item.card.queue.open_work }}</div></div>
+  <div class="stat"><div class="label">Running</div><div class="value info">{{ item.card.queue.running }}</div></div>
+  <div class="stat"><div class="label">Retry scheduled</div><div class="value warn">{{ item.card.queue.retrying }}</div></div>
+  <div class="stat"><div class="label">Failed</div><div class="value err">{{ item.card.queue.failed }}</div></div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Capabilities</h2></div>
+  <div class="card-body">
+    <div class="capability-row capability-large">
+      {% for label, available in [('Inspection', item.module.capabilities.inspection), ('Configuration', item.module.capabilities.configuration), ('Preview / testing', item.module.capabilities.preview_testing), ('Live execution', item.module.capabilities.live_execution), ('Reporting', item.module.capabilities.reporting)] %}<span class="cap {{ 'yes' if available else 'no' }}">{{ label }}</span>{% endfor %}
+    </div>
+    {% if not item.module.capabilities.configuration %}<p class="small muted-text">{{ item.module.configuration_boundary }}</p>{% endif %}
+    {% if not item.module.capabilities.preview_testing %}<p class="small muted-text">{{ item.module.preview_boundary }}</p>{% endif %}
+    {% if item.card.agent_id.value == 'personalization' %}<a class="btn" href="/admin/agents/studio/personalization">Open Personalization Policy Studio</a>{% endif %}
+    {% if item.card.agent_id.value == 'research' %}<a class="btn" href="/admin/agents/studio/research">Open Company Research report</a>{% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Control source</h2><a class="chip" href="/workbench/agents/{{ item.card.agent_id.value }}">Change in authoritative Workbench</a></div>
+  <div class="card-body"><dl class="kv"><dt>Effective status</dt><dd>{{ control_badge(item.effective_control.status) }}</dd><dt>Source</dt><dd>{{ item.effective_control.source | replace('_', ' ') }}</dd><dt>Global version</dt><dd>{{ item.effective_control.global_version if item.effective_control.global_version is not none else 'registry default' }}</dd><dt>Campaign version</dt><dd>{{ item.effective_control.campaign_version if item.effective_control.campaign_version is not none else 'none' }}</dd></dl></div>
+</div>
+
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Recent runs</strong><a class="chip" href="/workbench/jobs?agent={{ item.card.agent_id.value }}">All jobs</a></div>
+  {% if item.recent_runs %}<table><thead><tr><th>Job</th><th>Status</th><th>Attempts</th><th>Lease / retry</th><th>Updated</th></tr></thead><tbody>{% for job in item.recent_runs %}<tr><td class="mono small"><a href="/workbench/jobs/{{ job.job_id }}">{{ job.job_id }}</a></td><td>{{ job_status_badge(job.public_status) }}</td><td>{{ job.attempt_count }} / {{ job.max_attempts }}</td><td class="small">{% if job.lease_held %}leased by {{ job.lease_owner }} until {{ job.lease_expires_at | dt }}{% elif job.next_run_at %}next eligible {{ job.next_run_at | dt }}{% else %}—{% endif %}</td><td>{{ job.updated_at | dt }}</td></tr>{% endfor %}</tbody></table>{% else %}<div class="empty"><div class="empty-title">No persisted runs</div><p>This Agent has not written a durable job in the selected scope.</p></div>{% endif %}
+</div>
+{% endblock %}

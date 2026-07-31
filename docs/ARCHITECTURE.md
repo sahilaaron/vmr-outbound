@@ -39,6 +39,12 @@ The product has two server-rendered presentation layers over the same services a
 
 The customer interface is not a Workbench reskin. The two surfaces share domain services, not presentation code.
 
+The Admin Workbench also contains Agent Studio at `/admin/agents/studio`. Its
+common shell is a projection of the authoritative Agent registry, controls and
+durable queue. Agent-specific modules own their own typed configuration and
+preview contracts; Personalization Policy is intentionally not a universal
+Agent schema. See [AGENT_STUDIO.md](AGENT_STUDIO.md).
+
 ## Core entities
 
 ### Contact

@@ -35,6 +35,10 @@
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M7 20h10"/><path d="M7 9l2.5 2.5L7 14"/><path d="M12.5 14h4"/></svg>
         Workbench
       </a>
+      <a href="/admin/agents/studio" class="{{ 'active' if active_nav == 'agent-studio' else '' }}">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="7" cy="7" r="3"/><circle cx="17" cy="7" r="3"/><path d="M4 20v-4a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v4"/><path d="M12 4v6"/></svg>
+        Agent Studio
+      </a>
       {% endif %}
       <a href="/campaigns" class="{{ 'active' if active_nav == 'campaigns' else '' }}">
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 11l18-7-7 18-2.5-7.5L3 11z"/></svg>

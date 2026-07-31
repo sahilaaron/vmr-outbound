@@ -226,6 +226,45 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
 .stat .value.warn { color: var(--warn); }
 .stat .value.info { color: var(--info); }
 .stat .value.muted { color: var(--muted); }
+.stat .small-value { font-size: 17px; overflow-wrap: anywhere; }
+
+/* ---- Agent Studio ------------------------------------------------------- */
+
+.capability-row { display: flex; flex-wrap: wrap; gap: 5px; }
+.cap {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 10.5px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.cap.yes { color: var(--ok); background: var(--ok-soft); border-color: #b9dfc5; }
+.cap.no { color: var(--muted); background: var(--muted-soft); text-decoration: line-through; }
+.capability-large .cap { font-size: 12px; padding: 5px 10px; }
+.temperament-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}
+.scale { height: 7px; background: var(--muted-soft); border-radius: 999px; overflow: hidden; margin-top: 7px; }
+.scale span { display: block; height: 100%; background: var(--accent); }
+.email-preview, .json-report {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 14px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.preview-result { border-top: 3px solid var(--info); }
+.stack-form { display: grid; gap: 10px; }
+.stack-form fieldset { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px; }
+.stack-form legend { font-weight: 650; font-size: 13px; padding: 0 5px; }
 
 /* ---- Tables -------------------------------------------------------------- */
 

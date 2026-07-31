@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% from "_agent_macros.html" import control_badge, job_status_badge %}
+{% block content %}
+<div class="page-head">
+  <div class="crumbs"><a href="/admin">Admin</a><span>/</span>Agent Studio</div>
+  <h1>Agent Studio</h1>
+  <div class="sub">One global shell over the authoritative Agent registry, controls and durable jobs. Agent-specific policy lives only inside the Agent that owns it.</div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Effective control scope</h2><span class="hint">Campaign execution and overrides are shown without replacing the existing control system.</span></div>
+  <div class="card-body">
+    <form method="get" action="/admin/agents/studio" class="action-row">
+      <label for="studio-campaign">Campaign scope</label>
+      <select id="studio-campaign" name="campaign">
+        <option value="">Global controls</option>
+        {% for campaign in studio.campaigns %}<option value="{{ campaign.id }}" {{ "selected" if studio.selected_campaign_id == campaign.id else "" }}>{{ campaign.name }}</option>{% endfor %}
+      </select>
+      <button class="btn small secondary" type="submit">Inspect scope</button>
+    </form>
+  </div>
+</div>
+
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">{{ studio.agents | length }} registered Agents</strong><a class="chip" href="/workbench">Open execution Workbench</a></div>
+  <table>
+    <thead><tr><th>Agent</th><th>Registry</th><th>Effective control</th><th>Latest run</th><th>Failures</th><th>Capabilities</th></tr></thead>
+    <tbody>
+      {% for item in studio.agents %}
+      <tr>
+        <td><a href="{{ item.module.dedicated_path }}{{ '?campaign=' ~ studio.selected_campaign_id if studio.selected_campaign_id else '' }}"><strong>{{ item.card.display_name }}</strong></a><div class="small muted-text">Position {{ item.card.position + 1 }}</div></td>
+        <td>{% if item.card.control.implemented %}<span class="badge ok">implemented</span>{% else %}<span class="badge muted">unavailable</span>{% endif %}<div class="small muted-text">Health: {{ item.health }}</div></td>
+        <td>{{ control_badge(item.effective_control.status) }}<div class="small muted-text">{{ item.effective_control.source | replace('_', ' ') }}</div>{% if item.card.overriding_campaigns %}<div class="small muted-text">{{ item.card.overriding_campaigns | length }} Campaign override{{ '' if item.card.overriding_campaigns | length == 1 else 's' }}</div>{% endif %}</td>
+        <td>{% if item.latest_run %}{{ job_status_badge(item.latest_run.public_status) }}<div class="small muted-text">{{ item.latest_run.updated_at | dt }} · {{ item.latest_run.attempt_count }}/{{ item.latest_run.max_attempts }} attempts{% if item.latest_run.lease_held %} · leased{% endif %}</div>{% else %}<span class="muted-text">No persisted run</span>{% endif %}</td>
+        <td>{% if item.recent_failures %}<span class="badge err">{{ item.recent_failures | length }} recent</span><div class="small muted-text">Latest {{ item.recent_failures[0].updated_at | dt }}</div>{% else %}<span class="muted-text">None in recent history</span>{% endif %}</td>
+        <td><div class="capability-row">
+          <span class="cap {{ 'yes' if item.module.capabilities.inspection else 'no' }}">inspect</span>
+          <span class="cap {{ 'yes' if item.module.capabilities.configuration else 'no' }}">configure</span>
+          <span class="cap {{ 'yes' if item.module.capabilities.preview_testing else 'no' }}">preview</span>
+          <span class="cap {{ 'yes' if item.module.capabilities.live_execution else 'no' }}">live</span>
+          <span class="cap {{ 'yes' if item.module.capabilities.reporting else 'no' }}">report</span>
+        </div></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Boundary</h2></div>
+  <div class="card-body small">
+    <p class="mt-0">Agent Studio adds inspection and Agent-specific modules. It does not create another execution-control service. Status changes remain on the existing Workbench routes and preserve stored configuration, including <code>{"live": true}</code>.</p>
+    <p>Suppression, evidence eligibility, Campaign execution, Campaign overrides, exact-draft approval and Sending availability remain separate authorities.</p>
+  </div>
+</div>
+{% endblock %}
