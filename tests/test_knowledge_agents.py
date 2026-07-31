@@ -47,6 +47,7 @@ from app.services.agents.adapters import (
 from app.services.agents.jobs import enqueue_job
 from app.services.companies import dossiers
 from app.services.insights import evidence as insights_evidence
+from app.services.personalization import policy as personalization_policy
 from app.services.suppressions import add_suppression
 from app.services.thinking.contracts import ThinkingRequest, ThinkingResult, ThinkingTimeout
 from sqlalchemy import select
@@ -97,6 +98,7 @@ def _records(db: Session) -> tuple[Campaign, Company, Contact]:
     company = Company(name="Kiln Systems", domain="kiln.example")
     campaign = Campaign(
         name=f"Knowledge {uuid.uuid4()}",
+        description="Plant operations and industrial workflow",
         status=CampaignStatus.ACTIVE,
         execution_enabled=True,
     )
@@ -141,6 +143,8 @@ def _context(
     pretending a paid provider answered.
     """
 
+    if agent_id is AgentIdentifier.PERSONALIZATION:
+        personalization_policy.ensure_initial_policy(db, actor="test")
     enrolled = campaign_contacts.enrol_contact(
         db,
         campaign_id=campaign.id,
@@ -479,14 +483,26 @@ def test_an_empty_answer_is_accepted_as_evidence_being_too_thin(db_session: Sess
     assert db_session.scalars(select(DraftVersion)).all() == []
 
 
-def test_drafting_refuses_without_any_eligible_evidence(db_session: Session) -> None:
+def test_drafting_uses_the_valid_offering_led_fallback_without_prospect_evidence(
+    db_session: Session,
+) -> None:
     campaign, _, contact = _records(db_session)
+    contact.title = None
+    campaign.description = "A seller offering with no matching prospect context"
     context = _context(
         db_session, campaign=campaign, contact=contact, agent_id=AgentIdentifier.PERSONALIZATION
     )
-    with pytest.raises(AgentBlocked) as caught:
-        PersonalizationAgentAdapter(thinker_factory=lambda _s: ScriptedThinker()).execute(context)
-    assert caught.value.code == "no_eligible_evidence"
+    result = PersonalizationAgentAdapter(
+        thinker_factory=lambda _s: ScriptedThinker(
+            {
+                "subject": "A straightforward introduction",
+                "body": "We help teams simplify operational work. Is that relevant to you?",
+                "evidence_insight_ids": [],
+            }
+        )
+    ).execute(context)
+    assert result.output_reference["personalization_decision"]["fallback_level"] == 5
+    assert result.output_reference["evidence_insight_ids"] == []
 
 
 def test_a_suppression_added_after_enrolment_still_stops_the_draft(db_session: Session) -> None:

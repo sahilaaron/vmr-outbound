@@ -101,6 +101,39 @@ def test_migration_upgrade_check_downgrade_reupgrade(temp_database_url: str) -> 
         )
 
 
+def test_agent_studio_migration_seeds_valid_immutable_history(
+    temp_database_url: str,
+) -> None:
+    result = _alembic(["upgrade", "head"], temp_database_url)
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    engine = create_engine(temp_database_url)
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT p.version_number, p.schema_version, p.configuration, a.activated_by "
+                    "FROM personalization_policy_versions p "
+                    "JOIN personalization_policy_activations a ON a.policy_version_id = p.id"
+                )
+            ).one()
+            assert row.version_number == 1
+            assert row.schema_version == "personalization-policy/v1"
+            assert len(row.configuration["standards"]) == 8
+            assert len(row.configuration["strategies"]) == 5
+            assert row.activated_by == "system:migration"
+
+        with pytest.raises(Exception, match="append-only"):
+            with engine.begin() as conn:
+                conn.execute(text("UPDATE personalization_policy_versions SET name = 'mutated'"))
+
+        result = _alembic(["downgrade", "d3b7e2f19c45"], temp_database_url)
+        assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+        result = _alembic(["upgrade", "head"], temp_database_url)
+        assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    finally:
+        engine.dispose()
+
+
 def _seed_company(conn: Connection, *, name: str, domain: str | None) -> uuid.UUID:
     company_id = uuid.uuid4()
     conn.execute(

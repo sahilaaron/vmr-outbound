@@ -50,6 +50,7 @@ from app.models import insight as _insight  # noqa: E402,F401
 from app.models import linkedin_company as _linkedin_company  # noqa: E402,F401
 from app.models import linkedin_identity_link as _linkedin_identity_link  # noqa: E402,F401
 from app.models import linkedin_profile as _linkedin_profile  # noqa: E402,F401
+from app.models import personalization_policy as _personalization_policy  # noqa: E402,F401
 from app.models import pipeline as _pipeline  # noqa: E402,F401
 from app.models import provenance as _provenance  # noqa: E402,F401
 from app.models import qa_evaluation as _qa_evaluation  # noqa: E402,F401

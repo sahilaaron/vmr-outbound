@@ -34,6 +34,8 @@ from app.services.companies import dossiers
 from app.services.imports.normalization import is_valid_email, normalize_email
 from app.services.insights import evidence as insights_evidence
 from app.services.insights.evidence import InsightError
+from app.services.personalization import generation as personalization_generation
+from app.services.personalization import policy as personalization_policy
 from app.services.resolution import store as resolution_store
 from app.services.seller import context as seller_context
 from app.services.seller.context import SellerContext
@@ -1016,8 +1018,9 @@ class PersonalizationAgentAdapter:
     Three things this Agent deliberately does not do. It does not approve
     anything — a ``DraftVersion`` carries no authority and the separate
     ``DraftApproval`` remains a human act. It does not personalize from anything
-    except insights that already passed the eligibility gate, so an unsourced
-    sentence cannot reach an email through this path. And it re-checks the
+    except context selected by the deterministic policy gate. Weak evidence is
+    omitted and may lead to a valid offering-led draft, so an unsourced prospect
+    claim cannot reach an email through this path. And it re-checks the
     suppression ledger immediately before drafting, because an entry added while
     the job waited in the queue must still stop it: writing to someone is what
     suppression exists to prevent, and drafting is the first step of writing.
@@ -1034,99 +1037,30 @@ class PersonalizationAgentAdapter:
         _live_or_blocked(context, "Personalization")
         session = context.session
         contact = context.contact
-
-        suppression = evaluate_suppression(
-            session, email=contact.email, domain=contact.company_domain
-        )
-        if suppression.blocked:
+        policy = personalization_policy.active_policy(session)
+        if policy is None:
             raise AgentBlocked(
-                "suppression",
-                suppression.blocked_reason or "The suppression ledger blocks this Contact.",
+                "personalization_policy_missing",
+                "No Personalization policy version is active. Activate one in Admin Agent Studio.",
             )
-
-        company = session.get(Company, contact.company_id) if contact.company_id else None
-        if company is None:
-            raise AgentBlocked(
-                "company_missing",
-                "Drafting needs the permanent Company the Company Agent resolves.",
-            )
-
-        eligible = [
-            insight
-            for insight in insights_evidence.list_for_company(session, company_id=company.id)
-            if insights_evidence.is_personalization_eligible(session, insight=insight)
-        ]
-        eligible.extend(
-            insight
-            for insight in insights_evidence.list_for_contact(session, contact_id=contact.id)
-            if insights_evidence.is_personalization_eligible(session, insight=insight)
-        )
-        if not eligible:
-            raise AgentBlocked(
-                "no_eligible_evidence",
-                "No insight has passed the personalization eligibility gate for this Contact, "
-                "so there is nothing specific to write about.",
-            )
-
-        allowed_ids = {str(insight.id) for insight in eligible}
-        evidence_block = "\n".join(
-            f"[{insight.id}] ({insight.kind.value}) {insight.claim}" for insight in eligible
-        )
-        seller = seller_context.assemble(session, campaign_id=context.campaign.id)
-
         settings = get_settings()
         thinker = self._thinker_factory(settings)
-        request = ThinkingRequest(
-            prompt=prompts.personalization_prompt(
-                seller_summary=_seller_summary(seller),
-                restricted_claims=_restricted_claims_block(seller),
-                evidence_block=evidence_block,
-                first_name=contact.first_name,
-                title=contact.title,
-                company_name=company.name,
-                max_words=int(context.config.get("max_words", 150)),
-            ),
-            purpose="email_personalization",
-            timeout_seconds=float(context.config.get("timeout_seconds", 240.0)),
-            allowed_tools=(),
-        )
         try:
-            answer = thinker.think(request)
+            generated = personalization_generation.generate(
+                session,
+                membership=context.membership,
+                policy=policy,
+                thinker=thinker,
+                max_words=int(context.config.get("max_words", 150)),
+                timeout_seconds=float(context.config.get("timeout_seconds", 240.0)),
+                purpose="email_personalization",
+            )
         except ThinkingError as exc:
             raise _translate_thinking_error(exc) from exc
-
-        subject = _text(answer.payload.get("subject"), limit=300)
-        body = _text(answer.payload.get("body"), limit=20000)
-        rationale = _text(answer.payload.get("rationale"), limit=2000)
-        if subject is None or body is None:
-            # The prompt explicitly permits this as an answer, and it is a
-            # better one than a generic email would have been.
-            raise AgentBlocked(
-                "evidence_too_thin",
-                rationale
-                or "The evidence was too thin to write anything specific, so no draft was made.",
-            )
-
-        cited_raw = answer.payload.get("evidence_insight_ids")
-        cited = [
-            value
-            for value in (cited_raw if isinstance(cited_raw, list) else [])
-            if isinstance(value, str) and value in allowed_ids
-        ]
-        invented = [
-            value
-            for value in (cited_raw if isinstance(cited_raw, list) else [])
-            if isinstance(value, str) and value not in allowed_ids
-        ]
-        if invented:
-            # A citation to something that was never supplied means the draft is
-            # not traceable to its evidence, which is the one property that makes
-            # it reviewable at all.
-            raise AgentTerminalError(
-                "citation_not_supplied",
-                "The draft cited evidence that was never supplied to it.",
-                detail={"invented_ids": invented[:10]},
-            )
+        except personalization_generation.PreviewError as exc:
+            if exc.code == "citation_not_supplied":
+                raise AgentTerminalError(exc.code, str(exc)) from exc
+            raise AgentBlocked(exc.code, str(exc)) from exc
 
         next_number = (
             session.scalar(
@@ -1141,10 +1075,15 @@ class PersonalizationAgentAdapter:
             contact_id=contact.id,
             campaign_id=context.campaign.id,
             version_number=next_number,
-            subject=subject,
-            body=body,
-            rationale=rationale,
-            created_by=f"{answer.producer}/{answer.producer_version}",
+            subject=generated.subject,
+            body=generated.body,
+            rationale=generated.rationale,
+            personalization_policy_version_id=generated.policy_version_id,
+            personalization_strategy_id=generated.strategy_id,
+            personalization_decision=generated.decision.summary(),
+            producer=generated.producer,
+            producer_version=generated.producer_version,
+            created_by=f"{generated.producer}/{generated.producer_version}",
         )
         session.add(draft)
         session.flush()
@@ -1159,20 +1098,29 @@ class PersonalizationAgentAdapter:
             context={
                 "contact_id": str(contact.id),
                 "campaign_id": str(context.campaign.id),
-                "evidence_insight_ids": cited,
+                "evidence_insight_ids": list(generated.evidence_insight_ids),
+                "personalization_policy_version_id": str(generated.policy_version_id),
+                "personalization_policy_version_number": generated.policy_version_number,
+                "personalization_strategy_id": generated.strategy_id,
             },
         )
 
         output = {
             "draft_version_id": str(draft.id),
             "version_number": next_number,
-            "subject": subject,
-            "body": body,
-            "rationale": rationale,
-            "evidence_insight_ids": cited,
-            "evidence_supplied": len(eligible),
+            "subject": generated.subject,
+            "body": generated.body,
+            "rationale": generated.rationale,
+            "evidence_insight_ids": list(generated.evidence_insight_ids),
+            "evidence_supplied": len(generated.decision.used),
             "approved": False,
-            "producer": answer.producer,
+            "producer": generated.producer,
+            "producer_version": generated.producer_version,
+            "personalization_policy_version_id": str(generated.policy_version_id),
+            "personalization_policy_version_number": generated.policy_version_number,
+            "personalization_strategy_id": generated.strategy_id,
+            "personalization_decision": generated.decision.summary(),
+            "warnings": list(generated.warnings),
         }
         return AgentExecutionResult(
             outcome_committed=True,
