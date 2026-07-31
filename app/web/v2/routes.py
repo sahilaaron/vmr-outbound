@@ -991,12 +991,26 @@ def campaign_archive(
     There is no hard delete — enrolled contacts, drafts and audit history stay in
     place; archiving only turns execution off for good, the same guard already
     applied to any Campaign reaching ``ARCHIVED``.
+
+    Execution is turned off through :func:`apply_campaign_execution` rather than
+    left to ``update_campaign``'s own reconciliation — the same deadlock-safe,
+    batched control path the execution toggle uses, so archiving a Campaign with
+    many enrolled Contacts cannot deadlock or block a worker's lease the way an
+    unbatched reconcile could. ``apply_campaign_execution`` commits on its own;
+    the status transition that follows is a second, separate commit.
     """
 
     identifier = _uuid(campaign_id)
     if identifier is None:
         return _redirect("/app/campaigns", err="That is not a campaign id.")
     try:
+        campaign_service.apply_campaign_execution(
+            db,
+            identifier,
+            enabled=False,
+            actor=draft_service.OPERATOR_ACTOR,
+            reason="archived from the campaigns list",
+        )
         campaign = campaign_service.update_campaign(
             db,
             identifier,
