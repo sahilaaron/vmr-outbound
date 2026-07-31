@@ -8,13 +8,16 @@ here is transactional, validated, and audited; callers own the commit.
 from __future__ import annotations
 
 import json
+import random
+import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Final
+from typing import Any, Final, TypeVar
 
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from app.models.campaign import Campaign, CampaignContact
@@ -35,6 +38,11 @@ MAX_DESCRIPTION_LEN = 4_000
 MAX_DIRECTION_LEN = 8_000
 MAX_CTA_LEN = 2_000
 MAX_JSON_BYTES = 50_000
+CAMPAIGN_RECONCILE_BATCH_SIZE = 100
+DEADLOCK_RETRY_ATTEMPTS = 3
+POSTGRES_DEADLOCK_SQLSTATE = "40P01"
+
+T = TypeVar("T")
 
 _JSON_FIELDS: Final = frozenset(
     {
@@ -59,6 +67,14 @@ class CampaignError(Exception):
 
 class CampaignNotFound(CampaignError):
     """The requested Campaign does not exist."""
+
+
+class CampaignConcurrencyError(CampaignError):
+    """A Campaign control could not finish after bounded deadlock recovery."""
+
+
+class CampaignPersistenceError(CampaignError):
+    """A database failure that is safe to expose without its raw traceback."""
 
 
 class _Unset:
@@ -287,6 +303,7 @@ def _reconcile_campaign_controls(
     campaign_id: uuid.UUID,
     *,
     actor: str,
+    campaign_contact_ids: tuple[uuid.UUID, ...] = (),
 ) -> None:
     """Project the Campaign master switch onto durable Agent work."""
 
@@ -300,6 +317,7 @@ def _reconcile_campaign_controls(
         reconcile_agent_control(
             session,
             campaign_id=campaign_id,
+            campaign_contact_ids=campaign_contact_ids or None,
             agent_id=agent_id,
             actor=actor,
         )
@@ -312,15 +330,25 @@ def set_campaign_execution(
     enabled: bool,
     actor: str = "operator",
     reason: str | None = None,
+    reconcile: bool = True,
 ) -> Campaign:
-    """Enable or disable new Agent execution without deleting queued history."""
+    """Enable or disable new Agent execution without deleting queued history.
 
-    campaign = session.get(Campaign, campaign_id)
+    Callers that own a request transaction may pass ``reconcile=False`` and use
+    :func:`apply_campaign_execution` to commit the authoritative switch first,
+    then project it in bounded transactions.
+    """
+
+    campaign = session.scalars(
+        select(Campaign).where(Campaign.id == campaign_id).with_for_update()
+    ).one_or_none()
     if campaign is None:
         raise CampaignNotFound(f"campaign {campaign_id} does not exist")
     if enabled and campaign.status is CampaignStatus.ARCHIVED:
         raise CampaignError("an archived campaign cannot be enabled")
     if campaign.execution_enabled is enabled:
+        if reconcile:
+            _reconcile_campaign_controls(session, campaign.id, actor=actor)
         return campaign
 
     now = datetime.now(UTC)
@@ -335,6 +363,7 @@ def set_campaign_execution(
     else:
         campaign.disabled_at = now
         campaign.disabled_reason = reason or "disabled by operator"
+    campaign.settings_version += 1
     session.flush()
     record_audit_event(
         session,
@@ -346,7 +375,171 @@ def set_campaign_execution(
         new_state=str(enabled).lower(),
         reason=reason or ("campaign enabled" if enabled else "campaign disabled"),
     )
-    _reconcile_campaign_controls(session, campaign.id, actor=actor)
+    if reconcile:
+        _reconcile_campaign_controls(session, campaign.id, actor=actor)
+    return campaign
+
+
+def is_postgresql_deadlock(error: BaseException) -> bool:
+    """Return true only for PostgreSQL SQLSTATE ``40P01``.
+
+    SQLAlchemy, psycopg, and test doubles expose the state on slightly different
+    objects.  Walking only the explicit DBAPI/cause chain keeps classification
+    narrow; message text is intentionally ignored.
+    """
+
+    pending: list[BaseException | object] = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        identity = id(current)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        sqlstate = getattr(current, "sqlstate", None) or getattr(current, "pgcode", None)
+        diagnostic = getattr(current, "diag", None)
+        if (
+            sqlstate == POSTGRES_DEADLOCK_SQLSTATE
+            or getattr(diagnostic, "sqlstate", None) == POSTGRES_DEADLOCK_SQLSTATE
+        ):
+            return True
+        for attribute in ("orig", "__cause__", "__context__"):
+            nested = getattr(current, attribute, None)
+            if nested is not None:
+                pending.append(nested)
+    return False
+
+
+def _commit_with_deadlock_retry(
+    session: Session,
+    operation: Callable[[], T],
+    *,
+    attempts: int = DEADLOCK_RETRY_ATTEMPTS,
+    sleep: Callable[[float], None] = time.sleep,
+    jitter: Callable[[float, float], float] = random.uniform,
+) -> T:
+    """Run and commit one bounded transaction with narrow deadlock recovery."""
+
+    if attempts < 1:
+        raise ValueError("deadlock retry attempts must be positive")
+    for attempt in range(1, attempts + 1):
+        try:
+            result = operation()
+            session.commit()
+            return result
+        except OperationalError as exc:
+            session.rollback()
+            if not is_postgresql_deadlock(exc):
+                raise CampaignPersistenceError(
+                    "The Campaign control could not be saved because the database operation "
+                    "failed. Nothing was retried automatically."
+                ) from exc
+            if attempt >= attempts:
+                raise CampaignConcurrencyError(
+                    "The Campaign control could not finish because concurrent database work "
+                    "kept colliding. Try the operation again."
+                ) from exc
+            # Tens of milliseconds are enough to stop the same requests from
+            # immediately choosing the same victim again without making the button
+            # feel unresponsive.
+            sleep(jitter(0.02 * attempt, 0.05 * attempt))
+        except Exception:
+            session.rollback()
+            raise
+    raise AssertionError("deadlock retry loop did not return or raise")
+
+
+@dataclass(frozen=True)
+class _ReconcileBatch:
+    cursor: uuid.UUID | None
+    done: bool
+    superseded: bool = False
+
+
+def apply_campaign_execution(
+    session: Session,
+    campaign_id: uuid.UUID,
+    *,
+    enabled: bool,
+    actor: str = "operator",
+    reason: str | None = None,
+    batch_size: int = CAMPAIGN_RECONCILE_BATCH_SIZE,
+    retry_attempts: int = DEADLOCK_RETRY_ATTEMPTS,
+    sleep: Callable[[float], None] = time.sleep,
+    jitter: Callable[[float, float], float] = random.uniform,
+) -> Campaign:
+    """Commit the master switch, then reconcile bounded Contact batches.
+
+    Once the first transaction commits, worker lease eligibility reads the master
+    switch directly.  Projection can therefore use short transactions without a
+    window in which a worker may lease prohibited work.  A newer Pause/Resume
+    version supersedes older remaining batches; the newer request converges every
+    row to the latest effective control.
+    """
+
+    safe_batch_size = max(1, min(batch_size, 500))
+
+    def switch() -> int:
+        campaign = set_campaign_execution(
+            session,
+            campaign_id,
+            enabled=enabled,
+            actor=actor,
+            reason=reason,
+            reconcile=False,
+        )
+        return campaign.settings_version
+
+    version = _commit_with_deadlock_retry(
+        session,
+        switch,
+        attempts=retry_attempts,
+        sleep=sleep,
+        jitter=jitter,
+    )
+    cursor: uuid.UUID | None = None
+    while True:
+
+        def reconcile_batch(batch_cursor: uuid.UUID | None = cursor) -> _ReconcileBatch:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise CampaignNotFound(f"campaign {campaign_id} does not exist")
+            if campaign.settings_version != version or campaign.execution_enabled is not enabled:
+                return _ReconcileBatch(cursor=batch_cursor, done=True, superseded=True)
+            statement = select(CampaignContact.id).where(CampaignContact.campaign_id == campaign_id)
+            if batch_cursor is not None:
+                statement = statement.where(CampaignContact.id > batch_cursor)
+            identifiers = tuple(
+                session.scalars(statement.order_by(CampaignContact.id).limit(safe_batch_size)).all()
+            )
+            if not identifiers:
+                return _ReconcileBatch(cursor=batch_cursor, done=True)
+            _reconcile_campaign_controls(
+                session,
+                campaign_id,
+                actor=actor,
+                campaign_contact_ids=identifiers,
+            )
+            return _ReconcileBatch(
+                cursor=identifiers[-1],
+                done=len(identifiers) < safe_batch_size,
+            )
+
+        batch = _commit_with_deadlock_retry(
+            session,
+            reconcile_batch,
+            attempts=retry_attempts,
+            sleep=sleep,
+            jitter=jitter,
+        )
+        cursor = batch.cursor
+        if batch.done:
+            break
+
+    session.expire_all()
+    campaign = session.get(Campaign, campaign_id)
+    if campaign is None:  # pragma: no cover - protected by transaction/FK
+        raise CampaignNotFound(f"campaign {campaign_id} does not exist")
     return campaign
 
 

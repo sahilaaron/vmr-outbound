@@ -22,7 +22,7 @@ from app.models.enums import (
 from app.models.pipeline import CampaignContactAgentState, PipelineEvent
 from app.models.verification_job import AgentJob
 from app.services import campaign_contacts, campaigns, pipeline
-from app.services.agents import controls
+from app.services.agents import controls, locking
 from app.services.agents.adapters import (
     AgentExecutionContext,
     AgentExecutionResult,
@@ -288,9 +288,9 @@ def test_claim_running_and_domain_outcome_are_separate_durable_checkpoints(
 
     starter = Session(bind=engine, expire_on_commit=False)
     try:
-        leased = starter.scalars(
-            select(AgentJob).where(AgentJob.id == job_id).with_for_update()
-        ).one()
+        locked = locking.lock_job_context(starter, job_id)
+        assert locked is not None
+        leased = locked.job
         assert leased.status is AgentJobStatus.LEASED
         assert (
             prepare_leased_job(
@@ -316,9 +316,9 @@ def test_claim_running_and_domain_outcome_are_separate_durable_checkpoints(
 
     finisher = Session(bind=engine, expire_on_commit=False)
     try:
-        running = finisher.scalars(
-            select(AgentJob).where(AgentJob.id == job_id).with_for_update()
-        ).one()
+        locked = locking.lock_job_context(finisher, job_id)
+        assert locked is not None
+        running = locked.job
         completed = execute_started_job(
             finisher,
             job=running,
@@ -567,9 +567,9 @@ def test_pausing_a_campaign_does_not_skip_a_running_stage(db_session: Session) -
         reason="operator pressed pause",
     )
 
-    assert _research_state(db_session, enrolled) is PipelineStageStatus.DISABLED
-    assert _job_status(job) is AgentJobStatus.PAUSED
-    assert job.error_class == "agent_disabled"
+    assert _research_state(db_session, enrolled) is PipelineStageStatus.RUNNING
+    assert _job_status(job) is AgentJobStatus.IN_PROGRESS
+    assert job.lease_owner == "phase2-test"
     # The Contact is still standing at Research, not moved past it.
     assert enrolled.membership.next_stage is AgentIdentifier.RESEARCH
     snapshot = pipeline.pipeline_snapshot(db_session, campaign_contact_id=enrolled.membership.id)
@@ -585,7 +585,7 @@ def test_pausing_a_campaign_does_not_skip_a_running_stage(db_session: Session) -
 def test_resuming_a_campaign_continues_the_same_job_rather_than_a_second_one(
     db_session: Session,
 ) -> None:
-    """Resume returns the stage to where it was, and enqueues nothing new."""
+    """Resume leaves worker-owned Running work intact and enqueues nothing new."""
 
     campaign, _, contact = _records(db_session)
     enrolled, job = _research_in_flight(db_session, campaign, contact)
@@ -593,9 +593,10 @@ def test_resuming_a_campaign_continues_the_same_job_rather_than_a_second_one(
 
     campaigns.set_campaign_execution(db_session, campaign.id, enabled=True, reason="resume")
 
-    assert _research_state(db_session, enrolled) is PipelineStageStatus.WAITING
-    assert _job_status(job) is AgentJobStatus.PENDING
+    assert _research_state(db_session, enrolled) is PipelineStageStatus.RUNNING
+    assert _job_status(job) is AgentJobStatus.IN_PROGRESS
     assert job.error_class is None
+    assert job.lease_owner == "phase2-test"
     assert enrolled.membership.next_stage is AgentIdentifier.RESEARCH
     research_jobs = db_session.scalar(
         select(func.count(AgentJob.id)).where(
@@ -672,8 +673,9 @@ def test_disabling_one_agent_does_not_skip_its_running_stage_either(
         actor="test",
     )
 
-    assert _research_state(db_session, enrolled) is PipelineStageStatus.DISABLED
-    assert _job_status(job) is AgentJobStatus.PAUSED
+    assert _research_state(db_session, enrolled) is PipelineStageStatus.RUNNING
+    assert _job_status(job) is AgentJobStatus.IN_PROGRESS
+    assert job.lease_owner == "phase2-test"
     assert enrolled.membership.next_stage is AgentIdentifier.RESEARCH
 
 

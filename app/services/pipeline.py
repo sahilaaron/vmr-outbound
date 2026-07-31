@@ -402,6 +402,13 @@ def skip_current_stage(
 ) -> CampaignContactAgentState:
     """Deliberately skip the current non-blocked stage with durable history."""
 
+    from app.services.agents import locking
+
+    locked_membership = locking.lock_campaign_contact(session, membership.id)
+    if locked_membership is None:  # pragma: no cover - protected by caller/FK
+        raise PipelineStateError("the Campaign Contact no longer exists")
+    membership = locked_membership
+
     clean_reason = reason.strip()
     if not clean_reason:
         raise PipelineStateError("a reason is required to skip an Agent stage")

@@ -9,12 +9,18 @@ from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models.enums import AgentIdentifier, AgentJobStatus
+from app.models.campaign import Campaign, CampaignContact
+from app.models.enums import (
+    AgentIdentifier,
+    AgentJobStatus,
+    CampaignMembershipStatus,
+)
 from app.models.verification_job import AgentJob
+from app.services.agents import locking
 from app.services.audit import record_audit_event
 
 CLAIMABLE_STATUSES = (AgentJobStatus.PENDING, AgentJobStatus.RETRY_SCHEDULED)
@@ -24,6 +30,11 @@ TERMINAL_STATUSES = (
     AgentJobStatus.FAILED,
     AgentJobStatus.CANCELLED,
 )
+
+# A claim pass looks past rows temporarily held by other workers or a control
+# reconciliation.  This is a scan ceiling, not a work ceiling: the next poll starts
+# again immediately when all candidates are locked.
+CLAIM_SCAN_LIMIT = 64
 
 _PUBLIC_STATUS = {
     AgentJobStatus.PENDING: "queued",
@@ -265,7 +276,13 @@ def claim_next_job(
     recover_abandoned: bool = True,
     now: datetime | None = None,
 ) -> AgentJob | None:
-    """Atomically lease the highest-priority due job using ``SKIP LOCKED``."""
+    """Lease one due job using the shared Campaign Contact -> Agent Job order.
+
+    Candidate discovery is non-locking.  Each candidate is then revalidated after
+    its Campaign Contact and job rows are locked with ``SKIP LOCKED``.  This keeps
+    several workers independent while making the Campaign master switch part of
+    lease eligibility rather than relying on later reconciliation.
+    """
 
     clean_worker = worker_id.strip()
     if not clean_worker or len(clean_worker) > 100:
@@ -277,36 +294,128 @@ def claim_next_job(
     # separate scheduler. Exhausted abandoned work becomes FAILED; otherwise it
     # becomes due PENDING work while retaining a durable lease_expired marker.
     allowed = tuple(agent_ids or ())
+    recovered_ids: set[uuid.UUID] = set()
     if recover_abandoned:
-        recover_expired_leases(session, now=now, agent_ids=allowed or None)
+        recovered_ids = {
+            job.id
+            for job in recover_expired_leases(
+                session,
+                now=now,
+                agent_ids=allowed or None,
+                lock_claim_context=True,
+            )
+        }
     due = AgentJob.status.in_(CLAIMABLE_STATUSES) & (AgentJob.next_run_at <= now)
-    stmt = select(AgentJob).where(due)
+    effective_campaign_id = func.coalesce(
+        AgentJob.campaign_id,
+        CampaignContact.campaign_id,
+    )
+    stmt = (
+        select(
+            AgentJob.id,
+            effective_campaign_id.label("campaign_id"),
+            AgentJob.campaign_contact_id,
+            AgentJob.contact_id,
+            AgentJob.parent_job_id,
+        )
+        .outerjoin(
+            CampaignContact,
+            CampaignContact.id == AgentJob.campaign_contact_id,
+        )
+        .where(due)
+    )
     if allowed:
         stmt = stmt.where(AgentJob.agent_id.in_(allowed))
     if campaign_contact_only:
         stmt = stmt.where(AgentJob.campaign_contact_id.is_not(None))
-    stmt = (
-        stmt.order_by(
-            AgentJob.priority.desc(), AgentJob.next_run_at.asc(), AgentJob.created_at.asc()
+    if recovered_ids:
+        # Recovery already owns Campaign, Contact, membership and job locks. Do
+        # not reach into a different lock context in the same transaction.
+        stmt = stmt.where(AgentJob.id.in_(recovered_ids))
+    stmt = stmt.where(
+        or_(
+            effective_campaign_id.is_(None),
+            effective_campaign_id.in_(
+                select(Campaign.id).where(Campaign.execution_enabled.is_(True))
+            ),
         )
-        .limit(1)
-        .with_for_update(skip_locked=True)
     )
-    job = session.scalars(stmt).first()
-    if job is None:
-        return None
-    reclaimed = job.error_class == "lease_expired"
-    job.status = AgentJobStatus.LEASED
-    job.attempts += 1
-    job.lease_owner = clean_worker
-    job.lease_expires_at = now + timedelta(seconds=lease_seconds)
-    if not reclaimed:
-        job.error = None
-        job.error_class = None
-        job.last_error = None
-    session.flush()
-    job.__dict__["_reclaimed"] = reclaimed
-    return job
+    candidates = session.execute(
+        stmt.order_by(
+            AgentJob.priority.desc(),
+            AgentJob.next_run_at.asc(),
+            AgentJob.created_at.asc(),
+            AgentJob.id.asc(),
+        ).limit(CLAIM_SCAN_LIMIT)
+    ).all()
+    for candidate in candidates:
+        campaign = None
+        if candidate.campaign_id is not None:
+            gates = locking.lock_campaign_execution_gates(
+                session,
+                (candidate.campaign_id,),
+                skip_locked=True,
+            )
+            if not gates:
+                continue
+            campaign = gates[0]
+            if not campaign.execution_enabled:
+                continue
+        if candidate.contact_id is not None and not locking.lock_contacts(
+            session,
+            (candidate.contact_id,),
+            skip_locked=True,
+        ):
+            continue
+        if candidate.campaign_contact_id is not None:
+            membership = locking.lock_campaign_contact(
+                session,
+                candidate.campaign_contact_id,
+                skip_locked=True,
+            )
+            if membership is None:
+                continue
+            if (
+                campaign is None
+                or membership.campaign_id != campaign.id
+                or not campaign.execution_enabled
+                or membership.membership_status is not CampaignMembershipStatus.ACTIVE
+            ):
+                continue
+
+        related_ids = {candidate.id}
+        if candidate.parent_job_id is not None:
+            related_ids.add(candidate.parent_job_id)
+        locked = locking.lock_agent_jobs(
+            session,
+            select(AgentJob).where(AgentJob.id.in_(related_ids)),
+            skip_locked=True,
+        )
+        if len(locked) != len(related_ids):
+            continue
+        job = next((item for item in locked if item.id == candidate.id), None)
+        if job is None:
+            continue
+        if job.status not in CLAIMABLE_STATUSES or job.next_run_at > now:
+            continue
+        if allowed and job.agent_id not in allowed:
+            continue
+        if campaign_contact_only and job.campaign_contact_id is None:
+            continue
+
+        reclaimed = job.error_class == "lease_expired"
+        job.status = AgentJobStatus.LEASED
+        job.attempts += 1
+        job.lease_owner = clean_worker
+        job.lease_expires_at = now + timedelta(seconds=lease_seconds)
+        if not reclaimed:
+            job.error = None
+            job.error_class = None
+            job.last_error = None
+        session.flush()
+        job.__dict__["_reclaimed"] = reclaimed
+        return job
+    return None
 
 
 def claim_job(
@@ -331,11 +440,42 @@ def claim_job(
     if lease_seconds <= 0:
         raise AgentJobError("lease_seconds must be positive")
     now = now or _now()
-    job = session.scalars(
-        select(AgentJob).where(AgentJob.id == job_id).with_for_update(skip_locked=True)
+    reference = session.execute(
+        select(AgentJob.campaign_id, AgentJob.campaign_contact_id).where(AgentJob.id == job_id)
     ).one_or_none()
-    if job is None:
+    if reference is None:
         return None
+    campaign_id = reference.campaign_id
+    if campaign_id is None and reference.campaign_contact_id is not None:
+        campaign_id = session.scalar(
+            select(CampaignContact.campaign_id).where(
+                CampaignContact.id == reference.campaign_contact_id
+            )
+        )
+    campaign = None
+    if campaign_id is not None:
+        gates = locking.lock_campaign_execution_gates(
+            session,
+            (campaign_id,),
+            skip_locked=True,
+        )
+        if not gates:
+            return None
+        campaign = gates[0]
+        if not campaign.execution_enabled:
+            return None
+    context = locking.lock_job_context(session, job_id, skip_locked=True)
+    if context is None:
+        return None
+    job = context.job
+    if context.membership is not None:
+        if (
+            campaign is None
+            or context.membership.campaign_id != campaign.id
+            or not campaign.execution_enabled
+            or context.membership.membership_status is not CampaignMembershipStatus.ACTIVE
+        ):
+            return None
 
     reclaimed = False
     if (
@@ -599,20 +739,104 @@ def recover_expired_leases(
     *,
     now: datetime | None = None,
     agent_ids: Iterable[AgentIdentifier] | None = None,
+    lock_claim_context: bool = False,
 ) -> list[AgentJob]:
     """Make abandoned work resumable, respecting exhausted attempt limits."""
 
     now = now or _now()
-    statement = select(AgentJob).where(
+    conditions = (
         AgentJob.status.in_(LEASED_STATUSES),
         AgentJob.lease_expires_at.is_not(None),
         AgentJob.lease_expires_at < now,
     )
+    effective_campaign_id = func.coalesce(
+        AgentJob.campaign_id,
+        CampaignContact.campaign_id,
+    )
+    reference_statement = (
+        select(
+            AgentJob.id,
+            effective_campaign_id.label("campaign_id"),
+            AgentJob.campaign_contact_id,
+            AgentJob.contact_id,
+        )
+        .outerjoin(
+            CampaignContact,
+            CampaignContact.id == AgentJob.campaign_contact_id,
+        )
+        .where(*conditions)
+    )
     allowed = tuple(agent_ids or ())
     if allowed:
+        reference_statement = reference_statement.where(AgentJob.agent_id.in_(allowed))
+    references = session.execute(
+        reference_statement.order_by(
+            AgentJob.campaign_contact_id.asc().nulls_last(),
+            AgentJob.agent_id.asc(),
+            AgentJob.created_at.asc(),
+            AgentJob.id.asc(),
+        )
+    ).all()
+    locked_campaigns = locking.lock_campaign_execution_gates(
+        session,
+        (reference.campaign_id for reference in references if reference.campaign_id is not None),
+        skip_locked=True,
+    )
+    locked_campaign_ids = {campaign.id for campaign in locked_campaigns}
+    eligible_references = tuple(
+        reference
+        for reference in references
+        if reference.campaign_id is None or reference.campaign_id in locked_campaign_ids
+    )
+    locked_contacts = (
+        locking.lock_contacts(
+            session,
+            (
+                reference.contact_id
+                for reference in eligible_references
+                if reference.contact_id is not None
+            ),
+            skip_locked=True,
+        )
+        if lock_claim_context
+        else ()
+    )
+    locked_contact_ids = {contact.id for contact in locked_contacts}
+    locked_memberships = locking.lock_campaign_contacts(
+        session,
+        (
+            reference.campaign_contact_id
+            for reference in eligible_references
+            if reference.campaign_contact_id is not None
+            and (
+                not lock_claim_context
+                or reference.contact_id is None
+                or reference.contact_id in locked_contact_ids
+            )
+        ),
+        skip_locked=True,
+    )
+    locked_membership_ids = {membership.id for membership in locked_memberships}
+    eligible_job_ids = {
+        reference.id
+        for reference in eligible_references
+        if (
+            not lock_claim_context
+            or reference.contact_id is None
+            or reference.contact_id in locked_contact_ids
+        )
+        and (
+            reference.campaign_contact_id is None
+            or reference.campaign_contact_id in locked_membership_ids
+        )
+    }
+    if not eligible_job_ids:
+        return []
+    statement = select(AgentJob).where(AgentJob.id.in_(eligible_job_ids), *conditions)
+    if allowed:
         statement = statement.where(AgentJob.agent_id.in_(allowed))
-    jobs = list(session.scalars(statement.with_for_update(skip_locked=True)).all())
-    for job in jobs:
+    recovered = list(locking.lock_agent_jobs(session, statement, skip_locked=True))
+    for job in recovered:
         job.lease_owner = None
         job.lease_expires_at = None
         job.last_error = "reclaimed after worker lease expired"
@@ -628,9 +852,9 @@ def recover_expired_leases(
         else:
             job.status = AgentJobStatus.PENDING
             job.next_run_at = now
-    if jobs:
+    if recovered:
         session.flush()
-    return jobs
+    return recovered
 
 
 def _jobs_for_membership(
@@ -639,15 +863,19 @@ def _jobs_for_membership(
     campaign_contact_id: uuid.UUID,
     statuses: tuple[AgentJobStatus, ...],
 ) -> list[AgentJob]:
+    # Re-locking an already-owned row is harmless; doing it here makes these
+    # lifecycle helpers safe when called directly as well as through the Campaign
+    # Contact service.
+    if locking.lock_campaign_contact(session, campaign_contact_id) is None:
+        return []
     return list(
-        session.scalars(
-            select(AgentJob)
-            .where(
+        locking.lock_agent_jobs(
+            session,
+            select(AgentJob).where(
                 AgentJob.campaign_contact_id == campaign_contact_id,
                 AgentJob.status.in_(statuses),
-            )
-            .with_for_update()
-        ).all()
+            ),
+        )
     )
 
 
@@ -767,18 +995,19 @@ def cancel_jobs_for_stage(
 ) -> list[AgentJob]:
     """Cancel non-terminal work for one deliberately skipped Agent stage."""
 
+    if locking.lock_campaign_contact(session, campaign_contact_id) is None:
+        return []
     stage_jobs = list(
-        session.scalars(
-            select(AgentJob)
-            .where(
+        locking.lock_agent_jobs(
+            session,
+            select(AgentJob).where(
                 AgentJob.campaign_contact_id == campaign_contact_id,
                 AgentJob.agent_id == agent_id,
                 AgentJob.status.in_(
                     CLAIMABLE_STATUSES + LEASED_STATUSES + (AgentJobStatus.PAUSED,)
                 ),
-            )
-            .with_for_update()
-        ).all()
+            ),
+        )
     )
     now = _now()
     for job in stage_jobs:
@@ -818,9 +1047,10 @@ def retry_failed_job(
     actor: str = "operator",
     now: datetime | None = None,
 ) -> AgentJob:
-    job = session.get(AgentJob, job_id)
-    if job is None:
+    context = locking.lock_job_context(session, job_id)
+    if context is None:
         raise AgentJobNotFound(f"job {job_id} does not exist")
+    job = context.job
     if job.status is not AgentJobStatus.FAILED:
         raise AgentJobError("only a failed job can be retried")
     if not bool((job.error or {}).get("retryable", False)):

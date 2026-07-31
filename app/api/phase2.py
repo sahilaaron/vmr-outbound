@@ -376,7 +376,7 @@ def update_campaign_execution(
     db: DbSession,
 ) -> dict[str, Any]:
     try:
-        campaign = campaigns.set_campaign_execution(
+        campaign = campaigns.apply_campaign_execution(
             db,
             campaign_id,
             enabled=payload.enabled,
