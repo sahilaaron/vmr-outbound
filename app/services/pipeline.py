@@ -97,6 +97,19 @@ _ALLOWED: dict[PipelineStageStatus, frozenset[PipelineStageStatus]] = {
 }
 
 
+def can_transition(previous: PipelineStageStatus, target: PipelineStageStatus) -> bool:
+    """Whether the durable stage machine permits this move.
+
+    ``transition_stage`` raises on an illegal move, which is right when the target
+    is dictated by something that already happened. A caller that *chooses* a
+    target — a control projecting itself onto whatever state it finds — asks first
+    instead, so an illegal move becomes a different legal projection rather than
+    an exception an operator meets as a 500.
+    """
+
+    return target in _ALLOWED[previous]
+
+
 def agent_state(
     session: Session,
     *,
@@ -388,6 +401,13 @@ def skip_current_stage(
     actor: str = "operator",
 ) -> CampaignContactAgentState:
     """Deliberately skip the current non-blocked stage with durable history."""
+
+    from app.services.agents import locking
+
+    locked_membership = locking.lock_campaign_contact(session, membership.id)
+    if locked_membership is None:  # pragma: no cover - protected by caller/FK
+        raise PipelineStateError("the Campaign Contact no longer exists")
+    membership = locked_membership
 
     clean_reason = reason.strip()
     if not clean_reason:

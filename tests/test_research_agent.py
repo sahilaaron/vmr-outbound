@@ -492,6 +492,124 @@ def test_a_thin_result_reads_as_thin_rather_than_as_nothing(db_session: Session)
     assert view.research.dossier_version == 1, "a thin dossier is still a stored dossier"
 
 
+# --- when the Agent itself is broken ------------------------------------------
+
+
+def test_an_unexpected_exception_names_itself(db_session: Session) -> None:
+    """A defect must be identifiable from the worker log alone.
+
+    This is the shared framework's catch-all, tested here because Research is where
+    it bit: a Claude CLI encoding fault escaped the thinking seam untranslated, and
+    every affected contact produced the same message with no type in it. A worker log
+    of a hundred identical lines, with the one distinguishing fact reachable only by
+    querying the database, is not an observable system.
+
+    The exception's own *message* is still withheld — it is unsanitized and can carry
+    a path or a prompt fragment — but the type is named, and the type is what turns
+    "something broke" into a thing you can search for.
+    """
+
+    class BrokenAdapter:
+        agent_id = AgentIdentifier.RESEARCH
+
+        def execute(self, context: object) -> None:
+            raise ZeroDivisionError("a defect, not a data problem")
+
+    membership, job = _setup(db_session, FakeWorker())
+    merged = dict(DEFAULT_ADAPTERS)
+    merged[AgentIdentifier.RESEARCH] = BrokenAdapter()  # type: ignore[assignment]
+
+    outcome = run_next(db_session, worker_id=WORKER, adapters=merged)  # type: ignore[arg-type]
+
+    assert outcome is not None
+    assert "ZeroDivisionError" in (outcome.message or "")
+    db_session.refresh(job)
+    assert job.error_class == "unexpected_error"
+    assert (job.error or {}).get("detail", {}).get("exception_type") == "ZeroDivisionError"
+
+
+def test_a_missing_import_names_the_module_it_could_not_find(db_session: Session) -> None:
+    """The type alone is not a diagnosis for this one exception.
+
+    A UAT run produced two hundred consecutive Research failures reading only
+    "unexpected operational error (ModuleNotFoundError)". Every line identical, and
+    the fact that identifies the cause — *which* module — recorded nowhere. It is
+    the difference between "something is unimportable" and a name that points
+    straight at the subtree and the install that produced it.
+
+    The module name is admitted where the exception's own message still is not,
+    and the distinction is deliberate: a dotted import path carries no filesystem
+    path, no prompt fragment and no credential.
+    """
+
+    class MissingDependencyAdapter:
+        agent_id = AgentIdentifier.RESEARCH
+
+        def execute(self, context: object) -> None:
+            raise ModuleNotFoundError(
+                "No module named 'app.services.research.website'",
+                name="app.services.research.website",
+            )
+
+    membership, job = _setup(db_session, FakeWorker())
+    merged = dict(DEFAULT_ADAPTERS)
+    merged[AgentIdentifier.RESEARCH] = MissingDependencyAdapter()  # type: ignore[assignment]
+
+    outcome = run_next(db_session, worker_id=WORKER, adapters=merged)  # type: ignore[arg-type]
+
+    assert outcome is not None
+    assert "ModuleNotFoundError" in (outcome.message or "")
+    assert "app.services.research.website" in (outcome.message or ""), (
+        "the missing module name is the entire diagnostic value of this exception"
+    )
+    db_session.refresh(job)
+    detail = (job.error or {}).get("detail", {})
+    assert detail.get("missing_module") == "app.services.research.website"
+
+
+def test_an_exception_with_no_module_name_is_unchanged(db_session: Session) -> None:
+    """The extra field appears only where it means something.
+
+    A plain exception must not acquire an empty ``missing_module`` key, which would
+    make a database query for real import failures return every failure there is.
+    """
+
+    class BrokenAdapter:
+        agent_id = AgentIdentifier.RESEARCH
+
+        def execute(self, context: object) -> None:
+            raise ValueError("nothing to do with imports")
+
+    membership, job = _setup(db_session, FakeWorker())
+    merged = dict(DEFAULT_ADAPTERS)
+    merged[AgentIdentifier.RESEARCH] = BrokenAdapter()  # type: ignore[assignment]
+
+    run_next(db_session, worker_id=WORKER, adapters=merged)  # type: ignore[arg-type]
+
+    db_session.refresh(job)
+    assert "missing_module" not in (job.error or {}).get("detail", {})
+
+
+def test_the_research_package_is_not_a_namespace_package() -> None:
+    """A namespace package can be assembled from more than one checkout.
+
+    ``app/services/research`` was the only Python package under ``app/`` without an
+    ``__init__.py``, so it was the only subtree whose ``__path__`` could be built
+    from every matching directory on ``sys.path``. Share one ``.venv`` between a
+    worktree and the original checkout — the normal way to run a UAT branch — and
+    which files load depends on path order.
+
+    Asserted on ``__file__`` because that is precisely what a namespace package
+    does not have.
+    """
+
+    import app.services.research as research_pkg
+
+    assert getattr(research_pkg, "__file__", None) is not None, (
+        "app.services.research has become a namespace package again; add __init__.py"
+    )
+
+
 # --- idempotency -------------------------------------------------------------
 
 

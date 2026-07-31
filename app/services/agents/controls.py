@@ -19,6 +19,13 @@ from app.services.audit import record_audit_event
 
 MAX_CONFIG_BYTES = 25_000
 
+#: ``EffectiveAgentControl.source`` when the Campaign's master execution switch —
+#: the operator-facing "Pause campaign" — is what turned the Agent off. It is
+#: named because callers must be able to tell that disable apart from a
+#: configured one: it is temporary and reversible, and nothing may treat it as a
+#: standing decision that this Campaign does not use the stage.
+CAMPAIGN_EXECUTION_SOURCE: Final = "campaign_execution"
+
 
 class AgentControlError(Exception):
     """Safe operator-facing control validation error."""
@@ -288,7 +295,7 @@ def effective_control(
 
     if not campaign.execution_enabled and agent_id is not AgentIdentifier.CAPTURE:
         base_status = AgentControlStatus.DISABLED
-        source = "campaign_execution"
+        source = CAMPAIGN_EXECUTION_SOURCE
         reason = campaign.disabled_reason or "Campaign execution is disabled"
     elif not spec.implemented and base_status is AgentControlStatus.ENABLED:
         base_status = AgentControlStatus.DISABLED

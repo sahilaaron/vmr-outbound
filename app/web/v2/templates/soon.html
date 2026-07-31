@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% from "_ui.html" import soon %}
+{% block content %}
+{#
+  A future-feature surface. The design shows these screens, so the shape is kept —
+  but every figure is absent rather than filled in, because nothing behind them
+  exists. This page has no form, no action and no number.
+#}
+<div class="v2-page narrow">
+  <h1 class="v2-h1">{{ spec.title }}</h1>
+  {{ soon('', spec.lede, spec.tiles, spec.note) }}
+  <div class="v2-btn-row v2-page-actions">
+    <a class="v2-btn primary" href="/app/review">What you can do today: review drafts</a>
+    <a class="v2-btn" href="/app/campaigns">Watch the pipeline</a>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% from "_ui.html" import tag, dot, empty %}
+{% block content %}
+<div class="v2-page narrow">
+  <h1 class="v2-h1">Capture</h1>
+  <p class="v2-lede">
+    Capturing happens in the browser extension, over a Sales Navigator or LinkedIn page you already
+    have open. This page is what the system knows about it: whether the intake is accepting
+    submissions, what has arrived, and what is waiting to be resolved.
+  </p>
+
+  <div class="v2-capture-row">
+    <div class="v2-capture-panel">
+      <div class="v2-capture-brand">
+        <img src="{{ url_for('static', path='vmr-mark.svg') }}" alt="VMR" class="v2-capture-mark">
+        <b>VMR Capture</b>
+        <span class="v2-capture-state">
+          {% if intake_on %}<span class="v2-dot ok live"></span>Intake open
+          {% else %}<span class="v2-dot err"></span>Intake closed{% endif %}
+        </span>
+      </div>
+      <div>
+        <div class="v2-eyebrow">File into campaign</div>
+        <div class="v2-note v2-mt-sm">
+          {% if campaigns %}
+            {{ campaigns | length }} campaign{{ '' if campaigns | length == 1 else 's' }} available in
+            the panel's picker.
+          {% else %}
+            No campaign exists yet, so a capture will arrive unfiled.
+          {% endif %}
+        </div>
+        <div class="v2-hint">Optional. Without a campaign the person is still captured permanently.</div>
+      </div>
+      <div>
+        <div class="v2-eyebrow">Labels</div>
+        {% if labels %}
+        <div class="v2-pillset v2-mt-sm">
+          {% for label in labels %}<span class="v2-entry">{{ label.name }}</span>{% endfor %}
+        </div>
+        {% else %}
+        <div class="v2-note v2-mt-sm">No label has been created yet.</div>
+        {% endif %}
+      </div>
+      <div>
+        <div class="v2-eyebrow">Waiting to be resolved</div>
+        <div class="v2-note v2-mt-sm">
+          {% if promotion_on %}
+            {{ pending | length }} capture{{ '' if pending | length == 1 else 's' }} have not yet
+            become a permanent contact.
+          {% else %}
+            Promotion is switched off, so captures stay as snapshots.
+          {% endif %}
+        </div>
+        {% if unresolved %}
+        <div class="v2-hint">{{ unresolved }} still have no company website, so no address can be built for them.</div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="v2-capture-rules">
+      <h2 class="v2-card-title">Rules the panel follows</h2>
+      <div>A person is captured whether or not a campaign is selected. The campaign is filing, not permission.</div>
+      <div>Capturing someone twice does not create a second person — the second capture updates the first.</div>
+      <div>The panel only reads pages you have open. It never navigates, scrolls or clicks on your behalf.</div>
+      <div>The original snapshot is stored verbatim and never edited, so any derived value can be checked against what was on the page.</div>
+      <div>Someone who cannot be resolved is still captured permanently. They wait for a decision rather than being discarded.</div>
+    </div>
+  </div>
+
+  {% if pending %}
+  <h2 class="v2-section-title">Captures waiting on a company</h2>
+  <div class="v2-card clip">
+    <div class="v2-table-wrap">
+      <table>
+        <thead><tr><th>Capture</th><th>Company as captured</th><th>Arrived</th><th></th></tr></thead>
+        <tbody>
+          {% for snapshot in pending %}
+          <tr>
+            <td>
+              <div>{{ (snapshot.profile_fields or {}).get('full_name') or 'no name read' }}</div>
+              <div class="v2-sub">{{ (snapshot.profile_fields or {}).get('headline') or '' }}</div>
+            </td>
+            <td class="v2-note">{{ (snapshot.profile_fields or {}).get('company_name') or 'none read' }}</td>
+            <td class="m v2-nowrap">{{ snapshot.ingested_at | ago }}</td>
+            <td class="num"><a class="v2-btn small" href="/contact-captures/{{ snapshot.id }}">Resolve in admin</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="v2-card-foot plain">
+      Resolving a company is where a domain decision is made and kept, together with the candidates
+      that were rejected and why. That is why it lives in one place rather than on every screen.
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="v2-btn-row v2-page-actions">
+    <a class="v2-btn" href="/app/contacts">Browse what has been captured</a>
+    <a class="v2-btn" href="/contact-captures/pending">Open the resolution queue</a>
+  </div>
+</div>
+{% endblock %}

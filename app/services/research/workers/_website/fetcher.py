@@ -14,6 +14,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import socket
+import ssl
 import time
 from collections.abc import Callable
 from typing import Optional
@@ -37,11 +38,114 @@ TEXTUAL_CONTENT_TYPES = HTML_CONTENT_TYPES + (
 REDIRECT_STATUS = {301, 302, 303, 307, 308}
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
+# A rejected certificate is a decision the peer's configuration has already
+# made: the same handshake will fail identically every time, so retrying only
+# spends the budget. Verification is never relaxed to get past one of these.
+_CERTIFICATE_MARKERS = (
+    "certificate verify failed",
+    "certificate_verify_failed",
+    "self signed certificate",
+    "self-signed certificate",
+    "unable to get local issuer certificate",
+    "certificate has expired",
+    "certificate is not valid",
+    "hostname mismatch",
+    "doesn't match either of",
+)
+
+# A handshake that dies partway is not a statement about the certificate. It
+# is what a loaded, rate-limiting or fingerprint-filtering front end looks
+# like, and it can succeed on the next attempt -- so it earns the ordinary
+# bounded retry rather than an immediate stop.
+_HANDSHAKE_TRUNCATION_MARKERS = (
+    "unexpected_eof_while_reading",
+    "eof occurred in violation of protocol",
+    "unexpected eof",
+    "connection reset by peer",
+    "bad record mac",
+    "decryption failed",
+    "record layer failure",
+)
+
+TLS_CERTIFICATE = "tls_certificate"
+TLS_HANDSHAKE = "tls_handshake"
+TLS_PROTOCOL = "tls_protocol"
+HOST_POLICY_DEFERRAL = "host_policy_deferral"
+UNSAFE_TARGET = "unsafe_target"
+
 Resolver = Callable[[str, int], tuple[str, ...]]
 
 
 class UnsafeTargetError(ValueError):
     """A URL would connect outside the public Internet boundary."""
+
+
+class HostPolicyDeferral(UnsafeTargetError):
+    """A redirect to the apex/www twin of the requested host.
+
+    Refused for the same reason as any other cross-host redirect: this request
+    is being made under the robots policy of the host that was asked for, and
+    the twin's policy has not been read. It is separated from the general case
+    only so it can be reported as the routine deferral it is -- the collector
+    goes on to load that host's policy and try again through its variant loop,
+    which is a normal step rather than the crawl failure the shared wording
+    made it look like.
+    """
+
+
+def _ssl_cause(exc: BaseException) -> Optional[ssl.SSLError]:
+    """Find an SSLError anywhere in the raised exception's chain."""
+    seen: set[int] = set()
+    current: Optional[BaseException] = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, ssl.SSLError):
+            return current
+        current = current.__cause__ or current.__context__
+    return None
+
+
+def classify_tls_failure(exc: BaseException) -> Optional[tuple[str, str, bool]]:
+    """Classify a connection failure as a TLS fault.
+
+    Returns ``(error_kind, operator wording, retryable)``, or None when the
+    failure was not TLS at all. Replaces a string match on "ssl" that labelled
+    every one of these a "TLS certificate error" -- including a truncated
+    handshake, which sends the reader to inspect a certificate that is fine.
+    """
+    cause = _ssl_cause(exc)
+    text = str(cause if cause is not None else exc).lower()
+    if cause is None and "ssl" not in text and "certificate" not in text:
+        return None
+    if isinstance(cause, ssl.SSLCertVerificationError) or any(
+        marker in text for marker in _CERTIFICATE_MARKERS
+    ):
+        return TLS_CERTIFICATE, "TLS certificate error", False
+    if any(marker in text for marker in _HANDSHAKE_TRUNCATION_MARKERS):
+        return TLS_HANDSHAKE, "TLS handshake closed by the peer before completion", True
+    return TLS_PROTOCOL, "TLS protocol error", True
+
+
+def _is_apex_www_twin(one: str, other: str) -> bool:
+    """True when two hosts differ only by a leading ``www.``."""
+    return one != other and one.removeprefix("www.") == other.removeprefix("www.")
+
+
+def _redirect_refusal(requested_host: str, target_host: str) -> UnsafeTargetError:
+    """The refusal to raise for a redirect that leaves the requested host.
+
+    Every cross-host redirect is refused; this only chooses how it is
+    described. The apex/www twin is the ordinary case the collector already
+    knows how to finish, so it is not worded as a failure.
+    """
+    if _is_apex_www_twin(requested_host, target_host):
+        return HostPolicyDeferral(
+            f"{requested_host} redirects to {target_host}; not following it under "
+            f"{requested_host}'s robots policy, {target_host}'s will be loaded first"
+        )
+    return UnsafeTargetError(
+        f"cross-host redirect from {requested_host} to {target_host} is not allowed"
+    )
 
 
 def _system_resolver(host: str, port: int) -> tuple[str, ...]:
@@ -85,6 +189,7 @@ class HttpFetcher:
     def fetch(self, url: str, expect_html: bool = True) -> FetchResult:
         """GET a URL with retries; returns a FetchResult, never raises."""
         last_error: Optional[str] = None
+        last_kind: Optional[str] = None
         for attempt in range(self.cfg.max_retries + 1):
             try:
                 result = self._fetch_once(url, expect_html)
@@ -93,27 +198,45 @@ class HttpFetcher:
                     time.sleep(min(2**attempt, 8))
                     continue
                 return result
+            except HostPolicyDeferral as exc:
+                last_error = str(exc)
+                last_kind = HOST_POLICY_DEFERRAL
+                break
             except UnsafeTargetError as exc:
                 last_error = f"unsafe target: {exc}"
+                last_kind = UNSAFE_TARGET
                 break
             except httpx.TimeoutException:
                 last_error = "timeout"
+                last_kind = None
             except httpx.TooManyRedirects:
                 last_error = "too many redirects"
+                last_kind = None
                 break
             except httpx.ConnectError as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
-                msg = str(exc).lower()
-                if "certificate" in msg or "ssl" in msg:
-                    last_error = f"TLS certificate error: {exc}"
-                    break
+                last_kind = None
+                classified = classify_tls_failure(exc)
+                if classified is not None:
+                    last_kind, wording, retryable = classified
+                    last_error = f"{wording}: {exc}"
+                    if not retryable:
+                        break
+                    # Falls through to the shared bounded retry below; the
+                    # global attempt and timeout budget is unchanged.
             except httpx.HTTPError as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
+                last_kind = None
             except Exception as exc:  # defensive: fetching must never crash a job
                 last_error = f"{type(exc).__name__}: {exc}"
+                last_kind = None
             if attempt < self.cfg.max_retries:
                 time.sleep(min(2**attempt, 8))
-        log.warning("fetch failed %s: %s", url, last_error)
+        if last_kind == HOST_POLICY_DEFERRAL:
+            # Expected, and about to be handled: not a crawl failure.
+            log.info("deferred %s: %s", url, last_error)
+        else:
+            log.warning("fetch failed %s: %s", url, last_error)
         return FetchResult(
             requested_url=url,
             final_url=url,
@@ -122,6 +245,7 @@ class HttpFetcher:
             method="http",
             error=last_error,
             fetched_at=utcnow_iso(),
+            error_kind=last_kind,
         )
 
     def _validate_target(self, url: str) -> tuple[str, int]:
@@ -168,9 +292,7 @@ class HttpFetcher:
         for redirect_count in range(self.cfg.max_redirects + 1):
             current_host, _ = self._validate_target(current_url)
             if current_host != requested_host:
-                raise UnsafeTargetError(
-                    f"cross-host redirect from {requested_host} to {current_host} is not allowed"
-                )
+                raise _redirect_refusal(requested_host, current_host)
 
             with self.client.stream("GET", current_url) as resp:
                 if resp.status_code in REDIRECT_STATUS:
@@ -192,9 +314,7 @@ class HttpFetcher:
                     next_url = urljoin(str(resp.url), location)
                     next_host, _ = self._validate_target(next_url)
                     if next_host != requested_host:
-                        raise UnsafeTargetError(
-                            f"cross-host redirect from {requested_host} to {next_host} is not allowed"
-                        )
+                        raise _redirect_refusal(requested_host, next_host)
                     current_url = next_url
                     continue
 
@@ -245,9 +365,11 @@ class HttpFetcher:
             )
         chunks: list[bytes] = []
         size = 0
+        truncated = False
         for chunk in resp.iter_bytes(chunk_size=65536):
             size += len(chunk)
             if size > self.max_bytes:
+                truncated = True
                 warnings.append(f"response truncated at {self.max_bytes} bytes")
                 break
             chunks.append(chunk)
@@ -267,6 +389,7 @@ class HttpFetcher:
             content_type=ctype,
             html=html,
             warnings=warnings,
+            truncated=truncated,
         )
 
 

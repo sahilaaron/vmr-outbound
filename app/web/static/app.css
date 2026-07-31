@@ -354,6 +354,30 @@ textarea { min-height: 76px; resize: vertical; }
 .notice.warn { border-left-color: var(--warn); background: var(--warn-soft); }
 .notice.info { border-left-color: var(--info); background: var(--info-soft); }
 .notice strong { font-weight: 650; }
+/* `.notice` is flex because the common case is one line beside an icon. A notice
+   that is a paragraph, a list and a closing sentence needs those stacked — as flex
+   children they lay out as narrow side-by-side columns, which is unreadable. */
+.notice.stacked { display: block; }
+.notice.stacked > p { margin: 0 0 6px; }
+.notice.stacked > p:last-child { margin-bottom: 0; margin-top: 8px; }
+/* Tightened because the list is the substance of the message, not an aside from
+   it, so it should not read as a separate block floating below the sentence that
+   introduces it. */
+.notice ul.tight { margin: 6px 0 0; padding-left: 20px; }
+.notice ul.tight > li + li { margin-top: 8px; }
+/* An .env line to copy. `nowrap` because a variable name broken across two lines
+   is a name nobody can retype correctly, and this is the one thing on the panel
+   the reader has to reproduce exactly. */
+.notice code.setting {
+  display: inline-block;
+  margin-top: 3px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-size: 12px;
+  white-space: nowrap;
+}
 
 /* ---- Empty states -------------------------------------------------------- */
 
@@ -741,3 +765,16 @@ summary.small:hover {
 }
 
 .live-toggle[data-state="off"] { opacity: 0.8; }
+
+/* ---- Way back to the customer-facing interface (the default experience) ---- */
+.rail-exit {
+  display: block;
+  margin-bottom: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--rail-text-strong);
+  text-decoration: none;
+}
+.rail-exit:hover {
+  text-decoration: underline;
+}

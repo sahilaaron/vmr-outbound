@@ -1,0 +1,426 @@
+{% extends "base.html" %}
+{% from "_ui.html" import stat, stat_unbuilt, tag, unbuilt, dot, campaign_state, stage_status, stage_tone, control_state, empty, pager, readiness_state %}
+{% block content %}
+
+<div class="v2-camp-head">
+  <div class="v2-sticky-title">
+    <div class="v2-title-row">
+      <div class="v2-title-main">
+        <div class="v2-title-line">
+          <h1>{{ execution.name }}</h1>
+          {{ campaign_state(execution.status, execution.execution_enabled) }}
+          {% if campaigns | length > 1 %}
+          <details class="v2-menu">
+            <summary><span class="v2-chip sm">Switch campaign ▾</span></summary>
+            <div class="v2-menu-panel left">
+              {% for other in campaigns %}
+              <a class="v2-menu-item" href="/app/campaigns/{{ other.campaign.id }}">
+                <b>{{ other.campaign.name }}
+                  {%- if other.campaign.id == execution.campaign_id %} {{ tag('open now', 'brand', small=true) }}{% endif %}</b>
+                <span>{{ other.contact_count }} contacts · {{ other.campaign.status.value }}{% if not other.campaign.execution_enabled %} · execution off{% endif %}</span>
+              </a>
+              {% endfor %}
+              <a class="v2-menu-item last" href="/app/campaigns/new">
+                <b>Create a new campaign</b>
+                <span>Name it, attach an offering, enrol contacts</span>
+              </a>
+            </div>
+          </details>
+          {% endif %}
+        </div>
+        <div class="v2-meta-row">
+          <span><b class="m">{{ execution.enrolled_contacts | thousands }}</b> contacts</span>
+          <span class="sep">·</span>
+          <span>settings version <b class="m">{{ execution.settings_version }}</b></span>
+          <span class="sep">·</span>
+          <span>every draft waits for your approval — there is no auto-send</span>
+          {% if execution.suppressed_contacts %}
+          <span class="sep">·</span>
+          <span><b class="m">{{ execution.suppressed_contacts }}</b> suppressed and never contacted</span>
+          {% endif %}
+        </div>
+        {% if not execution.execution_enabled %}
+        <p class="v2-note">
+          Execution is off, so every Agent except Capture is held.
+          {%- if execution.disabled_reason %} Reason on record: {{ execution.disabled_reason }}{% endif %}
+        </p>
+        {% endif %}
+      </div>
+
+      <div class="v2-title-actions">
+        <form method="post" action="/app/campaigns/{{ execution.campaign_id }}/execution">
+          <input type="hidden" name="enabled" value="{{ '0' if execution.execution_enabled else '1' }}">
+          <label class="v2-sr" for="exec-reason-{{ execution.campaign_id }}">Reason</label>
+          <input class="v2-sr" id="exec-reason-{{ execution.campaign_id }}" name="reason" value="">
+          <button class="v2-btn" type="submit">
+            {{ 'Pause campaign' if execution.execution_enabled else 'Resume campaign' }}
+          </button>
+        </form>
+        <span class="v2-btn is-disabled" title="No sending adapter is registered, so there is no sending to stop.">Stop sending</span>
+        {% if attention_here.drafts_awaiting %}
+        <a class="v2-btn primary" href="/app/review?campaign={{ execution.campaign_id }}">
+          Review {{ attention_here.drafts_awaiting }} draft{{ '' if attention_here.drafts_awaiting == 1 else 's' }}
+        </a>
+        {% else %}
+        <a class="v2-btn" href="/app/review?campaign={{ execution.campaign_id }}">Review queue</a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  {# The design's live strip. Every figure here is a Phase 2 count; the sending
+     measures carry no number because there is no sending. #}
+  <div class="v2-stat-strip">
+    {{ stat('Enrolled', execution.enrolled_contacts | thousands, 'contacts', 'find') }}
+    {{ stat('Completed the chain', execution.completed_contacts | thousands, execution.progress_percent ~ '% of enrolled', 'find') }}
+    {{ stat('In the queue', execution.queue.open_work | thousands, execution.queue.running ~ ' running now', 'write') }}
+    {{ stat('Stopped', execution.queue.failed | thousands, execution.queue.terminal_failures ~ ' terminal', 'err') }}
+    {{ stat('Held', execution.blocked_contacts | thousands, 'need a decision', 'err') }}
+    {{ stat('Drafts waiting', attention_here.drafts_awaiting | thousands, 'for your read', 'write') }}
+    {{ stat_unbuilt('Sent', 'no sending adapter') }}
+    <div class="v2-strip-foot">counted now · this page refreshes itself</div>
+  </div>
+</div>
+
+<div class="v2-camp-body">
+
+  <div class="v2-card clip">
+    <div class="v2-card-head">
+      <h2>Pipeline <span class="v2-muted">— the 9 Agents every contact passes through</span></h2>
+      <div class="v2-note push">
+        The number is how many have got <b>past</b> that Agent, so the row reads as a funnel.
+        What is happening right now is underneath it.
+      </div>
+    </div>
+    <ol class="v2-pipe">
+      {% for tile in tiles %}
+      <li class="v2-pipe-item">
+        <a class="v2-pipe-stage phase-{{ tile.phase }} {{ 'on' if tile.selected }}"
+           href="{{ tile.href }}"
+           title="{{ tile.blurb }}">
+          <span class="v2-pipe-top">
+            <span class="v2-pipe-idx">{{ tile.index }}</span>
+            <span class="v2-pipe-name">{{ tile.label }}<small>{{ tile.suffix }}</small></span>
+          </span>
+          <span class="v2-pipe-count">{{ tile.through | thousands }}</span>
+          <span class="v2-pipe-notes">
+            {% if tile.moving %}<span class="moving">{{ dot('info', true) }}{{ tile.moving }} moving now</span>{% endif %}
+            {# The re-run affordance rides on the held line rather than adding a second
+               number, because the two counts usually describe the same people and two
+               numbers read as twice the trouble. They are not the same question,
+               though: "held" is where a contact is standing *now*, while the failure
+               count comes from the per-stage ledger and still remembers a skippable
+               Agent that failed and was stepped over. That case gets its own line,
+               since nothing else on the tile would mention it.
+
+               Failures only, not every stopped contact: a hint offering a re-run must
+               not point at a stage whose only stopped contact is suppressed, which a
+               re-run cannot lift. See rerun.failure_counts. #}
+            {% set failed_here = failure_counts.get(tile.agent_id, 0) %}
+            {% if tile.held %}
+              <span class="stuck">{{ tile.held }} held here{% if failed_here and not tile.selected %} — open to run again{% endif %}</span>
+            {% elif failed_here and not tile.selected %}
+              <span class="stuck">{{ failed_here }} failed earlier — open to run again</span>
+            {% endif %}
+            {% if tile.waiting %}<span class="clear">{{ tile.waiting }} waiting here</span>{% endif %}
+            {% if tile.skipped %}<span class="clear">{{ tile.skipped }} skipped</span>{% endif %}
+            {% if not tile.implemented %}<span class="clear">no adapter</span>
+            {% elif tile.control_status != 'enabled' %}<span class="clear">agent {{ tile.control_status }}</span>
+            {% elif tile.quiet %}<span class="clear">all clear</span>{% endif %}
+          </span>
+          {% if tile.moving %}<span class="railtrack"><i></i></span>{% endif %}
+        </a>
+      </li>
+      {% endfor %}
+    </ol>
+    <div class="v2-card-foot plain">
+      Capture completes as soon as a contact is enrolled — the extension has already done the
+      capturing — so its number is how many arrived. Identity and Company usually finish in under a
+      second, which is why you will rarely catch anybody resting on them.
+    </div>
+  </div>
+
+  <div class="v2-split">
+
+    <div class="v2-card clip">
+      <div class="v2-card-head">
+        <h2>
+          {% if selected_tile %}{{ selected_tile.label }} Agent{% else %}Everyone in this campaign{% endif %}
+        </h2>
+        {% if selected_tile %}
+        <span class="v2-note">{{ selected_tile.blurb }}</span>
+        {% else %}
+        <span class="v2-note">Pick an Agent above to see only the contacts resting on it.</span>
+        {% endif %}
+        <div class="v2-chips push">
+          <a class="v2-chip sm {{ 'on' if not selected_stage }}" href="/app/campaigns/{{ execution.campaign_id }}">All<span class="count">{{ execution.enrolled_contacts }}</span></a>
+          {% if selected_stage %}
+          <a class="v2-chip sm on" href="/app/campaigns/{{ execution.campaign_id }}?stage={{ selected_stage }}">{{ selected_tile.label }}<span class="count">{{ execution.contact_total }}</span></a>
+          {% endif %}
+        </div>
+      </div>
+
+      {# Run this Agent again. Offered only where something is actually stopped, so the
+         control never invites a click that can do nothing — which is also why a contact
+         a suppression is holding is listed but has no button: the count stays honest
+         and the reason is stated instead. #}
+      {% if rerun_candidates %}
+      {% set runnable = rerun_candidates | selectattr('runnable') | list %}
+      <div class="v2-rerun">
+        <div class="v2-rerun-head">
+          <b>{{ rerun_candidates | length }} contact{{ '' if rerun_candidates | length == 1 else 's' }} stopped here.</b>
+          {%- if runnable %}
+          Once you have fixed the cause — a setting, a domain, a website that is back —
+          run the {{ selected_tile.label }} Agent again.
+          {%- elif rerun_candidates | length == 1 %}
+          It cannot be re-run: something that outranks a re-run is holding it.
+          {%- else %}
+          None of them can be re-run: each is held by something that outranks it.
+          {%- endif %}
+        </div>
+        {% if runnable %}
+        <form class="v2-inline-form" method="post"
+              action="/app/campaigns/{{ execution.campaign_id }}/agents/{{ selected_stage }}/rerun">
+          <input type="hidden" name="back"
+                 value="/app/campaigns/{{ execution.campaign_id }}?stage={{ selected_stage }}">
+          <label class="v2-sr" for="rerun-reason">What changed</label>
+          <input class="v2-input" id="rerun-reason" name="reason" maxlength="500"
+                 placeholder="What changed? (kept on the record)">
+          <button class="v2-btn primary" type="submit">
+            {%- if runnable | length == 1 %}Run again for this contact
+            {%- else %}Run again for all {{ runnable | length }}{% endif %}
+          </button>
+        </form>
+        <div class="v2-hint">
+          Each contact starts with a fresh attempt budget and the earlier failure stays on
+          record.
+          {%- if rerun_spends %} <b>This Agent spends per contact</b> — a credit or a model
+          call each — so it will cost something to run {{ runnable | length }} again.{% endif %}
+          {%- if runnable | length >= rerun_ceiling %} At most {{ rerun_ceiling }} are
+          taken at a time.{% endif %}
+        </div>
+        {% endif %}
+        <details class="v2-sub-disclose v2-rerun-list">
+          <summary>Why each one stopped</summary>
+          <div class="v2-rerun-rows">
+            {% for candidate in rerun_candidates %}
+            <div class="v2-rerun-row">
+              <a href="/app/contacts/{{ candidate.contact_id }}?campaign={{ execution.campaign_id }}">{{ candidate.contact_label }}</a>
+              {{ tag(candidate.status.value, 'err', small=true) }}
+              {# `nice` because some recorded details are machine vocabulary — a
+                 suppression writes "email opt_out" — and this is a customer-facing
+                 page. The stored value is untouched; only its display softens. #}
+              <span class="v2-note">
+                {{ (candidate.reason_detail or candidate.reason_code or 'No reason was recorded.') | nice }}
+              </span>
+              {% if candidate.runnable %}
+              <form method="post"
+                    action="/app/campaigns/{{ execution.campaign_id }}/agents/{{ selected_stage }}/rerun">
+                <input type="hidden" name="campaign_contact_id" value="{{ candidate.campaign_contact_id }}">
+                <input type="hidden" name="back"
+                       value="/app/campaigns/{{ execution.campaign_id }}?stage={{ selected_stage }}">
+                <button class="v2-btn small" type="submit">Run again</button>
+              </form>
+              {% else %}
+              <span class="v2-rerun-held">{{ candidate.standing_block }}</span>
+              {% endif %}
+            </div>
+            {% endfor %}
+          </div>
+        </details>
+      </div>
+      {% endif %}
+
+      {% if execution.contacts %}
+      <div class="v2-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Contact</th>
+              <th>Company</th>
+              <th>Where it stands</th>
+              <th class="num">Changed</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in execution.contacts %}
+            <tr>
+              <td>
+                <a href="/app/contacts/{{ row.contact_id }}?campaign={{ execution.campaign_id }}">{{ row.contact_label }}</a>
+                <div class="v2-sub">{{ row.email or 'no address yet' }}</div>
+              </td>
+              <td>
+                <div>{{ row.company_label or '—' }}</div>
+              </td>
+              <td class="v2-cell-wide">
+                <div class="v2-cell-state">
+                  {{ dot(stage_tone(row.pipeline_status), row.pipeline_status.value == 'running') }}
+                  <b>{{ row.pipeline_status.value | nice }}</b>
+                  {% if row.current_stage %}<span class="v2-muted">at {{ row.current_stage.value | nice }}</span>{% endif %}
+                </div>
+                <div class="v2-cell-reason">
+                  {% if row.suppressed %}Suppressed — never contacted, whatever else is true.
+                  {% elif row.blocking_detail %}{{ row.blocking_detail }}
+                  {% elif row.next_stage %}Next: {{ row.next_stage.value | nice }} Agent.
+                  {% else %}Nothing is recorded as holding this contact.{% endif %}
+                </div>
+                {% if row.membership_status.value != 'active' %}
+                <div class="v2-chipline">{{ tag('membership ' ~ row.membership_status.value, 'warn', small=true) }}</div>
+                {% endif %}
+              </td>
+              <td class="num m v2-nowrap">{{ row.updated_at | ago }}</td>
+              <td class="num v2-nowrap">
+                <a class="v2-btn small" href="/app/contacts/{{ row.contact_id }}?campaign={{ execution.campaign_id }}">Open</a>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="v2-cardlist">
+        {% for row in execution.contacts %}
+        <div class="v2-item">
+          <div class="v2-item-top">
+            <a href="/app/contacts/{{ row.contact_id }}?campaign={{ execution.campaign_id }}">{{ row.contact_label }}</a>
+            <span class="when">{{ row.updated_at | ago }}</span>
+          </div>
+          <div class="v2-sub">{{ row.company_label or '—' }}</div>
+          <div class="v2-cell-state v2-chipline">
+            {{ dot(stage_tone(row.pipeline_status), row.pipeline_status.value == 'running') }}
+            <b>{{ row.pipeline_status.value | nice }}</b>
+          </div>
+          <div class="v2-cell-reason">
+            {% if row.suppressed %}Suppressed — never contacted.
+            {% elif row.blocking_detail %}{{ row.blocking_detail }}
+            {% elif row.next_stage %}Next: {{ row.next_stage.value | nice }} Agent.{% endif %}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      <div class="v2-card-foot">
+        {{ pager(page, pages, execution.contact_total, base_url, 'contacts') }}
+        <a href="/app/contacts">Open all in the contacts table →</a>
+      </div>
+      {% else %}
+        {% if execution.enrolled_contacts == 0 %}
+          {{ empty('Nobody is enrolled yet', 'Capture people, then enrol them into this campaign. A person is captured permanently whether or not a campaign is chosen.') }}
+        {% else %}
+          {{ empty('No contact is resting on this Agent', 'The count above is what has passed through. Pick another Agent, or clear the filter to see everyone.') }}
+        {% endif %}
+      {% endif %}
+    </div>
+
+    <div class="v2-aside">
+
+      <div class="v2-card">
+        <div class="v2-card-head tight {{ 'alert' if decisions else '' }}">
+          <h2>Needs a decision from you</h2>
+          {% if decisions %}
+          <span class="m v2-note">{{ decisions | length }} group{{ '' if decisions | length == 1 else 's' }}</span>
+          {% endif %}
+        </div>
+        {% for decision in decisions %}
+        <div class="v2-decision">
+          <div class="v2-decision-top">
+            <span class="v2-decision-count">{{ decision.count }}</span>
+            <div>
+              <div class="v2-decision-title">{{ decision.title }}</div>
+              <div class="v2-decision-detail">{{ decision.detail }}</div>
+            </div>
+          </div>
+          <div class="v2-btn-row">
+            <a class="v2-btn small primary" href="{{ decision.primary_href }}">{{ decision.primary_label }}</a>
+            {% if decision.secondary_label %}
+            <a class="v2-btn small" href="{{ decision.secondary_href }}">{{ decision.secondary_label }}</a>
+            {% endif %}
+          </div>
+        </div>
+        {% endfor %}
+        <div class="v2-card-foot plain">
+          {% if decisions %}
+            Everything else the system could settle safely, it already did.
+          {% else %}
+            Nothing needs you here. Everything the system could settle safely, it did.
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="v2-card">
+        <div class="v2-card-head tight calm">
+          <h2>What changed</h2>
+          <span class="v2-dot ok live"></span>
+          <span class="v2-hint push">most recent first</span>
+        </div>
+        {% if activity %}
+          {% for line in activity %}
+          <div class="v2-activity-row">
+            <span class="v2-activity-time">{{ line.time | clock }}</span>
+            <div>
+              <div class="v2-activity-text">{{ line.text }}</div>
+              <div class="v2-activity-meta">{{ line.meta }}</div>
+            </div>
+          </div>
+          {% endfor %}
+        {% else %}
+          {{ empty('Nothing has happened yet', 'Pipeline events appear here the moment an Agent commits an outcome.') }}
+        {% endif %}
+      </div>
+
+      <div class="v2-card">
+        <div class="v2-card-head tight"><h2>Agents for this campaign</h2></div>
+        {% for control in execution.controls %}
+        <div class="v2-row tight">
+          <div class="v2-sidelist-top">
+            <b>{{ control.display_name }}</b>
+            {{ control_state(control.status) }}
+            {% if control.campaign_scoped %}{{ tag('campaign override', 'brand', small=true) }}{% endif %}
+            {% if not control.implemented %}{{ tag('no adapter', '', small=true) }}{% endif %}
+          </div>
+          <div class="v2-hint">
+            from {{ control.source | nice }}{% if control.reason %} · {{ control.reason }}{% endif %}
+          </div>
+        </div>
+        {% endfor %}
+        <div class="v2-card-foot plain">
+          <a href="/app/agents">Open Agent settings →</a>
+        </div>
+      </div>
+
+      {% if kb_on %}
+      <div class="v2-card">
+        <div class="v2-card-head tight">
+          <h2>What this campaign may say</h2>
+        </div>
+        {% if offerings %}
+        <div class="v2-row tight">
+          <div class="v2-pillset">
+            {% for offering in offerings %}
+            <span class="v2-entry">{{ offering.name }}</span>
+            {% endfor %}
+          </div>
+        </div>
+        {% else %}
+        <div class="v2-row tight v2-note">
+          No offering is attached, so a draft has nothing it is authorised to offer.
+        </div>
+        {% endif %}
+        {% if readiness %}
+          {% for item in readiness.items %}
+          <div class="v2-row tight">
+            <div class="v2-sidelist-top">
+              <b>{{ item.label }}</b>
+              {{ readiness_state(item.state) }}
+            </div>
+            <div class="v2-hint">{{ item.reason }}</div>
+          </div>
+          {% endfor %}
+        {% endif %}
+        <div class="v2-card-foot plain"><a href="/app/knowledge">Open the Knowledge Base →</a></div>
+      </div>
+      {% endif %}
+
+    </div>
+  </div>
+</div>
+{% endblock %}

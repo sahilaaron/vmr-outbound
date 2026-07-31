@@ -317,6 +317,14 @@ class Settings(BaseSettings):
         default="claude-cli/v1",
         description="Producer version recorded alongside anything the CLI produces.",
     )
+    # One domain question, not a dossier. Far below `claude_cli_timeout_seconds`
+    # on purpose: a backfill pass walks up to fifty captures, and a stalled call
+    # on the third must not consume the window the other forty-seven needed.
+    model_domain_lookup_timeout_seconds: float = Field(
+        default=90.0,
+        gt=0,
+        description="Maximum wall-clock seconds for one model company-domain lookup.",
+    )
 
     features: FeatureFlags = Field(default_factory=FeatureFlags)
 

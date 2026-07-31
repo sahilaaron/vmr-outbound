@@ -28,6 +28,7 @@ from app.models.enums import (
 )
 from app.models.pipeline import CampaignContactSource
 from app.models.verification_job import AgentJob
+from app.services.agents import locking
 from app.services.audit import record_audit_event
 from app.services.pipeline import (
     agent_state,
@@ -154,6 +155,27 @@ def _blocking_reasons(
             }
         )
     return reasons, suppression.blocked
+
+
+def is_terminally_blocked(session: Session, *, membership: CampaignContact) -> bool:
+    """Whether policy blocks this membership terminally, asked without writing.
+
+    :func:`refresh_eligibility` answers the same question authoritatively, but it also
+    re-projects the answer onto the row and can transition the current stage. A page
+    render must not do either, so read-only callers use this instead. The two can only
+    disagree in the operator's favour: a suppression lifted a moment ago is invisible
+    here until the next write path notices it.
+    """
+
+    contact = session.get(Contact, membership.contact_id)
+    if contact is None:  # pragma: no cover - protected by FK
+        raise CampaignContactNotFound(f"contact {membership.contact_id} does not exist")
+    if membership.state in (ContactWorkflowState.EXCLUDED, ContactWorkflowState.SUPPRESSED):
+        return True
+    _, terminal = _blocking_reasons(
+        session, contact, campaign=session.get(Campaign, membership.campaign_id)
+    )
+    return terminal
 
 
 def refresh_eligibility(
@@ -317,6 +339,7 @@ def reconcile_contact_memberships(
                 CampaignContact.contact_id == contact_id,
                 CampaignContact.membership_status == CampaignMembershipStatus.ACTIVE,
             )
+            .order_by(CampaignContact.id)
             .with_for_update()
         ).all()
     )
@@ -330,15 +353,15 @@ def reconcile_contact_memberships(
         )
         if terminal or membership.next_stage is None:
             continue
-        paused = session.scalars(
-            select(AgentJob)
-            .where(
+        paused_jobs = locking.lock_agent_jobs(
+            session,
+            select(AgentJob).where(
                 AgentJob.campaign_contact_id == membership.id,
                 AgentJob.agent_id == membership.next_stage,
                 AgentJob.status == AgentJobStatus.PAUSED,
-            )
-            .with_for_update()
-        ).first()
+            ),
+        )
+        paused = paused_jobs[0] if paused_jobs else None
         if paused is None or paused.error_class not in _EVIDENCE_RESOLVABLE_BLOCKS:
             continue
         paused.status = AgentJobStatus.PENDING
@@ -372,7 +395,7 @@ def retry_processing(
 ) -> AgentJob | None:
     """Retry the current retryable/blocked stage without bypassing controls."""
 
-    membership = session.get(CampaignContact, campaign_contact_id)
+    membership = locking.lock_campaign_contact(session, campaign_contact_id)
     if membership is None:
         raise CampaignContactNotFound(f"campaign contact {campaign_contact_id} does not exist")
     if membership.membership_status is not CampaignMembershipStatus.ACTIVE:
@@ -384,15 +407,14 @@ def retry_processing(
     agent_id = membership.next_stage
     if agent_id is None:
         raise CampaignContactError("the Campaign Contact has no stage to retry")
-    job = session.scalars(
-        select(AgentJob)
-        .where(
+    locked_jobs = locking.lock_agent_jobs(
+        session,
+        select(AgentJob).where(
             AgentJob.campaign_contact_id == membership.id,
             AgentJob.agent_id == agent_id,
-        )
-        .order_by(AgentJob.created_at.desc())
-        .with_for_update()
-    ).first()
+        ),
+    )
+    job = locked_jobs[-1] if locked_jobs else None
     if job is not None:
         if job.status not in {AgentJobStatus.PAUSED, AgentJobStatus.FAILED}:
             raise CampaignContactError(
@@ -710,7 +732,7 @@ def archive_membership(
     actor: str = "operator",
     reason: str = "removed from Campaign by operator",
 ) -> CampaignContact:
-    membership = session.get(CampaignContact, campaign_contact_id)
+    membership = locking.lock_campaign_contact(session, campaign_contact_id)
     if membership is None:
         raise CampaignContactNotFound(f"campaign contact {campaign_contact_id} does not exist")
     if membership.membership_status is CampaignMembershipStatus.ARCHIVED:
@@ -759,7 +781,7 @@ def pause_membership(
     actor: str = "operator",
     reason: str = "paused by operator",
 ) -> CampaignContact:
-    membership = session.get(CampaignContact, campaign_contact_id)
+    membership = locking.lock_campaign_contact(session, campaign_contact_id)
     if membership is None:
         raise CampaignContactNotFound(f"campaign contact {campaign_contact_id} does not exist")
     if membership.membership_status is CampaignMembershipStatus.ARCHIVED:
@@ -832,7 +854,7 @@ def resume_membership(
     actor: str = "operator",
     reason: str = "resumed by operator",
 ) -> CampaignContact:
-    membership = session.get(CampaignContact, campaign_contact_id)
+    membership = locking.lock_campaign_contact(session, campaign_contact_id)
     if membership is None:
         raise CampaignContactNotFound(f"campaign contact {campaign_contact_id} does not exist")
     if membership.membership_status is CampaignMembershipStatus.ARCHIVED:

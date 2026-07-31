@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="v2-page narrow">
+  <h1 class="v2-h1">Agent settings &amp; logs</h1>
+  <p class="v2-lede">
+    The Agent monitor is switched off in this environment. Turn on
+    <span class="m">FEATURES__AGENT_WORKBENCH</span> and reload to see each Agent's control state,
+    the precedence that produced it, and the log of what it actually did.
+  </p>
+  <div class="v2-callout v2-mt">
+    <strong>Nothing is running unseen.</strong> With this switch off the Agents still hold whatever
+    control state was last committed — the page that reads it is what is unavailable, not the state.
+  </div>
+</div>
+{% endblock %}

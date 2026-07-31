@@ -1,185 +1,128 @@
 # VMR Outbound Agent
 
-VMR Outbound Agent is an internal, single-operator outbound operating system.
+VMR Outbound Agent is a private, single-operator outbound operating system built around permanent Contacts, reusable Companies and observable Campaign execution.
 
-Its MVP has one defining outcome:
+## Current MVP
 
-> **A user can capture 2,000 Sales Navigator contacts in the morning and begin sending AI-personalized verified emails that afternoon.**
-
-Every active build must move a captured person closer to a sendable, campaign-specific email. Features that do not support that path are deferred.
-
-## Canonical MVP workflow
+The current MVP produces a trustworthy human-approved email draft:
 
 ```text
-Capture permanent Contacts
-→ optionally auto-add them to a Campaign through persistent extension selection
-→ Contact and Company identity resolution
-→ Company-domain resolution
-→ Company research
-→ Email discovery
-→ Exact-address verification
-→ AI company insights and outreach scoring
-→ Campaign Contact acceptance
-→ AI personalization inside campaign guardrails
-→ Operator review
-→ Email sending integration
+Capture authorized prospect
+→ resolve Contact and Company
+→ gather sourced Company research
+→ discover and verify an exact email
+→ generate evidence-backed Insights
+→ generate Campaign-specific Personalization
+→ approve or discard one exact immutable draft
 ```
 
-The backend continues to use jobs and workers. The operator-facing application calls them **Agents**.
+It does **not** send email. SalesHandy/provider submission, delivery events, replies, sequences and analytics are post-MVP work.
 
-The Phase 2 execution backbone is documented in
-[`docs/PHASE_2_EXECUTION_MODEL.md`](docs/PHASE_2_EXECUTION_MODEL.md). The common
-worker is `scripts/run_agent_worker.py`; Research, Insights, Personalization,
-and Sending remain registered but disabled until real adapters exist.
+See [`docs/CURRENT_MVP.md`](docs/CURRENT_MVP.md) for the authoritative status, limitations and acceptance plan.
 
-## Core product objects
+## Delivery status
 
-- **Campaign** — owns audience criteria, seller context, messaging direction, CTA, guardrails, templates, sending configuration and per-campaign Agent controls.
-- **Collection** — a reusable grouping applied to Contacts and Campaigns. The Chrome extension presents Collections as **Labels**.
-- **Contact** — the permanent person record shared across campaigns.
-- **Company** — the permanent organization record shared across contacts and campaigns.
-- **Campaign Contact** — the campaign-specific membership record that owns fit, acceptance, generated copy, approval and send state.
-- **Agent Job** — one resumable, inspectable unit of pipeline work.
+- **Campaign pipeline:** PR #232, merged into `main`.
+- **Customer-facing v2 application:** PR #233.
+- **Operating acceptance:** one real Contact followed by a controlled 10–20 Contact batch.
 
-A Contact may belong to many Collections and many Campaigns. Campaign-specific scores, messages, approvals and send outcomes must never be stored as permanent Contact facts.
+Green CI proves the implementation gates. It does not replace live website, MillionVerifier and Claude CLI acceptance.
 
-## Capture model
+## Product surfaces
 
-Capture is always campaign-independent at the Contact level.
+| Route | Purpose |
+| --- | --- |
+| `/` and `/app` | Customer-facing application |
+| `/app/review` | Review evidence and approve/discard an exact immutable draft version |
+| `/admin` | Operator/admin Workbench for jobs, controls, retries and authoritative write paths |
 
-- Every successful capture creates or updates a permanent Contact.
-- Campaign selection in the extension is optional.
-- If a Campaign is selected, the system auto-adds the resolved Contact to that Campaign by creating or updating Campaign Contact membership.
-- If no Campaign is selected, the Contact is still captured normally.
-- Selecting a Campaign never changes identity resolution, Contact ownership or canonical data rules.
+The v2 customer interface and Workbench share services and models but use separate routers, templates and stylesheets.
 
-In other words, Campaign selection is a filing shortcut, not a prerequisite for capture.
+## Agent pipeline
 
-## Campaign setup
+1. **Capture Agent** — existing contact-first capture and promotion path.
+2. **Identity Agent** — authoritative LinkedIn identity convergence.
+3. **Company Agent** — permanent Company and domain linking.
+4. **Research Agent** — deterministic registered workers that persist sourced evidence.
+5. **Email Agent** — ordered candidate generation.
+6. **Verification Agent** — durable exact-address verification.
+7. **Insights Agent** — Claude CLI interpretation of persisted evidence.
+8. **Personalization Agent** — Claude CLI generation of an immutable draft.
+9. **Sending Agent** — registered but disabled; no production adapter exists.
 
-A functional MVP Campaign supports:
+The common worker uses the durable PostgreSQL Agent Job queue and supports parallel, Agent-scoped pools.
 
-- title and audience definition;
-- employee-size, geography, industry, role and seniority criteria;
-- seller Knowledge Base and company-profile context;
-- messaging angle and CTA;
-- AI guardrails;
-- reusable and HTML-uploaded templates;
-- operator preview, editing and personalization;
-- email-account or sending-provider configuration;
-- campaign-level Agent enablement and overrides;
-- stage counts, exceptions and readiness state.
+## Research and AI boundary
 
-## Collections and extension Labels
+Research gathers evidence and writes the raw submission, a versioned dossier and sourced fact records. It does not use a language model and does not rewrite canonical Company fields.
 
-Collections are first-class backend records. The extension calls them Labels because that is the clearest operator language.
+Claude is used only by Insights and Personalization through one bounded thinking seam. Both run with `allowed_tools=()` and cannot verify email, change controls, approve their own draft or send.
 
-The extension must:
+## Email policy
 
-1. search Campaigns and previously used Labels from the backend as the operator types;
-2. allow multiple Labels;
-3. persist the selected Campaign and Labels across every normal LinkedIn person capture and every Sales Navigator list capture;
-4. keep them active until the operator deselects them;
-5. attach selected Labels to every captured Contact without extra clicks;
-6. when a Campaign is selected, auto-add each resolved Contact to that Campaign without changing the permanent Contact record;
-7. continue to support normal capture when no Campaign is selected.
-
-## Locked Agent order
-
-1. **Capture Agent**
-2. **Identity Agent**
-3. **Company Agent**
-4. **Research Agent**
-5. **Email Agent**
-6. **Verification Agent**
-7. **Insights Agent**
-8. **Personalization Agent**
-9. **Sending Agent**
-
-### Domain reuse
-
-When one domain is resolved for a Sales Navigator company identity, every Contact with the same company identity must reuse that result and resolve toward the same permanent Company. Repeated captures must converge on existing Contacts and Companies rather than create duplicates.
-
-### Email-discovery policy
-
-Search at most three formats per Contact and stop after a verified address is found.
-
-For companies with more than 50 employees:
+The Email Agent tries at most three candidates and stops after the first verified result:
 
 1. `firstname.lastname`
-2. `finitiallastname`
-3. `lastnamefinitial`
-
-For companies with 50 or fewer employees:
-
-1. `firstname`
-2. `firstname.lastname`
+2. `firstname`
 3. `finitiallastname`
 
-Email discovery runs after company research and before AI insight generation. Paid AI work must not run for a Contact that has no verified email unless an operator explicitly overrides the Campaign.
+It enqueues one child Verification Agent Job at a time and resumes from the committed Verification outcome.
 
-## Workbench
+Live MillionVerifier use requires the feature switch, valid credentials and effective Verification Agent configuration containing `{"live": true}`. Simulated evidence cannot complete a live Campaign stage.
 
-The Workbench is the operating home of the application. It must show:
+## Core objects
 
-- Campaign progress by pipeline stage;
-- queue depth and current throughput;
-- running, paused, waiting, retrying, failed and completed Agent jobs;
-- failure reasons and retry controls;
-- global Agent on/off controls;
-- Campaign-specific Agent overrides;
-- drill-down from every stage count to the affected records;
-- an immediate emergency stop for new sending work.
+- **Contact** — permanent canonical person.
+- **Company** — permanent reusable organization.
+- **Campaign** — Campaign-specific operating context and Agent controls.
+- **Campaign Contact** — Campaign membership, pipeline state and draft boundary.
+- **Collection** — reusable Contact grouping; the extension may call it a Label.
+- **Agent Job** — resumable, inspectable unit of work with attempts, errors, leases and audit history.
+- **DraftVersion** — immutable Campaign-specific draft output.
+- **DraftApproval** — human decision against one exact draft version.
 
-Global Agent settings define defaults. Campaign settings may disable or override an Agent without changing another Campaign.
+Campaign membership never owns or duplicates the permanent Contact or Company.
 
-## MVP boundary
+## Current operating choices
 
-The first usable model is complete when one operator can:
+- Capture remains Campaign-independent.
+- Campaign enrolment is explicit and reversible through the Workbench, including bulk enrolment.
+- Knowledge Base editing remains on `/admin`; the customer interface reads it.
+- Capture-domain decisions and suppression creation retain one authoritative admin write path.
+- Unsupported capabilities are shown as unavailable instead of being represented with fabricated metrics or actions.
 
-1. configure a Campaign;
-2. capture between 100 and 2,000 Sales Navigator contacts, with optional persistent Campaign auto-add and persistent Labels;
-3. see the captures converge into permanent Contacts and Companies;
-4. run domain resolution, research, email discovery and verification automatically;
-5. generate company insights, outreach scores and campaign-specific personalized email copy;
-6. review ready contacts and messages;
-7. hand approved records to an email sending service.
+## Not built
 
-The MVP does not require advanced analytics, autonomous LinkedIn navigation, CRM replacement, omnichannel outreach, automatic replies, a general workflow builder or multi-tenant SaaS.
+- sending-provider integration and outcome synchronization;
+- sending, replies, sequences and analytics backends;
+- deterministic fit/confidence scoring;
+- Saved Audience criteria;
+- extension Campaign auto-add;
+- multi-email cadence generation;
+- draft editing or auto-send.
 
-## Current foundation
+## Windows quick start
 
-The repository already contains substantial parts of the foundation:
+```bat
+cd "C:\Users\sahil\Personal Data\VMR Data - Laptop\Outbound Agent\vmr-outbound"
+git checkout feat/v2-customer-ui
+git pull
+run_vmr_app_v2.bat
+```
 
-- operator-controlled LinkedIn and Sales Navigator capture;
-- immutable capture evidence;
-- permanent Contact and Company records;
-- LinkedIn identity resolution;
-- company-domain lookup and decision history;
-- provenance, notes, labels and suppression;
-- seller-side Knowledge Base records;
-- deterministic email candidate generation;
-- MillionVerifier-backed exact-address verification;
-- company evidence and insight models.
+Start the worker in another CMD window:
 
-The immediate work is to connect these capabilities into the canonical Contact-to-send pipeline rather than continue building them as isolated features.
+```bat
+cd "C:\Users\sahil\Personal Data\VMR Data - Laptop\Outbound Agent\vmr-outbound"
+run_vmr_worker.bat 8
+```
 
-## Operating principles
-
-- **One person, one Contact.** Campaign membership never duplicates the permanent person.
-- **Capture never requires a Campaign.** Campaign selection only auto-adds a Contact after capture.
-- **One company, reusable research.** Domain and research work should be reused across Contacts and Campaigns.
-- **Campaign-specific output stays campaign-specific.** Scores, messages, approvals and send state belong to Campaign Contact.
-- **Evidence before interpretation.** Raw captures and sourced research remain separate from AI-derived insights.
-- **No fabricated certainty.** Missing and ambiguous values remain unresolved or reviewable.
-- **Safe retries.** Jobs are resumable and idempotent.
-- **Visible control.** Every Agent can be observed, paused and disabled.
-- **Operator-controlled sending.** Suppression and approval rules remain authoritative.
+The first live acceptance should use one Contact before increasing batch size.
 
 ## Technology
 
 - Python 3.11+
-- FastAPI
+- FastAPI and Jinja
 - SQLAlchemy 2
 - PostgreSQL
 - Alembic
@@ -187,28 +130,10 @@ The immediate work is to connect these capabilities into the canonical Contact-t
 - Pytest, Ruff and mypy
 - Manifest V3 Chrome extension using plain JavaScript
 
-## Quick start
+## Governing documents
 
-### Windows
-
-```bat
-python -m venv .venv
-.venv\Scripts\activate
-pip install -e ".[dev]"
-copy .env.example .env
-alembic upgrade head
-python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
-```
-
-### macOS or Linux
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-cp .env.example .env
-alembic upgrade head
-python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
-```
-
-See `docs/GOAL.md` for the authorized MVP, `docs/ARCHITECTURE.md` for the pipeline and data boundaries, and `docs/PROJECT_TRACKING.md` for tracker ownership and reporting rules.
+- [`docs/CURRENT_MVP.md`](docs/CURRENT_MVP.md) — current product and acceptance truth
+- [`docs/GOAL.md`](docs/GOAL.md) — authorized MVP outcome
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — current data and Agent architecture
+- [`docs/PHASE_2_EXECUTION_MODEL.md`](docs/PHASE_2_EXECUTION_MODEL.md) — durable queue and pipeline contract
+- [`docs/PROJECT_TRACKING.md`](docs/PROJECT_TRACKING.md) — management tracking rules

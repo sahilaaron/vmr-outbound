@@ -1,0 +1,215 @@
+{% extends "base.html" %}
+{% from "_ui.html" import tag, dot, unbuilt, empty, control_state, stage_status %}
+{% block content %}
+<div class="v2-page">
+
+  <h1 class="v2-h1">Agent settings &amp; logs</h1>
+  <p class="v2-lede">
+    One workshop per Agent: what it is allowed to do, and a log of what it actually did. A change
+    applies to work that starts after it — nothing already approved is ever rewritten.
+  </p>
+
+  <div class="v2-split">
+    <div class="v2-stack">
+
+      <div class="v2-card">
+        <div class="v2-card-head">
+          <h2>{{ spec.display_name }}</h2>
+          {% if detail %}{{ control_state(detail.effective_control.status) }}{% endif %}
+          {% if not spec.implemented %}{{ tag('no adapter registered', 'err') }}{% endif %}
+          <span class="v2-hint push">step {{ spec.position + 1 }} of 9 · {{ phases[selected] }} phase</span>
+        </div>
+        <div class="v2-card-body">
+          <p class="v2-kb-prose">{{ blurb }}</p>
+          {% if detail %}
+          <p class="v2-note v2-mt-sm">
+            {% if detail.effective_control.status.value == 'enabled' %}
+              This Agent may claim new work.
+            {% elif detail.effective_control.status.value == 'paused' %}
+              Held. Claimable and leased work waits, and nothing was discarded.
+            {% else %}
+              Withdrawn. No new work is claimed, and work already held stays held.
+            {% endif %}
+            The state came from <b>{{ detail.effective_control.source | nice }}</b>{% if detail.effective_control.reason %} — {{ detail.effective_control.reason }}{% endif %}.
+          </p>
+          {% endif %}
+        </div>
+
+        {% if detail %}
+        <div class="v2-card-head">
+          <h2>What it may claim</h2>
+          <span class="v2-note">The one control that genuinely exists. Versioned, so two people cannot silently overwrite each other.</span>
+        </div>
+        <div class="v2-card-body">
+          {% if spec.implemented %}
+          <form class="v2-inline-form" method="post" action="/app/agents/{{ selected.value }}/control">
+            {# Blank when the page saw no stored control. Never 0: that would claim a
+               version exists and turn a conflict into a silent overwrite. #}
+            {% set seen_version = detail.effective_control.campaign_version if campaign_id else detail.effective_control.global_version %}
+            <input type="hidden" name="expected_version" value="{{ seen_version if seen_version is not none else '' }}">
+            {% if campaign_id %}<input type="hidden" name="campaign_id" value="{{ campaign_id }}">{% endif %}
+            <label class="v2-label" for="agent-status">State</label>
+            <select class="v2-select v2-select-inline" id="agent-status" name="status">
+              {% for option in ['enabled', 'paused', 'disabled'] %}
+              <option value="{{ option }}" {{ 'selected' if detail.effective_control.status.value == option }}>{{ option }}</option>
+              {% endfor %}
+            </select>
+            <label class="v2-label" for="agent-reason">Reason</label>
+            <input class="v2-input" id="agent-reason" name="reason" maxlength="500"
+                   placeholder="Why (kept on the record)">
+            <button class="v2-btn primary" type="submit">
+              {{ 'Apply to this campaign' if campaign_id else 'Apply globally' }}
+            </button>
+          </form>
+          <p class="v2-hint v2-mt-sm">
+            Enabled means it may claim new work. Paused holds work in flight rather than discarding
+            it. Disabled claims nothing new, and held work stays held.
+            {% if selected.value == 'capture' %}
+              The Capture Agent cannot be paused or disabled: it is what makes a person exist at
+              all, and stopping it would silently drop captures.
+            {% endif %}
+          </p>
+          {% else %}
+          <p class="v2-note">
+            This Agent has no executable adapter, so it cannot be enabled at all. The switch is not
+            hidden — it is refused, and the refusal is the honest state.
+          </p>
+          {% endif %}
+        </div>
+
+        <div class="v2-card-head">
+          <h2>Registry facts</h2>
+          <span class="v2-note">Not settings. These are properties of the Agent, and no screen can change them.</span>
+        </div>
+        <dl class="v2-dl">
+          <div class="v2-kv"><dt>Runs after</dt><dd>
+            {% if spec.dependencies %}{{ spec.dependencies | map(attribute='value') | map('nice') | join(', ') }}
+            {% else %}nothing — it is first{% endif %}
+          </dd></div>
+          <div class="v2-kv"><dt>Attempts allowed</dt><dd class="m">{{ spec.max_attempts }}</dd></div>
+          <div class="v2-kv"><dt>Retry backoff</dt><dd class="m">{{ spec.retry_base_seconds | int }}s, capped at {{ spec.retry_cap_seconds | int }}s</dd></div>
+          <div class="v2-kv"><dt>Can be skipped</dt><dd>
+            {% if spec.skippable %}Yes — switching it off auto-skips a contact rather than parking them for a click.
+            {% else %}No — a contact cannot go past it, so switching it off holds them.{% endif %}
+          </dd></div>
+          <div class="v2-kv"><dt>Default state</dt><dd>{{ spec.default_status.value }}</dd></div>
+        </dl>
+        <div class="v2-card-foot plain">
+          These decide what this Agent <em>executes</em>. They never decide what is
+          <em>permitted</em> — suppression, campaign eligibility and your approval stay
+          authoritative above every control here.
+        </div>
+        {% endif %}
+      </div>
+
+      <div class="v2-card">
+        <div class="v2-card-head">
+          <h2>Run log</h2>
+          <span class="v2-note">Every run, and why it came out the way it did. A refusal that spent nothing is as much a result as a success.</span>
+        </div>
+        {% if jobs.jobs %}
+          {% for job in jobs.jobs %}
+          <div class="v2-log">
+            <div class="v2-log-top">
+              <span class="v2-log-time">{{ job.updated_at | clock }}</span>
+              {{ dot('ok' if job.public_status == 'completed' else ('err' if job.public_status == 'failed' else ('info' if job.public_status in ('running', 'leased') else 'warn'))) }}
+              <span class="v2-log-who">{{ job.contact_label or job.task_kind }}</span>
+              {{ tag(job.public_status, 'ok' if job.public_status == 'completed' else ('err' if job.public_status == 'failed' else 'info'), small=true) }}
+              {% if job.terminal_failure %}{{ tag('terminal', 'err', small=true) }}{% endif %}
+              {% if job.completed_without_result %}{{ tag('no usable result', 'warn', small=true) }}{% endif %}
+              <span class="v2-log-right">
+                attempt {{ job.attempt_count }}/{{ job.max_attempts }}
+                {%- if job.campaign_name %} · {{ job.campaign_name }}{% endif %}
+              </span>
+            </div>
+            <div class="v2-log-why">
+              {% if job.error_message %}{{ job.error_message }}
+              {% elif job.outcome_status %}Outcome recorded: {{ job.outcome_status | nice }}.
+              {% elif job.public_status == 'completed' %}Completed, and a domain outcome was committed.
+              {% elif job.next_run_at %}Retry scheduled for {{ job.next_run_at | dt }}.
+              {% else %}No reason was recorded.{% endif %}
+              {% if job.error_class %}<div class="v2-sub mono">{{ job.error_class }}</div>{% endif %}
+              {# The detail is where an unexpected error names itself. Withholding it
+                 made "unexpected operational error" a dead end on this page too. #}
+              {% if job.error_detail %}
+              <details class="v2-sub-disclose">
+                <summary>What the Agent recorded</summary>
+                <pre class="v2-pre">{{ job.error_detail | tojson(indent=2) }}</pre>
+              </details>
+              {% endif %}
+            </div>
+          </div>
+          {% endfor %}
+          <div class="v2-card-foot plain">
+            Showing the most recent {{ jobs.jobs | length }} of {{ jobs.total }}.
+            <a href="/workbench/jobs?agent={{ selected.value }}">Open the full queue in the admin Workbench →</a>
+          </div>
+        {% else %}
+          {{ empty('This Agent has not run', 'No job has ever been queued for it. Either it is switched off, or nothing has reached it yet.') }}
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="v2-aside plain">
+      <div class="v2-card clip">
+        <div class="v2-card-head tight"><h2>Agents</h2></div>
+        {% for card in overview.agents %}
+        <a class="v2-sidelist-item {{ 'on' if card.agent_id == selected }}"
+           href="/app/agents?agent={{ card.agent_id.value }}{% if campaign_id %}&campaign={{ campaign_id }}{% endif %}">
+          <div class="v2-sidelist-top">
+            <span class="v2-sidelist-n">{{ card.position + 1 }}</span>
+            <b>{{ card.display_name }}</b>
+            {{ control_state(card.control.status) }}
+          </div>
+          <div class="v2-hint">
+            {{ card.queue.open_work }} open · {{ card.queue.failed }} failed
+            {%- if not card.control.implemented %} · no adapter{% endif %}
+          </div>
+        </a>
+        {% endfor %}
+      </div>
+
+      {% if campaigns %}
+      <div class="v2-card">
+        <div class="v2-card-head tight"><h2>Scope</h2></div>
+        <div class="v2-row tight">
+          <div class="v2-chips">
+            <a class="v2-chip sm {{ 'on' if not campaign_id }}" href="/app/agents?agent={{ selected.value }}">Everywhere</a>
+            {% for overview_row in campaigns %}
+            <a class="v2-chip sm {{ 'on' if campaign_id == overview_row.campaign.id }}"
+               href="/app/agents?agent={{ selected.value }}&campaign={{ overview_row.campaign.id }}">{{ overview_row.campaign.name }}</a>
+            {% endfor %}
+          </div>
+          <div class="v2-hint v2-mt-sm">
+            A campaign override replaces the global state for that campaign only, and merges its
+            configuration over the global one.
+          </div>
+        </div>
+      </div>
+      {% endif %}
+
+      <div class="v2-card">
+        <div class="v2-card-head tight"><h2>What this Agent cannot do</h2></div>
+        <div class="v2-card-body v2-note">
+          No control here can loosen a limit. Suppression wins over everything, a campaign with
+          execution off holds every Agent but Capture, an unimplemented Agent cannot be enabled at
+          all, and no Agent sends: nothing in this product can put an email on the wire.
+        </div>
+      </div>
+
+      <div class="v2-card">
+        <div class="v2-card-head tight"><h2>Spend</h2></div>
+        <div class="v2-card-body">
+          <div class="v2-figure-row"><span>{{ unbuilt('not tracked here') }}</span><span>model spend for this Agent</span></div>
+          <div class="v2-hint v2-mt-sm">
+            Provider usage and credits are recorded per call in the usage ledger, which the admin
+            Workbench reads. This page does not roll it up per Agent, and inventing a figure would be
+            worse than not showing one.
+          </div>
+        </div>
+        <div class="v2-card-foot plain"><a href="/verification">Open the verification console →</a></div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

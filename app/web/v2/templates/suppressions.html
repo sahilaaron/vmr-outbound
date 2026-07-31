@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% from "_ui.html" import tag, empty %}
+{% block content %}
+<div class="v2-page narrow">
+  <h1 class="v2-h1">Suppression list</h1>
+  <p class="v2-lede">
+    {{ total | thousands }} active entr{{ 'y' if total == 1 else 'ies' }}. Suppression wins over
+    every other decision, including your approval: a suppressed address or domain is never written
+    to and never contacted, whatever else the pipeline believes.
+  </p>
+
+  <div class="v2-card clip v2-mt">
+    {% if rows %}
+    <div class="v2-table-wrap">
+      <table>
+        <thead><tr><th>Value</th><th>Kind</th><th>Reason</th><th>Source</th><th class="num">Added</th></tr></thead>
+        <tbody>
+          {% for row in rows %}
+          <tr>
+            <td class="m v2-break">{{ row.value }}</td>
+            <td>{{ tag(row.suppression_type.value, '', small=true) }}</td>
+            <td class="v2-note">
+              {{ row.reason.value | nice }}
+              {% if row.notes %}<div class="v2-sub">{{ row.notes }}</div>{% endif %}
+            </td>
+            <td class="v2-note">{{ row.source or 'not recorded' }}</td>
+            <td class="num m v2-nowrap">{{ row.created_at | dt }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="v2-card-foot plain">
+      Read-only here on purpose. Adding a suppression is irreversible in effect — it stops outreach
+      to someone — so it stays a deliberate act on the admin surface rather than a click on a
+      browsing screen. Deactivating one is recorded as an event, never as a deletion.
+    </div>
+    {% else %}
+      {{ empty('Nothing is suppressed',
+        'No address or domain has been excluded. The ledger is empty, which is different from being switched off.') }}
+    {% endif %}
+  </div>
+
+  {% if not enabled %}
+  <div class="v2-callout v2-mt">
+    <strong>The suppression feature switch is off.</strong> Existing entries are still stored and
+    still shown here, but the import and enrolment paths that consult the ledger are not active in
+    this environment.
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

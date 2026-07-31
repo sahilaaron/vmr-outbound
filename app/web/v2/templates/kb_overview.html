@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% from "_ui.html" import tag, readiness_state, empty, unbuilt %}
+{% block content %}
+<div class="v2-page">
+  {% include "_kb_head.html" %}
+
+  <div class="v2-split">
+    <div class="v2-stack">
+      <div class="v2-card">
+        <div class="v2-card-head">
+          <h2>What is entered, and what is missing</h2>
+          <span class="v2-note">Counted from stored records. Not a score, and it blocks nothing.</span>
+        </div>
+        {% for item in report.items %}
+        <div class="v2-row">
+          <div class="v2-sidelist-top">
+            <b>{{ item.label }}</b>
+            {{ readiness_state(item.state) }}
+            {% if item.link %}<a class="v2-btn small push" href="{{ item.link }}">Open</a>{% endif %}
+          </div>
+          <div class="v2-note">{{ item.reason }}</div>
+        </div>
+        {% endfor %}
+        <div class="v2-card-foot plain">
+          {{ report.configured_count }} of {{ report.applicable_count }} applicable areas are
+          configured. Nothing here stops an Agent from running — it changes what a draft is
+          allowed to say.
+        </div>
+      </div>
+
+      {% if profile %}
+      <div class="v2-card">
+        <div class="v2-card-head">
+          <h2>Who we are</h2>
+          <span class="v2-note">One profile. Drafts paraphrase it and never quote it.</span>
+          <a class="v2-btn small push" href="/knowledge-base/company">Edit in admin</a>
+        </div>
+        <div class="v2-card-body roomy">
+          <div><div class="v2-eyebrow">Company name</div><div class="v2-kb-value">{{ profile.name }}</div></div>
+          {% if profile.short_description %}
+          <div><div class="v2-eyebrow">Short description</div><div class="v2-kb-prose">{{ profile.short_description }}</div></div>
+          {% endif %}
+          {% if profile.positioning %}
+          <div><div class="v2-eyebrow">Positioning</div><div class="v2-kb-prose">{{ profile.positioning }}</div></div>
+          {% endif %}
+        </div>
+      </div>
+      {% else %}
+      <div class="v2-card">
+        <div class="v2-card-head"><h2>Who we are</h2></div>
+        {{ empty('No company profile is stored',
+          'Without it a draft has no description of the seller to paraphrase. Enter it on the admin Knowledge Base, or generate a proposal from your own website pages there.') }}
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="v2-aside plain">
+      <div class="v2-card">
+        <div class="v2-card-head tight"><h2>Where this is used</h2></div>
+        <div class="v2-row tight">
+          <div class="v2-eyebrow">Drafting</div>
+          <div class="v2-note">
+            The Personalization Agent writes from this and from sourced prospect research, and from
+            nothing else. A claim that is not here does not reach a draft.
+          </div>
+        </div>
+        <div class="v2-row tight">
+          <div class="v2-eyebrow">Campaigns</div>
+          <div class="v2-note">
+            A campaign names an offering and inherits its proof points and limits. It never writes
+            copy or chooses a call to action.
+          </div>
+        </div>
+        <div class="v2-row tight">
+          <div class="v2-eyebrow">Prospect research</div>
+          <div class="v2-note">
+            Unaffected. Seller knowledge and researched evidence stay structurally separate;
+            nothing here changes how a contact is researched, verified or suppressed.
+          </div>
+        </div>
+      </div>
+
+      <div class="v2-card">
+        <div class="v2-card-head tight"><h2>Effect on drafts</h2></div>
+        <div class="v2-card-body">
+          <div class="v2-figure-row"><span class="m">{{ draft_counts.total }}</span><span>drafts written from this Knowledge Base</span></div>
+          <div class="v2-figure-row"><span class="m">{{ draft_counts.awaiting }}</span><span>waiting for your read</span></div>
+          <div class="v2-figure-row"><span class="m">{{ draft_counts.approved }}</span><span>approved by you</span></div>
+          <div class="v2-figure-row"><span>{{ unbuilt('not counted') }}</span><span>rewrites forced by a limit</span></div>
+        </div>
+        <div class="v2-card-foot plain">
+          Rewrites are not counted yet: the Personalization Agent enforces the limits, but it does
+          not record how many sentences it removed doing so.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,15 @@
+{#
+  Knowledge Base section switcher. Counts come from stored records, so a section
+  showing zero genuinely holds nothing.
+#}
+<div class="v2-chips v2-mt">
+  {% for key, label in kb_sections %}
+  <a class="v2-chip {{ 'on' if kb_section == key }}" href="/app/knowledge{{ '' if key == 'overview' else '/' ~ key }}">
+    {{ label }}
+    {%- if key == 'offerings' %}<span class="count">{{ kb_counts.offerings.active }}</span>
+    {%- elif key == 'proof-points' %}<span class="count">{{ kb_counts.proof_points.active }}</span>
+    {%- elif key == 'restricted-claims' %}<span class="count">{{ kb_counts.restricted_claims.active }}</span>
+    {%- elif key == 'personas' %}<span class="count">{{ kb_counts.personas.active }}</span>{% endif %}
+  </a>
+  {% endfor %}
+</div>

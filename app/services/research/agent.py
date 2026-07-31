@@ -27,6 +27,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy.orm import Session
+
 from app.models.company import Company
 from app.models.contact import Contact
 from app.models.enums import DossierSection, InsightKind, InsightState
@@ -41,7 +43,6 @@ from app.services.research.contracts import (
     WorkerResult,
 )
 from app.services.resolution import gates
-from sqlalchemy.orm import Session
 
 RESEARCH_ACTOR = "system:research-agent"
 INTERPRETER = "research-agent"

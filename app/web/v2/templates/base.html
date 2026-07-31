@@ -1,0 +1,103 @@
+{#
+  The customer-facing application shell.
+
+  Navigation is the design's default model: a sticky top bar with the three groups
+  the design names — Work (Today, Campaigns, Review), Records (Contacts,
+  Companies), Setup (Knowledge Base) — plus the account menu, which is where the
+  design puts Agent settings.
+
+  No script except the monitor auto-refresh the campaign screen opts into, which is
+  the existing `live.js` and swaps `.main-inner`. That class is on the content
+  wrapper here for exactly that reason; the file needed no change.
+
+  The admin Workbench keeps its own shell (`app/web/templates/base.html`) and its
+  own stylesheet. Nothing is shared, so a change here cannot reach it.
+#}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ page_title | default("Outbound") }}{% endblock %} — VMR Outbound</title>
+  <link rel="icon" href="{{ url_for('static', path='vmr-mark.svg') }}" type="image/svg+xml">
+  <link rel="stylesheet" href="{{ url_for('static', path='v2.css') }}">
+</head>
+<body class="v2"{% if live_seconds %} data-live="{{ live_seconds }}"{% endif %}>
+<div class="v2-shell">
+
+  <header class="v2-top">
+    <div class="v2-top-inner">
+      <a class="v2-brand" href="/app">
+        <img src="{{ url_for('static', path='vmr-mark.svg') }}" alt="VMR">
+        <b>Outbound</b>
+      </a>
+
+      <nav class="v2-topnav" aria-label="Primary">
+        {% for group in nav_groups %}
+        <div class="v2-topnav-group">
+          {% if not loop.first %}<span class="v2-navsep" aria-hidden="true"></span>{% endif %}
+          {% for item in group.items %}
+          <a class="v2-navlink {{ 'active' if item.key == active_nav else '' }}" href="{{ item.href }}">
+            {{ item.label }}
+            {% if item.badge %}<span class="v2-nav-badge {{ item.badge_tone }}">{{ item.badge }}</span>{% endif %}
+          </a>
+          {% endfor %}
+        </div>
+        {% endfor %}
+      </nav>
+
+      <div class="v2-top-right">
+        <a class="v2-pill-live" href="/app/capture" title="The capture extension is a browser extension; this page explains what it does and what it has captured.">
+          <span class="v2-dot {{ 'ok live' if capture_ready else 'warn' }}"></span>
+          <span class="label">Capture</span>
+        </a>
+        <details class="v2-menu">
+          <summary title="Account and setup">
+            <span class="v2-avatar">{{ operator_initials }}</span>
+            <span class="v2-sr">Account menu</span>
+          </summary>
+          <div class="v2-menu-panel">
+            <div class="v2-menu-head">
+              <b>{{ operator_name }}</b>
+              <span class="m v2-hint">{{ operator_email }}</span>
+            </div>
+            <a class="v2-menu-item" href="/app/agents">
+              <b>Agent settings &amp; logs</b>
+              <span>What each Agent may do, and what it did</span>
+            </a>
+            <a class="v2-menu-item" href="/app/knowledge">
+              <b>Knowledge Base</b>
+              <span>What we sell and what we may say about it</span>
+            </a>
+            <a class="v2-menu-item" href="/app/suppressions">
+              <b>Suppression list</b>
+              <span>Addresses and domains never contacted</span>
+            </a>
+            <a class="v2-menu-item" href="/app/sending">
+              <b>Sending accounts</b>
+              <span>Not connected — sending is not built yet</span>
+            </a>
+            <a class="v2-menu-item last" href="/">
+              <b>Operator Workbench</b>
+              <span>The admin surface: imports, queues, raw records</span>
+            </a>
+          </div>
+        </details>
+      </div>
+    </div>
+  </header>
+
+  <main class="v2-main">
+    <div class="main-inner">
+      {% if flash_ok %}<div class="v2-page narrow"><div class="v2-notice ok" role="status">{{ flash_ok }}</div></div>{% endif %}
+      {% if flash_err %}<div class="v2-page narrow"><div class="v2-notice err" role="alert">{{ flash_err }}</div></div>{% endif %}
+      {% if not database_ok %}
+      <div class="v2-page narrow"><div class="v2-notice err" role="alert">The database is not reachable right now, so these pages cannot show current state. Nothing has been lost — start the database and reload.</div></div>
+      {% endif %}
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+</div>
+{% if live_seconds %}<script src="{{ url_for('static', path='live.js') }}" defer></script>{% endif %}
+</body>
+</html>

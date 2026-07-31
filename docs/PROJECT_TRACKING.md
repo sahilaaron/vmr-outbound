@@ -2,194 +2,136 @@
 
 ## Purpose
 
-This document defines the single management structure for the VMR Outbound Agent MVP.
+This document defines the management structure for the current VMR Outbound Agent MVP.
 
 The tracker must answer:
 
-> **What prevents a captured Contact from becoming a verified, personalized and approved email ready for sending?**
+> **What prevents the assembled Contact-to-approved-draft product from being accepted in real operation?**
 
-The product outcome is:
-
-> **A user can capture 2,000 Sales Navigator contacts in the morning and begin sending AI-personalized verified emails that afternoon.**
+The current answer is operating proof, not another architecture build.
 
 ## Systems of record
 
 - **GitHub** owns source code, issues, pull requests, technical decisions, tests and implementation evidence.
-- **Google Sheets** owns management status, ownership, blockers, forecasts and readiness.
-- `docs/GOAL.md` owns the authorized MVP outcome and acceptance criteria.
-- `docs/ARCHITECTURE.md` owns the canonical data and Agent pipeline.
-- `docs/AGENTS.md` and `docs/CLAUDE.md` own engineering guardrails.
+- **Google Sheets build tracker** owns management status, owner, blocker, next action and readiness consequence.
+- [`CURRENT_MVP.md`](CURRENT_MVP.md) owns the current product reality.
+- [`GOAL.md`](GOAL.md) owns the authorized MVP outcome and acceptance criteria.
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) owns the current data and Agent boundaries.
+- `AGENTS.md` and `CLAUDE.md` own engineering guardrails.
 
-The Sheet is not a second technical backlog. One management row may summarize several GitHub issues that produce one operational outcome.
+The Sheet is not a second technical backlog. It summarizes the operational consequence of GitHub work.
 
-## Canonical tracker structure
+## Current roadmap — 30 July 2026
 
-Replace the old phase-first roadmap with one Roadmap tab and these MVP stage tabs:
+| Workstream | Status | Evidence | Current reality | Next action |
+| --- | --- | --- | --- | --- |
+| Contact and Company foundation | Complete | #131 and merged foundation PRs | Permanent contact-first records, capture evidence, identity, domain and suppression exist | Use in live acceptance |
+| Campaign pipeline | Complete | PR #232 | Durable Campaign Contacts, Agents, jobs, controls, Research, Email, Verification, Insights and Personalization are merged | Validate in operation |
+| Customer v2 interface | Ready for merge | PR #233 / #217 | `/app`, Review and customer views are implemented; `/admin` remains the Workbench | Merge after CI and route checks |
+| One-Contact live acceptance | Not started | #202 / #96 | Real website, MillionVerifier and Claude CLI path has not been proven together | Run one authorized Contact |
+| Controlled 10–20 Contact batch | Not started | #202 / #96 | Concurrency, retries and usability need operating proof | Run only after the one-Contact pass |
+| AI trust hardening | In progress | #181 | Core tool/evidence separation exists; adversarial matrix remains | Complete before send-capable pilot |
+| Provider sending and outcomes | Post-MVP | #174 | No provider adapter; no sending side effect exists | Activate after MVP acceptance |
+| Controlled 100-Contact send pilot | Post-MVP | #96 | Requires provider boundary and IT/mailbox readiness | Start with one provider submission |
+| Fit scoring and Saved Audiences | Deferred | #161 / #163 | Explicit Campaign enrolment is the current path | Activate only from measured need |
+| Cadence generation | Deferred | #213 / #214 | Current output is one immutable draft | Activate only from measured need |
+| Extension Campaign auto-add | Deferred | #220 | Capture remains Campaign-independent; Workbench supports enrolment | Activate only if enrolment is a bottleneck |
 
-| Tab | Stage question |
-| --- | --- |
-| `Roadmap` | What is the current critical path to the MVP outcome? |
-| `01 — Campaigns & Collections` | Can operators configure Campaigns and reusable Collections without making Campaigns own Contacts? |
-| `02 — Capture & Identity` | Can 100–2,000 people be captured safely into permanent Contacts, with optional Campaign auto-add and persistent Labels? |
-| `03 — Company Resolution` | Can Contacts converge on the correct reusable Company and domain? |
-| `04 — Company Research` | Can the Research Agent produce reusable sourced Company facts? |
-| `05 — Email & Verification` | Can the system find and verify an exact email using the locked policy? |
-| `06 — Insights & Personalization` | Can verified Campaign Contacts receive evidence-backed AI insights and personalized copy? |
-| `07 — Review & Sending` | Can exact message versions be approved and submitted safely? |
-| `08 — Workbench & Agents` | Can every Agent and job be observed, paused, retried or disabled globally and per Campaign? |
-| `09 — Pilot` | Can the complete pipeline process a controlled batch reliably? |
-| `Future` | Which explicitly deferred ideas are being held outside the MVP? |
+## Tracker sheets
 
-Do not create one tab per issue or legacy code prefix.
+Use these management views:
 
-## Roadmap rows
+1. **Roadmap** — current critical path and post-MVP boundary.
+2. **MVP Acceptance** — one-Contact and 10–20 Contact proof checklist.
+3. **Current Product** — implemented surfaces, Agent status and accepted limitations.
+4. **Post-MVP** — work that must not appear as a current blocker.
+5. **Issue Reconciliation** — GitHub issue/PR status map.
 
-The Roadmap uses one row per operational workstream:
-
-1. Campaign and Collection model
-2. Optional Campaign auto-add and persistent extension Labels
-3. Contact and Company identity convergence
-4. Company-domain reuse
-5. Company research integration
-6. Locked email discovery policy
-7. Exact-address verification
-8. AI company insights
-9. Campaign Contact personalization
-10. Review and approval
-11. Sending integration
-12. Workbench Jobs monitor and Agent controls
-13. End-to-end dry run and pilot
+Do not return to the old phase-first plan. The current system is assembled vertically; management must track acceptance and operating consequence.
 
 ## Required columns
 
 | Column | Meaning |
 | --- | --- |
 | Workstream | Management-level outcome |
-| MVP stage | Canonical stage above |
-| GitHub evidence | Parent or implementation issue / PR |
+| Status | Complete, Ready for merge, In progress, Not started, Blocked, Post-MVP or Deferred |
+| GitHub evidence | Authoritative issue or PR |
 | Owner | Person or agent responsible for the next action |
-| Status | Not started, In progress, Blocked, Ready for review, Complete or Deferred |
-| Dependency | Earlier outcome or external condition |
-| Blocker | Specific condition preventing progress |
-| Launch impact | Critical, High, Medium or Low |
-| Current build | Active branch, PR or release |
-| Latest verified result | What is actually usable now |
-| Next action | One concrete next step |
-| Decision required | Exact decision and owner, or None |
-| Forecast | Realistic date or range, or Not estimated |
+| Current reality | What is actually usable now |
+| Blocker | Specific condition preventing the next state |
+| Next action | One concrete step |
+| Launch impact | Current MVP, acceptance, send-capable pilot or future |
 | Confidence | Low, Medium or High |
 | Last updated | Timestamp and updater |
 
 Do not use percentage-complete estimates.
 
-## Locked product rules reflected in tracking
+## Current MVP exit conditions
 
-- Capture never requires a Campaign.
-- An optional selected Campaign only auto-adds the resolved permanent Contact by upserting Campaign Contact membership.
-- Labels in the extension are backend Collections.
-- Campaign and Label selections persist until deselected.
-- Campaign-specific scores, copy, approvals and send state belong to Campaign Contact.
-- The frontend calls workers Agents.
-- Every Agent needs global controls and Campaign-level overrides.
-- The locked Agent order is Capture, Identity, Company, Research, Email, Verification, Insights, Personalization and Sending.
-- The Workbench Jobs monitor is an MVP requirement, not a future dashboard enhancement.
-- Email discovery attempts at most three formats and stops on the first verified result.
+### Product merge
 
-## Stage exit conditions
+- PR #232 is merged.
+- PR #233 is merged.
+- `/`, `/app/review` and `/admin` render correctly after local update.
 
-### 01 — Campaigns & Collections
+### One real Contact
 
-- Campaign stores audience definition, seller context, messaging, CTA, guardrails, templates, sending configuration and Agent overrides.
-- Collections are reusable backend records.
-- Campaign Contact is the Campaign-specific membership and state boundary.
-- Contacts remain permanent and campaign-independent.
+- Identity and Company resolution complete truthfully.
+- Research reads the real Company website and stores sources, gaps and a dossier version.
+- Email and live Verification record the exact provider outcome.
+- Real Claude CLI Insights and Personalization complete from persisted evidence.
+- One exact immutable draft appears in Review.
+- Human approve/discard is recorded in audit history.
+- No sending side effect exists.
 
-### 02 — Capture & Identity
+### Controlled 10–20 Contact batch
 
-- Normal LinkedIn and Sales Navigator capture create or update permanent Contacts.
-- Campaign selection is optional.
-- A selected Campaign auto-adds resolved Contacts idempotently.
-- Selected Labels apply as Collections.
-- Campaign and Label selections persist until deselected.
-- Repeated capture does not duplicate Contacts.
+- Worker claims remain exclusive under the selected concurrency.
+- Retries and failures remain readable and recoverable.
+- Blocked and partial records remain truthful.
+- Provider/model spend stays bounded to the selected batch.
+- Customer UI and Workbench remain usable during execution.
+- No duplicate Contact, Company, Campaign Contact or draft artifact is created.
 
-### 03 — Company Resolution
+### Verdict
 
-- Captures converge on reusable Companies.
-- A resolved domain is reused across Contacts sharing the same Sales Navigator company identity.
-- Ambiguous identity remains reviewable rather than fabricated.
+Record one verdict:
 
-### 04 — Company Research
+- **Pass** — close #202 and plan post-MVP work.
+- **Conditional pass** — accept the MVP with named follow-up defects that do not invalidate the workflow.
+- **Blocked** — name the exact operating failure and smallest repair.
 
-- Research jobs are resumable and visible.
-- Sourced facts retain provenance and freshness.
-- Third-party text remains untrusted evidence.
-- Research is reusable by Company.
+## Current product truth
 
-### 05 — Email & Verification
-
-- The employee-size pattern ordering is implemented as a versioned policy.
-- No more than three candidates are attempted.
-- Search stops after the first verified address.
-- Verification outcomes remain exact-address evidence.
-- Invalid, catch-all and unknown outcomes remain truthful.
-
-### 06 — Insights & Personalization
-
-- AI insights are stored separately from sourced facts.
-- AI work runs after verification by default.
-- Personalization uses Campaign context and stored evidence.
-- Generated copy is Campaign Contact-specific and versioned.
-
-### 07 — Review & Sending
-
-- One exact message version can be reviewed and approved.
-- Editing invalidates approval.
-- Suppression and current eligibility are checked before sending.
-- Approved Campaign Contacts can be submitted idempotently to the sending integration.
-- Outcomes return to the application.
-
-### 08 — Workbench & Agents
-
-- Every Agent shows waiting, running, paused, retrying, failed and completed work.
-- Queue depth, throughput and recent failures are visible.
-- Operators can retry and inspect failures.
-- Agents can be enabled, paused or disabled globally.
-- Campaigns can override Agent defaults.
-- New sending work has an emergency stop.
-
-### 09 — Pilot
-
-- A synthetic dry run completes without a real send.
-- A controlled batch completes without duplicate Contacts, Companies, Campaign memberships, messages or sends.
-- Failures are recoverable from the Workbench.
-- Operating effort and bottlenecks are recorded before scale increases.
+- The Campaign pipeline is merged through PR #232.
+- The worker-based Research adapter is authoritative.
+- Research gathers evidence; Claude is used by Insights and Personalization.
+- Email candidate order is `firstname.lastname`, `firstname`, `finitiallastname`.
+- Live Verification requires the feature switch, credentials and Agent live authority.
+- The v2 interface is the customer front door; the Workbench remains at `/admin`.
+- Review decides one exact immutable `DraftVersion` and does not send.
+- Sending, replies, sequences and analytics are not built.
+- Scoring, Saved Audiences, extension Campaign auto-add and multi-email cadence are not current MVP blockers.
 
 ## Update procedure
 
-After a meaningful build:
+After a meaningful delivery or acceptance event:
 
-1. Verify the remote branch, diff, tests and migrations.
-2. Update the relevant GitHub parent or implementation issue.
-3. Record the operational consequence in the Roadmap and one stage tab.
-4. State what became usable, what remains blocked and the next action.
-5. Preserve earlier log entries; append corrections instead of rewriting history.
-
-Also update the relevant tab when a stacked pull-request chain is assembled, or
-merged in part, so that the remaining merge order and its owner stay visible.
-
-Treat a stacked chain built by parallel threads as one unit of work. Do not log
-each thread's branch separately. Record the merge order, which parent is
-currently blocking its children, and who must act next. Intermediate restacks
-and corrective pushes are engineering detail and belong in GitHub.
+1. Verify the remote branch or PR, diff, tests and migrations.
+2. Update the authoritative GitHub issue.
+3. Update one Roadmap row and the relevant Acceptance or Product row.
+4. State what became usable, what remains blocked and who acts next.
+5. Preserve earlier evidence but mark superseded guidance clearly.
+6. Reconcile `CURRENT_MVP.md` when the product boundary or actual capability changes.
 
 ## Backlog rule
 
-The single MVP epic owns the active end-to-end build. Keep a separate open issue only when it is:
+Keep a separate open issue only when it is:
 
-- an active implementation slice;
+- current MVP operating acceptance;
 - a narrow live defect;
-- a required safety boundary;
-- or a reviewable design task that directly advances the MVP.
+- required safety hardening;
+- an active post-MVP provider build;
+- or a future item with an explicit activation gate.
 
-All other suggestions belong in the single Future issue until operating evidence justifies activation.
+A future capability must not be presented as incomplete MVP work merely because an old roadmap once included it.

@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import exists, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.campaign import Campaign, CampaignContact
@@ -21,7 +21,7 @@ from app.models.enums import (
     PipelineStageStatus,
 )
 from app.models.verification_job import AgentJob
-from app.services.agents import jobs
+from app.services.agents import jobs, locking
 from app.services.agents.adapters import (
     DEFAULT_ADAPTERS,
     AgentAdapter,
@@ -31,12 +31,13 @@ from app.services.agents.adapters import (
     AgentRetryableError,
     AgentWaiting,
 )
-from app.services.agents.controls import effective_control
+from app.services.agents.controls import CAMPAIGN_EXECUTION_SOURCE, effective_control
 from app.services.agents.registry import get_agent_spec
 from app.services.campaign_contacts import refresh_eligibility
 from app.services.pipeline import (
     agent_state,
     append_event,
+    can_transition,
     dependencies_satisfied,
     transition_stage,
 )
@@ -217,6 +218,23 @@ def _terminal_eligibility_block(membership: CampaignContact) -> str | None:
     return None
 
 
+def stage_job_key(
+    campaign_contact_id: uuid.UUID, agent_id: AgentIdentifier, *, generation: int = 1
+) -> str:
+    """The idempotency key for one Campaign Contact's turn at one Agent.
+
+    ``generation`` exists so a stage can be run *again* after the reason it failed has
+    been fixed. The key used to be a hardcoded ``v1``, which made that impossible:
+    ``enqueue_job`` is idempotent on the key, so re-queueing returned the same failed
+    job and the contact never moved. Every ordinary caller stays on generation 1, so
+    two workers scheduling the same stage concurrently still converge on one job —
+    that convergence is the whole reason the key exists and must not be weakened to
+    allow re-runs.
+    """
+
+    return f"pipeline:{campaign_contact_id}:{agent_id.value}:v{generation}"
+
+
 def schedule_next(
     session: Session,
     *,
@@ -225,8 +243,13 @@ def schedule_next(
     parent_job: AgentJob | None = None,
     priority: int = 100,
     allow_enqueue: bool = True,
+    generation: int = 1,
 ) -> AgentJob | None:
-    """Enqueue the next eligible Agent or persist why it cannot run."""
+    """Enqueue the next eligible Agent or persist why it cannot run.
+
+    ``generation`` is passed through to :func:`stage_job_key`; only an explicit
+    operator re-run ever raises it.
+    """
 
     if membership.membership_status is not CampaignMembershipStatus.ACTIVE:
         return None
@@ -283,7 +306,29 @@ def schedule_next(
         # A disabled Agent that is NOT skippable still stops dead. Sending is the
         # case that matters: switching it off must mean nothing is sent, never
         # "silently proceed as though sending had happened".
-        if spec.skippable and agent_id is not AgentIdentifier.CAPTURE:
+        #
+        # Two further cases are never stepped over, because in both the skip
+        # would assert something untrue and SKIPPED is terminal — no transition
+        # leads out of it, so neither is recoverable by resuming.
+        #
+        # A Campaign whose master execution switch is off is *paused*, not
+        # configured without this stage. The operator pressed "Pause campaign";
+        # auto-skipping would answer that by permanently discarding every
+        # skippable stage of every Contact in it, and resuming would find the
+        # work gone rather than where it was left.
+        #
+        # A stage that cannot legally reach SKIPPED from where it is has work
+        # that already started — RUNNING above all. Treating a claimed, running
+        # Research job as unstarted work to step over is exactly wrong: the job
+        # exists, may still finish, and its stage is not the Campaign's to
+        # rewrite from here. This used to raise ``PipelineStateError`` out of
+        # transition_stage and surface as a 500 on the pause button.
+        if (
+            spec.skippable
+            and agent_id is not AgentIdentifier.CAPTURE
+            and control.source != CAMPAIGN_EXECUTION_SOURCE
+            and can_transition(state.status, PipelineStageStatus.SKIPPED)
+        ):
             transition_stage(
                 session,
                 membership=membership,
@@ -311,7 +356,15 @@ def schedule_next(
                 priority=priority,
                 allow_enqueue=allow_enqueue,
             )
-        if state.status is not PipelineStageStatus.DISABLED:
+        # A control projects itself onto the stage only where that is a legal
+        # move. A stage that already failed keeps its failure: "disabled" would
+        # overwrite the one durable fact an operator needs, and the control's
+        # actual effect — that nothing is queued from here — holds either way.
+        # This is the same hazard as the skip above, and the reason a pause used
+        # to be able to 500 on a Campaign that merely contained a failed stage.
+        if state.status is not PipelineStageStatus.DISABLED and can_transition(
+            state.status, PipelineStageStatus.DISABLED
+        ):
             transition_stage(
                 session,
                 membership=membership,
@@ -324,7 +377,9 @@ def schedule_next(
             )
         return None
     if control.status is AgentControlStatus.PAUSED:
-        if state.status is not PipelineStageStatus.PAUSED:
+        if state.status is not PipelineStageStatus.PAUSED and can_transition(
+            state.status, PipelineStageStatus.PAUSED
+        ):
             transition_stage(
                 session,
                 membership=membership,
@@ -379,7 +434,7 @@ def schedule_next(
         return None
 
     spec = get_agent_spec(agent_id)
-    key = f"pipeline:{membership.id}:{agent_id.value}:v1"
+    key = stage_job_key(membership.id, agent_id, generation=generation)
     job, created = jobs.enqueue_job(
         session,
         agent_id=agent_id,
@@ -432,6 +487,7 @@ def reconcile_agent_control(
     *,
     agent_id: AgentIdentifier,
     campaign_id: uuid.UUID | None = None,
+    campaign_contact_ids: Iterable[uuid.UUID] | None = None,
     actor: str = "system",
 ) -> int:
     """Project a changed Agent control onto affected memberships and jobs.
@@ -441,13 +497,33 @@ def reconcile_agent_control(
     their original reason and require their own resolution.
     """
 
+    relevant_job = exists(
+        select(AgentJob.id).where(
+            AgentJob.campaign_contact_id == CampaignContact.id,
+            AgentJob.agent_id == agent_id,
+            AgentJob.status.in_(
+                (
+                    AgentJobStatus.PENDING,
+                    AgentJobStatus.LEASED,
+                    AgentJobStatus.IN_PROGRESS,
+                    AgentJobStatus.RETRY_SCHEDULED,
+                    AgentJobStatus.PAUSED,
+                )
+            ),
+        )
+    )
     statement = select(CampaignContact).where(
         CampaignContact.membership_status == CampaignMembershipStatus.ACTIVE,
-        CampaignContact.next_stage == agent_id,
+        or_(CampaignContact.next_stage == agent_id, relevant_job),
     )
     if campaign_id is not None:
         statement = statement.where(CampaignContact.campaign_id == campaign_id)
-    memberships = list(session.scalars(statement.with_for_update()).all())
+    scoped_memberships = tuple(campaign_contact_ids or ())
+    if scoped_memberships:
+        statement = statement.where(CampaignContact.id.in_(scoped_memberships))
+    memberships = list(
+        session.scalars(statement.order_by(CampaignContact.id).with_for_update()).all()
+    )
     now = datetime.now(UTC)
     changed = 0
     for membership in memberships:
@@ -455,26 +531,17 @@ def reconcile_agent_control(
         if campaign is None:  # pragma: no cover - protected by FK
             continue
         control = effective_control(session, campaign=campaign, agent_id=agent_id)
-        controlled_jobs = list(
-            session.scalars(
-                select(AgentJob)
-                .where(
-                    AgentJob.campaign_contact_id == membership.id,
-                    AgentJob.agent_id == agent_id,
-                    AgentJob.status.in_(
-                        (
-                            AgentJobStatus.PENDING,
-                            AgentJobStatus.LEASED,
-                            AgentJobStatus.IN_PROGRESS,
-                            AgentJobStatus.RETRY_SCHEDULED,
-                            AgentJobStatus.PAUSED,
-                        )
+        if control.status is AgentControlStatus.ENABLED:
+            controlled_jobs = list(
+                locking.lock_agent_jobs(
+                    session,
+                    select(AgentJob).where(
+                        AgentJob.campaign_contact_id == membership.id,
+                        AgentJob.agent_id == agent_id,
+                        AgentJob.status == AgentJobStatus.PAUSED,
                     ),
                 )
-                .with_for_update()
-            ).all()
-        )
-        if control.status is AgentControlStatus.ENABLED:
+            )
             for job in controlled_jobs:
                 if job.status is AgentJobStatus.PAUSED and job.error_class in {
                     "agent_disabled",
@@ -486,9 +553,40 @@ def reconcile_agent_control(
                     job.error = None
                     job.error_class = None
                     changed += 1
-            schedule_next(session, membership=membership, actor=actor)
+            if membership.next_stage == agent_id:
+                schedule_next(session, membership=membership, actor=actor)
             continue
 
+        # Leased and Running work belongs to its worker until that worker reaches
+        # its next safety gate or commits its outcome.  Reconciliation never clears
+        # the lease or rewrites RUNNING stage state underneath it.
+        in_flight = bool(
+            session.scalar(
+                select(
+                    exists().where(
+                        AgentJob.campaign_contact_id == membership.id,
+                        AgentJob.agent_id == agent_id,
+                        AgentJob.status.in_((AgentJobStatus.LEASED, AgentJobStatus.IN_PROGRESS)),
+                    )
+                )
+            )
+        )
+        controlled_jobs = list(
+            locking.lock_agent_jobs(
+                session,
+                select(AgentJob).where(
+                    AgentJob.campaign_contact_id == membership.id,
+                    AgentJob.agent_id == agent_id,
+                    AgentJob.status.in_(
+                        (
+                            AgentJobStatus.PENDING,
+                            AgentJobStatus.RETRY_SCHEDULED,
+                            AgentJobStatus.PAUSED,
+                        )
+                    ),
+                ),
+            )
+        )
         reason = control.reason or f"{agent_id.value} is {control.status.value}."
         reason_code = f"agent_{control.status.value}"
         has_domain_pause = False
@@ -520,7 +618,7 @@ def reconcile_agent_control(
                     reason_code=reason_code,
                 )
                 changed += 1
-        if not has_domain_pause:
+        if membership.next_stage == agent_id and not has_domain_pause and not in_flight:
             schedule_next(session, membership=membership, actor=actor)
     if memberships:
         session.flush()
@@ -840,6 +938,11 @@ def prepare_leased_job(
     ``None`` means the job is ready for adapter execution. A
     :class:`WorkerExecution` means a safety gate paused or failed it instead.
     """
+
+    locked_context = locking.lock_job_context(session, job.id)
+    if locked_context is None:
+        raise jobs.AgentJobNotFound(f"job {job.id} does not exist")
+    job = locked_context.job
 
     membership = (
         session.get(CampaignContact, job.campaign_contact_id)
@@ -1250,6 +1353,11 @@ def execute_started_job(
 ) -> WorkerExecution:
     """Execute a durably Running job and stage its domain outcome atomically."""
 
+    locked_context = locking.lock_job_context(session, job.id)
+    if locked_context is None:
+        raise jobs.AgentJobNotFound(f"job {job.id} does not exist")
+    job = locked_context.job
+
     if job.status is not AgentJobStatus.IN_PROGRESS:
         raise jobs.AgentJobError("only a running job can execute")
     if job.lease_owner != worker_id:
@@ -1534,14 +1642,44 @@ def execute_started_job(
             actor=worker_id,
         )
     except Exception as exc:  # noqa: BLE001 - converted to a bounded retry classification
+        # Name what broke. This used to read only "an unexpected operational error":
+        # the exception type was recorded in `error_detail` but appeared in no
+        # message, so a worker log full of these was a dead end — every line
+        # identical, nothing to search for, and the one fact that identifies the
+        # cause reachable only by querying the database by hand.
+        #
+        # Deliberately still not the exception's own message: that text is
+        # unsanitized and can carry a filesystem path, a prompt fragment or a
+        # credential. The type names the fault, and the full detail continues to
+        # reach the job record where the Workbench sanitizes it on the way to a page.
+        #
+        # One exception carries its whole diagnosis in a field rather than in its
+        # message, and naming the type alone throws that away. A missing import is
+        # identified entirely by *which* module was missing: "ModuleNotFoundError"
+        # on two hundred consecutive Research jobs says only that something is
+        # unimportable, while "ModuleNotFoundError: app.services.research.website"
+        # names the subtree and points straight at the install. The module *name*
+        # is safe to print — it is a dotted import path, not a filesystem path,
+        # a prompt fragment or a credential — which is exactly why it is admitted
+        # here when the exception's own message still is not.
+        missing = getattr(exc, "name", None) if isinstance(exc, ImportError) else None
+        named = f"{type(exc).__name__}: {missing}" if missing else type(exc).__name__
         return _handle_execution_error(
             session,
             membership=membership,
             job=job,
             error=AgentRetryableError(
                 "unexpected_error",
-                "The Agent encountered an unexpected operational error.",
-                detail={"exception_type": type(exc).__name__},
+                (
+                    f"The Agent encountered an unexpected operational error ({named}). "
+                    "This is a defect rather than a data problem: the same input will "
+                    "fail the same way until it is fixed."
+                ),
+                detail={
+                    "exception_type": type(exc).__name__,
+                    "exception_module": type(exc).__module__,
+                    **({"missing_module": missing} if missing else {}),
+                },
             ),
             actor=worker_id,
         )

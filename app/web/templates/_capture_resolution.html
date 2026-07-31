@@ -7,7 +7,11 @@
 
 {% from "_macros.html" import resolution_badge, resolution_detail %}
 
-{% macro resolution_card(resolution, lookup_available, auto_available=false, decision=none, history=[]) %}
+{# `readiness` is an explicit parameter rather than an imported context: this macro is
+   imported without context, so anything the route puts in the template namespace is
+   invisible in here. Passing it by name also makes the dependency legible at the call
+   site, the way `lookup_available` already is. #}
+{% macro resolution_card(resolution, lookup_available, auto_available=false, decision=none, history=[], readiness=none) %}
 {% set promotion = resolution.promotion %}
 {% set record = resolution.record %}
 
@@ -181,7 +185,45 @@
         {{ record.lookup_status.value }} · {{ record.lookup_attempts }} attempt(s)
         {% if record.provider %} · {{ record.provider }} ({{ record.lookup_version }}){% endif %}
         {% if record.looked_up_at %} · {{ record.looked_up_at }}{% endif %}
+        {# "not_started · 0 attempt(s)" is true and, on its own, useless: it reports a
+           state without saying that nothing was ever attempted or which switch would
+           attempt it. Four separate preconditions can produce it, so they are named
+           here rather than left for someone to deduce from a stalled queue. #}
+        {% if record.lookup_status.value == "not_started" and readiness and readiness.blockers %}
+        <div class="notice warn small stacked">
+          <p><strong>Nothing has been looked up for this company yet</strong> — this is a
+          configuration state, not a result. What is missing:</p>
+          <ul class="tight">
+            {% for blocker in readiness.blockers %}
+            <li>{{ blocker.message }}<br><code class="setting">{{ blocker.setting }}</code></li>
+            {% endfor %}
+          </ul>
+          <p class="muted-text">The capture is left untouched until then, so it becomes
+          resolvable the moment the missing piece is in place.</p>
+        </div>
+        {% endif %}
       </td></tr>
+      {# The model fallback, shown as its own row rather than folded into the one
+         above: "the brand matcher found nothing" and "a model then found something"
+         are two facts about this company and an operator confirming a provisional
+         domain needs both. #}
+      {% if record.model_lookup_attempts or record.model_lookup_status.value != "not_started" %}
+      <tr><td class="mono">model lookup</td><td class="wrap">
+        {{ record.model_lookup_status.value }} · {{ record.model_lookup_attempts }} attempt(s)
+        {% if record.model_looked_up_at %} · {{ record.model_looked_up_at }}{% endif %}
+        {% if record.model_domain %}
+        <div class="small">named <span class="mono">{{ record.model_domain }}</span>{% if record.model_source_url %} ·
+          read <a class="mono" href="{{ record.model_source_url }}" rel="noopener noreferrer nofollow" target="_blank">{{ record.model_source_url }}</a>{% endif %}
+        </div>
+        {% endif %}
+        {% if record.model_note %}<div class="muted-text small wrap">{{ record.model_note }}</div>{% endif %}
+      </td></tr>
+      {% elif readiness and readiness.provider_ready and not readiness.model_ready %}
+      <tr><td class="mono">model lookup</td><td class="wrap muted-text">
+        switched off — companies logo.dev cannot match stay unresolved rather than
+        being searched for
+      </td></tr>
+      {% endif %}
       {% endif %}
     </tbody>
   </table>

@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% from "_ui.html" import campaign_state %}
+{% block content %}
+<div class="v2-page narrow">
+  <div class="v2-crumbs"><a href="/app/campaigns">Campaigns</a><span class="sep">/</span>{{ overview.campaign.name }}</div>
+  <div class="v2-title-line v2-mt-sm">
+    <h1 class="v2-h1">{{ overview.campaign.name }}</h1>
+    {{ campaign_state(overview.campaign.status, overview.campaign.execution_enabled) }}
+  </div>
+  <p class="v2-lede">
+    This campaign has {{ overview.contact_count | thousands }} contact(s) enrolled. The
+    nine-Agent pipeline view reads the Agent monitor, which is switched off in this environment —
+    so the stage counts, the queue and the activity feed cannot be shown. Turn on
+    <span class="m">FEATURES__AGENT_WORKBENCH</span> and reload.
+  </p>
+  <div class="v2-callout v2-mt">
+    <strong>The campaign is unaffected.</strong> Whatever the Agents have committed is still
+    committed; only the screen that reads it is unavailable.
+  </div>
+</div>
+{% endblock %}

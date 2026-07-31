@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% from "_ui.html" import stat, stat_unbuilt, tag, unbuilt, campaign_state, empty %}
+{% block content %}
+<div class="v2-page narrow">
+
+  <div class="v2-head">
+    <div>
+      <h1 class="v2-h1 big">{{ today.strftime('%A, %d %B') if today else 'Today' }}</h1>
+      <p class="v2-lede">
+        {% if draft_counts.awaiting or attention.total %}
+          {{ attention.total }} thing{{ '' if attention.total == 1 else 's' }} want you.
+        {% else %}
+          Nothing is waiting on you right now.
+        {% endif %}
+        The pipeline has {{ plural(contacts_total, 'person', 'people') }} and
+        {{ plural(companies_total, 'company', 'companies') }} on file.
+      </p>
+    </div>
+    <div class="v2-note">
+      <div>No sending exists yet, so nothing goes out on its own.</div>
+      <div class="v2-hint">Every message waits for your approval in Review.</div>
+    </div>
+  </div>
+
+  <div class="v2-today-cards">
+    {% for card in cards %}
+    <div class="v2-today-card {{ card.tone }}">
+      <div class="v2-today-num">{{ card.count }}</div>
+      <div class="v2-today-body">
+        <h2>{{ card.title }}</h2>
+        <p>{{ card.detail }}</p>
+      </div>
+      <a class="v2-btn primary" href="{{ card.href }}">{{ card.cta }}</a>
+    </div>
+    {% endfor %}
+  </div>
+
+  {# The design's overnight strip. Sends, replies and bounces are not measurable
+     in this product, so those slots say so instead of carrying a number. #}
+  <h2 class="v2-section-title">Where the work stands</h2>
+  <div class="v2-card">
+    <div class="v2-stat-strip">
+      {{ stat('People on file', contacts_total | thousands, 'captured permanently', 'find') }}
+      {{ stat('With an address', confirmed_addresses | thousands, 'built and stored', 'find') }}
+      {{ stat('Drafts written', draft_counts.total | thousands, draft_counts.awaiting ~ ' waiting for you', 'write') }}
+      {{ stat('Decided', draft_counts.decided | thousands, draft_counts.approved ~ ' approved', 'write') }}
+      {% if agent_workbench_on and queue %}
+        {{ stat('In the queue', queue.open_work | thousands, queue.running ~ ' running now', 'ok') }}
+        {{ stat('Stopped', queue.failed | thousands, queue.terminal_failures ~ ' terminal', 'err') }}
+      {% endif %}
+      {{ stat_unbuilt('Sent', 'sending is not built') }}
+      {{ stat_unbuilt('Replies', 'no inbound channel') }}
+      <div class="v2-strip-foot">counted now, from committed state</div>
+    </div>
+  </div>
+
+  <h2 class="v2-section-title">Your campaigns</h2>
+  <div class="v2-card clip">
+    {% if campaign_rows %}
+    <div class="v2-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Campaign</th>
+            <th>State</th>
+            <th class="num">Contacts</th>
+            <th class="num">Drafts waiting</th>
+            <th class="num">Sent</th>
+            <th class="num">Replies</th>
+            <th>Needs you</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in campaign_rows %}
+          <tr>
+            <td>
+              <a href="/app/campaigns/{{ row.campaign.id }}">{{ row.campaign.name }}</a>
+              <div class="v2-sub">
+                created {{ row.campaign.created_at | day }}
+                {%- if row.campaign.description %} · {{ row.campaign.description | truncate(60) }}{% endif %}
+              </div>
+            </td>
+            <td>{{ campaign_state(row.campaign.status, row.campaign.execution_enabled) }}</td>
+            <td class="num m">{{ row.contacts | thousands }}</td>
+            <td class="num m">{{ row.drafts_awaiting }}</td>
+            <td class="num">{{ unbuilt('—') }}</td>
+            <td class="num">{{ unbuilt('—') }}</td>
+            <td class="v2-note">{{ row.needs }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="v2-cardlist">
+      {% for row in campaign_rows %}
+      <div class="v2-item">
+        <div class="v2-item-top">
+          <a href="/app/campaigns/{{ row.campaign.id }}">{{ row.campaign.name }}</a>
+        </div>
+        <div class="v2-chipline">
+          {{ campaign_state(row.campaign.status, row.campaign.execution_enabled) }}
+          {{ tag(row.contacts ~ ' contacts') }}
+          {% if row.drafts_awaiting %}{{ tag(row.drafts_awaiting ~ ' drafts waiting', 'brand') }}{% endif %}
+        </div>
+        <p class="v2-note">{{ row.needs }}</p>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+      {{ empty('No campaigns yet', 'A campaign is what enrols captured people into the pipeline. Create one, then enrol contacts into it.') }}
+    {% endif %}
+  </div>
+
+  <div class="v2-btn-row v2-page-actions">
+    <a class="v2-btn primary" href="/app/campaigns/new">New campaign</a>
+    <a class="v2-btn" href="/app/capture">Capture from Sales Navigator</a>
+    <a class="v2-btn" href="/app/contacts">Browse contacts</a>
+  </div>
+</div>
+{% endblock %}

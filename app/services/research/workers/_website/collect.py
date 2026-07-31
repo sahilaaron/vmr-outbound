@@ -151,6 +151,10 @@ def _collect(
     homepage = None
     robots = RobotsInfo.deny_all()
     tried: list[str] = []
+    # Held back rather than recorded as they happen. Trying apex before www is
+    # how this loop is meant to work, so a variant that defers to the next one
+    # is evidence of something only if every variant is exhausted.
+    variant_notes: list[str] = []
     for start in (nd.start_url, f"https://www.{nd.host}/", f"http://{nd.host}/"):
         if start in tried:
             continue
@@ -161,7 +165,7 @@ def _collect(
             else RobotsInfo.allow_all()
         )
         if not candidate_robots.can_fetch(start):
-            outcome.warnings.append(
+            variant_notes.append(
                 f"skipped {start}: robots.txt unavailable or disallows the homepage"
             )
             continue
@@ -172,6 +176,8 @@ def _collect(
         time.sleep(delay)
 
     if homepage is None or not homepage.ok:
+        # Now they matter: one of these was the site's real front door.
+        outcome.warnings.extend(variant_notes)
         reason = (homepage.error if homepage else None) or "no response permitted by robots.txt"
         return _fail(outcome, nd.start_url, "homepage", f"homepage unreachable: {reason}")
 
@@ -191,12 +197,15 @@ def _collect(
     sitemap_urls: list[str] = []
     if cfg.discovery.use_sitemap:
         sources = list(robots.sitemaps) or [urljoin(homepage.final_url, "/sitemap.xml")]
-        sitemap_urls = [
-            entry.loc
-            for entry in collect_sitemap_urls(
-                fetcher, sources, max_urls=cfg.discovery.max_sitemap_urls
-            )
-        ]
+        collected = collect_sitemap_urls(
+            fetcher, sources, max_urls=cfg.discovery.max_sitemap_urls
+        )
+        sitemap_urls = [entry.loc for entry in collected.entries]
+        # A sitemap cut short by the response cap, or malformed at its tail,
+        # still contributes every entry that arrived whole. Record that the
+        # list is partial: the crawl below is sound either way, but a run that
+        # saw part of a site must not read afterwards as if it saw all of it.
+        outcome.warnings.extend(collected.warnings)
 
     # 3. Extract the homepage and rank what to read next.
     homepage_page = extract_page(homepage, nd, include_subdomains)

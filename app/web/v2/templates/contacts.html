@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% from "_ui.html" import tag, dot, empty, pager, email_state, research_state %}
+{% block content %}
+<div class="v2-page">
+
+  <div class="v2-head">
+    <div>
+      <h1 class="v2-h1">Contacts</h1>
+      <p class="v2-lede">
+        {{ total | thousands }} record{{ '' if total == 1 else 's' }} in this view. A person exists
+        once, whatever campaigns they are in — capturing someone twice updates the first record
+        rather than creating a second.
+      </p>
+    </div>
+    <a class="v2-btn" href="/app/capture">Capture more</a>
+  </div>
+
+  <div class="v2-card clip v2-mt">
+    <form class="v2-toolbar" method="get" action="/app/contacts">
+      <label class="v2-sr" for="contact-q">Search</label>
+      <input class="v2-input sm" id="contact-q" name="q" value="{{ filters.search or '' }}"
+             placeholder="Search name, company or domain">
+      <input type="hidden" name="view" value="{{ filters.view }}">
+      <input type="hidden" name="sort" value="{{ filters.sort }}">
+      <button class="v2-btn small" type="submit">Search</button>
+      {% if filters.search %}<a class="v2-btn small" href="/app/contacts?view={{ filters.view }}">Clear</a>{% endif %}
+      <span class="push">Sorted by {{ (sorts | selectattr('0', 'equalto', filters.sort) | map(attribute='1') | first) or 'last change' }}</span>
+    </form>
+
+    <div class="v2-toolbar">
+      <div class="v2-chips">
+        {% for key, label in views %}
+        <a class="v2-chip sm {{ 'on' if filters.view == key }}"
+           href="/app/contacts?view={{ key }}{% if filters.search %}&q={{ filters.search }}{% endif %}">{{ label }}</a>
+        {% endfor %}
+      </div>
+      <div class="v2-chips push">
+        {% for key, label in sorts %}
+        <a class="v2-chip sm {{ 'on' if filters.sort == key }}"
+           href="/app/contacts?view={{ filters.view }}&sort={{ key }}{% if filters.search %}&q={{ filters.search }}{% endif %}">{{ label }}</a>
+        {% endfor %}
+      </div>
+    </div>
+
+    {% if labels %}
+    <div class="v2-toolbar">
+      <span class="v2-eyebrow">Labels</span>
+      <div class="v2-chips">
+        {% for label in labels %}
+        <a class="v2-chip sm {{ 'on' if filters.label_slug == label.slug }}"
+           href="/app/contacts?view={{ filters.view }}&label={{ label.slug }}">{{ label.name }}</a>
+        {% endfor %}
+        {% if filters.label_slug %}<a class="v2-chip sm" href="/app/contacts?view={{ filters.view }}">clear label</a>{% endif %}
+      </div>
+    </div>
+    {% endif %}
+
+    {% if rows %}
+    <div class="v2-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Person</th>
+            <th>Company</th>
+            <th>Email</th>
+            <th>Identity</th>
+            <th>Research</th>
+            <th class="num">Last change</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr>
+            <td>
+              <a href="{{ '/app/contacts/' ~ row.contact_id if row.contact_id else row.detail_url }}">{{ row.full_name }}</a>
+              <div class="v2-sub">{{ row.title or 'no title captured' }}</div>
+              {% if row.labels %}
+              <div class="v2-sub">{{ row.labels | join(', ') }}</div>
+              {% endif %}
+            </td>
+            <td>
+              <div>{{ row.company_name or '—' }}</div>
+              <div class="v2-sub mono">{{ row.company_domain or 'no website resolved' }}</div>
+            </td>
+            <td>
+              <div class="m v2-break">{{ row.email or '—' }}</div>
+              <div class="v2-chipline">{{ email_state(row.states.email_status) }}</div>
+            </td>
+            <td>
+              {% if row.states.suppressed %}
+                {{ tag('suppressed', 'err', small=true) }}
+                <div class="v2-sub">{{ row.states.suppression_reason or 'on the do-not-contact list' }}</div>
+              {% else %}
+                {{ tag(row.states.identity.value | nice, 'ok' if row.states.identity.value == 'canonical' else 'warn', small=true) }}
+              {% endif %}
+              <div class="v2-sub">{{ row.source | nice }}</div>
+            </td>
+            <td>{{ research_state(row.states.research) }}</td>
+            <td class="num m v2-nowrap">
+              {{ row.last_updated | ago }}
+              {% if row.freshness %}<div class="v2-sub">{{ row.freshness }}</div>{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="v2-cardlist">
+      {% for row in rows %}
+      <div class="v2-item">
+        <div class="v2-item-top">
+          <a href="{{ '/app/contacts/' ~ row.contact_id if row.contact_id else row.detail_url }}">{{ row.full_name }}</a>
+          <span class="when">{{ row.last_updated | ago }}</span>
+        </div>
+        <div class="v2-sub">{{ row.title or 'no title' }} · {{ row.company_name or 'no company' }}</div>
+        <div class="m v2-break v2-mt-sm">{{ row.email or 'no address yet' }}</div>
+        <div class="v2-chipline">
+          {{ email_state(row.states.email_status) }}
+          {% if row.states.suppressed %}{{ tag('suppressed', 'err', small=true) }}{% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="v2-card-foot">
+      {{ pager(page, pages, total, filter_url, 'people') }}
+    </div>
+    {% else %}
+      {{ empty('Nothing in this view',
+        'Either nobody has been captured yet, or this filter excludes everyone. Clear the filters, or open the capture panel.') }}
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% from "_ui.html" import tag, unbuilt, campaign_state, empty %}
+{% block content %}
+<div class="v2-page">
+
+  <div class="v2-head">
+    <div>
+      <h1 class="v2-h1">Campaigns</h1>
+      <p class="v2-lede">
+        A campaign is what enrols captured people into the pipeline. A person exists once and
+        permanently; a campaign only decides which nine-Agent run they are part of, so leaving
+        one never deletes anybody.
+      </p>
+    </div>
+    <a class="v2-btn primary" href="/app/campaigns/new">New campaign</a>
+  </div>
+
+  <div class="v2-card clip v2-mt">
+    {% if rows %}
+    <div class="v2-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Campaign</th>
+            <th>State</th>
+            <th class="num">Contacts</th>
+            <th class="num">Completed</th>
+            <th class="num">Drafts waiting</th>
+            <th class="num">Sent</th>
+            <th>Needs you</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr>
+            <td>
+              <a href="/app/campaigns/{{ row.campaign.id }}">{{ row.campaign.name }}</a>
+              <div class="v2-sub">
+                created {{ row.campaign.created_at | day }}
+                {%- if row.campaign.description %} · {{ row.campaign.description | truncate(70) }}{% endif %}
+              </div>
+            </td>
+            <td>{{ campaign_state(row.campaign.status, row.campaign.execution_enabled) }}</td>
+            <td class="num m">{{ row.contacts | thousands }}</td>
+            <td class="num m">{{ row.pipeline_counts.get('completed', 0) | thousands }}</td>
+            <td class="num m">{{ row.counts.drafts_awaiting }}</td>
+            <td class="num">{{ unbuilt('—') }}</td>
+            <td class="v2-note">{{ row.needs }}</td>
+            <td class="v2-row-actions">
+              <a class="v2-btn small" href="/app/campaigns/{{ row.campaign.id }}/edit">Edit</a>
+              {% if row.campaign.status.value != 'archived' %}
+              <form method="post" action="/app/campaigns/{{ row.campaign.id }}/archive"
+                    onsubmit="return confirm('Archive {{ row.campaign.name }}? Execution turns off for good and this cannot be undone; contacts, drafts and history stay.');">
+                <button class="v2-btn small danger" type="submit">Archive</button>
+              </form>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="v2-cardlist">
+      {% for row in rows %}
+      <div class="v2-item">
+        <div class="v2-item-top">
+          <a href="/app/campaigns/{{ row.campaign.id }}">{{ row.campaign.name }}</a>
+        </div>
+        <div class="v2-chipline">
+          {{ campaign_state(row.campaign.status, row.campaign.execution_enabled) }}
+          {{ tag(row.contacts ~ ' contacts') }}
+        </div>
+        <p class="v2-note">{{ row.needs }}</p>
+        <div class="v2-row-actions">
+          <a class="v2-btn small" href="/app/campaigns/{{ row.campaign.id }}/edit">Edit</a>
+          {% if row.campaign.status.value != 'archived' %}
+          <form method="post" action="/app/campaigns/{{ row.campaign.id }}/archive"
+                onsubmit="return confirm('Archive {{ row.campaign.name }}? Execution turns off for good and this cannot be undone; contacts, drafts and history stay.');">
+            <button class="v2-btn small danger" type="submit">Archive</button>
+          </form>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+      {{ empty('No campaigns yet', 'Create one, attach the offering it may talk about, then enrol contacts into it.') }}
+    {% endif %}
+  </div>
+
+  <p class="v2-hint v2-page-actions">
+    Sent and reply figures are shown as unavailable because they are: no sending adapter is
+    registered, so this product has never sent an email and has no inbound channel.
+  </p>
+</div>
+{% endblock %}

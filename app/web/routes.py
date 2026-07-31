@@ -79,6 +79,7 @@ from app.services.imports.importer import (
     run_import,
 )
 from app.services.imports.preview import preview_import, preview_pending_batch
+from app.services.resolution import pending as resolution_pending
 from app.services.resolution import service as resolution_service
 from app.services.seller import campaign_offerings as seller_campaign_offerings
 from app.services.seller import generate as seller_generate
@@ -275,7 +276,10 @@ def _parse_uuid(value: str | None) -> uuid.UUID | None:
 # --- Overview ----------------------------------------------------------------
 
 
-@router.get("/", response_class=HTMLResponse)
+# The admin Workbench root is `/admin`. `/` now belongs to the customer-facing
+# interface, which is the default application experience; this page, its template
+# and its context are otherwise unchanged.
+@router.get("/admin", response_class=HTMLResponse)
 def overview_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     stats = workbench.load_overview(db)
     return _render(
@@ -3082,6 +3086,10 @@ def contact_capture_page(
             "lookup_available": (
                 settings.features.salesnav_domain_enrichment and settings.has_logo_dev_key()
             ),
+            # So "not_started · 0 attempt(s)" can say *why* nothing was attempted.
+            # A status with no explanation reads as a broken pipeline when the truth
+            # is usually one unset switch.
+            "readiness": resolution_pending.lookup_readiness(settings),
             # Decisions are shown whenever they exist, even with the switch since
             # turned off: a decision that produced a live company link must stay
             # explainable regardless of the current configuration.

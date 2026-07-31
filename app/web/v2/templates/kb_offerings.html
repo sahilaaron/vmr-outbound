@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% from "_ui.html" import tag, empty %}
+{% block content %}
+<div class="v2-page">
+  {% include "_kb_head.html" %}
+
+  {% if not offerings %}
+  <div class="v2-card v2-mt">
+    {{ empty('No offering is stored',
+      'A draft may only offer something listed here, so with none stored the Personalization Agent has nothing it is authorised to propose. Add one on the admin Knowledge Base.') }}
+  </div>
+  {% else %}
+  <div class="v2-split">
+    <div class="v2-stack">
+      <div class="v2-card clip">
+        <div class="v2-card-head">
+          <h2>{{ selected.name }}</h2>
+          {% if selected.state.value == 'archived' %}{{ tag('archived', '') }}{% endif %}
+          <span class="v2-note">{{ selected.offering_type.value | nice }}</span>
+          <a class="v2-btn small push" href="/knowledge-base/offerings/{{ selected.id }}">Edit in admin</a>
+        </div>
+        <div class="v2-card-body roomy">
+          <div><div class="v2-eyebrow">Short description</div><div class="v2-kb-prose">{{ selected.short_description or 'not entered' }}</div></div>
+          <div><div class="v2-eyebrow">Full description</div><div class="v2-kb-prose">{{ selected.description or 'not entered' }}</div></div>
+          {% for label, values in [
+              ('Problems it addresses', selected.problems_addressed),
+              ('Use cases', selected.use_cases),
+              ('Differentiators', selected.differentiators)
+            ] %}
+          <div>
+            <div class="v2-eyebrow">{{ label }}</div>
+            {% if values %}
+            <div class="v2-blockquote-list">
+              {% for value in values %}<div>{{ value }}</div>{% endfor %}
+            </div>
+            {% else %}
+            <p class="v2-note">{{ 'Not entered.' if values is none else 'Recorded as none.' }}</p>
+            {% endif %}
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="v2-card">
+        <div class="v2-card-head">
+          <h2>What this offering is allowed to draw on</h2>
+          <span class="v2-note">Referenced, never copied — editing a proof point changes it everywhere.</span>
+        </div>
+        <div class="v2-row">
+          <div class="v2-eyebrow">Proof points it may use</div>
+          {% if proof_points %}
+          <div class="v2-pillset v2-mt-sm">
+            {% for record in proof_points %}<span class="v2-entry">{{ record.statement }}</span>{% endfor %}
+          </div>
+          {% else %}
+          <p class="v2-note">None associated — a draft for this offering can state no numbers.</p>
+          {% endif %}
+        </div>
+        <div class="v2-row">
+          <div class="v2-eyebrow">Restricted claims that apply</div>
+          {% if claims %}
+          <div class="v2-pillset v2-mt-sm">
+            {% for record in claims %}<span class="v2-entry">{{ record.title }}</span>{% endfor %}
+          </div>
+          {% else %}
+          <p class="v2-note">Only the global limits apply.</p>
+          {% endif %}
+        </div>
+        <div class="v2-row">
+          <div class="v2-eyebrow">Personas it is written for</div>
+          {% if personas %}
+          <div class="v2-pillset v2-mt-sm">
+            {% for record in personas %}<span class="v2-entry">{{ record.name }}</span>{% endfor %}
+          </div>
+          {% else %}
+          <p class="v2-note">None associated.</p>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div class="v2-aside plain">
+      <div class="v2-card clip">
+        <div class="v2-card-head tight">
+          <h2>Offerings</h2>
+          <span class="v2-hint push">{{ kb_counts.offerings.active }} active · {{ kb_counts.offerings.archived }} archived</span>
+        </div>
+        {% for offering in offerings %}
+        <a class="v2-sidelist-item {{ 'on' if selected and offering.id == selected.id }}{{ ' dim' if offering.state.value == 'archived' }}"
+           href="/app/knowledge/offerings?offering={{ offering.id }}">
+          <div class="v2-sidelist-top">
+            <b>{{ offering.name }}</b>
+            {% if offering.state.value == 'archived' %}{{ tag('archived', '', small=true) }}{% endif %}
+          </div>
+          <div class="v2-hint">{{ offering.offering_type.value | nice }}</div>
+          <div class="v2-note">{{ offering.short_description or '' }}</div>
+        </a>
+        {% endfor %}
+      </div>
+
+      <div class="v2-card">
+        <div class="v2-card-head tight"><h2>Campaigns that name it</h2></div>
+        {% for campaign in campaigns %}
+        <div class="v2-row tight">
+          <a href="/app/campaigns/{{ campaign.id }}">{{ campaign.name }}</a>
+        </div>
+        {% endfor %}
+        {% if not campaigns %}
+        <div class="v2-row tight v2-note">No campaign names this offering, so no draft will offer it.</div>
+        {% endif %}
+        <div class="v2-card-foot plain">
+          Association only. Naming an offering never wrote a campaign's copy or chose its call to
+          action.
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

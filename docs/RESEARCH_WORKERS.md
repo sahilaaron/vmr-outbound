@@ -88,6 +88,30 @@ than editing it in place. `collect.py` is the one file in there written
 for this repository, and it is the in-memory replacement for the
 prototype's filesystem pipeline.
 
+### Vendored revision
+
+The prototype is a plain directory with no version control, so a
+re-vendor is recorded here by date and content hash rather than by
+commit.
+
+| Re-vendored | Upstream file | SHA-256 (first 16) | How it landed here |
+| --- | --- | --- | --- |
+| 2026-07-31 | `company_research/sitemap.py` | `8caf3b216dac0b3b` | copied whole |
+| 2026-07-31 | `company_research/fetcher.py` | `4d0dfcea54c7f9ec` | corrections ported by hand |
+| 2026-07-31 | `company_research/models.py` | `02b1270a00761789` | corrections ported by hand |
+
+`sitemap.py` was byte-identical to upstream, so it was copied whole.
+`fetcher.py` and `models.py` were not: this repository's copies carry
+hardening the prototype has no equivalent of — an SSRF boundary,
+manually validated redirects that refuse to leave the requested host, an
+injectable resolver and transport, and a `FetchResult` without the
+prototype's job-store types. Copying those two files over would have
+removed all of it, so only the corrected regions were ported. Check that
+divergence before the next re-vendor; it is deliberate.
+
+`robots.py` also diverges deliberately: this copy is fail-closed, where
+the prototype allows a crawl when robots.txt cannot be read.
+
 ## Planned: script workers (v2, not built)
 
 Sahil's `find_domain.py` and `company_intel.py` already produce exactly

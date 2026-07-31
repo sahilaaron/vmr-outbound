@@ -24,6 +24,18 @@ class FetchResult:
     error: Optional[str] = None
     fetched_at: str = field(default_factory=utcnow_iso)
     warnings: list[str] = field(default_factory=list)
+    # A body that hit the response-size cap is still returned, because a
+    # partial page is usually still worth reading. Consumers that must know
+    # the difference -- sitemap parsing above all, where a cut document is
+    # invalid XML rather than merely short -- read this flag. It exists as a
+    # field because the alternative was scraping the wording out of
+    # `warnings`, and a consumer that silently stops matching such a string
+    # goes back to treating a partial body as a whole one.
+    truncated: bool = False
+    # Machine-readable companion to `error`, set only where a caller changes
+    # what it does based on the kind of failure rather than merely reporting
+    # it. `error` stays the human sentence.
+    error_kind: Optional[str] = None
 
 
 @dataclass
