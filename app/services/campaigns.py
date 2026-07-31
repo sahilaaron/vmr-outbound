@@ -145,6 +145,7 @@ def create_campaign(
     template_config: dict[str, Any] | None = None,
     cadence_config: dict[str, Any] | None = None,
     sending_settings: dict[str, Any] | None = None,
+    allow_provisional_domains: bool = False,
     actor: str = "operator",
 ) -> Campaign:
     """Create a Campaign shell and validated operating context."""
@@ -166,6 +167,7 @@ def create_campaign(
         template_config=_json_object(template_config, field_name="template_config"),
         cadence_config=_json_object(cadence_config, field_name="cadence_config"),
         sending_settings=_json_object(sending_settings, field_name="sending_settings"),
+        allow_provisional_domains=bool(allow_provisional_domains),
         execution_enabled=False,
         settings_version=1,
     )
