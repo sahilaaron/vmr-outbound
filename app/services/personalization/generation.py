@@ -525,6 +525,43 @@ def decide_context(
     )
 
 
+def _drafting_instructions(decision: ContextDecision) -> str:
+    """Turn the selected policy outcome into concrete copy-writing constraints."""
+
+    evidence_rule = (
+        "Build that bridge only from selected prospect context, and omit any selected fact "
+        "that does not strengthen it."
+        if decision.used
+        else (
+            "No prospect context cleared policy. Use the earnest offering-led fallback as a "
+            "successful outcome; do not manufacture a relevance bridge."
+        )
+    )
+    return "\n".join(
+        (
+            "- Do not open with a description or summary of the recipient's company.",
+            (
+                '- Do not write "I noticed your company does X" or an equivalent research '
+                "display unless the selected X creates a genuine conversational reason."
+            ),
+            (
+                "- Do not claim to know internal plans, priorities, challenges, budgets, goals, "
+                "or strategy. Turn uncertain relevance into one honest question."
+            ),
+            "- Use at most one clear relevance bridge.",
+            f"- {evidence_rule}",
+            (
+                "- Introduce the seller and offering concisely, with enough detail to be "
+                "understandable but not enough to become a product brochure."
+            ),
+            "- End with one simple call to action.",
+            "- Do not force every available fact into the email.",
+            ("- Avoid praise, flattery, fake familiarity, and performative research language."),
+            "- Keep the email concise, commercially natural, and human-sounding.",
+        )
+    )
+
+
 def _prompt(
     *,
     policy: PersonalizationPolicyVersion,
@@ -558,6 +595,9 @@ def _prompt(
 
 POLICY VERSION
 v{policy.version_number} / {policy.id} / {policy.schema_version}
+
+OPERATIONAL DRAFTING RULES
+{_drafting_instructions(decision)}
 
 NON-NEGOTIABLE WRITING STANDARDS
 {standards}

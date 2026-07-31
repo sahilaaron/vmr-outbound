@@ -51,6 +51,25 @@ class ScriptedThinker:
         )
 
 
+# Manual inspection aid only: these are behavioural examples, not production templates.
+COPY_QUALITY_COMPARISON = {
+    "bad_company_summary": (
+        "Given that Acme provides cloud analytics solutions across several industries, I "
+        "thought your team may be interested in our market intelligence platform."
+    ),
+    "useful_evidence": (
+        "Are you currently evaluating external market data for any of the sectors your team "
+        "covers? VM Intelligence lets investment teams build and review a sourced market report "
+        "before purchasing the complete version."
+    ),
+    "weak_evidence": (
+        "I'm reaching out from VM Intelligence. We help investment teams build sourced market "
+        "reports in minutes, including a meaningful preview before purchase. Would it be useful "
+        "to see how it works for a market you are currently evaluating?"
+    ),
+}
+
+
 def _subject(
     db: Session,
     *,
@@ -302,6 +321,29 @@ def test_performative_company_description_is_rejected_even_when_supported(
     assert any("performative" in item.reason for item in decision.rejected)
 
 
+def test_irrelevant_company_fact_is_rejected_instead_of_forced(
+    db_session: Session,
+) -> None:
+    _, company, _, membership = _subject(
+        db_session,
+        campaign_description="Plant operations workflow software",
+    )
+    insight_id = _supported_insight(
+        db_session,
+        company,
+        "Won a regional workplace award.",
+    )
+    decision = generation.decide_context(
+        db_session, membership=membership, policy=_policy(db_session)
+    )
+
+    assert decision.fallback_level == 5
+    assert decision.used == ()
+    rejected = next(item for item in decision.rejected if item.evidence_id == insight_id)
+    assert rejected.accepted is False
+    assert rejected.reason == "No explicit connection to the Campaign or seller offering was found."
+
+
 def test_preview_is_side_effect_free_and_leaves_immutable_drafts_unchanged(
     db_session: Session,
 ) -> None:
@@ -362,6 +404,40 @@ def test_preview_is_side_effect_free_and_leaves_immutable_drafts_unchanged(
         "assertive_tone": 1,
     }
     assert thinker.requests[0].allowed_tools == ()
+
+
+def test_shared_prompt_makes_the_copy_standard_operational(
+    db_session: Session,
+) -> None:
+    """The fixture documents the intended move from research recital to useful copy."""
+
+    _, _, _, membership = _subject(db_session)
+    thinker = ScriptedThinker(
+        {
+            "subject": "A sourced market report",
+            "body": COPY_QUALITY_COMPARISON["weak_evidence"],
+            "evidence_insight_ids": [],
+        }
+    )
+
+    generated = generation.generate(
+        db_session,
+        membership=membership,
+        policy=_policy(db_session),
+        thinker=thinker,
+    )
+    prompt = thinker.requests[0].prompt
+
+    assert generated.decision.fallback_level == 5
+    assert "Do not open with a description or summary of the recipient's company." in prompt
+    assert 'Do not write "I noticed your company does X"' in prompt
+    assert "internal plans, priorities, challenges, budgets, goals, or strategy" in prompt
+    assert "one clear relevance bridge" in prompt
+    assert "seller and offering concisely" in prompt
+    assert "End with one simple call to action." in prompt
+    assert "Do not force every available fact" in prompt
+    assert "praise, flattery, fake familiarity, and performative research" in prompt
+    assert "Use the earnest offering-led fallback as a successful outcome" in prompt
 
 
 def test_preview_rejects_performative_or_assumptive_generated_copy(

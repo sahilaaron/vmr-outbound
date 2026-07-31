@@ -19,6 +19,7 @@ from __future__ import annotations
 import inspect
 import uuid
 from collections.abc import Iterator
+from copy import deepcopy
 
 import pytest
 from app.core.config import get_settings
@@ -47,6 +48,7 @@ from app.services.agents.adapters import (
 from app.services.agents.jobs import enqueue_job
 from app.services.companies import dossiers
 from app.services.insights import evidence as insights_evidence
+from app.services.personalization import generation as personalization_generation
 from app.services.personalization import policy as personalization_policy
 from app.services.suppressions import add_suppression
 from app.services.thinking.contracts import ThinkingRequest, ThinkingResult, ThinkingTimeout
@@ -443,6 +445,87 @@ def test_a_draft_is_stored_unapproved_and_cites_only_supplied_evidence(
     from app.models.draft import DraftApproval
 
     assert db_session.scalars(select(DraftApproval)).all() == []
+
+
+def test_production_uses_active_policy_and_the_same_interpretation_as_preview(
+    db_session: Session,
+) -> None:
+    campaign, _, contact = _records(db_session)
+    context = _context(
+        db_session, campaign=campaign, contact=contact, agent_id=AgentIdentifier.PERSONALIZATION
+    )
+    initial = personalization_policy.active_policy(db_session)
+    assert initial is not None
+    historical = DraftVersion(
+        contact_id=contact.id,
+        campaign_id=campaign.id,
+        version_number=1,
+        subject="Historical subject",
+        body="Historical body",
+        personalization_policy_version_id=initial.id,
+    )
+    db_session.add(historical)
+    db_session.flush()
+
+    configuration = deepcopy(initial.configuration)
+    standard = next(
+        item for item in configuration["standards"] if item["id"] == "do_not_explain_company"
+    )
+    standard["wording"] = "ACTIVE POLICY SENTINEL: never summarize the prospect's company."
+    active = personalization_policy.create_policy_version(
+        db_session,
+        configuration=configuration,
+        name="Active production copy standard",
+        actor="test",
+        based_on_version_id=initial.id,
+        change_note="Prove the worker reads the latest activation.",
+    )
+    personalization_policy.activate_policy(
+        db_session,
+        policy_version_id=active.id,
+        actor="test",
+        reason="Production path test",
+    )
+
+    production_thinker = ScriptedThinker(
+        {
+            "subject": "A straightforward introduction",
+            "body": "We help operations teams simplify workflow. Is that relevant to you?",
+            "evidence_insight_ids": [],
+        }
+    )
+    result = PersonalizationAgentAdapter(
+        thinker_factory=lambda _settings: production_thinker
+    ).execute(context)
+    preview_thinker = ScriptedThinker(
+        {
+            "subject": "A straightforward introduction",
+            "body": "We help operations teams simplify workflow. Is that relevant to you?",
+            "evidence_insight_ids": [],
+        }
+    )
+    preview = personalization_generation.generate(
+        db_session,
+        membership=context.membership,
+        policy=active,
+        thinker=preview_thinker,
+    )
+
+    drafts = db_session.scalars(select(DraftVersion).order_by(DraftVersion.version_number)).all()
+    production_draft = drafts[-1]
+    db_session.refresh(historical)
+    assert production_thinker.requests[0].prompt == preview_thinker.requests[0].prompt
+    assert "ACTIVE POLICY SENTINEL" in production_thinker.requests[0].prompt
+    assert production_thinker.requests[0].purpose == "email_personalization"
+    assert preview_thinker.requests[0].purpose == "email_personalization_preview"
+    assert production_draft.version_number == 2
+    assert production_draft.personalization_policy_version_id == active.id
+    assert production_draft.personalization_strategy_id == preview.strategy_id
+    assert production_draft.personalization_decision == preview.decision.summary()
+    assert production_draft.created_by == "scripted/scripted/v1"
+    assert result.output_reference["personalization_policy_version_id"] == str(active.id)
+    assert (historical.subject, historical.body) == ("Historical subject", "Historical body")
+    assert historical.personalization_policy_version_id == initial.id
 
 
 def test_a_draft_citing_evidence_never_supplied_is_refused(db_session: Session) -> None:
