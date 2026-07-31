@@ -150,10 +150,16 @@ edition = taxonomy.create_taxonomy(
     title="VMR industry taxonomy (2027 revision)",
     source="operator-supplied revision",
 )
-parent = taxonomy.add_term(session, taxonomy=edition, code="manufacturing",
-                           canonical_label="Manufacturing")
-taxonomy.add_term(session, taxonomy=edition, code="manufacturing--pumps",
-                  canonical_label="Pumps, Valves & Fluid Handling", parent=parent)
+parent = taxonomy.add_term(
+    session, taxonomy=edition, code="manufacturing", canonical_label="Manufacturing"
+)
+taxonomy.add_term(
+    session,
+    taxonomy=edition,
+    code="manufacturing--pumps",
+    canonical_label="Pumps, Valves & Fluid Handling",
+    parent=parent,
+)
 taxonomy.add_alias(session, term=parent, alias="industrial manufacturing")
 taxonomy.activate_taxonomy(session, taxonomy=edition)
 ```

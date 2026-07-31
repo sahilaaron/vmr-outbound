@@ -21,7 +21,9 @@ cursor, and can be paused and resumed.
 2. **Vocabularies must be seeded**, or every value will come back unmapped:
    ```python
    from app.services.company_intelligence.seed import seed_vocabularies
-   seed_vocabularies(session); session.commit()
+
+   seed_vocabularies(session)
+   session.commit()
    ```
 3. **A worker must be running** for anything queued to be executed:
    ```
@@ -154,7 +156,11 @@ delays telling the operator why.
 from app.services.company_intelligence import backfill
 
 run = backfill.create_run(
-    session, label="First 50", dry_run=True, batch_size=25, max_companies=50,
+    session,
+    label="First 50",
+    dry_run=True,
+    batch_size=25,
+    max_companies=50,
     created_by="sahil",
 )
 while True:

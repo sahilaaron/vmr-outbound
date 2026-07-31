@@ -190,14 +190,14 @@ Nothing outside the package should query the intelligence tables directly.
 from app.services.company_intelligence.read import get_company_intelligence
 
 view = get_company_intelligence(session, company_id=company.id)
-view.latest_model_version        # newest produced, reviewed or not
-view.latest_reviewed_version     # newest an operator acted on, or None
-view.current_version             # the selected understanding
-view.classifications             # effective values, decisions applied
-view.conflicts                   # disagreements, unflattened
-view.unresolved()                # unresolved + conflicted + unknown
-view.settled_values(dimension)   # resolved AND backed — the targeting answer
-view.primary_industry()          # None rather than a guess when conflicted
+view.latest_model_version  # newest produced, reviewed or not
+view.latest_reviewed_version  # newest an operator acted on, or None
+view.current_version  # the selected understanding
+view.classifications  # effective values, decisions applied
+view.conflicts  # disagreements, unflattened
+view.unresolved()  # unresolved + conflicted + unknown
+view.settled_values(dimension)  # resolved AND backed — the targeting answer
+view.primary_industry()  # None rather than a guess when conflicted
 ```
 
 Every `ClassificationView` carries `source` (`model` / `operator_confirmed` /
