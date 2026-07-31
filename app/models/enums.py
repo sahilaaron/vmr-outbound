@@ -1035,3 +1035,190 @@ class VerificationFailureClass(enum.StrEnum):
     TRANSIENT_PROVIDER = "transient_provider"
     PERMANENT_PROVIDER = "permanent_provider"
     INSUFFICIENT_CREDITS = "insufficient_credits"
+
+
+# ---------------------------------------------------------------------------
+# Company Intelligence (CI-001)
+# ---------------------------------------------------------------------------
+#
+# Company Intelligence turns *committed* Research evidence into structured,
+# versioned, evidence-linked understanding of a Company. Every vocabulary below
+# exists so an operator can tell four different things apart at a glance: what a
+# model suggested, what a controlled vocabulary normalized it to, what a human
+# confirmed, and what nobody could establish. Collapsing any two of those would
+# turn an unverified classification into an apparent fact, which is the single
+# failure this whole area is built to prevent.
+
+
+class IntelligenceDimension(enum.StrEnum):
+    """The classified dimensions of a Company.
+
+    A closed set on purpose. A producer cannot invent a twelfth dimension
+    without a schema change and a review, and a reader can tell which
+    dimensions a given version actually addressed.
+
+    ``INDUSTRY`` carries both the primary and the secondary industries: they
+    differ by rank, not by kind, and modelling them as two dimensions would make
+    "promote this secondary industry to primary" a cross-dimension move rather
+    than a rank change. ``SUBINDUSTRY`` is separate because it is a child of an
+    industry in the taxonomy hierarchy rather than another industry.
+    """
+
+    INDUSTRY = "industry"
+    SUBINDUSTRY = "subindustry"
+    PRODUCT = "product"
+    SERVICE = "service"
+    SPECIALTY = "specialty"
+    CAPABILITY = "capability"
+    GEOGRAPHY = "geography"
+    OPERATING_MARKET = "operating_market"
+    CUSTOMER_SEGMENT = "customer_segment"
+    BUSINESS_MODEL = "business_model"
+    COMPANY_TYPE = "company_type"
+
+
+class IntelligenceValueState(enum.StrEnum):
+    """How settled one classified value is.
+
+    ``RESOLVED`` — a value supported by persisted evidence.
+    ``UNRESOLVED`` — a value was proposed but could not be tied to evidence, or
+    could not be normalized to a vocabulary that requires normalization. It is
+    kept, visibly unresolved, rather than dropped: a discarded suggestion is
+    invisible to review, and invisible work gets redone.
+    ``UNKNOWN`` — the producer looked at this dimension and the evidence said
+    nothing. Different from a dimension that was never addressed at all, which
+    has no row.
+    ``CONFLICTED`` — the evidence supports more than one mutually exclusive
+    answer. Never flattened to whichever scored higher.
+    """
+
+    RESOLVED = "resolved"
+    UNRESOLVED = "unresolved"
+    UNKNOWN = "unknown"
+    CONFLICTED = "conflicted"
+
+
+class IntelligenceNormalization(enum.StrEnum):
+    """How a suggested value reached (or failed to reach) a canonical term.
+
+    Stored per classification so the operator can always see the difference
+    between "the model said exactly the canonical label", "the model said
+    something we recognised as an alias of it", and "nothing in the vocabulary
+    matched, and this is the model's own wording".
+    """
+
+    CANONICAL = "canonical"
+    ALIAS = "alias"
+    UNMAPPED = "unmapped"
+    #: The dimension has no controlled vocabulary in this taxonomy release, so
+    #: free text is the intended representation rather than a failure.
+    NOT_APPLICABLE = "not_applicable"
+
+
+class IntelligenceConfidenceBand(enum.StrEnum):
+    """A coarse band derived deterministically from the numeric confidence.
+
+    Bands exist because a stored float invites false precision in a UI: 0.62 and
+    0.58 are not meaningfully different judgements, and showing them side by side
+    implies they are. The float is preserved; the band is what screens compare.
+    """
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class IntelligenceEvidenceSupport(enum.StrEnum):
+    """Whether one evidence reference supports or contradicts a classification."""
+
+    SUPPORTS = "supports"
+    CONTRADICTS = "contradicts"
+
+
+class IntelligenceEvidenceStatus(enum.StrEnum):
+    """Whether a classification is backed by evidence that was actually present.
+
+    ``INSUFFICIENT`` is a first-class, storable outcome. A classification that
+    cites nothing the input contained is recorded as unsupported rather than
+    stored as a weaker fact — and never silently dropped.
+    """
+
+    SUPPORTED = "supported"
+    INSUFFICIENT = "insufficient"
+
+
+class IntelligenceValueSource(enum.StrEnum):
+    """Who is responsible for the value a reader is looking at."""
+
+    MODEL = "model"
+    OPERATOR_CONFIRMED = "operator_confirmed"
+    OPERATOR_CORRECTED = "operator_corrected"
+    OPERATOR_UNRESOLVED = "operator_unresolved"
+
+
+class IntelligenceDecisionAction(enum.StrEnum):
+    """What an operator decided about one classified value.
+
+    Every action is an append-only record. None of them edits the model-produced
+    version: the historical classification stays exactly as it was produced, and
+    the decision is applied on top when the effective value is resolved.
+    """
+
+    CONFIRM = "confirm"
+    CORRECT = "correct"
+    MARK_UNRESOLVED = "mark_unresolved"
+    REJECT = "reject"
+
+
+class TaxonomyAliasSource(enum.StrEnum):
+    """Where a vocabulary alias came from.
+
+    ``MODEL_SUGGESTION`` aliases are recorded but are **not** authoritative for
+    normalization until an operator promotes them; that is what keeps a model
+    from quietly widening the controlled vocabulary.
+    """
+
+    SEED = "seed"
+    OPERATOR = "operator"
+    MODEL_SUGGESTION = "model_suggestion"
+
+
+class IntelligenceJobStatus(enum.StrEnum):
+    """Durable lifecycle of one Company Intelligence production job.
+
+    Deliberately its own vocabulary rather than a reuse of the Campaign Contact
+    Agent job status. Company Intelligence is company-scoped derived work that
+    runs outside the Campaign Contact pipeline, and sharing the pipeline's status
+    type would make it look enrollable from the type alone.
+    """
+
+    PENDING = "pending"
+    LEASED = "leased"
+    IN_PROGRESS = "in_progress"
+    RETRY_SCHEDULED = "retry_scheduled"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class IntelligenceBackfillStatus(enum.StrEnum):
+    """Lifecycle of one bounded backfill run."""
+
+    PREVIEW = "preview"
+    RUNNING = "running"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+
+
+class IntelligenceBackfillOutcome(enum.StrEnum):
+    """What a backfill run decided about one Company.
+
+    ``SKIPPED`` always carries a truthful reason code. A backfill that reports a
+    company as done when it was skipped is worse than one that fails loudly.
+    """
+
+    PREVIEWED = "previewed"
+    ENQUEUED = "enqueued"
+    SKIPPED = "skipped"
+    FAILED = "failed"
