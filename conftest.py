@@ -39,7 +39,8 @@ from __future__ import annotations
 
 import os
 import re
-from urllib.parse import urlsplit, urlunsplit
+
+from sqlalchemy.engine import make_url
 
 # --------------------------------------------------------------------------
 # 1. Test mode, set before anything can read settings.
@@ -120,7 +121,7 @@ def is_trusted_ci() -> bool:
 
 
 def _database_name(url: str) -> str:
-    return urlsplit(url).path.lstrip("/")
+    return make_url(url).database or ""
 
 
 def _assert_safe(url: str, *, trusted_ci: bool | None = None) -> None:
@@ -134,8 +135,8 @@ def _assert_safe(url: str, *, trusted_ci: bool | None = None) -> None:
     if trusted_ci is None:
         trusted_ci = is_trusted_ci()
 
-    parts = urlsplit(url)
-    name = _database_name(url)
+    parsed = make_url(url)
+    name = parsed.database or ""
 
     # The name check is unconditional. Nothing — not CI, not an explicit
     # override — permits a database that is not clearly a test database.
@@ -149,7 +150,7 @@ def _assert_safe(url: str, *, trusted_ci: bool | None = None) -> None:
             f"a development database would destroy data."
         )
 
-    host = (parts.hostname or "").lower()
+    host = (parsed.host or "").lower()
     if host in SERVICE_HOSTS and not trusted_ci:
         raise UnsafeTestDatabase(
             f"Refusing to run the test suite against host {host!r}.\n"
@@ -163,14 +164,19 @@ def _assert_safe(url: str, *, trusted_ci: bool | None = None) -> None:
 def _with_test_database(url: str) -> str:
     """Borrow a server's coordinates, but never its database name.
 
-    Keeps scheme, credentials, host and port; replaces the path with
-    :data:`TEST_DB_NAME`. This is what lets CI work without the suite ever being
-    handed a database it may not touch: the operator's ``vmr_dev`` contributes
-    only the address and login, never the target.
+    Keeps scheme, credentials, host and port; replaces only the database with
+    :data:`TEST_DB_NAME`. This is what lets CI work without the suite ever
+    being handed a database it may not touch: the operator's ``vmr_dev``
+    contributes only the address and login, never the target.
+
+    Built with SQLAlchemy's own URL type rather than ``urllib.parse``: a
+    generic URL parser treats a password containing ``#`` as introducing a
+    fragment, silently truncating the host, port and database from the
+    credentials onward. ``make_url``/``URL.set`` know a database URL's actual
+    grammar, so an arbitrary valid password round-trips intact.
     """
 
-    parts = urlsplit(url)
-    return urlunsplit((parts.scheme, parts.netloc, f"/{TEST_DB_NAME}", "", ""))
+    return make_url(url).set(database=TEST_DB_NAME).render_as_string(hide_password=False)
 
 
 def _maintenance_urls(url: str) -> list[str]:
@@ -182,9 +188,9 @@ def _maintenance_urls(url: str) -> list[str]:
     a server that lacks it.
     """
 
-    parts = urlsplit(url)
+    parsed = make_url(url)
     return [
-        urlunsplit((parts.scheme, parts.netloc, f"/{name}", "", ""))
+        parsed.set(database=name).render_as_string(hide_password=False)
         for name in ("postgres", "template1")
     ]
 
