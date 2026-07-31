@@ -71,6 +71,9 @@ class DecisionRequest:
     dimension: IntelligenceDimension
     action: IntelligenceDecisionAction
     target_key: str
+    #: What the operator actually saw. Falls back to the reviewed
+    #: classification's display value, then to the key itself.
+    target_label: str | None = None
     classification_id: uuid.UUID | None = None
     corrected_term_id: uuid.UUID | None = None
     corrected_value: str | None = None
@@ -144,6 +147,7 @@ def record_decision(
         classification_id=classification.id if classification is not None else None,
         dimension=request.dimension,
         target_key=target[:320],
+        target_label=_label_for(request, classification),
         action=request.action,
         corrected_term_id=corrected_term.id if corrected_term is not None else None,
         corrected_term_code=corrected_term.code if corrected_term is not None else None,
@@ -189,6 +193,26 @@ def record_decision(
         },
     )
     return decision
+
+
+def _label_for(
+    request: DecisionRequest,
+    classification: CompanyIntelligenceClassification | None,
+) -> str | None:
+    """The human-readable value a decision concerns.
+
+    The reviewed classification's own display value first, because that is
+    literally what was on the operator's screen. The request's label second, for
+    a decision about a value no classification carries. Never the target key: a
+    canonical key is a slug, and printing it would show the operator a different
+    string from the one they clicked.
+    """
+
+    if classification is not None:
+        return (classification.term_label or classification.model_value)[:500]
+    if request.target_label:
+        return request.target_label.strip()[:500] or None
+    return None
 
 
 def _correction(

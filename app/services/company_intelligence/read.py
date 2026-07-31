@@ -573,6 +573,7 @@ def _view_from_decision(decision: CompanyIntelligenceDecision) -> Classification
     display = (
         decision.corrected_term_label
         or decision.corrected_value
+        or decision.target_label
         or decision.target_key.removeprefix("text:")
     )
     return ClassificationView(

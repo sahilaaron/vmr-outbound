@@ -323,6 +323,7 @@ def upgrade() -> None:
     sa.Column('classification_id', sa.UUID(), nullable=True),
     sa.Column('dimension', sa.Enum('INDUSTRY', 'SUBINDUSTRY', 'PRODUCT', 'SERVICE', 'SPECIALTY', 'CAPABILITY', 'GEOGRAPHY', 'OPERATING_MARKET', 'CUSTOMER_SEGMENT', 'BUSINESS_MODEL', 'COMPANY_TYPE', name='intelligence_dimension'), nullable=False),
     sa.Column('target_key', sa.String(length=320), nullable=False),
+    sa.Column('target_label', sa.String(length=500), nullable=True),
     sa.Column('action', sa.Enum('CONFIRM', 'CORRECT', 'MARK_UNRESOLVED', 'REJECT', name='intelligence_decision_action'), nullable=False),
     sa.Column('corrected_term_id', sa.UUID(), nullable=True),
     sa.Column('corrected_term_code', sa.String(length=160), nullable=True),

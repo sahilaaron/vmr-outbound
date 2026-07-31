@@ -602,6 +602,13 @@ class CompanyIntelligenceDecision(Base):
     #: version: a term code when the value normalized, otherwise the normalized
     #: text. This is what lets a confirmation survive a new production run.
     target_key: Mapped[str] = mapped_column(String(320), nullable=False)
+    #: The value as it read when the decision was made, for display and for the
+    #: audit trail. A ``target_key`` is a stable identity, not a label: for a
+    #: canonical value it is the term *code*, so a screen that printed it would
+    #: show "pharma-and-healthcare" where a person wrote "Pharma & Healthcare".
+    #: Denormalized on purpose — the label a person saw is part of what they
+    #: decided, and it must not change when a vocabulary edition rewords a term.
+    target_label: Mapped[str | None] = mapped_column(String(500), nullable=True)
     action: Mapped[IntelligenceDecisionAction] = mapped_column(
         Enum(IntelligenceDecisionAction, name="intelligence_decision_action"), nullable=False
     )
