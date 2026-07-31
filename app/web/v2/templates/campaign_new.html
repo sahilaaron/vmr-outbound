@@ -54,6 +54,18 @@
             <p class="v2-note">The Knowledge Base is switched off in this environment.</p>
             {% endif %}
           </div>
+          <div class="v2-field v2-check-field">
+            <label for="campaign-provisional">
+              <input type="checkbox" id="campaign-provisional" name="allow_provisional_domains" checked>
+              Act on provisional company domains
+            </label>
+            <div class="v2-hint">
+              A provisional domain is a single candidate nothing has independently confirmed.
+              Checked, this campaign's Agents may research, draft and send against it; unchecked,
+              they wait for a confirmed domain past company research. Change this any time from
+              Edit.
+            </div>
+          </div>
           <div class="v2-btn-row">
             <button class="v2-btn primary big" type="submit">Create the campaign</button>
             <a class="v2-btn big" href="/app/campaigns">Cancel</a>

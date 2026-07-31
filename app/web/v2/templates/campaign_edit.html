@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="v2-page wiz">
+  <h1 class="v2-h1">Edit {{ campaign.name }}</h1>
+  <p class="v2-lede">
+    Name, memory note and the provisional-domain policy are the settings a campaign can change
+    after it exists. Nothing enrolled, sent or drafted is touched by saving this form.
+  </p>
+
+  <div class="v2-card v2-mt">
+    <div class="v2-card-body roomy">
+      <form class="v2-form-stack" method="post" action="/app/campaigns/{{ campaign.id }}/edit">
+        <div class="v2-field">
+          <label for="campaign-name">Campaign name</label>
+          <div class="v2-hint">Only you see this. It must be unique.</div>
+          <input class="v2-input" id="campaign-name" name="name" maxlength="255" required
+                 value="{{ campaign.name }}">
+        </div>
+        <div class="v2-field">
+          <label for="campaign-description">What it is for</label>
+          <div class="v2-hint">A sentence for your own memory. No draft reads this.</div>
+          <textarea class="v2-textarea" id="campaign-description" name="description"
+                    maxlength="4000">{{ campaign.description or '' }}</textarea>
+        </div>
+        <div class="v2-field v2-check-field">
+          <label for="campaign-provisional">
+            <input type="checkbox" id="campaign-provisional" name="allow_provisional_domains"
+                   {{ "checked" if campaign.allow_provisional_domains }}>
+            Act on provisional company domains
+          </label>
+          <div class="v2-hint">
+            A provisional domain is a single candidate nothing has independently confirmed.
+            Checked, this campaign's Agents may research, draft and send against it; unchecked,
+            they wait for a confirmed domain past company research.
+          </div>
+        </div>
+        <div class="v2-btn-row">
+          <button class="v2-btn primary big" type="submit">Save changes</button>
+          <a class="v2-btn big" href="/app/campaigns/{{ campaign.id }}">Cancel</a>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

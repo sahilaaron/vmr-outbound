@@ -28,6 +28,7 @@
             <th class="num">Drafts waiting</th>
             <th class="num">Sent</th>
             <th>Needs you</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
@@ -46,6 +47,15 @@
             <td class="num m">{{ row.counts.drafts_awaiting }}</td>
             <td class="num">{{ unbuilt('—') }}</td>
             <td class="v2-note">{{ row.needs }}</td>
+            <td class="v2-row-actions">
+              <a class="v2-btn small" href="/app/campaigns/{{ row.campaign.id }}/edit">Edit</a>
+              {% if row.campaign.status.value != 'archived' %}
+              <form method="post" action="/app/campaigns/{{ row.campaign.id }}/archive"
+                    onsubmit="return confirm('Archive {{ row.campaign.name }}? Execution turns off for good and this cannot be undone; contacts, drafts and history stay.');">
+                <button class="v2-btn small danger" type="submit">Archive</button>
+              </form>
+              {% endif %}
+            </td>
           </tr>
           {% endfor %}
         </tbody>
@@ -62,6 +72,15 @@
           {{ tag(row.contacts ~ ' contacts') }}
         </div>
         <p class="v2-note">{{ row.needs }}</p>
+        <div class="v2-row-actions">
+          <a class="v2-btn small" href="/app/campaigns/{{ row.campaign.id }}/edit">Edit</a>
+          {% if row.campaign.status.value != 'archived' %}
+          <form method="post" action="/app/campaigns/{{ row.campaign.id }}/archive"
+                onsubmit="return confirm('Archive {{ row.campaign.name }}? Execution turns off for good and this cannot be undone; contacts, drafts and history stay.');">
+            <button class="v2-btn small danger" type="submit">Archive</button>
+          </form>
+          {% endif %}
+        </div>
       </div>
       {% endfor %}
     </div>

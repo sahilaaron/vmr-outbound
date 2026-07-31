@@ -899,6 +899,7 @@ def campaign_create(
     name: str = Form(...),
     description: str = Form(""),
     offering_id: str = Form(""),
+    allow_provisional_domains: str = Form(""),
 ) -> RedirectResponse:
     try:
         campaign = campaign_service.create_campaign(
@@ -906,6 +907,7 @@ def campaign_create(
             name=name,
             description=description or None,
             status=CampaignStatus.DRAFT,
+            allow_provisional_domains=bool(allow_provisional_domains),
             actor=draft_service.OPERATOR_ACTOR,
         )
     except CampaignError as exc:
@@ -932,6 +934,94 @@ def campaign_create(
             "execution on when you want the Agents to start."
         ),
     )
+
+
+@router.get("/campaigns/{campaign_id}/edit")
+def campaign_edit_page(
+    campaign_id: str, request: Request, db: Session = Depends(get_db)
+) -> HTMLResponse:
+    identifier = _uuid(campaign_id)
+    if identifier is None:
+        return _not_found(request, db, "That is not a campaign id.")
+    campaign = campaign_service.get_campaign(db, identifier)
+    if campaign is None:
+        return _not_found(request, db, "That campaign does not exist.")
+    return _render(
+        request,
+        db,
+        "campaign_edit.html",
+        {"active_nav": "campaigns", "page_title": f"Edit {campaign.name}", "campaign": campaign},
+    )
+
+
+@router.post("/campaigns/{campaign_id}/edit")
+def campaign_edit_submit(
+    campaign_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    name: str = Form(...),
+    description: str = Form(""),
+    allow_provisional_domains: str = Form(""),
+) -> RedirectResponse:
+    identifier = _uuid(campaign_id)
+    if identifier is None:
+        return _redirect("/app/campaigns", err="That is not a campaign id.")
+    try:
+        campaign = campaign_service.update_campaign(
+            db,
+            identifier,
+            name=name,
+            description=description or None,
+            allow_provisional_domains=bool(allow_provisional_domains),
+            actor=draft_service.OPERATOR_ACTOR,
+            reason="campaign edited",
+        )
+    except CampaignError as exc:
+        return _redirect(f"/app/campaigns/{identifier}/edit", err=str(exc))
+    db.commit()
+    return _redirect(f"/app/campaigns/{campaign.id}", ok=f"{campaign.name} updated.")
+
+
+@router.post("/campaigns/{campaign_id}/archive")
+def campaign_archive(
+    campaign_id: str, request: Request, db: Session = Depends(get_db)
+) -> RedirectResponse:
+    """Retire a campaign from the list. One-way: an archived campaign cannot reopen.
+
+    There is no hard delete — enrolled contacts, drafts and audit history stay in
+    place; archiving only turns execution off for good, the same guard already
+    applied to any Campaign reaching ``ARCHIVED``.
+
+    Execution is turned off through :func:`apply_campaign_execution` rather than
+    left to ``update_campaign``'s own reconciliation — the same deadlock-safe,
+    batched control path the execution toggle uses, so archiving a Campaign with
+    many enrolled Contacts cannot deadlock or block a worker's lease the way an
+    unbatched reconcile could. ``apply_campaign_execution`` commits on its own;
+    the status transition that follows is a second, separate commit.
+    """
+
+    identifier = _uuid(campaign_id)
+    if identifier is None:
+        return _redirect("/app/campaigns", err="That is not a campaign id.")
+    try:
+        campaign_service.apply_campaign_execution(
+            db,
+            identifier,
+            enabled=False,
+            actor=draft_service.OPERATOR_ACTOR,
+            reason="archived from the campaigns list",
+        )
+        campaign = campaign_service.update_campaign(
+            db,
+            identifier,
+            status=CampaignStatus.ARCHIVED,
+            actor=draft_service.OPERATOR_ACTOR,
+            reason="archived from the campaigns list",
+        )
+    except CampaignError as exc:
+        return _redirect("/app/campaigns", err=str(exc))
+    db.commit()
+    return _redirect("/app/campaigns", ok=f"{campaign.name} archived.")
 
 
 @router.get("/campaigns/{campaign_id}")
