@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% from "company_intelligence/_ci_macros.html" import backfill_badge, outcome_badge %}
+{% set ci_section = "backfill" %}
+{% block content %}
+{% include "company_intelligence/_ci_nav.html" %}
+
+<div class="grid-2">
+  <div class="card">
+    <div class="card-head"><h2>Start a run</h2></div>
+    <div class="card-body">
+      <p class="small">
+        {{ eligible_companies }} compan{{ "y has" if eligible_companies == 1 else "ies have" }}
+        a current research dossier. That is an upper bound, not a promise:
+        eligibility also needs sourced facts, decided per company.
+      </p>
+      <form method="post" action="/admin/company-intelligence/backfill">
+        <div class="field">
+          <label for="bf-label">Label</label>
+          <input type="text" id="bf-label" name="label" maxlength="255" value="Company Intelligence backfill">
+        </div>
+        <div class="field">
+          <label for="bf-mode">Mode</label>
+          <select id="bf-mode" name="mode">
+            <option value="preview">Dry run — decide, report, queue nothing</option>
+            <option value="live">Live — queue jobs for eligible companies</option>
+          </select>
+          <div class="help">A dry run walks the identical eligibility path, so the
+            preview is produced by the code that will actually run.</div>
+        </div>
+        <div class="field">
+          <label for="bf-batch">Batch size</label>
+          <input type="number" id="bf-batch" name="batch_size" min="1" max="1000" value="{{ default_batch_size }}">
+          <div class="help">One press of “Advance” processes at most this many companies.</div>
+        </div>
+        <div class="field">
+          <label for="bf-max">Ceiling <span class="opt">(optional)</span></label>
+          <input type="number" id="bf-max" name="max_companies" min="1" placeholder="e.g. 50">
+          <div class="help">Start with fifty before committing to everything.</div>
+        </div>
+        <button class="btn" type="submit">Open run</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="table-wrap">
+    <div class="toolbar"><strong class="small">Runs</strong></div>
+    {% if runs %}
+    <table>
+      <thead><tr><th>Run</th><th>State</th><th>Considered</th><th>Queued</th><th>Skipped</th></tr></thead>
+      <tbody>
+        {% for run in runs %}
+        <tr>
+          <td><a href="/admin/company-intelligence/backfill?run={{ run.id }}">{{ run.label }}</a>
+            <div class="small muted-text">{{ run.created_at.strftime("%Y-%m-%d %H:%M") }}{{ " · dry run" if run.dry_run }}</div>
+          </td>
+          <td class="small">{{ backfill_badge(run.status) }}</td>
+          <td class="small">{{ run.considered_count }}</td>
+          <td class="small">{{ run.enqueued_count }}</td>
+          <td class="small">{{ run.skipped_count }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty"><div class="empty-title">No runs yet</div></div>
+    {% endif %}
+  </div>
+</div>
+
+{% if selected %}
+<div class="card">
+  <div class="card-head">
+    <h2>{{ selected.label }}</h2>
+    <div class="small muted-text">{{ backfill_badge(selected.status) }} · batch {{ selected.batch_size }}{% if selected.max_companies %} · ceiling {{ selected.max_companies }}{% endif %}</div>
+  </div>
+  <div class="card-body">
+    <p class="small">
+      {{ selected.considered_count }} considered · {{ selected.enqueued_count }} queued ·
+      {{ selected.skipped_count }} skipped · {{ selected.failed_count }} failed
+    </p>
+    {% if selected.skip_reasons %}
+    <p class="small muted-text">
+      Skip reasons:
+      {% for reason, count in selected.skip_reasons.items() %}{{ reason.replace("_", " ") }} × {{ count }}{{ " · " if not loop.last }}{% endfor %}
+    </p>
+    {% endif %}
+    <div class="toolbar">
+      {% if selected.status.value in ("preview", "running") %}
+      <form method="post" action="/admin/company-intelligence/backfill/{{ selected.id }}/advance">
+        <button class="btn" type="submit">Advance one batch</button>
+      </form>
+      {% endif %}
+      {% if selected.status.value == "running" %}
+      <form method="post" action="/admin/company-intelligence/backfill/{{ selected.id }}/pause"><button class="btn ghost" type="submit">Pause</button></form>
+      {% elif selected.status.value == "paused" %}
+      <form method="post" action="/admin/company-intelligence/backfill/{{ selected.id }}/resume"><button class="btn ghost" type="submit">Resume</button></form>
+      {% endif %}
+      {% if selected.status.value in ("preview", "running", "paused") %}
+      <form method="post" action="/admin/company-intelligence/backfill/{{ selected.id }}/cancel"><button class="btn ghost" type="submit">Cancel</button></form>
+      {% endif %}
+    </div>
+    <p class="small muted-text">
+      Cancelling ends the plan. Jobs it already queued are left alone: they are
+      idempotent and individually cancellable, and killing them silently would
+      make “cancel” mean two different things.
+    </p>
+  </div>
+</div>
+
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Per-company outcomes</strong></div>
+  {% if items %}
+  <table>
+    <thead><tr><th>#</th><th>Company</th><th>Outcome</th><th>Reason</th></tr></thead>
+    <tbody>
+      {% for item in items %}
+      <tr>
+        <td class="small muted-text">{{ item.sequence }}</td>
+        <td class="small"><a href="/admin/companies/{{ item.company_id }}/intelligence">{{ item.company_id }}</a></td>
+        <td class="small">{{ outcome_badge(item.outcome) }}</td>
+        <td class="small">
+          {% if item.skip_reason %}<code>{{ item.skip_reason }}</code>{% endif %}
+          {% if item.detail %}<div class="small muted-text">{{ item.detail }}</div>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty"><div class="empty-title">Nothing processed yet</div><p>Advance the run to walk the first batch.</p></div>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

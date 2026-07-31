@@ -1,0 +1,9 @@
+{# Sub-navigation for the Company Intelligence area. Kept in its own partial so
+   the area can be removed in one directory. #}
+<div class="toolbar">
+  <div class="filter-chips" role="group" aria-label="Company Intelligence sections">
+    <a class="chip {{ 'on' if ci_section == 'companies' }}" href="/admin/company-intelligence">Companies</a>
+    <a class="chip {{ 'on' if ci_section == 'taxonomy' }}" href="/admin/company-intelligence/taxonomy">Vocabulary</a>
+    <a class="chip {{ 'on' if ci_section == 'backfill' }}" href="/admin/company-intelligence/backfill">Backfill</a>
+  </div>
+</div>

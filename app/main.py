@@ -119,6 +119,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # The v2 router is included first so its `/app/...` paths are matched
         # before any broader admin pattern can shadow them.
         app.include_router(v2_router)
+
+        # Company Intelligence (CI-001) mounts as its own router, behind its own
+        # default-off switch on top of `workbench`. Two consequences, both
+        # deliberate: while the switch is off the paths do not exist at all
+        # (a 404, not a page explaining a disabled feature), and the area can be
+        # added or removed without touching a line of the existing workbench.
+        if settings.features.company_intelligence:
+            from app.web.company_intelligence import router as company_intelligence_router
+
+            app.include_router(company_intelligence_router)
+
         app.include_router(web_router)
 
     return app

@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% from "company_intelligence/_ci_macros.html" import state_badge, normalization_badge, evidence_badge, confidence_badge %}
+{% set ci_section = "companies" %}
+{% block content %}
+{% include "company_intelligence/_ci_nav.html" %}
+
+<div class="card">
+  <div class="card-head">
+    <h2>{{ company.name }} — version {{ version.version_number }}</h2>
+    <div class="small muted-text">
+      {% if version.is_current %}<span class="badge ok">current</span>{% else %}<span class="badge muted">superseded {{ version.superseded_at.strftime("%Y-%m-%d %H:%M") if version.superseded_at }}</span>{% endif %}
+    </div>
+  </div>
+  <div class="card-body">
+    <p class="small">
+      This page shows the version <strong>exactly as it was produced</strong>.
+      Operator decisions are not folded in here — a produced version is never
+      edited, and seeing it unmodified is the point of keeping it.
+    </p>
+    <ul class="small">
+      <li>Producer <code>{{ version.producer }}/{{ version.producer_version }}</code>, policy <code>{{ version.policy_version }}</code></li>
+      <li>Read research dossier v{{ version.dossier_version_number }} and {{ version.sourced_fact_count }} sourced fact(s)</li>
+      <li>Vocabularies: {% for dimension, edition in (version.taxonomy_versions or {}).items() %}<code>{{ dimension }} {{ edition }}</code>{{ " " }}{% endfor %}</li>
+      <li>Input digest <code>{{ version.input_digest }}</code></li>
+      <li>Answer digest <code>{{ version.answer_digest or "not recorded" }}</code> — the answer text itself is deliberately not stored</li>
+      <li>Dimensions addressed: {{ (version.dimensions_addressed or []) | join(", ") or "none" }}</li>
+    </ul>
+    {% if version.warnings %}
+    <details><summary class="small">{{ version.warnings | length }} warning(s)</summary>
+      <ul class="small muted-text">{% for warning in version.warnings %}<li>{{ warning }}</li>{% endfor %}</ul>
+    </details>
+    {% endif %}
+    <p><a class="btn ghost" href="/admin/companies/{{ company.id }}/intelligence">Back to current understanding</a></p>
+  </div>
+</div>
+
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">{{ classifications | length }} classification(s) as produced</strong></div>
+  {% if classifications %}
+  <table>
+    <thead><tr><th>Dimension</th><th>Model value</th><th>Normalized to</th><th>State</th><th>Evidence</th></tr></thead>
+    <tbody>
+      {% for row in classifications %}
+      <tr>
+        <td class="small">{{ row.dimension.value.replace("_", " ") }} <span class="muted-text">#{{ row.rank }}</span></td>
+        <td>{{ row.model_value }}{% if row.is_primary %} <span class="badge ok">primary</span>{% endif %}
+          {% if row.rationale %}<div class="small muted-text">{{ row.rationale }}</div>{% endif %}
+        </td>
+        <td class="small">
+          {{ row.term_label or "—" }} {{ normalization_badge(row.normalization) }}
+          {% if row.taxonomy_version %}<div class="small muted-text">{{ row.taxonomy_version }}</div>{% endif %}
+        </td>
+        <td class="small">{{ state_badge(row.state) }}
+          {% if row.unresolved_reason %}<div class="small muted-text">{{ row.unresolved_reason.replace("_", " ") }}</div>{% endif %}
+        </td>
+        <td class="small">{{ evidence_badge(row.evidence_status, row.evidence_count) }} {{ confidence_badge(row.confidence_band, row.confidence) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty"><div class="empty-title">No classifications in this version</div></div>
+  {% endif %}
+</div>
+{% endblock %}

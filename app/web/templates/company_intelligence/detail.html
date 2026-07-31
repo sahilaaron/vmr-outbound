@@ -1,0 +1,221 @@
+{% extends "base.html" %}
+{% from "company_intelligence/_ci_macros.html" import state_badge, source_badge, normalization_badge, evidence_badge, confidence_badge, job_badge %}
+{% set ci_section = "companies" %}
+{% block content %}
+{% include "company_intelligence/_ci_nav.html" %}
+
+<div class="card">
+  <div class="card-head">
+    <h2>{{ company.name }}</h2>
+    <div class="small muted-text">{{ company.domain or "no domain recorded" }}</div>
+  </div>
+  <div class="card-body">
+    {% if view and view.current_version %}
+    <p class="small">
+      Current version <strong>v{{ view.current_version.version_number }}</strong>,
+      produced by <code>{{ view.current_version.producer }}/{{ view.current_version.producer_version }}</code>
+      under policy <code>{{ view.current_version.policy_version }}</code>
+      from research dossier v{{ view.current_version.dossier_version_number }}
+      and {{ view.current_version.sourced_fact_count }} sourced fact(s).
+    </p>
+    <p class="small muted-text">
+      Latest model version: v{{ view.latest_model_version.version_number }} ·
+      Latest reviewed version:
+      {% if view.latest_reviewed_version %}v{{ view.latest_reviewed_version.version_number }}{% else %}<em>not reviewed yet</em>{% endif %} ·
+      Input digest <code>{{ view.current_version.input_digest[:12] }}…</code>
+    </p>
+    {% if view.stale_decision_count %}
+    <p class="small"><span class="badge warn">{{ view.stale_decision_count }}</span>
+      operator decision(s) concern a value the current version no longer proposes.
+      They are still applied and marked <em>operator only</em> below.</p>
+    {% endif %}
+    {% if view.current_version.warnings %}
+    <details><summary class="small">{{ view.current_version.warnings | length }} production warning(s)</summary>
+      <ul class="small muted-text">{% for warning in view.current_version.warnings %}<li>{{ warning }}</li>{% endfor %}</ul>
+    </details>
+    {% endif %}
+    {% else %}
+    <p class="small">No intelligence has been produced for this company yet.</p>
+    {% endif %}
+
+    {% if blocked_reason %}
+    <p class="small"><span class="badge err">cannot classify</span> {{ blocked_reason }}</p>
+    {% elif active_job %}
+    <p class="small">A job is already {{ job_badge(active_job.status) | safe }} for this company.</p>
+    {% else %}
+    <form method="post" action="/admin/companies/{{ company.id }}/intelligence/run">
+      <button class="btn" type="submit">Run classification</button>
+      <span class="help">Queues a durable job. Nothing is sent, and no canonical company field is written.</span>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+{% if view and view.conflicts %}
+<div class="card">
+  <div class="card-head"><h2>Unresolved disagreements</h2></div>
+  <div class="card-body">
+    {% for conflict in view.conflicts %}
+    <p class="small">
+      <span class="badge warn">{{ conflict.dimension.value.replace("_", " ") }}</span>
+      {{ conflict.statement }}
+      <br><span class="muted-text">Competing values: {{ conflict.values | join(" · ") }}</span>
+    </p>
+    {% endfor %}
+    <p class="small muted-text">
+      Nothing picks a winner here. Choose one with a correction below, or leave it
+      unresolved — an unresolved value is a truthful answer.
+    </p>
+  </div>
+</div>
+{% endif %}
+
+{% if view and view.classifications %}
+{% for dimension in dimensions %}
+{% set values = view.for_dimension(dimension) %}
+{% if values %}
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">{{ dimension.value.replace("_", " ") | title }}</strong></div>
+  <table>
+    <thead>
+      <tr><th>Value</th><th>State</th><th>Responsibility</th><th>Evidence</th><th>Review</th></tr>
+    </thead>
+    <tbody>
+      {% for item in values %}
+      <tr>
+        <td>
+          <strong>{{ item.display_value }}</strong>
+          {% if item.is_primary %}<span class="badge ok">primary</span>{% endif %}
+          {% if item.operator_only %}<span class="badge warn">operator only</span>{% endif %}
+          {% if item.term_label and item.model_value != item.term_label %}
+          <div class="small muted-text">model wrote: “{{ item.model_value }}”</div>
+          {% endif %}
+          {% if item.parent_term_code %}<div class="small muted-text">under {{ item.parent_term_code }}</div>{% endif %}
+        </td>
+        <td class="small">
+          {{ state_badge(item.state) }}
+          {% if item.unresolved_reason %}<div class="small muted-text">{{ item.unresolved_reason.replace("_", " ") }}</div>{% endif %}
+        </td>
+        <td class="small">
+          {{ source_badge(item.source) }} {{ normalization_badge(item.normalization) }}
+          {% if item.decided_by %}<div class="small muted-text">{{ item.decided_by }}{% if item.decision_note %} — {{ item.decision_note }}{% endif %}</div>{% endif %}
+        </td>
+        <td class="small">
+          {{ evidence_badge(item.evidence_status, item.evidence | length) }}
+          {{ confidence_badge(item.confidence_band, item.confidence) }}
+          {% for evidence in item.evidence %}
+          <div class="small muted-text">
+            {% if evidence.source_url %}<a href="{{ evidence.source_url }}" rel="noreferrer noopener nofollow">{{ evidence.source_url | truncate(60) }}</a>{% endif %}
+            {% if evidence.excerpt %}<br>“{{ evidence.excerpt | truncate(120) }}”{% endif %}
+          </div>
+          {% endfor %}
+        </td>
+        <td>
+          <form method="post" action="/admin/companies/{{ company.id }}/intelligence/decisions" class="stack">
+            <input type="hidden" name="dimension" value="{{ dimension.value }}">
+            <input type="hidden" name="target_key" value="{{ item.term_code or ('text:' ~ item.display_value | lower) }}">
+            <input type="hidden" name="target_label" value="{{ item.display_value }}">
+            {% if item.classification_id %}<input type="hidden" name="classification_id" value="{{ item.classification_id }}">{% endif %}
+            <select name="action" aria-label="Decision">
+              {% for action in actions %}
+              <option value="{{ action.value }}">{{ action.value.replace("_", " ") }}</option>
+              {% endfor %}
+            </select>
+            {% if correction_terms.get(dimension.value) %}
+            <select name="corrected_term_id" aria-label="Correct to">
+              <option value="">— correct to (canonical) —</option>
+              {% for term in correction_terms[dimension.value] %}
+              <option value="{{ term.id }}">{{ term.canonical_label }}</option>
+              {% endfor %}
+            </select>
+            {% else %}
+            <input type="text" name="corrected_value" maxlength="500" placeholder="correct to (free text)">
+            {% endif %}
+            {% if dimension.value == "industry" %}
+            <label class="small"><input type="checkbox" name="set_primary" value="1"> primary</label>
+            {% endif %}
+            <input type="text" name="note" maxlength="500" placeholder="why (optional)">
+            <button class="btn ghost" type="submit">Record</button>
+          </form>
+          {% if item.normalization.value == "unmapped" and correction_terms.get(dimension.value) %}
+          <form method="post" action="/admin/companies/{{ company.id }}/intelligence/aliases" class="stack">
+            <input type="hidden" name="dimension" value="{{ dimension.value }}">
+            <input type="hidden" name="alias" value="{{ item.model_value }}">
+            <select name="term_id" aria-label="Map alias to">
+              <option value="">— teach the vocabulary this means —</option>
+              {% for term in correction_terms[dimension.value] %}
+              <option value="{{ term.id }}">{{ term.canonical_label }}</option>
+              {% endfor %}
+            </select>
+            <button class="btn ghost" type="submit">Map alias</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endfor %}
+{% endif %}
+
+<div class="grid-2">
+  <div class="table-wrap">
+    <div class="toolbar"><strong class="small">Versions</strong></div>
+    {% if versions %}
+    <table>
+      <thead><tr><th>Version</th><th>State</th><th>Producer</th><th>Dossier</th><th>Produced</th></tr></thead>
+      <tbody>
+        {% for version in versions %}
+        <tr>
+          <td><a href="/admin/companies/{{ company.id }}/intelligence/versions/{{ version.id }}">v{{ version.version_number }}</a></td>
+          <td class="small">{% if version.is_current %}<span class="badge ok">current</span>{% else %}<span class="badge muted">superseded</span>{% endif %}</td>
+          <td class="small">{{ version.producer }}/{{ version.producer_version }}</td>
+          <td class="small">v{{ version.dossier_version_number }}</td>
+          <td class="small muted-text">{{ version.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty"><div class="empty-title">No versions</div></div>
+    {% endif %}
+  </div>
+
+  <div class="table-wrap">
+    <div class="toolbar"><strong class="small">Correction history</strong></div>
+    {% if decisions %}
+    <table>
+      <thead><tr><th>When</th><th>Dimension</th><th>Action</th><th>Value</th><th>Who</th></tr></thead>
+      <tbody>
+        {% for decision in decisions %}
+        <tr class="{{ '' if decision.is_current else 'muted-text' }}">
+          <td class="small">{{ decision.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+          <td class="small">{{ decision.dimension.value.replace("_", " ") }}</td>
+          <td class="small">
+            {{ decision.action.value.replace("_", " ") }}
+            {% if not decision.is_current %}<span class="badge muted">superseded</span>{% endif %}
+          </td>
+          <td class="small">
+            {{ decision.target_label or decision.target_key }}
+            {% if decision.corrected_term_label or decision.corrected_value %}
+            → {{ decision.corrected_term_label or decision.corrected_value }}
+            {% endif %}
+            {% if decision.note %}<div class="small muted-text">{{ decision.note }}</div>{% endif %}
+          </td>
+          <td class="small">{{ decision.actor }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty">
+      <div class="empty-title">Nothing reviewed yet</div>
+      <p>Confirming, correcting or rejecting a value records a decision here. A
+         decision never edits the version it was made against.</p>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
