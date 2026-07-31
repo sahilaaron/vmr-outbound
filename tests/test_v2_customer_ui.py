@@ -25,15 +25,16 @@ from app.api.deps import get_db
 from app.core.config import get_settings
 from app.main import create_app
 from app.models.audit_event import AuditEvent
+from app.models.campaign import Campaign, CampaignContact
 from app.models.draft import DraftApproval, DraftVersion
-from app.models.enums import AgentIdentifier, ApprovalStatus, SellerOfferingType
+from app.models.enums import AgentIdentifier, ApprovalStatus, CampaignStatus, SellerOfferingType
 from app.services import campaigns as campaign_service
 from app.services import drafts as draft_service
 from app.services.agents.registry import AGENT_SPECS, PIPELINE_ORDER
 from app.services.seller import profile as seller_profile
 from app.services.seller import records as seller_records
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from tests import workbench_scenario
@@ -252,6 +253,8 @@ def test_unknown_ids_render_the_not_found_page_not_a_crash(client: TestClient) -
     for path in (
         "/app/campaigns/not-a-uuid",
         f"/app/campaigns/{uuid.uuid4()}",
+        "/app/campaigns/not-a-uuid/edit",
+        f"/app/campaigns/{uuid.uuid4()}/edit",
         "/app/contacts/not-a-uuid",
         f"/app/contacts/{uuid.uuid4()}",
         f"/app/companies/{uuid.uuid4()}",
@@ -648,6 +651,269 @@ def test_a_campaign_renders_honestly_when_the_agent_monitor_is_off(
     assert response.status_code == 200
     assert "FEATURES__AGENT_WORKBENCH" in response.text
     assert "The campaign is unaffected" in response.text
+
+
+# ---------------------------------------------------------------------------
+# New campaigns default to acting on provisional company domains
+# ---------------------------------------------------------------------------
+
+
+def _provisional_checkbox(body: str) -> str:
+    """The exact `<input>` tag for the provisional-domains checkbox, or ''.
+
+    Isolated with a regex rather than a raw substring check because the
+    ``checked`` attribute is conditionally rendered on its own line: a naive
+    ``"checked" in body`` would pass on any page that happens to say the word
+    elsewhere.
+    """
+
+    match = re.search(r'<input[^>]*id="campaign-provisional"[^>]*>', body, re.DOTALL)
+    return match.group(0) if match else ""
+
+
+def test_new_campaign_form_defaults_the_provisional_checkbox_to_checked(
+    client: TestClient,
+) -> None:
+    body = client.get("/app/campaigns/new").text
+    tag = _provisional_checkbox(body)
+    assert tag, "the provisional-domains checkbox is missing from the creation form"
+    assert "checked" in tag
+
+
+def test_creating_a_campaign_with_the_box_checked_enables_provisional_domains(
+    client: TestClient, db_session: Session
+) -> None:
+    response = client.post(
+        "/app/campaigns/new",
+        data={"name": "Checked on create", "allow_provisional_domains": "on"},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    created = db_session.scalar(select(Campaign).where(Campaign.name == "Checked on create"))
+    assert created is not None
+    assert created.allow_provisional_domains is True
+
+
+def test_creating_a_campaign_with_the_box_unchecked_leaves_provisional_domains_off(
+    client: TestClient, db_session: Session
+) -> None:
+    """A real browser omits an unchecked box's field entirely; nothing recovers it."""
+
+    response = client.post(
+        "/app/campaigns/new",
+        data={"name": "Unchecked on create"},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    created = db_session.scalar(select(Campaign).where(Campaign.name == "Unchecked on create"))
+    assert created is not None
+    assert created.allow_provisional_domains is False
+
+
+# ---------------------------------------------------------------------------
+# Editing a Campaign from /app/campaigns
+# ---------------------------------------------------------------------------
+
+
+def test_editing_a_campaign_updates_name_description_and_provisional_toggle(
+    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
+) -> None:
+    target = scenario.other_campaign
+    response = client.post(
+        f"/app/campaigns/{target.id}/edit",
+        data={
+            "name": "Renamed campaign",
+            "description": "a new memory note",
+            "allow_provisional_domains": "on",
+        },
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert "Renamed campaign updated." in response.text
+    db_session.expire_all()
+    assert target.name == "Renamed campaign"
+    assert target.description == "a new memory note"
+    assert target.allow_provisional_domains is True
+
+
+def test_editing_without_the_checkbox_turns_provisional_domains_off(
+    client: TestClient, db_session: Session
+) -> None:
+    """The unchecked-submission case: the field is simply absent from the form data."""
+
+    on = campaign_service.create_campaign(
+        db_session, name="Starts enabled", allow_provisional_domains=True
+    )
+    db_session.commit()
+
+    response = client.post(
+        f"/app/campaigns/{on.id}/edit",
+        data={"name": "Starts enabled", "description": ""},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    db_session.expire_all()
+    assert on.allow_provisional_domains is False
+
+
+def test_existing_campaigns_retain_their_persisted_provisional_value_on_the_edit_page(
+    client: TestClient, db_session: Session
+) -> None:
+    on = campaign_service.create_campaign(
+        db_session, name="Edit page: on", allow_provisional_domains=True
+    )
+    off = campaign_service.create_campaign(
+        db_session, name="Edit page: off", allow_provisional_domains=False
+    )
+    db_session.commit()
+
+    on_tag = _provisional_checkbox(client.get(f"/app/campaigns/{on.id}/edit").text)
+    off_tag = _provisional_checkbox(client.get(f"/app/campaigns/{off.id}/edit").text)
+    assert "checked" in on_tag
+    assert "checked" not in off_tag
+
+
+def test_editing_a_missing_campaign_ends_at_not_found(client: TestClient) -> None:
+    response = client.post(
+        f"/app/campaigns/{uuid.uuid4()}/edit",
+        data={"name": "does not matter"},
+        follow_redirects=True,
+    )
+    assert response.status_code == 404
+    assert "Not found" in response.text
+
+
+def test_editing_with_a_missing_required_field_is_rejected(
+    client: TestClient, scenario: workbench_scenario.Scenario
+) -> None:
+    """`name` is required; FastAPI's own form validation must reject its absence."""
+
+    response = client.post(f"/app/campaigns/{scenario.other_campaign.id}/edit", data={})
+    assert response.status_code == 422
+
+
+def test_archive_is_post_only_a_get_must_not_archive_anything(
+    client: TestClient, scenario: workbench_scenario.Scenario
+) -> None:
+    """The archive action is POST-only; a GET must not silently archive anything."""
+
+    response = client.get(f"/app/campaigns/{scenario.other_campaign.id}/archive")
+    assert response.status_code == 405
+
+
+# ---------------------------------------------------------------------------
+# Archiving a Campaign from /app/campaigns
+# ---------------------------------------------------------------------------
+
+
+def test_archiving_a_campaign_turns_execution_off_and_marks_it_archived(
+    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
+) -> None:
+    target = scenario.other_campaign
+    response = client.post(f"/app/campaigns/{target.id}/archive", follow_redirects=True)
+    assert response.status_code == 200
+    assert f"{target.name} archived." in response.text
+    db_session.expire_all()
+    assert target.status is CampaignStatus.ARCHIVED
+    assert target.execution_enabled is False
+
+
+def test_archiving_does_not_delete_the_campaign_or_its_enrolled_history(
+    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
+) -> None:
+    """Archiving is the only "delete" this product has, and it must not delete.
+
+    The whole point of a status transition instead of a row deletion is that
+    enrolled Contacts, their per-campaign membership state and the audit trail
+    survive. If any of these counts drop, the operation quietly became a real
+    delete.
+    """
+
+    campaign_id = scenario.campaign.id
+    membership_count_before = (
+        db_session.scalar(
+            select(func.count())
+            .select_from(CampaignContact)
+            .where(CampaignContact.campaign_id == campaign_id)
+        )
+        or 0
+    )
+    audit_count_before = (
+        db_session.scalar(
+            select(func.count())
+            .select_from(AuditEvent)
+            .where(AuditEvent.entity_type == "campaign", AuditEvent.entity_id == str(campaign_id))
+        )
+        or 0
+    )
+    assert membership_count_before > 0, "the fixture is supposed to enrol contacts"
+
+    response = client.post(f"/app/campaigns/{campaign_id}/archive", follow_redirects=True)
+    assert response.status_code == 200
+
+    db_session.expire_all()
+    assert campaign_service.get_campaign(db_session, campaign_id) is not None
+
+    membership_count_after = (
+        db_session.scalar(
+            select(func.count())
+            .select_from(CampaignContact)
+            .where(CampaignContact.campaign_id == campaign_id)
+        )
+        or 0
+    )
+    audit_count_after = (
+        db_session.scalar(
+            select(func.count())
+            .select_from(AuditEvent)
+            .where(AuditEvent.entity_type == "campaign", AuditEvent.entity_id == str(campaign_id))
+        )
+        or 0
+    )
+    assert membership_count_after == membership_count_before
+    assert audit_count_after > audit_count_before, "archiving itself must be audited, not erased"
+
+
+def test_archiving_an_already_archived_campaign_does_not_error(
+    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
+) -> None:
+    target = scenario.other_campaign
+    first = client.post(f"/app/campaigns/{target.id}/archive", follow_redirects=True)
+    assert first.status_code == 200
+    second = client.post(f"/app/campaigns/{target.id}/archive", follow_redirects=True)
+    assert second.status_code == 200
+    assert "err=" not in str(second.url)
+    db_session.expire_all()
+    assert target.status is CampaignStatus.ARCHIVED
+
+
+def test_archiving_a_missing_campaign_redirects_with_an_error(client: TestClient) -> None:
+    response = client.post(
+        f"/app/campaigns/{uuid.uuid4()}/archive",
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("/app/campaigns?err=")
+
+
+def test_archived_campaigns_show_archived_state_and_no_archive_action_but_keep_edit(
+    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
+) -> None:
+    target = scenario.other_campaign
+    client.post(f"/app/campaigns/{target.id}/archive")
+    db_session.expire_all()
+
+    body = client.get("/app/campaigns").text
+    row_start = body.index(str(target.id))
+    row = body[row_start : row_start + 1200]
+    assert "Archived" in row
+    assert f"/app/campaigns/{target.id}/edit" in row
+    assert f'action="/app/campaigns/{target.id}/archive"' not in row
+
+    # The campaign detail page must still say Archived, not silently revert to Draft.
+    detail = client.get(f"/app/campaigns/{target.id}")
+    assert detail.status_code == 200
+    assert "Archived" in detail.text
 
 
 # ---------------------------------------------------------------------------
