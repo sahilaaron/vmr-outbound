@@ -1070,7 +1070,7 @@ def campaign_execution_toggle(
         return _redirect("/app/campaigns", err="That is not a campaign id.")
     want = enabled.lower() in {"1", "true", "on", "yes"}
     try:
-        campaign_service.set_campaign_execution(
+        campaign_service.apply_campaign_execution(
             db,
             identifier,
             enabled=want,
@@ -1079,7 +1079,6 @@ def campaign_execution_toggle(
         )
     except CampaignError as exc:
         return _redirect(f"/app/campaigns/{identifier}", err=str(exc))
-    db.commit()
     message = (
         "Execution is on. Agents may claim work for this campaign again."
         if want

@@ -52,7 +52,7 @@ from app.models.pipeline import CampaignContactAgentState
 from app.models.verification_job import AgentJob
 from app.services import pipeline
 from app.services.agents import jobs as agent_jobs
-from app.services.agents import orchestrator
+from app.services.agents import locking, orchestrator
 from app.services.agents.controls import effective_control
 from app.services.agents.registry import AGENT_SPECS
 from app.services.audit import record_audit_event
@@ -206,7 +206,10 @@ def _candidate_rows(
                 CampaignContactAgentState.agent_id == agent_id,
                 CampaignContactAgentState.status.in_(STOPPED_STATES),
             )
-            .order_by(CampaignContactAgentState.updated_at.desc())
+            .order_by(
+                CampaignContactAgentState.updated_at.desc(),
+                CampaignContactAgentState.id.desc(),
+            )
         ).all()
     )
     return [(state, membership, contact) for state, membership, contact in rows]
@@ -367,12 +370,25 @@ def rerun_stage(
     capped_at = ceiling if len(rows) > ceiling else None
     rows = rows[:ceiling]
 
+    # Acquire every Campaign Contact before this operation locks or cancels any
+    # related job.  The original display order is retained for the outcome, while
+    # the database lock order is the stable UUID order enforced by the helper.
+    locked_memberships = {
+        membership.id: membership
+        for membership in locking.lock_campaign_contacts(
+            session,
+            (membership.id for _, membership, _ in rows),
+        )
+    }
+
     note = _clean_reason(reason)
     requeued: list[uuid.UUID] = []
     refusals: list[RerunRefusal] = []
     generation: int | None = None
 
     for state, membership, contact in rows:
+        membership = locked_memberships.get(membership.id, membership)
+        session.refresh(state)
         label = _label(contact)
         refusal = _refuse_membership(session, membership=membership, actor=actor, label=label)
         if refusal is not None:

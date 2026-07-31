@@ -72,7 +72,7 @@ if str(_REPO_ROOT) not in sys.path:
 from app.db.session import session_scope  # noqa: E402 - must follow the path anchor above
 from app.models.enums import AgentIdentifier, AgentJobStatus  # noqa: E402
 from app.models.verification_job import AgentJob  # noqa: E402
-from app.services.agents import jobs  # noqa: E402
+from app.services.agents import jobs, locking  # noqa: E402
 from app.services.agents.orchestrator import (  # noqa: E402
     WorkerExecution,
     claim_next_campaign_job,
@@ -80,7 +80,6 @@ from app.services.agents.orchestrator import (  # noqa: E402
     prepare_leased_job,
 )
 from app.services.resolution.pending import resolve_pending  # noqa: E402
-from sqlalchemy import select  # noqa: E402
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -313,18 +312,25 @@ def _run_once(
     # Running is a second durable checkpoint. Safety gates are evaluated before
     # this commit, so disabled, paused, or blocked work never reaches an adapter.
     with session_scope() as session:
-        job = session.scalars(select(AgentJob).where(AgentJob.id == job_id).with_for_update()).one()
+        context = locking.lock_job_context(session, job_id)
+        if context is None:
+            raise jobs.AgentJobNotFound(f"job {job_id} disappeared before execution")
+        job = context.job
         if job.status is not AgentJobStatus.LEASED or job.lease_owner != worker_id:
             return _current_execution(job, "Job lease changed before execution.")
         rejected = prepare_leased_job(session, job=job, worker_id=worker_id)
     if rejected is not None:
         return rejected
 
-    # Hold the job row lock while staging the real domain outcome and terminal
-    # queue/pipeline projection. The transaction either commits all of them or
-    # rolls all of them back, leaving the durable Running lease recoverable.
+    # Hold the Campaign Contact and related job rows, in that order, while staging
+    # the real domain outcome and terminal queue/pipeline projection. The
+    # transaction either commits all of them or rolls all of them back, leaving the
+    # durable Running lease recoverable.
     with session_scope() as session:
-        job = session.scalars(select(AgentJob).where(AgentJob.id == job_id).with_for_update()).one()
+        context = locking.lock_job_context(session, job_id)
+        if context is None:
+            raise jobs.AgentJobNotFound(f"job {job_id} disappeared before completion")
+        job = context.job
         if job.status is not AgentJobStatus.IN_PROGRESS or job.lease_owner != worker_id:
             return _current_execution(job, "Running job ownership changed before execution.")
         return execute_started_job(

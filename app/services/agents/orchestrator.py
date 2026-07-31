@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import exists, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.campaign import Campaign, CampaignContact
@@ -21,7 +21,7 @@ from app.models.enums import (
     PipelineStageStatus,
 )
 from app.models.verification_job import AgentJob
-from app.services.agents import jobs
+from app.services.agents import jobs, locking
 from app.services.agents.adapters import (
     DEFAULT_ADAPTERS,
     AgentAdapter,
@@ -487,6 +487,7 @@ def reconcile_agent_control(
     *,
     agent_id: AgentIdentifier,
     campaign_id: uuid.UUID | None = None,
+    campaign_contact_ids: Iterable[uuid.UUID] | None = None,
     actor: str = "system",
 ) -> int:
     """Project a changed Agent control onto affected memberships and jobs.
@@ -496,13 +497,33 @@ def reconcile_agent_control(
     their original reason and require their own resolution.
     """
 
+    relevant_job = exists(
+        select(AgentJob.id).where(
+            AgentJob.campaign_contact_id == CampaignContact.id,
+            AgentJob.agent_id == agent_id,
+            AgentJob.status.in_(
+                (
+                    AgentJobStatus.PENDING,
+                    AgentJobStatus.LEASED,
+                    AgentJobStatus.IN_PROGRESS,
+                    AgentJobStatus.RETRY_SCHEDULED,
+                    AgentJobStatus.PAUSED,
+                )
+            ),
+        )
+    )
     statement = select(CampaignContact).where(
         CampaignContact.membership_status == CampaignMembershipStatus.ACTIVE,
-        CampaignContact.next_stage == agent_id,
+        or_(CampaignContact.next_stage == agent_id, relevant_job),
     )
     if campaign_id is not None:
         statement = statement.where(CampaignContact.campaign_id == campaign_id)
-    memberships = list(session.scalars(statement.with_for_update()).all())
+    scoped_memberships = tuple(campaign_contact_ids or ())
+    if scoped_memberships:
+        statement = statement.where(CampaignContact.id.in_(scoped_memberships))
+    memberships = list(
+        session.scalars(statement.order_by(CampaignContact.id).with_for_update()).all()
+    )
     now = datetime.now(UTC)
     changed = 0
     for membership in memberships:
@@ -510,26 +531,17 @@ def reconcile_agent_control(
         if campaign is None:  # pragma: no cover - protected by FK
             continue
         control = effective_control(session, campaign=campaign, agent_id=agent_id)
-        controlled_jobs = list(
-            session.scalars(
-                select(AgentJob)
-                .where(
-                    AgentJob.campaign_contact_id == membership.id,
-                    AgentJob.agent_id == agent_id,
-                    AgentJob.status.in_(
-                        (
-                            AgentJobStatus.PENDING,
-                            AgentJobStatus.LEASED,
-                            AgentJobStatus.IN_PROGRESS,
-                            AgentJobStatus.RETRY_SCHEDULED,
-                            AgentJobStatus.PAUSED,
-                        )
+        if control.status is AgentControlStatus.ENABLED:
+            controlled_jobs = list(
+                locking.lock_agent_jobs(
+                    session,
+                    select(AgentJob).where(
+                        AgentJob.campaign_contact_id == membership.id,
+                        AgentJob.agent_id == agent_id,
+                        AgentJob.status == AgentJobStatus.PAUSED,
                     ),
                 )
-                .with_for_update()
-            ).all()
-        )
-        if control.status is AgentControlStatus.ENABLED:
+            )
             for job in controlled_jobs:
                 if job.status is AgentJobStatus.PAUSED and job.error_class in {
                     "agent_disabled",
@@ -541,9 +553,40 @@ def reconcile_agent_control(
                     job.error = None
                     job.error_class = None
                     changed += 1
-            schedule_next(session, membership=membership, actor=actor)
+            if membership.next_stage == agent_id:
+                schedule_next(session, membership=membership, actor=actor)
             continue
 
+        # Leased and Running work belongs to its worker until that worker reaches
+        # its next safety gate or commits its outcome.  Reconciliation never clears
+        # the lease or rewrites RUNNING stage state underneath it.
+        in_flight = bool(
+            session.scalar(
+                select(
+                    exists().where(
+                        AgentJob.campaign_contact_id == membership.id,
+                        AgentJob.agent_id == agent_id,
+                        AgentJob.status.in_((AgentJobStatus.LEASED, AgentJobStatus.IN_PROGRESS)),
+                    )
+                )
+            )
+        )
+        controlled_jobs = list(
+            locking.lock_agent_jobs(
+                session,
+                select(AgentJob).where(
+                    AgentJob.campaign_contact_id == membership.id,
+                    AgentJob.agent_id == agent_id,
+                    AgentJob.status.in_(
+                        (
+                            AgentJobStatus.PENDING,
+                            AgentJobStatus.RETRY_SCHEDULED,
+                            AgentJobStatus.PAUSED,
+                        )
+                    ),
+                ),
+            )
+        )
         reason = control.reason or f"{agent_id.value} is {control.status.value}."
         reason_code = f"agent_{control.status.value}"
         has_domain_pause = False
@@ -575,7 +618,7 @@ def reconcile_agent_control(
                     reason_code=reason_code,
                 )
                 changed += 1
-        if not has_domain_pause:
+        if membership.next_stage == agent_id and not has_domain_pause and not in_flight:
             schedule_next(session, membership=membership, actor=actor)
     if memberships:
         session.flush()
@@ -895,6 +938,11 @@ def prepare_leased_job(
     ``None`` means the job is ready for adapter execution. A
     :class:`WorkerExecution` means a safety gate paused or failed it instead.
     """
+
+    locked_context = locking.lock_job_context(session, job.id)
+    if locked_context is None:
+        raise jobs.AgentJobNotFound(f"job {job.id} does not exist")
+    job = locked_context.job
 
     membership = (
         session.get(CampaignContact, job.campaign_contact_id)
@@ -1304,6 +1352,11 @@ def execute_started_job(
     adapters: dict[AgentIdentifier, AgentAdapter] | None = None,
 ) -> WorkerExecution:
     """Execute a durably Running job and stage its domain outcome atomically."""
+
+    locked_context = locking.lock_job_context(session, job.id)
+    if locked_context is None:
+        raise jobs.AgentJobNotFound(f"job {job.id} does not exist")
+    job = locked_context.job
 
     if job.status is not AgentJobStatus.IN_PROGRESS:
         raise jobs.AgentJobError("only a running job can execute")
