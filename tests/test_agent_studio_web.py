@@ -77,6 +77,44 @@ def test_personalization_has_a_dedicated_policy_page_and_other_agents_are_explic
     assert "No side-effect-free preview is implemented" in email.text
 
 
+def test_wording_revision_is_versioned_and_preserves_every_other_policy_field(
+    studio_client: TestClient, db_session: Session
+) -> None:
+    active = policy.ensure_initial_policy(db_session, actor="test:web")
+    original = policy.PolicyConfig.from_dict(dict(active.configuration))
+    data = {
+        "edit_mode": "wording",
+        "based_on_version_id": str(active.id),
+        "name": "Clearer operator wording",
+        "change_note": "Make the standards easier to inspect without retuning policy.",
+    }
+    for standard in original.standards:
+        data[f"standard_{standard.identifier}_description"] = standard.description
+        data[f"standard_{standard.identifier}_wording"] = standard.wording
+    first = original.standards[0]
+    data[f"standard_{first.identifier}_description"] = "A clearer operator description."
+    data[f"standard_{first.identifier}_wording"] = "A clearer deterministic instruction."
+
+    response = studio_client.post("/admin/agents/studio/personalization/policies", data=data)
+
+    assert response.status_code == 200
+    revised_version = policy.list_policy_versions(db_session)[0]
+    revised = policy.PolicyConfig.from_dict(dict(revised_version.configuration))
+    assert revised_version.id != active.id
+    assert revised_version.based_on_version_id == active.id
+    assert policy.active_policy(db_session).id == active.id
+    assert revised.standards[0].description == "A clearer operator description."
+    assert revised.standards[0].wording == "A clearer deterministic instruction."
+    assert revised.standards[0].strength == first.strength
+    assert revised.standards[0].state == first.state
+    assert revised.standards[1:] == original.standards[1:]
+    assert revised.temperament == original.temperament
+    assert revised.strategies == original.strategies
+    assert revised.fallback_ladder == original.fallback_ladder
+    assert revised.examples == original.examples
+    assert revised.evidence == original.evidence
+
+
 def test_preview_route_renders_decision_and_creates_no_pipeline_side_effect(
     studio_client: TestClient,
     db_session: Session,

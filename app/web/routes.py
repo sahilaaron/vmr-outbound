@@ -4082,10 +4082,19 @@ async def personalization_policy_create(
             "/admin/agents/studio/personalization", err="Choose an existing base version."
         )
     raw = deepcopy(dict(base.configuration))
+    wording_revision = str(form.get("edit_mode", "")) == "wording"
     for standard in raw.get("standards", []):
         if not isinstance(standard, dict) or not isinstance(standard.get("id"), str):
             continue
         identifier = standard["id"]
+        if wording_revision:
+            standard["description"] = str(
+                form.get(f"standard_{identifier}_description", standard.get("description", ""))
+            )
+            standard["wording"] = str(
+                form.get(f"standard_{identifier}_wording", standard.get("wording", ""))
+            )
+            continue
         standard["strength"] = str(
             form.get(f"standard_{identifier}_strength", standard.get("strength", "required"))
         )
@@ -4095,23 +4104,27 @@ async def personalization_policy_create(
             or f"standard_{identifier}_enabled" in form
             else "unavailable"
         )
-    for strategy in raw.get("strategies", []):
-        if isinstance(strategy, dict) and isinstance(strategy.get("id"), str):
-            strategy["enabled"] = f"strategy_{strategy['id']}_enabled" in form
-    temperament = raw.get("temperament")
-    if isinstance(temperament, dict):
-        for field in tuple(temperament):
-            try:
-                temperament[field] = int(str(form.get(f"temperament_{field}", temperament[field])))
-            except ValueError:
-                temperament[field] = -1
+    if not wording_revision:
+        for strategy in raw.get("strategies", []):
+            if isinstance(strategy, dict) and isinstance(strategy.get("id"), str):
+                strategy["enabled"] = f"strategy_{strategy['id']}_enabled" in form
+        temperament = raw.get("temperament")
+        if isinstance(temperament, dict):
+            for field in tuple(temperament):
+                try:
+                    temperament[field] = int(
+                        str(form.get(f"temperament_{field}", temperament[field]))
+                    )
+                except ValueError:
+                    temperament[field] = -1
+        try:
+            age = int(str(form.get("maximum_age_days", "365")))
+        except ValueError:
+            age = -1
+        raw["evidence"] = {"maximum_age_days": age}
     try:
-        age = int(str(form.get("maximum_age_days", "365")))
-    except ValueError:
-        age = -1
-    raw["evidence"] = {"maximum_age_days": age}
-    try:
-        raw["examples"] = _parse_examples(str(form.get("examples", "")))
+        if not wording_revision:
+            raw["examples"] = _parse_examples(str(form.get("examples", "")))
         config = personalization_policy.PolicyConfig.from_dict(raw)
         version = personalization_policy.create_policy_version(
             db,

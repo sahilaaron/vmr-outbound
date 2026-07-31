@@ -36,6 +36,25 @@
 
 <div class="card"><div class="card-head"><h2>Writing standards</h2></div><div class="card-body tight"><table><thead><tr><th>Stable id</th><th>Operator description</th><th>Versioned wording</th><th>Strength</th><th>State</th></tr></thead><tbody>{% for standard in config.standards %}<tr><td class="mono small">{{ standard.identifier }}</td><td>{{ standard.description }}</td><td>{{ standard.wording }}</td><td><span class="badge {{ 'err' if standard.strength.value == 'required' else 'info' }}">{{ standard.strength.value }}</span></td><td>{{ standard.state.value }}</td></tr>{% endfor %}</tbody></table></div></div>
 
+<div class="card">
+  <div class="card-head"><h2>Create a wording revision</h2><span class="hint">Preserves every control, scale, strategy, example and evidence threshold from the base.</span></div>
+  <div class="card-body">
+    <form method="post" action="/admin/agents/studio/personalization/policies" class="stack-form">
+      <input type="hidden" name="edit_mode" value="wording">
+      <input type="hidden" name="based_on_version_id" value="{{ selected_policy.id }}">
+      <label>Version name</label><input name="name" maxlength="160" required>
+      <label>Change note</label><textarea name="change_note" maxlength="2000" required></textarea>
+      {% for standard in config.standards %}
+      <fieldset><legend>{{ standard.identifier }}</legend>
+        <label>Operator description</label><textarea name="standard_{{ standard.identifier }}_description" maxlength="600" required>{{ standard.description }}</textarea>
+        <label>Policy wording</label><textarea name="standard_{{ standard.identifier }}_wording" maxlength="800" required>{{ standard.wording }}</textarea>
+      </fieldset>
+      {% endfor %}
+      <button class="btn" type="submit">Save inactive wording version</button>
+    </form>
+  </div>
+</div>
+
 <div class="card"><div class="card-head"><h2>Temperament</h2><span class="hint">0 = minimum / reserved; 4 = maximum / assertive</span></div><div class="card-body"><div class="temperament-grid">{% for name, value in temperament_values.items() %}<div><strong>{{ name | replace('_', ' ') | title }}</strong><div class="scale"><span style="width: {{ value * 25 }}%"></span></div><span class="small muted-text">{{ value }} / 4</span></div>{% endfor %}</div></div></div>
 
 <div class="card"><div class="card-head"><h2>Approved writing strategies</h2></div><div class="card-body tight"><table><thead><tr><th>Strategy</th><th>Eligibility and evidence</th><th>Opening / introduction / CTA</th><th>Fallback</th></tr></thead><tbody>{% for strategy in config.strategies %}<tr><td><strong>{{ strategy.name }}</strong><div class="small mono">{{ strategy.identifier }}</div><span class="badge {{ 'ok' if strategy.enabled else 'muted' }}">{{ 'enabled' if strategy.enabled else 'unavailable' }}</span></td><td>{{ strategy.eligible_when }}<div class="small muted-text">Requires: {{ strategy.evidence_required | join(', ') if strategy.evidence_required else 'no prospect evidence' }}</div></td><td class="small"><strong>Open:</strong> {{ strategy.opening_shape }}<br><strong>Introduce:</strong> {{ strategy.introduction_placement }}<br><strong>CTA:</strong> {{ strategy.cta_shape }}<br><strong>Never:</strong> {{ strategy.prohibited_behavior | join(', ') }}</td><td>{{ strategy.fallback_destination or 'terminal success' }}</td></tr>{% endfor %}</tbody></table></div></div>
