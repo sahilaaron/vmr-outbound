@@ -267,10 +267,9 @@ def upgrade() -> None:
     # is no longer required for new Email executions.
     op.alter_column("email_candidate_attempts", "employee_count_class", nullable=True)
     op.alter_column("email_candidate_attempts", "employee_evidence_freshness", nullable=True)
-    op.drop_constraint(
-        "ck_email_candidate_attempts_ck_email_candidate_attempts_257a",
-        "email_candidate_attempts",
-        type_="check",
+    op.execute(
+        "ALTER TABLE email_candidate_attempts DROP CONSTRAINT "
+        "ck_email_candidate_attempts_ck_email_candidate_attempts_257a"
     )
     op.create_check_constraint(
         "candidate_index_bounded",
@@ -358,15 +357,14 @@ def downgrade() -> None:
         op.execute(f"DROP TRIGGER IF EXISTS {table}_append_only ON {table}")
         op.execute(f"DROP FUNCTION IF EXISTS prevent_{table}_mutation()")
 
-    op.drop_constraint(
-        op.f("ck_email_candidate_attempts_candidate_index_bounded"),
-        "email_candidate_attempts",
-        type_="check",
+    op.execute(
+        "ALTER TABLE email_candidate_attempts DROP CONSTRAINT "
+        "ck_email_candidate_attempts_candidate_index_bounded"
     )
-    op.create_check_constraint(
-        op.f("ck_email_candidate_attempts_ck_email_candidate_attempts_257a"),
-        "email_candidate_attempts",
-        "candidate_index >= 0 AND candidate_index < 3",
+    op.execute(
+        "ALTER TABLE email_candidate_attempts ADD CONSTRAINT "
+        "ck_email_candidate_attempts_ck_email_candidate_attempts_257a "
+        "CHECK (candidate_index >= 0 AND candidate_index < 3)"
     )
     op.alter_column("email_candidate_attempts", "employee_evidence_freshness", nullable=False)
     op.alter_column("email_candidate_attempts", "employee_count_class", nullable=False)
