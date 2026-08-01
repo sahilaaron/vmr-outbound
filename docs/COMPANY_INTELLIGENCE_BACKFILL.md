@@ -131,6 +131,24 @@ the aliases (from the company detail page), then re-run those companies. The
 alias changes what the *next* run resolves; it does not retro-fit stored
 versions, because versions are immutable.
 
+## After a CI-002 upgrade, every company is eligible again
+
+CI-002 changed two things that are part of the input digest: the producer's
+policy version (1 → 2) and the set of active vocabularies (geography now has
+one). So a company whose research has not moved will nonetheless produce a **new
+version** on its next run, with geography relationships and specialty hygiene
+applied.
+
+That is correct and intended — the old version genuinely was produced under
+different rules — but it means the first backfill after this upgrade is a full
+one, not an incremental one. Plan it the same way as the first ever run: dry
+run, small ceiling, read the skip reasons, spot-check a handful, then widen.
+
+Operator decisions survive it. Decisions are company-scoped, so a confirmation
+made against version 1 still applies to version 2 (CI-001 review semantics), and
+a decision concerning a value the new version no longer proposes is reported as
+`operator only` rather than discarded.
+
 ## Costs
 
 One model call per company, per distinct input. Re-running a backfill over

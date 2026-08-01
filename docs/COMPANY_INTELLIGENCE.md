@@ -84,6 +84,37 @@ industry to primary" should be a rank change rather than a cross-dimension move.
 | `unknown` | The producer addressed this dimension and the evidence said nothing. Different from a dimension with no row, which was never addressed. |
 | `conflicted` | The evidence supports two answers that cannot both be true. |
 
+### Geography and specialty (CI-002)
+
+Two dimensions are hardened beyond the generic contract above.
+
+**Geography** is no longer free text. Deterministic extraction finds the places
+one company's evidence actually names, canonicalises them against a versioned
+reference edition of 60 countries and 259 cities, and hands the model a short
+list of candidate handles. The model assigns a **relationship** —
+`headquarters`, `office`, `branch`, `facility`, `manufacturing`,
+`research_and_development`, `warehouse`, `distribution`, `operations`,
+`commercial_market`, `planned_presence`, `historical_presence`, `unclear` — and
+deterministic code derives a **presence kind** from it: `physical`,
+`commercial`, `prospective`, `former`, `unknown`.
+
+The division of labour is the design. Code decides what places exist, so the
+model cannot invent a location. The model decides the relationship, because no
+regex distinguishes "headquartered in Pune" from "presented at a conference in
+Pune". See `docs/COMPANY_INTELLIGENCE_EVIDENCE.md` for how each half is checked.
+
+Only `physical` and `commercial` count as current presence. A planned plant and
+a closed one are both real and neither is a place the company is today, so both
+are stored, shown, and never settled.
+
+**Specialty** passes through deterministic hygiene with four outcomes — accept,
+clean, leave unresolved, reject — described in
+`docs/COMPANY_INTELLIGENCE_TAXONOMY.md`. A specialty is *a concrete area of
+domain expertise, technical focus, service practice or delivery competence that
+is narrower than the broad industry and more specific than the general company
+type.* "Semiconductor failure analysis" is one; "world-class customer-centric
+solutions" is not.
+
 ---
 
 ## The producer contract
@@ -112,11 +143,19 @@ rather than a promise.
     {"dimension": "industry", "values": ["A", "B"], "statement": "what disagrees",
      "evidence": ["F2"]}
   ],
+  "geography": [
+    {"candidate": "G1", "relationship": "headquarters",
+     "evidence": ["F2"], "confidence": 0.9, "rationale": "one sentence"}
+  ],
   "unknown_dimensions": ["business_model"]
 }
 ```
 
-**Validation policy** (`producer.POLICY_VERSION`, currently `1`), in order:
+Places arrive only through `geography`, keyed by a candidate handle. A
+`geography` entry in `classifications` is dropped with a warning: accepting one
+would let the model name a location deterministic extraction never found.
+
+**Validation policy** (`producer.POLICY_VERSION`, currently `2`), in order:
 
 1. Not a JSON object, or `classifications` not a list → **malformed**. Nothing is
    persisted; the caller may retry. Partial parsing is never attempted.
@@ -131,6 +170,15 @@ rather than a promise.
    than two surviving members is dropped.
 7. Ranks are dense and deterministic per dimension; `is_primary` applies only to
    industry, only at rank 0. Per-dimension caps drop the excess and say so.
+8. **Specialty hygiene** (CI-002). Rejected only for empty, purely promotional
+   or outcome-claim wording; cleaned when a modifier can be removed without
+   changing the meaning; otherwise kept `unresolved` with a reason.
+9. **Geography validation** (CI-002). An unknown candidate handle is dropped; an
+   unknown relationship becomes `unclear`; cited evidence must be evidence that
+   actually mentioned the place; a relationship that contradicts the context the
+   place was found in is stored as a disagreement; a candidate the model ignored
+   is stored `unclear` rather than lost. A settled city then infers its country —
+   never the reverse.
 
 **Idempotency.** `input_digest` is SHA-256 over the dossier version, the exact
 sourced facts (id + content hash), the taxonomy editions, and the producer and
@@ -198,7 +246,15 @@ view.conflicts  # disagreements, unflattened
 view.unresolved()  # unresolved + conflicted + unknown
 view.settled_values(dimension)  # resolved AND backed — the targeting answer
 view.primary_industry()  # None rather than a guess when conflicted
+view.geographies(current_only=True)  # places the company is, now
+view.headquarters()  # None when the evidence names two
+view.countries()  # ISO alpha-2 codes with a current presence
 ```
+
+Every geography view carries `geo_relationship`, `presence_kind`, `country_code`,
+`country_name` and `city_name`, plus `is_physical_presence` and
+`is_current_presence`. Every view carries `cleaned_value`, which is set when
+deterministic hygiene removed a promotional modifier.
 
 Every `ClassificationView` carries `source` (`model` / `operator_confirmed` /
 `operator_corrected` / `operator_unresolved`), `normalization` (`canonical` /
@@ -229,9 +285,20 @@ truthful reason code on every skip. It enqueues; it never produces inline.
 * **The taxonomy is not complete.** The industry vocabulary is the
   operator-supplied list used verbatim; the business-model, company-type,
   customer-segment and operating-market lists are short first-release
-  vocabularies. Products, services, specialties, capabilities and specific
-  geographies have **no** controlled vocabulary and record the producer's own
-  wording. See `docs/COMPANY_INTELLIGENCE_TAXONOMY.md`.
+  vocabularies. Products, services, specialties and capabilities have **no**
+  controlled vocabulary and record the producer's own wording. See
+  `docs/COMPANY_INTELLIGENCE_TAXONOMY.md`.
+* **The geography edition is not the world.** 60 countries and 259 cities,
+  selected for commercial relevance to this product's B2B work. A place outside
+  it is not extracted at all, so a company in a country this edition omits will
+  show no geography rather than a wrong one. Adding coverage is a new edition.
+* **Extraction is conservative about ambiguous names.** An ambiguous surface
+  needs a capital letter *and* a preposition directly in front of it, or its
+  country named nearby. "Our Reading site" is therefore missed. Missing a real
+  place is recoverable; asserting a false one is not.
+* **Specialty remains an open vocabulary.** There is no closed global list, so
+  two companies can describe the same competence differently and nothing folds
+  them together. Aliases are the extension point and are curated by hand.
 * **Classifications are not verified** unless an operator has confirmed them
   under the review semantics above. Model confidence is an opinion.
 * **Freshness is not automatic.** Re-running Research does not re-classify a

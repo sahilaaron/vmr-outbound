@@ -16,6 +16,10 @@ answer every one of these questions from the database alone.**
 | Was it superseded? | `versions.is_current`, `versions.superseded_at` |
 | What conflicting evidence existed? | `company_intelligence_conflicts` + the `conflict_group` on each member |
 | Exactly which question was asked? | `versions.input_digest` |
+| Which wording in the evidence produced this place? | `classifications.model_value` (the matched surface) |
+| What is the company's relationship to it? | `classifications.geo_relationship` |
+| Is that a site or a sales territory? | `classifications.presence_kind` |
+| Was a promotional modifier removed, and from what? | `classifications.normalized_value` vs `model_value` |
 | Was the answer the same as last time? | `versions.answer_digest` |
 
 ## The chain
@@ -162,3 +166,98 @@ Every material action writes an `AuditEvent` alongside the domain row:
 The audit trail is a second, independent record. The domain tables above are the
 primary one — a lineage that only existed in audit events would be one truncation
 away from gone.
+
+---
+
+# Geography lineage (CI-002)
+
+Geography has a second lineage question the other dimensions do not: **which
+words in which fact made this a place at all?**
+
+## The chain, for one place
+
+```
+Insight.claim / InsightEvidence.excerpt
+        │  exact phrase match against the active geography edition
+        ▼
+GeographyCandidate  (handle G1, canonical place, matched surface,
+                     evidence handles, context flags)
+        │  the model assigns a relationship, choosing only from these handles
+        ▼
+CompanyIntelligenceClassification
+   dimension        = GEOGRAPHY
+   model_value      = the wording that matched, verbatim
+   term_id/term_code= the canonical place in the active edition
+   parent_term_code = the ISO alpha-2 of its country, for a city
+   geo_relationship = what the model said
+   presence_kind    = derived deterministically from the relationship
+   unresolved_reason= why it is not settled, when it is not
+        │
+        └─→ CompanyIntelligenceEvidenceLink  → the insights that named the place
+```
+
+## What is deliberately *not* scanned
+
+**Source URLs and source titles.** A publisher's address lives there, and a paper
+published in Heidelberg says nothing about the company. Only claim text and
+evidence excerpts are read, which removes that whole class of false positive
+structurally rather than by pattern-matching against it afterwards.
+
+## Refusals are part of the record
+
+Three tiers, and every refusal is written into the version's `warnings` so it is
+reviewable rather than silent:
+
+| Tier | Example | Outcome |
+| --- | --- | --- |
+| Ambiguous surface, unqualified | "reading the operating manual" | never a candidate, warning recorded |
+| Hard-suppressing context | "published by a publisher in Munich", "presented at a conference in Berlin", "graduated from a university in Amsterdam", "governed by the laws of Ireland" | never a candidate, warning recorded |
+| Soft context | "our customer Nordwerk is based in Munich", "acquired a Paris-based company", "plans a site in Bilbao" | candidate, carrying its flag |
+
+A soft flag is then checked against the model's answer. A place found only in a
+customer example that the model calls a *headquarters* does not become one: the
+classification is stored `unresolved` with
+`context_conflicts_with_relationship`, because a candidate and an answer
+disagreeing is a disagreement, not a reason to prefer one side.
+
+A second, unflagged sighting clears the doubt the first raised — "acquired a
+Paris company" plus "our Paris office" is an office — so flags intersect across
+sightings rather than accumulating.
+
+## Country inference
+
+A **settled city implies its country**, and the derived row says so in its
+rationale ("derived from Pune, which the evidence places in India") and carries
+`inferred_from`. A plant in Pune is a plant in India, and a reader filtering by
+country should find it.
+
+The reverse is **forbidden and not implemented**. "Operations in India" names no
+city, and inventing one would be fabrication with a tidy shape. An *unclear* city
+does not propagate either: an unclear country is noise.
+
+## Physical versus commercial presence
+
+| Relationship | Presence | Current? |
+| --- | --- | --- |
+| headquarters, office, branch, facility, manufacturing, research_and_development, warehouse, distribution, operations | `physical` | yes |
+| commercial_market | `commercial` | yes |
+| planned_presence | `prospective` | **no** |
+| historical_presence | `former` | **no** |
+| unclear | `unknown` | **no** |
+
+`presence_kind` is derived, not asserted by the model, and it is stored rather
+than computed at read time — so a consumer asking "where is this company
+physically" never re-implements the mapping, and the difference between a factory
+and a sales territory survives in the row itself.
+
+## Specialty lineage
+
+A cleaned specialty keeps both forms: `model_value` is what the producer wrote,
+`normalized_value` is what deterministic hygiene left. Both are shown side by
+side on the review screen, because the only way to notice a clean that went too
+far is to see what it started from.
+
+`unresolved_reason` carries the hygiene verdict — `promotional_language`,
+`too_broad`, `dimension_boundary_unclear`, `specialty_too_long` — and rejected
+values appear in the version's `warnings` with the reason and the original
+wording. Nothing a producer proposed disappears without a trace.
