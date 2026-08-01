@@ -316,7 +316,8 @@ class DurableCompanyReportReader:
         )
         historical_state = _outcome(
             historical_map.get("domain_resolution_state")
-            or _mapping(job.result).get("domain_resolution_state")
+            if "domain_resolution_state" in historical_map
+            else _mapping(job.result).get("domain_resolution_state")
         )
         historical = CompanyTruthReport(
             company_id=historical_company_id,

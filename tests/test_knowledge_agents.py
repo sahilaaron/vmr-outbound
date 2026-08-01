@@ -306,13 +306,13 @@ def test_the_two_model_agents_get_no_tools(db_session: Session) -> None:
     InsightsAgentAdapter(thinker_factory=lambda _s: insights_thinker).execute(context)
     assert insights_thinker.requests[0].allowed_tools == ()
 
-    eligible = _with_eligible_insight(db_session, company)
+    _with_eligible_insight(db_session, company)
     draft_thinker = ScriptedThinker(
         {
             "subject": "s",
             "body": "b",
             "rationale": "r",
-            "evidence_insight_ids": [eligible],
+            "evidence_insight_ids": [],
         }
     )
     context = _context(
