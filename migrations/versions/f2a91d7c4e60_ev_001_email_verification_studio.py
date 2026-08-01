@@ -301,7 +301,8 @@ def upgrade() -> None:
         sa.text(
             "INSERT INTO verification_waterfall_policy_versions "
             "(id, version_number, schema_version, name, configuration, created_by) "
-            "VALUES (:id, 1, 'verification-waterfall/v1', 'Initial provider waterfall', "
+            "VALUES (CAST(:id AS uuid), 1, 'verification-waterfall/v1', "
+            "'Initial provider waterfall', "
             "CAST(:configuration AS jsonb), 'migration:EV-001')"
         ).bindparams(id=_WATERFALL_ID, configuration=json.dumps(waterfall))
     )
@@ -309,14 +310,16 @@ def upgrade() -> None:
         sa.text(
             "INSERT INTO verification_waterfall_activations "
             "(id, policy_version_id, activated_by, reason) "
-            "VALUES (:id, :policy_id, 'migration:EV-001', 'initial policy')"
+            "VALUES (CAST(:id AS uuid), CAST(:policy_id AS uuid), "
+            "'migration:EV-001', 'initial policy')"
         ).bindparams(id=_WATERFALL_ACTIVATION_ID, policy_id=_WATERFALL_ID)
     )
     op.execute(
         sa.text(
             "INSERT INTO email_pattern_policy_versions "
             "(id, version_number, schema_version, name, configuration, created_by) "
-            "VALUES (:id, 1, 'email-pattern-policy/v1', 'Initial Email pattern policy', "
+            "VALUES (CAST(:id AS uuid), 1, 'email-pattern-policy/v1', "
+            "'Initial Email pattern policy', "
             "CAST(:configuration AS jsonb), 'migration:EV-001')"
         ).bindparams(id=_PATTERN_ID, configuration=json.dumps(patterns))
     )
@@ -324,7 +327,8 @@ def upgrade() -> None:
         sa.text(
             "INSERT INTO email_pattern_policy_activations "
             "(id, policy_version_id, activated_by, reason) "
-            "VALUES (:id, :policy_id, 'migration:EV-001', 'initial policy')"
+            "VALUES (CAST(:id AS uuid), CAST(:policy_id AS uuid), "
+            "'migration:EV-001', 'initial policy')"
         ).bindparams(id=_PATTERN_ACTIVATION_ID, policy_id=_PATTERN_ID)
     )
 
