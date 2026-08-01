@@ -166,6 +166,7 @@ def rotate_credential(
             previous_credential_version_id=previous.credential_version_id,
             activated_by=actor,
             reason=_sanitize_text(reason, limit=500),
+            activated_at=datetime.now(UTC),
         )
     )
     session.flush()
@@ -183,6 +184,7 @@ def deactivate_credential(
             previous_credential_version_id=previous.credential_version_id,
             activated_by=actor,
             reason=_sanitize_text(reason, limit=500),
+            activated_at=datetime.now(UTC),
         )
     )
     session.flush()
@@ -451,6 +453,7 @@ def activate_waterfall(
         previous_policy_version_id=previous.id if previous else None,
         activated_by=actor,
         reason=_sanitize_text(reason, limit=1000),
+        activated_at=datetime.now(UTC),
     )
     session.add(activation)
     session.flush()
@@ -493,6 +496,7 @@ def activate_pattern_policy(
         previous_policy_version_id=previous.id if previous else None,
         activated_by=actor,
         reason=_sanitize_text(reason, limit=1000),
+        activated_at=datetime.now(UTC),
     )
     session.add(activation)
     session.flush()
