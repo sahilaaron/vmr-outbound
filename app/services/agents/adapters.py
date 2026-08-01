@@ -45,6 +45,7 @@ from app.services.thinking.claude_cli import ClaudeCliThinker
 from app.services.thinking.contracts import Thinker, ThinkingError, ThinkingRequest
 from app.services.verification import service as verification_service
 from app.services.verification import status as verification_status
+from app.services.verification import waterfall as verification_waterfall
 from app.services.verification.decisions import (
     ADDRESS_VERDICTS,
     UNSETTLED_EVIDENCE,
@@ -55,6 +56,7 @@ from app.services.verification.decisions import (
 )
 from app.services.verification.policy import get_policy
 from app.services.verification.provider import VerificationProvider
+from app.services.verification.waterfall import WaterfallUnavailable
 
 
 class AgentExecutionError(Exception):
@@ -479,9 +481,7 @@ class VerificationAgentAdapter:
         # default, which is the same builder every other verification caller
         # uses; a test supplying its own provider still has to get past the live
         # authority and simulated-provider gates below.
-        self._provider_factory = provider_factory or (
-            lambda settings: verification_service.get_provider(settings, live=True)
-        )
+        self._provider_factory = provider_factory
 
     def execute(self, context: AgentExecutionContext) -> AgentExecutionResult:
         session = context.session
@@ -591,28 +591,46 @@ class VerificationAgentAdapter:
                 rejected.reason,
                 detail=self._refusal_output(rejected, context=context),
             )
-        provider = self._provider_factory(settings)
-        if provider.simulated:
-            rejected = refusal(
-                "verification_credentials_missing",
-                "Live MillionVerifier credentials are not configured; simulator "
-                "output cannot complete the Verification Agent.",
-            )
-            raise AgentBlocked(
-                rejected.reason_code,
-                rejected.reason,
-                detail=self._refusal_output(rejected, context=context),
-            )
-
         context.job.email = email
         context.job.policy_version = policy.version
-        outcome = verification_service.verify_exact_address(
-            session,
-            context.job,
-            provider=provider,
-            settings=settings,
-            policy=policy,
-        )
+        waterfall_policy_version_id: str | None = None
+        providers_attempted: tuple[str, ...] = ()
+        if self._provider_factory is not None:
+            provider = self._provider_factory(settings)
+            if provider.simulated:
+                rejected = refusal(
+                    "verification_credentials_missing",
+                    "Live verification credentials are not configured; simulator "
+                    "output cannot complete the Verification Agent.",
+                )
+                raise AgentBlocked(
+                    rejected.reason_code,
+                    rejected.reason,
+                    detail=self._refusal_output(rejected, context=context),
+                )
+            outcome = verification_service.verify_exact_address(
+                session,
+                context.job,
+                provider=provider,
+                settings=settings,
+                policy=policy,
+            )
+            providers_attempted = (provider.name,)
+        else:
+            try:
+                traversal = verification_waterfall.verify(
+                    session, context.job, settings=settings, policy=policy
+                )
+            except WaterfallUnavailable as exc:
+                rejected = refusal("verification_credentials_missing", str(exc))
+                raise AgentBlocked(
+                    rejected.reason_code,
+                    rejected.reason,
+                    detail=self._refusal_output(rejected, context=context),
+                ) from None
+            outcome = traversal.outcome
+            waterfall_policy_version_id = traversal.policy_version_id
+            providers_attempted = traversal.providers_attempted
 
         decision = self._decide(session, context=context, outcome=outcome)
         context.job.outcome_status = decision.status.value
@@ -628,6 +646,8 @@ class VerificationAgentAdapter:
             "reused_evidence": outcome.reused,
             "provider_called": outcome.provider_called,
             "provider": outcome.provider_label,
+            "providers_attempted": list(providers_attempted),
+            "waterfall_policy_version_id": waterfall_policy_version_id,
             "policy_version": outcome.policy_version,
         }
 

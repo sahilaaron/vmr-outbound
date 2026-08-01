@@ -278,6 +278,16 @@ class Settings(BaseSettings):
         description="ISO currency code for MillionVerifier cost estimates.",
     )
 
+    # Dedicated key-encryption key for credential versions created in Agent
+    # Studio. There is deliberately no fallback key: without an explicit Fernet
+    # key, credential writes and live Studio calls are unavailable.
+    provider_credential_encryption_key: str | None = Field(
+        default=None,
+        repr=False,
+        exclude=True,
+        description="Fernet key for encrypted provider credentials.",
+    )
+
     def has_millionverifier_key(self) -> bool:
         """True when a non-empty MillionVerifier key is configured (never logs it)."""
 

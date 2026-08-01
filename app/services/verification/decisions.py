@@ -169,7 +169,7 @@ def decide(
                 status,
                 "verification_simulated",
                 "simulated verification cannot advance a Campaign Contact; "
-                "live MillionVerifier evidence is required",
+                "live evidence from an enabled verification provider is required",
             )
         return DecisionOutcome(
             VerificationDecision.ACCEPT,

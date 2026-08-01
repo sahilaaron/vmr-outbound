@@ -34,7 +34,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 # Documented test keys that must always route to the simulator, never the network.
 TEST_KEYS: dict[str, str] = {
@@ -60,6 +60,8 @@ TEST_KEYS: dict[str, str] = {
 # records an explicit simulated label. These are the values the operator sees.
 LIVE_PROVIDER_LABEL = "millionverifier"
 SIMULATOR_PROVIDER_LABEL = "millionverifier-simulator"
+DEBOUNCE_LIVE_PROVIDER_LABEL = "debounce"
+DEBOUNCE_SIMULATOR_PROVIDER_LABEL = "debounce-simulator"
 
 # Static request headers for the live Single API client. A descriptive User-Agent
 # is good API citizenship (and some providers reject header-less requests); Accept
@@ -124,6 +126,13 @@ def evidence_provider_label(provider: VerificationProvider) -> str:
     ``simulated``; the two production providers both set it explicitly.
     """
 
+    name = getattr(provider, "name", "millionverifier")
+    if name == "debounce":
+        return (
+            DEBOUNCE_SIMULATOR_PROVIDER_LABEL
+            if getattr(provider, "simulated", False)
+            else DEBOUNCE_LIVE_PROVIDER_LABEL
+        )
     return (
         SIMULATOR_PROVIDER_LABEL if getattr(provider, "simulated", False) else LIVE_PROVIDER_LABEL
     )
@@ -142,6 +151,14 @@ def redact_secret(text: str, secret: str | None) -> str:
     if secret:
         return text.replace(secret, REDACTION_PLACEHOLDER)
     return text
+
+
+def redact_payload(value: dict[str, Any], secret: str | None) -> dict[str, Any]:
+    """Redact a credential anywhere in a JSON-compatible provider payload."""
+
+    if not secret:
+        return value
+    return cast(dict[str, Any], json.loads(redact_secret(json.dumps(value), secret)))
 
 
 # Historical private alias, kept so the live client's call sites read unchanged.
@@ -329,6 +346,7 @@ class HttpMillionVerifier:
             raise ProviderTransientError(f"malformed provider response: {exc}") from None
         # Never keep the key anywhere in the stored payload.
         data.pop("api", None)
+        data = redact_payload(data, self._api_key)
         return ProviderResponse(
             email=str(data.get("email", email)),
             result=data.get("result"),
@@ -343,6 +361,91 @@ class HttpMillionVerifier:
             error=data.get("error") or None,
             livemode=bool(data.get("livemode", False)),
             raw={k: v for k, v in data.items() if k != "api"},
+        )
+
+
+class SimulatedDebounce(SimulatedMillionVerifier):
+    """Network-free DeBounce adapter with the same deterministic fixtures."""
+
+    name = "debounce"
+
+
+class HttpDebounce:
+    """DeBounce single-validation adapter normalized to ProviderResponse."""
+
+    name = "debounce"
+    simulated = False
+    _base_url = "https://api.debounce.io/v1/"
+
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        timeout_seconds: int = 20,
+        transport: Transport | None = None,
+    ) -> None:
+        self._api_key = api_key
+        self._timeout = timeout_seconds
+        self._transport = transport or UrllibTransport()
+
+    def _build_url(self, email: str) -> str:
+        return f"{self._base_url}?{urllib.parse.urlencode({'api': self._api_key, 'email': email})}"
+
+    def redacted_url(self, email: str) -> str:
+        return _redact(self._build_url(email), self._api_key)
+
+    def verify(self, email: str) -> ProviderResponse:
+        try:
+            body = self._transport.get(self._build_url(email), timeout=float(self._timeout))
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 402, 403):
+                error = "insufficient_credits" if exc.code == 402 else "access_rejected"
+                return ProviderResponse(
+                    email=email,
+                    result=None,
+                    resultcode=None,
+                    error=error,
+                    raw={"error": error, "http_status": exc.code},
+                )
+            raise ProviderTransientError(f"HTTP {exc.code}") from None
+        except Exception as exc:
+            raise ProviderTransientError(_redact(str(exc), self._api_key)) from None
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise ProviderTransientError(f"malformed provider response: {exc}") from None
+        data.pop("api", None)
+        data = redact_payload(data, self._api_key)
+        raw_code = (
+            data.get("debounce", {}).get("code")
+            if isinstance(data.get("debounce"), dict)
+            else data.get("code")
+        )
+        try:
+            code = int(str(raw_code))
+        except (TypeError, ValueError):
+            code = 7
+        # Official DeBounce codes: 4 accept-all, 5 deliverable, 3 disposable,
+        # 1/2/6 invalid, 7 unknown. Role is an orthogonal flag.
+        result = {3: "disposable", 4: "catch_all", 5: "ok", 7: "unknown"}.get(code, "invalid")
+        nested = data.get("debounce") if isinstance(data.get("debounce"), dict) else data
+        assert isinstance(nested, dict)
+        role = bool(nested.get("role"))
+        return ProviderResponse(
+            email=str(nested.get("email", email)),
+            result=result,
+            resultcode=code,
+            subresult=str(nested.get("reason")) if nested.get("reason") else None,
+            quality=str(nested.get("result")) if nested.get("result") else None,
+            free=bool(nested.get("free_email")) if "free_email" in nested else None,
+            role=role,
+            didyoumean=nested.get("did_you_mean") or None,
+            credits=int(nested["balance"]) if str(nested.get("balance", "")).isdigit() else None,
+            error=(
+                _redact(str(nested.get("error")), self._api_key) if nested.get("error") else None
+            ),
+            livemode=True,
+            raw={k: v for k, v in nested.items() if k != "api"},
         )
 
 
@@ -364,3 +467,27 @@ def build_provider(
     if live and key and not is_test_key:
         return HttpMillionVerifier(key, base_url=base_url, timeout_seconds=timeout_seconds)
     return SimulatedMillionVerifier(api_key=key or None)
+
+
+def build_provider_by_id(
+    provider_id: str,
+    *,
+    api_key: str | None,
+    timeout_seconds: int = 20,
+    live: bool = False,
+) -> VerificationProvider:
+    """Build only a provider declared in the fixed registry."""
+
+    key = (api_key or "").strip()
+    if provider_id == "millionverifier":
+        return build_provider(
+            api_key=key or None,
+            base_url="https://api.millionverifier.com/api/v3",
+            timeout_seconds=timeout_seconds,
+            live=live,
+        )
+    if provider_id == "debounce":
+        if live and key:
+            return HttpDebounce(key, timeout_seconds=timeout_seconds)
+        return SimulatedDebounce(api_key=key or None)
+    raise ValueError("unknown verification provider")

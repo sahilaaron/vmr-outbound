@@ -70,7 +70,7 @@ class EmailCandidateAttempt(Base):
             name="uq_email_candidate_attempts_verification_job",
         ),
         CheckConstraint(
-            "candidate_index >= 0 AND candidate_index < 3",
+            "candidate_index >= 0 AND candidate_index < 24",
             name="candidate_index_bounded",
         ),
         CheckConstraint(
@@ -133,7 +133,9 @@ class EmailCandidateAttempt(Base):
 
     policy_identifier: Mapped[str] = mapped_column(String(64), nullable=False)
     policy_version: Mapped[str] = mapped_column(String(50), nullable=False)
-    employee_count_class: Mapped[str] = mapped_column(String(32), nullable=False)
+    # Legacy provenance only. EV-001 no longer requires or reads size evidence
+    # when choosing candidates; historical rows remain readable.
+    employee_count_class: Mapped[str | None] = mapped_column(String(32), nullable=True)
     employee_evidence_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey(
@@ -147,7 +149,7 @@ class EmailCandidateAttempt(Base):
     employee_evidence_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    employee_evidence_freshness: Mapped[str] = mapped_column(String(32), nullable=False)
+    employee_evidence_freshness: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     force_refresh: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"

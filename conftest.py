@@ -63,7 +63,11 @@ for _name in list(os.environ):
 
 # Provider credentials must never be reachable from an automated test: a live
 # call would spend real MillionVerifier credits or hit the logo.dev quota.
-PROVIDER_KEY_VARS = ("MILLIONVERIFIER_API_KEY", "LOGO_DEV_API_KEY")
+PROVIDER_KEY_VARS = (
+    "MILLIONVERIFIER_API_KEY",
+    "LOGO_DEV_API_KEY",
+    "PROVIDER_CREDENTIAL_ENCRYPTION_KEY",
+)
 for _name in PROVIDER_KEY_VARS:
     os.environ.pop(_name, None)
 

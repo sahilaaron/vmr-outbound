@@ -60,6 +60,7 @@ from app.services.imports.normalization import is_valid_email, normalize_domain,
 from app.services.pipeline import append_event
 from app.services.resolution.gates import DownstreamStage, authorize_contact
 from app.services.suppressions import evaluate_suppression
+from app.services.verification import studio as verification_studio
 from app.services.verification.decisions import VerificationDecision
 from app.services.verification.policy import VerificationPolicy, get_policy
 from app.services.verification.provider import SIMULATOR_PROVIDER_LABEL
@@ -464,11 +465,20 @@ def _employee_evidence(session: Session, company: Company) -> EmployeeCountEvide
     )
 
 
-def _policy_json(decision: EmailDiscoveryPolicyDecision) -> dict[str, Any]:
+def _policy_json(
+    decision: EmailDiscoveryPolicyDecision,
+    *,
+    pattern_policy_version_id: uuid.UUID | None = None,
+    pattern_policy_version_number: int | None = None,
+) -> dict[str, Any]:
     evidence = decision.evidence
     return {
         "policy_identifier": POLICY_IDENTIFIER,
         "policy_version": POLICY_VERSION,
+        "pattern_policy_version_id": (
+            str(pattern_policy_version_id) if pattern_policy_version_id else None
+        ),
+        "pattern_policy_version_number": pattern_policy_version_number,
         "policy_outcome": decision.outcome.value,
         "normalization_version": decision.normalization_version,
         "employee_count_class": decision.employee_count_class.value,
@@ -496,6 +506,7 @@ def _policy_json(decision: EmailDiscoveryPolicyDecision) -> dict[str, Any]:
                 "format": candidate.format_id,
                 "local_part": candidate.local_part,
                 "email": candidate.email,
+                "source": candidate.source,
             }
             for index, candidate in enumerate(decision.candidates)
         ],
@@ -994,6 +1005,22 @@ def _accepted_write(
     attempt.verification_result = verification_outcome.reference or {}
     attempt.resolved_at = now
     session.flush()
+    if domain is not None:
+        verification_studio.learn_domain_format(
+            session,
+            domain=domain,
+            pattern_id=attempt.candidate_format,
+            evidence=evidence,
+            provenance={
+                "email_job_id": str(job.id),
+                "candidate_attempt_id": str(attempt.id),
+                "verification_job_id": (
+                    str(attempt.verification_job_id)
+                    if attempt.verification_job_id is not None
+                    else None
+                ),
+            },
+        )
     record_audit_event(
         session,
         actor="email-agent",
@@ -1287,14 +1314,25 @@ def execute_step(
                     reason=reuse_decision.reason,
                 )
 
+        pattern_policy, pattern_plan, max_candidates = verification_studio.pattern_plan(
+            session, canonical_domain
+        )
         decision = evaluate(
             first_name=contact.first_name,
             last_name=contact.last_name,
             domain=company.domain,
             employee_evidence=employee_evidence,
             now=now,
+            ordered_patterns=pattern_plan,
+            max_candidates=max_candidates,
         )
-        state = _policy_json(decision)
+        state = _policy_json(
+            decision,
+            pattern_policy_version_id=pattern_policy.id if pattern_policy else None,
+            pattern_policy_version_number=(
+                pattern_policy.version_number if pattern_policy else None
+            ),
+        )
         state["force_refresh"] = force_refresh
         state["refresh_scope"] = refresh_scope
         state["prior_policy_outcomes"] = prior_policy_outcomes

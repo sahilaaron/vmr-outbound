@@ -43,6 +43,7 @@ from app.models import draft as _draft  # noqa: E402,F401
 from app.models import email_candidate as _email_candidate  # noqa: E402,F401
 from app.models import email_discovery as _email_discovery  # noqa: E402,F401
 from app.models import email_evidence as _email_evidence  # noqa: E402,F401
+from app.models import email_verification_studio as _email_verification_studio  # noqa: E402,F401
 from app.models import external_event as _external_event  # noqa: E402,F401
 from app.models import identity_resolution as _identity_resolution  # noqa: E402,F401
 from app.models import import_batch as _import_batch  # noqa: E402,F401

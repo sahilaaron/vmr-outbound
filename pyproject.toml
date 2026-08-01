@@ -31,6 +31,8 @@ dependencies = [
     "trafilatura>=1.8,<3.0",
     "tldextract>=5.0,<6.0",
     "PyYAML>=6.0,<7.0",
+    # Fernet envelope for Admin-managed verification-provider credentials.
+    "cryptography>=42.0,<47.0",
 ]
 
 [project.optional-dependencies]
