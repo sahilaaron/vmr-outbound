@@ -59,6 +59,7 @@ from app.models.verification_job import AgentJob
 from app.services import agent_studio as agent_studio_service
 from app.services import campaign_contacts, devtools, identity, workbench, workbench_agents
 from app.services.agent_studio.email_verification_report import EmailVerificationReportReader
+from app.services.agent_studio.insights_report import DurableInsightsReportReader
 from app.services.agent_studio.research_report import (
     DurableResearchReportReader,
     ResearchReportReader,
@@ -4226,6 +4227,10 @@ def _research_report_reader(db: Session) -> ResearchReportReader:
     return DurableResearchReportReader(db)
 
 
+def _insights_report_reader(db: Session) -> DurableInsightsReportReader:
+    return DurableInsightsReportReader(db)
+
+
 def _email_verification_context(
     request: Request,
     db: Session,
@@ -4530,6 +4535,49 @@ def research_agent_report_api(agent_job_id: str, db: Session = Depends(get_db)) 
         return JSONResponse(status_code=404, content={"detail": "Not found."})
     parsed = _parse_uuid(agent_job_id)
     report = _research_report_reader(db).read_job(parsed) if parsed else None
+    if report is None:
+        return JSONResponse(status_code=404, content={"detail": "Not found."})
+    return JSONResponse(content=jsonable_encoder(report))
+
+
+@router.get("/admin/agents/studio/insights", response_class=HTMLResponse)
+def insights_agent_report_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    if not _agent_workbench_available():
+        return _agent_workbench_unavailable(request, db)
+    selected = _parse_uuid(request.query_params.get("job"))
+    report = _insights_report_reader(db).read_job(selected) if selected else None
+    if selected and report is None:
+        return _not_found(request, db, "That Insights report is unavailable.")
+    studio = agent_studio_service.load_studio(db, campaign_id=_studio_campaign_id(request))
+    item = next(entry for entry in studio.agents if entry.card.agent_id is AgentIdentifier.INSIGHTS)
+    jobs = db.scalars(
+        select(AgentJob)
+        .where(AgentJob.agent_id == AgentIdentifier.INSIGHTS)
+        .order_by(AgentJob.created_at.desc(), AgentJob.id.desc())
+        .limit(100)
+    ).all()
+    return _render(
+        request,
+        db,
+        "insights_agent_studio.html",
+        {
+            "item": item,
+            "jobs": jobs,
+            "report": report,
+            "active_nav": "agent-studio",
+            "page_title": "Insights Agent Studio",
+        },
+    )
+
+
+@router.get("/api/admin/agent-studio/insights/jobs/{agent_job_id}/report")
+def insights_agent_report_api(agent_job_id: str, db: Session = Depends(get_db)) -> JSONResponse:
+    """Return the same exact-job read model as the operator HTML surface."""
+
+    if not _agent_workbench_available():
+        return JSONResponse(status_code=404, content={"detail": "Not found."})
+    parsed = _parse_uuid(agent_job_id)
+    report = _insights_report_reader(db).read_job(parsed) if parsed else None
     if report is None:
         return JSONResponse(status_code=404, content={"detail": "Not found."})
     return JSONResponse(content=jsonable_encoder(report))

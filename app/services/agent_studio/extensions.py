@@ -89,7 +89,17 @@ AGENT_STUDIO_MODULES: dict[AgentIdentifier, AgentStudioModule] = {
             "or evidence."
         ),
     ),
-    AgentIdentifier.INSIGHTS: _module(AgentIdentifier.INSIGHTS, reporting=True),
+    AgentIdentifier.INSIGHTS: _module(
+        AgentIdentifier.INSIGHTS,
+        reporting=True,
+        configuration_boundary=(
+            "Claim and Employee Size derivation is append-only; manual rewriting is unavailable."
+        ),
+        preview_boundary=(
+            "No separate preview or model call exists; execution uses only committed Research "
+            "evidence through the authoritative Insights job."
+        ),
+    ),
     AgentIdentifier.PERSONALIZATION: _module(
         AgentIdentifier.PERSONALIZATION,
         configuration=True,

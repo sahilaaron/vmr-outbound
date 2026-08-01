@@ -167,6 +167,7 @@ def test_studio_exists_only_under_admin_and_is_absent_when_admin_is_not_mounted(
     studio_client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     assert studio_client.get("/app/agents/studio").status_code == 404
+    assert studio_client.get("/app/agents/studio/insights").status_code == 404
 
     monkeypatch.setenv("FEATURES__WORKBENCH", "false")
     monkeypatch.setenv("FEATURES__AGENT_WORKBENCH", "true")
@@ -185,6 +186,10 @@ def test_studio_exists_only_under_admin_and_is_absent_when_admin_is_not_mounted(
         )
         assert (
             client.get(f"/api/admin/agent-studio/email/jobs/{uuid.uuid4()}/report").status_code
+            == 404
+        )
+        assert (
+            client.get(f"/api/admin/agent-studio/insights/jobs/{uuid.uuid4()}/report").status_code
             == 404
         )
         assert (
@@ -372,6 +377,36 @@ def test_research_api_hides_unknown_and_non_research_jobs(
     malformed = studio_client.get("/api/admin/agent-studio/research/jobs/not-a-uuid/report")
     assert missing.status_code == 404
     assert malformed.status_code == 404
+    assert missing.json() == malformed.json() == {"detail": "Not found."}
+
+
+def test_insights_html_and_api_share_the_exact_job_report(
+    studio_client: TestClient, db_session: Session
+) -> None:
+    from tests.test_agent_studio_insights_report import _complete
+
+    job, dossier_id, claim_id = _complete(db_session)
+    html = studio_client.get(f"/admin/agents/studio/insights?job={job.id}")
+    api = studio_client.get(f"/api/admin/agent-studio/insights/jobs/{job.id}/report")
+
+    assert html.status_code == 200
+    assert "Insights Agent Studio" in html.text
+    assert str(job.id) in html.text
+    assert str(dossier_id) in html.text
+    assert str(claim_id) in html.text
+    assert "Customer/account" in html.text
+    assert "Employee Size" in html.text
+    assert api.status_code == 200
+    assert api.json()["job_id"] == str(job.id)
+    assert api.json()["research_dossier_id"] == str(dossier_id)
+    assert api.json()["claims"][0]["insight_id"] == str(claim_id)
+    assert studio_client.get(f"/app/agents/studio/insights?job={job.id}").status_code == 404
+
+
+def test_insights_api_uses_one_generic_safe_not_found(studio_client: TestClient) -> None:
+    missing = studio_client.get(f"/api/admin/agent-studio/insights/jobs/{uuid.uuid4()}/report")
+    malformed = studio_client.get("/api/admin/agent-studio/insights/jobs/not-a-uuid/report")
+    assert missing.status_code == malformed.status_code == 404
     assert missing.json() == malformed.json() == {"detail": "Not found."}
 
 
