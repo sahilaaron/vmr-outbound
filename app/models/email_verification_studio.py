@@ -225,10 +225,10 @@ class VerificationProviderAttempt(Base):
     conflict: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     error_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     verification_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("exact_email_verifications.id", ondelete="SET NULL")
+        UUID(as_uuid=True), ForeignKey("exact_email_verifications.id", ondelete="RESTRICT")
     )
     usage_ledger_entry_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("usage_ledger_entries.id", ondelete="SET NULL")
+        UUID(as_uuid=True), ForeignKey("usage_ledger_entries.id", ondelete="RESTRICT")
     )
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -242,7 +242,7 @@ class ProviderTestRun(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     provider_id: Mapped[str] = mapped_column(String(64), nullable=False)
     credential_version_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("provider_credential_versions.id", ondelete="SET NULL")
+        UUID(as_uuid=True), ForeignKey("provider_credential_versions.id", ondelete="RESTRICT")
     )
     normalized_email: Mapped[str] = mapped_column(String(320), nullable=False)
     live: Mapped[bool] = mapped_column(Boolean, nullable=False)
@@ -251,7 +251,7 @@ class ProviderTestRun(Base):
     error_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     response_summary: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     usage_ledger_entry_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("usage_ledger_entries.id", ondelete="SET NULL")
+        UUID(as_uuid=True), ForeignKey("usage_ledger_entries.id", ondelete="RESTRICT")
     )
     actor: Mapped[str] = mapped_column(String(160), nullable=False)
     created_at: Mapped[datetime] = mapped_column(

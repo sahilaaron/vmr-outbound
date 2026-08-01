@@ -219,12 +219,12 @@ def upgrade() -> None:
         sa.Column(
             "verification_id",
             postgresql.UUID(as_uuid=True),
-            sa.ForeignKey("exact_email_verifications.id", ondelete="SET NULL"),
+            sa.ForeignKey("exact_email_verifications.id", ondelete="RESTRICT"),
         ),
         sa.Column(
             "usage_ledger_entry_id",
             postgresql.UUID(as_uuid=True),
-            sa.ForeignKey("usage_ledger_entries.id", ondelete="SET NULL"),
+            sa.ForeignKey("usage_ledger_entries.id", ondelete="RESTRICT"),
         ),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("finished_at", sa.DateTime(timezone=True), nullable=False),
@@ -244,7 +244,7 @@ def upgrade() -> None:
         sa.Column(
             "credential_version_id",
             postgresql.UUID(as_uuid=True),
-            sa.ForeignKey("provider_credential_versions.id", ondelete="SET NULL"),
+            sa.ForeignKey("provider_credential_versions.id", ondelete="RESTRICT"),
         ),
         sa.Column("normalized_email", sa.String(320), nullable=False),
         sa.Column("live", sa.Boolean(), nullable=False),
@@ -255,7 +255,7 @@ def upgrade() -> None:
         sa.Column(
             "usage_ledger_entry_id",
             postgresql.UUID(as_uuid=True),
-            sa.ForeignKey("usage_ledger_entries.id", ondelete="SET NULL"),
+            sa.ForeignKey("usage_ledger_entries.id", ondelete="RESTRICT"),
         ),
         sa.Column("actor", sa.String(160), nullable=False),
         sa.Column(

@@ -48,13 +48,9 @@ from app.services.email.discovery_policy import (
     POLICY_VERSION,
     EmailDiscoveryPolicyDecision,
     EmailPolicyOutcome,
-    EmployeeCountClass,
     EmployeeCountEvidence,
-    EmployeeEvidenceFreshness,
-    classify_employee_count,
     evaluate,
     evaluate_existing_accepted_email_reuse,
-    evidence_freshness,
 )
 from app.services.imports.normalization import is_valid_email, normalize_domain, normalize_email
 from app.services.pipeline import append_event
@@ -665,39 +661,6 @@ def _policy_block(
             decision.outcome.value,
         )
     return EmailExecutionOutcome.DOMAIN_INELIGIBLE, decision.outcome.value
-
-
-def _persisted_evidence_block(
-    *,
-    state: dict[str, Any],
-    current: EmployeeCountEvidence,
-    now: datetime,
-) -> tuple[EmailExecutionOutcome, str] | None:
-    """Refuse to mix a stored candidate plan with changed or stale evidence."""
-
-    stored = state.get("employee_evidence")
-    if not isinstance(stored, dict):
-        raise EmailAgentStateError("stored Email policy has no employee evidence object")
-    freshness = evidence_freshness(current, now=now)
-    classification = classify_employee_count(current.raw_value)
-    if freshness is not EmployeeEvidenceFreshness.FRESH:
-        classification = EmployeeCountClass.UNKNOWN
-    # Size becoming unknown or stale mid-execution no longer stops the run: the
-    # candidate order was already chosen and re-deriving it would only reshuffle
-    # three formats. What still stops it is the evidence being *different* from
-    # what the order was chosen against — that means the plan in flight was built
-    # on a fact that has since changed, and finishing it would silently attribute
-    # results to a classification nobody made.
-    if (
-        stored.get("id") != current.evidence_id
-        or state.get("employee_count_class") != classification.value
-    ):
-        return (
-            EmailExecutionOutcome.EMPLOYEE_COUNT_UNKNOWN,
-            "employee-count evidence changed after candidate policy selection; "
-            "an explicitly scoped Email refresh is required",
-        )
-    return None
 
 
 def _latest_exact_evidence(
@@ -1417,32 +1380,9 @@ def execute_step(
                 reason_code="canonical_domain_changed",
                 reason=str(state["reason"]),
             )
-        evidence_block = _persisted_evidence_block(
-            state=state,
-            current=_employee_evidence(session, company),
-            now=now,
-        )
-        if evidence_block is not None:
-            outcome, reason = evidence_block
-            state["blocked_outcome"] = outcome.value
-            state["reason"] = reason
-            result = _persist_result(
-                job,
-                state,
-                {"domain_outcome": outcome.value},
-            )
-            return EmailExecutionStep(
-                kind=EmailExecutionStepKind.BLOCKED,
-                outcome=outcome,
-                result=result,
-                output_reference={
-                    "company_id": str(company.id),
-                    "policy_identifier": POLICY_IDENTIFIER,
-                    "policy_version": POLICY_VERSION,
-                },
-                reason_code=outcome.value,
-                reason=reason,
-            )
+        # Employee-size evidence is legacy provenance only. A correction while
+        # Verification is in flight neither reorders candidates nor blocks the
+        # pinned Email policy execution.
         if not force_refresh:
             reusable = reusable_accepted_email(
                 session,
