@@ -75,3 +75,53 @@
   {%- elif v == "failed" -%}<span class="badge err">failed</span>
   {%- else -%}<span class="badge muted">skipped</span>{%- endif -%}
 {%- endmacro %}
+
+{# --- CI-002 ---------------------------------------------------------------
+
+   Geography and specialty need their own badges for one reason: a place without
+   a relationship, and a specialty without its hygiene verdict, both read as
+   settled facts on a screen. These make the difference visible. #}
+
+{% macro presence_badge(presence) -%}
+  {%- if presence is none -%}
+  {%- else -%}
+    {%- set v = presence.value -%}
+    {%- if v == "physical" -%}<span class="badge ok" title="The company is physically there.">physical</span>
+    {%- elif v == "commercial" -%}<span class="badge info" title="Sells into this market; no evidence of a site.">market</span>
+    {%- elif v == "prospective" -%}<span class="badge warn" title="Announced, not yet there.">planned</span>
+    {%- elif v == "former" -%}<span class="badge warn" title="Was there; the evidence does not say it still is.">former</span>
+    {%- else -%}<span class="badge muted" title="The place is mentioned; the relationship is not established.">presence unknown</span>{%- endif -%}
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro relationship_badge(relationship) -%}
+  {%- if relationship is none -%}
+  {%- else -%}
+    {%- set v = relationship.value -%}
+    {%- if v == "headquarters" -%}<span class="badge ok">headquarters</span>
+    {%- elif v == "unclear" -%}<span class="badge warn">relationship unclear</span>
+    {%- else -%}<span class="badge info">{{ v.replace("_", " ") }}</span>{%- endif -%}
+  {%- endif -%}
+{%- endmacro %}
+
+{# Why a value is not settled, in words rather than a code. An operator should
+   not have to learn a vocabulary of reason codes to review a queue. #}
+{% macro reason_note(reason) -%}
+  {%- if reason -%}
+    {%- set explain = {
+      "no_evidence": "the producer proposed this but cited nothing that survived checking",
+      "unmapped_value": "no canonical value in the active vocabulary matches this wording",
+      "conflicting_evidence": "the evidence supports more than one incompatible answer",
+      "evidence_silent": "this dimension was looked at and the evidence said nothing",
+      "unclear_relationship": "the place is named; the evidence does not say what the company does there",
+      "ambiguous_location": "the name is also an ordinary word, and the relationship is not established",
+      "context_conflicts_with_relationship": "the place was found in a context that does not support this relationship",
+      "not_current_presence": "planned or former — real, but not where the company is today",
+      "promotional_language": "carries marketing wording that cannot be removed without changing the meaning",
+      "too_broad": "names a whole field rather than a concentration within one",
+      "dimension_boundary_unclear": "repeats a product, service or capability word for word",
+      "specialty_too_long": "long enough to be a description rather than a specialty",
+    } -%}
+    <div class="small muted-text">{{ explain.get(reason, reason.replace("_", " ")) }}</div>
+  {%- endif -%}
+{%- endmacro %}

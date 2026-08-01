@@ -60,10 +60,14 @@ from app.models.enums import (
     IntelligenceDimension,
     IntelligenceEvidenceStatus,
     IntelligenceEvidenceSupport,
+    IntelligenceGeoRelationship,
     IntelligenceNormalization,
+    IntelligencePresenceKind,
     IntelligenceValueState,
 )
 from app.services.audit import record_audit_event
+from app.services.company_intelligence import geography as geo
+from app.services.company_intelligence import specialty as specialty_rules
 from app.services.company_intelligence import taxonomy as taxonomy_service
 from app.services.company_intelligence.inputs import IntelligenceInput
 from app.services.company_intelligence.normalization import normalize_term
@@ -74,7 +78,11 @@ PRODUCER_ACTOR = "system:company-intelligence"
 #: produced the answer. Changing a validation, a cap or the ranking rule is a
 #: policy bump, and a policy bump changes the input digest, which is what makes
 #: the change produce a new version instead of silently reinterpreting an old one.
-POLICY_VERSION = "1"
+#: Bumped to 2 by CI-002. Geography now arrives as candidate handles with a
+#: relationship, and specialties pass through deterministic hygiene — both change
+#: what the same evidence produces, so the digest must change with them or an
+#: old version would silently masquerade as a new one.
+POLICY_VERSION = "2"
 
 #: How many values are kept per dimension. Caps are not tidiness: an unbounded
 #: list turns "we found eleven products" into a wall nobody reviews, and review
@@ -108,6 +116,32 @@ REASON_NO_EVIDENCE = "no_evidence"
 REASON_UNMAPPED = "unmapped_value"
 REASON_CONFLICT = "conflicting_evidence"
 REASON_SILENT = "evidence_silent"
+
+#: Order geography rows are ranked in: a headquarters before a warehouse before a
+#: market before a plan. Deterministic, so the same evidence always ranks the
+#: same, and useful, because rank 0 should be the answer to "where are they".
+_RELATIONSHIP_ORDER: tuple[IntelligenceGeoRelationship, ...] = (
+    IntelligenceGeoRelationship.HEADQUARTERS,
+    IntelligenceGeoRelationship.OFFICE,
+    IntelligenceGeoRelationship.MANUFACTURING,
+    IntelligenceGeoRelationship.RESEARCH_AND_DEVELOPMENT,
+    IntelligenceGeoRelationship.FACILITY,
+    IntelligenceGeoRelationship.BRANCH,
+    IntelligenceGeoRelationship.WAREHOUSE,
+    IntelligenceGeoRelationship.DISTRIBUTION,
+    IntelligenceGeoRelationship.OPERATIONS,
+    IntelligenceGeoRelationship.COMMERCIAL_MARKET,
+    IntelligenceGeoRelationship.PLANNED_PRESENCE,
+    IntelligenceGeoRelationship.HISTORICAL_PRESENCE,
+    IntelligenceGeoRelationship.UNCLEAR,
+)
+
+#: Dimensions whose wording a specialty must not simply repeat.
+_SPECIALTY_NEIGHBOURS = (
+    IntelligenceDimension.PRODUCT,
+    IntelligenceDimension.SERVICE,
+    IntelligenceDimension.CAPABILITY,
+)
 
 
 class IntelligenceProducerError(Exception):
@@ -166,6 +200,12 @@ class _Candidate:
     evidence: list[tuple[uuid.UUID | None, uuid.UUID | None, str | None, str | None]]
     resolution: taxonomy_service.TermResolution
     conflict_group: int | None = None
+    #: CI-002 specialty hygiene: the cleaned wording, when cleaning was safe.
+    #: Distinct from ``normalized_value`` above, which is the comparison form used
+    #: for duplicate and conflict matching and is never shown to anybody.
+    cleaned_value: str | None = None
+    #: CI-002 specialty hygiene: why this value is not settled, if it is not.
+    hygiene_reason: str | None = None
 
 
 def confidence_band(value: float | None) -> IntelligenceConfidenceBand | None:
@@ -212,6 +252,12 @@ def vocabulary_for_prompt(session: Session, *, limit_per_dimension: int = 200) -
         depth = 0 if dimension is IntelligenceDimension.INDUSTRY else None
         if dimension is IntelligenceDimension.SUBINDUSTRY:
             continue
+        if dimension is IntelligenceDimension.GEOGRAPHY:
+            # Geography has a vocabulary of hundreds of places and the model does
+            # not choose from it — deterministic extraction already decided which
+            # places the evidence names, and the model is given those handles
+            # instead. Listing the whole edition would crowd out the evidence.
+            continue
         terms = taxonomy_service.list_terms(session, taxonomy=edition, depth=depth)
         if not terms:
             continue
@@ -257,7 +303,13 @@ def produce(
         )
 
     warnings: list[str] = []
+    # The deterministic extractor's refusals are part of this version's record:
+    # a place that was found and deliberately not offered is a decision somebody
+    # may need to see, so it travels with the warnings rather than vanishing.
+    warnings.extend(source.geography.warnings)
+
     candidates, unknown_dimensions = _validate(answer, source=source, warnings=warnings)
+    candidates = _apply_specialty_hygiene(candidates, warnings=warnings)
     conflicts = _apply_conflicts(answer, candidates=candidates, warnings=warnings)
     candidates = _apply_caps(candidates, warnings=warnings)
 
@@ -266,11 +318,14 @@ def produce(
             session, dimension=candidate.dimension, value=candidate.value
         )
 
+    geographies = _validate_geography(answer, source=source, warnings=warnings)
+
     version = _persist(
         session,
         company=company,
         source=source,
         candidates=candidates,
+        geographies=geographies,
         conflicts=conflicts,
         unknown_dimensions=unknown_dimensions,
         raw_answer=raw_answer,
@@ -340,6 +395,16 @@ def _validate(
             warnings.append(
                 f"classification {index} named unknown dimension "
                 f"{str(item.get('dimension'))[:40]!r} and was dropped"
+            )
+            continue
+        if dimension is IntelligenceDimension.GEOGRAPHY:
+            # Places arrive as candidate handles with a relationship, never as
+            # free text in `classifications`. Accepting one here would let the
+            # model name a location deterministic extraction never found, which
+            # is the single thing CI-002 exists to prevent.
+            warnings.append(
+                f"classification {index} put a geography in `classifications`; places "
+                "must come from the candidate list, so it was dropped"
             )
             continue
         value = _text(item.get("value"), limit=MAX_VALUE_CHARS)
@@ -466,6 +531,72 @@ def _evidence(
     return resolved
 
 
+def _apply_specialty_hygiene(
+    candidates: list[_Candidate], *, warnings: list[str]
+) -> list[_Candidate]:
+    """Run every proposed specialty through deterministic hygiene.
+
+    Four outcomes, and only one of them removes anything: a value is rejected
+    solely when it is malformed, empty, purely promotional or an outcome claim.
+    Everything else that is not clean enough to accept becomes *unresolved* and
+    stays on the screen, because a suggestion an operator can judge is worth more
+    than a silent deletion.
+
+    Two duplicate checks run here as well. Within the dimension, near-duplicates
+    ("battery pack assembly" and "battery pack assemblies") collapse to one.
+    Across dimensions, a specialty that merely repeats a product, service or
+    capability word for word is kept but marked unresolved — the boundary is
+    genuinely unclear, and guessing which side it falls on is not this layer's
+    job.
+    """
+
+    neighbours = {
+        specialty_rules.duplicate_key(candidate.value)
+        for candidate in candidates
+        if candidate.dimension in _SPECIALTY_NEIGHBOURS
+    }
+    seen: set[str] = set()
+    kept: list[_Candidate] = []
+
+    for candidate in candidates:
+        if candidate.dimension is not IntelligenceDimension.SPECIALTY:
+            kept.append(candidate)
+            continue
+
+        verdict = specialty_rules.evaluate(candidate.value)
+        if verdict.action is specialty_rules.SpecialtyAction.REJECT:
+            warnings.append(
+                f"specialty {candidate.value[:60]!r} was rejected ({verdict.reason}): "
+                f"{verdict.detail}"
+            )
+            continue
+
+        key = specialty_rules.duplicate_key(candidate.value, verdict.cleaned_value)
+        if key in seen:
+            warnings.append(
+                f"specialty {candidate.value[:60]!r} repeats a value already recorded "
+                "on this dimension and was dropped"
+            )
+            continue
+        seen.add(key)
+
+        if verdict.action is specialty_rules.SpecialtyAction.CLEAN:
+            candidate.cleaned_value = verdict.cleaned_value
+        elif verdict.action is specialty_rules.SpecialtyAction.UNRESOLVED:
+            candidate.hygiene_reason = verdict.reason
+            warnings.append(f"specialty {candidate.value[:60]!r}: {verdict.detail}")
+
+        if key in neighbours and candidate.hygiene_reason is None:
+            candidate.hygiene_reason = specialty_rules.REASON_DIMENSION_OVERLAP
+            warnings.append(
+                f"specialty {candidate.value[:60]!r} repeats a product, service or "
+                "capability word for word; kept for review rather than settled"
+            )
+        kept.append(candidate)
+
+    return kept
+
+
 def _apply_conflicts(
     answer: dict[str, Any],
     *,
@@ -516,6 +647,206 @@ def _apply_conflicts(
     return rows
 
 
+def _validate_geography(
+    answer: dict[str, Any],
+    *,
+    source: IntelligenceInput,
+    warnings: list[str],
+) -> list[geo.GeographyDecision]:
+    """Turn the model's geography answers into validated decisions.
+
+    Deterministic code is the authority for every part of this except the
+    relationship itself:
+
+    * a handle that is not one of the candidates this run offered is dropped —
+      the model cannot introduce a place;
+    * a relationship outside the enum becomes ``unclear`` rather than being
+      invented or discarded;
+    * cited evidence must be evidence that actually mentioned the place, so a
+      relationship "supported" by a fact the place never appeared in falls back
+      to the facts that did mention it, and says so;
+    * a relationship that contradicts the context the place was found in — a
+      headquarters discovered inside a customer example — is stored as a
+      disagreement rather than resolved in the model's favour;
+    * a candidate the model ignored entirely is still stored, ``unclear``,
+      because the evidence does name the place and dropping it would lose that.
+    """
+
+    raw = answer.get("geography")
+    if raw is None:
+        raw = []
+    if not isinstance(raw, list):
+        warnings.append("`geography` was not a list and was ignored")
+        raw = []
+
+    decisions: dict[str, geo.GeographyDecision] = {}
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            warnings.append(f"geography {index} was not an object and was dropped")
+            continue
+        handle = str(item.get("candidate", "")).strip()
+        candidate = source.geography.by_handle(handle)
+        if candidate is None:
+            warnings.append(
+                f"geography {index} named candidate {handle[:20]!r}, which was not offered; "
+                "a place the evidence did not name cannot be classified"
+            )
+            continue
+        if candidate.place.code in decisions:
+            warnings.append(
+                f"geography {index} repeats candidate {candidate.handle}; kept the first"
+            )
+            continue
+
+        relationship = geo.parse_relationship(item.get("relationship"))
+        reason: str | None = None
+        if relationship is None:
+            warnings.append(
+                f"geography {index} named relationship {str(item.get('relationship'))[:40]!r}, "
+                "which is not one of ours; recorded as unclear"
+            )
+            relationship = IntelligenceGeoRelationship.UNCLEAR
+
+        cited = _text_handles(item.get("evidence"))
+        supported = tuple(handle for handle in candidate.evidence_handles if handle in cited)
+        if cited and not supported:
+            warnings.append(
+                f"geography for {candidate.place.label} cited evidence that never mentions it; "
+                "fell back to the facts that do"
+            )
+        evidence_handles = supported or candidate.evidence_handles
+
+        if relationship is IntelligenceGeoRelationship.UNCLEAR:
+            reason = (
+                geo.REASON_AMBIGUOUS_LOCATION
+                if candidate.qualified_ambiguous
+                else geo.REASON_UNCLEAR_RELATIONSHIP
+            )
+        elif not geo.flags_allow(candidate, relationship):
+            warnings.append(
+                f"{candidate.place.label} was found only in a "
+                f"{', '.join(candidate.flags)} context but was classified as "
+                f"{relationship.value}; kept unresolved"
+            )
+            reason = geo.REASON_CONTEXT_MISMATCH
+
+        presence = geo.presence_for(relationship)
+        if reason is None and presence not in geo.CURRENT_PRESENCE_KINDS:
+            # A plan and a closed site are both real and neither is a place the
+            # company is today. Kept, shown, never counted as settled.
+            reason = geo.REASON_NOT_CURRENT
+
+        decisions[candidate.place.code] = geo.GeographyDecision(
+            candidate=candidate,
+            relationship=relationship,
+            presence=presence,
+            evidence_handles=evidence_handles,
+            rationale=_text(item.get("rationale"), limit=MAX_RATIONALE_CHARS),
+            confidence=_confidence(item.get("confidence")),
+            unresolved_reason=reason,
+            is_current=reason is None,
+            _sort=(
+                _RELATIONSHIP_ORDER.index(relationship),
+                candidate.first_seen[0],
+                candidate.place.code,
+            ),
+        )
+
+    for candidate in source.geography.candidates:
+        if candidate.place.code in decisions:
+            continue
+        decisions[candidate.place.code] = geo.GeographyDecision(
+            candidate=candidate,
+            relationship=IntelligenceGeoRelationship.UNCLEAR,
+            presence=IntelligencePresenceKind.UNKNOWN,
+            evidence_handles=candidate.evidence_handles,
+            rationale=None,
+            confidence=None,
+            unresolved_reason=(
+                geo.REASON_AMBIGUOUS_LOCATION
+                if candidate.qualified_ambiguous
+                else geo.REASON_UNCLEAR_RELATIONSHIP
+            ),
+            is_current=False,
+            _sort=(
+                _RELATIONSHIP_ORDER.index(IntelligenceGeoRelationship.UNCLEAR),
+                candidate.first_seen[0],
+                candidate.place.code,
+            ),
+        )
+
+    ordered = sorted(decisions.values(), key=lambda item: item._sort)
+    return _infer_countries(ordered, warnings=warnings)
+
+
+def _infer_countries(
+    decisions: list[geo.GeographyDecision], *, warnings: list[str]
+) -> list[geo.GeographyDecision]:
+    """A settled city implies its country. Never the other way round.
+
+    "A plant in Pune" is a plant in India, and a reader filtering by country
+    should find it. The reverse inference — a country implying a city — is
+    forbidden and not implemented: "operations in India" names no city, and
+    inventing one would be fabrication with a tidy shape.
+
+    Only settled cities propagate. An unclear city gives an unclear country,
+    which is noise, so it does not.
+    """
+
+    present = {decision.candidate.place.code for decision in decisions}
+    derived: list[geo.GeographyDecision] = []
+    for decision in decisions:
+        place = decision.candidate.place
+        if place.is_country or not decision.is_current:
+            continue
+        if place.country_code in present:
+            continue
+        present.add(place.country_code)
+        country_place = geo.Place(
+            kind="country",
+            code=place.country_code,
+            label=place.country_name,
+            country_code=place.country_code,
+            country_name=place.country_name,
+            country_alpha3=place.country_alpha3,
+            region=place.region,
+        )
+        derived.append(
+            geo.GeographyDecision(
+                candidate=geo.GeographyCandidate(
+                    handle=decision.candidate.handle,
+                    place=country_place,
+                    matched_surface=decision.candidate.matched_surface,
+                    evidence_handles=decision.evidence_handles,
+                    first_seen=decision.candidate.first_seen,
+                ),
+                relationship=decision.relationship,
+                presence=decision.presence,
+                evidence_handles=decision.evidence_handles,
+                rationale=(
+                    f"derived from {place.label}, which the evidence places in {place.country_name}"
+                ),
+                confidence=decision.confidence,
+                unresolved_reason=None,
+                is_current=True,
+                inferred_from=place.code,
+                _sort=(decision._sort[0], decision._sort[1], place.country_code),
+            )
+        )
+        warnings.append(
+            f"{place.country_name} was inferred from {place.label}; no country implies a city"
+        )
+
+    return sorted([*decisions, *derived], key=lambda item: item._sort)
+
+
+def _text_handles(raw: Any) -> frozenset[str]:
+    if raw is None:
+        return frozenset()
+    entries = raw if isinstance(raw, list) else [raw]
+    return frozenset(str(entry).strip().upper() for entry in entries if str(entry).strip())
+
+
 def _apply_caps(candidates: list[_Candidate], *, warnings: list[str]) -> list[_Candidate]:
     """Keep at most ``DIMENSION_CAPS[dimension]`` values, in answer order.
 
@@ -550,6 +881,7 @@ def _persist(
     company: Company,
     source: IntelligenceInput,
     candidates: list[_Candidate],
+    geographies: list[geo.GeographyDecision],
     conflicts: list[tuple[IntelligenceDimension, int, str, int]],
     unknown_dimensions: tuple[IntelligenceDimension, ...],
     raw_answer: str,
@@ -569,6 +901,7 @@ def _persist(
     addressed = sorted(
         {candidate.dimension.value for candidate in candidates}
         | {dimension.value for dimension in unknown_dimensions}
+        | ({IntelligenceDimension.GEOGRAPHY.value} if geographies else set())
     )
 
     version = CompanyIntelligenceVersion(
@@ -635,6 +968,7 @@ def _persist(
                 if candidate.resolution.taxonomy is not None and term is not None
                 else None
             ),
+            normalized_value=candidate.cleaned_value,
             term_id=term.id if term is not None else None,
             term_code=term.code if term is not None else None,
             term_label=term.canonical_label if term is not None else None,
@@ -663,6 +997,96 @@ def _persist(
                     support=IntelligenceEvidenceSupport.SUPPORTS,
                 )
             )
+
+    # --- geography ----------------------------------------------------------
+    #
+    # Written from validated decisions rather than from free text: the place is
+    # already canonical, so the term is looked up by code and there is nothing to
+    # match, nothing to guess and no wording to normalize.
+    geo_edition = taxonomy_service.active_taxonomy(
+        session, dimension=IntelligenceDimension.GEOGRAPHY
+    )
+    for rank, decision in enumerate(geographies[: DIMENSION_CAPS[IntelligenceDimension.GEOGRAPHY]]):
+        place = decision.candidate.place
+        term = taxonomy_service.term_by_code(
+            session, dimension=IntelligenceDimension.GEOGRAPHY, code=place.code
+        )
+        has_evidence = bool(decision.evidence_handles)
+        if not has_evidence:
+            state = IntelligenceValueState.UNRESOLVED
+            evidence_status = IntelligenceEvidenceStatus.INSUFFICIENT
+            reason = REASON_NO_EVIDENCE
+        elif decision.unresolved_reason is not None:
+            state = IntelligenceValueState.UNRESOLVED
+            evidence_status = IntelligenceEvidenceStatus.SUPPORTED
+            reason = decision.unresolved_reason
+        else:
+            state = IntelligenceValueState.RESOLVED
+            evidence_status = IntelligenceEvidenceStatus.SUPPORTED
+            reason = None
+
+        if evidence_status is IntelligenceEvidenceStatus.SUPPORTED:
+            supported += 1
+        if state is IntelligenceValueState.UNRESOLVED:
+            unresolved += 1
+
+        row = CompanyIntelligenceClassification(
+            intelligence_version_id=version.id,
+            company_id=company.id,
+            dimension=IntelligenceDimension.GEOGRAPHY,
+            rank=rank,
+            model_value=decision.candidate.matched_surface[:MAX_VALUE_CHARS] or place.label,
+            rationale=decision.rationale,
+            taxonomy_id=geo_edition.id if geo_edition is not None and term is not None else None,
+            taxonomy_version=(
+                geo_edition.version if geo_edition is not None and term is not None else None
+            ),
+            term_id=term.id if term is not None else None,
+            term_code=place.code,
+            term_label=place.label,
+            normalization=(
+                IntelligenceNormalization.CANONICAL
+                if term is not None
+                else IntelligenceNormalization.UNMAPPED
+            ),
+            parent_term_code=None if place.is_country else place.country_code,
+            state=state,
+            evidence_status=evidence_status,
+            confidence=decision.confidence,
+            confidence_band=confidence_band(decision.confidence),
+            evidence_count=len(decision.evidence_handles),
+            unresolved_reason=reason,
+            geo_relationship=decision.relationship,
+            presence_kind=decision.presence,
+        )
+        session.add(row)
+        session.flush()
+
+        for handle in decision.evidence_handles:
+            fact = source.fact_by_ref(handle)
+            if fact is None:  # pragma: no cover - handles come from the input
+                continue
+            first = fact.evidence[0] if fact.evidence else None
+            session.add(
+                CompanyIntelligenceEvidenceLink(
+                    classification_id=row.id,
+                    intelligence_version_id=version.id,
+                    insight_id=fact.insight_id,
+                    insight_evidence_id=first.evidence_id if first else None,
+                    source_url=first.source_url if first else None,
+                    excerpt=(
+                        first.excerpt[:MAX_EXCERPT_CHARS] if first and first.excerpt else None
+                    ),
+                    support=IntelligenceEvidenceSupport.SUPPORTS,
+                )
+            )
+
+    if len(geographies) > DIMENSION_CAPS[IntelligenceDimension.GEOGRAPHY]:
+        dropped = geographies[DIMENSION_CAPS[IntelligenceDimension.GEOGRAPHY] :]
+        warnings.append(
+            f"{len(dropped)} geography value(s) beyond the cap were not stored: "
+            + ", ".join(item.candidate.place.label for item in dropped[:10])
+        )
 
     # Dimensions the producer looked at and found nothing for. Stored as rows so
     # "we checked and the evidence is silent" is queryable, and so it cannot be
@@ -695,7 +1119,11 @@ def _persist(
             )
         )
 
-    version.classification_count = len(candidates) + len(unknown_dimensions)
+    version.classification_count = (
+        len(candidates)
+        + len(unknown_dimensions)
+        + min(len(geographies), DIMENSION_CAPS[IntelligenceDimension.GEOGRAPHY])
+    )
     version.supported_count = supported
     version.unresolved_count = unresolved + len(unknown_dimensions)
     version.conflict_count = len(conflicts)
@@ -719,6 +1147,14 @@ def _state_for(
             IntelligenceValueState.UNRESOLVED,
             IntelligenceEvidenceStatus.INSUFFICIENT,
             REASON_NO_EVIDENCE,
+        )
+    if candidate.hygiene_reason is not None:
+        # Evidence-backed, but the wording is too broad, too promotional or
+        # indistinguishable from another dimension. Visible and unsettled.
+        return (
+            IntelligenceValueState.UNRESOLVED,
+            IntelligenceEvidenceStatus.SUPPORTED,
+            candidate.hygiene_reason,
         )
     if candidate.resolution.normalization is IntelligenceNormalization.UNMAPPED:
         return (

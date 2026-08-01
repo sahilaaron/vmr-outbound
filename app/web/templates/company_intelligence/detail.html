@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "company_intelligence/_ci_macros.html" import state_badge, source_badge, normalization_badge, evidence_badge, confidence_badge, job_badge %}
+{% from "company_intelligence/_ci_macros.html" import state_badge, source_badge, normalization_badge, evidence_badge, confidence_badge, job_badge, presence_badge, relationship_badge, reason_note %}
 {% set ci_section = "companies" %}
 {% block content %}
 {% include "company_intelligence/_ci_nav.html" %}
@@ -68,6 +68,54 @@
     </p>
   </div>
 </div>
+{% endif %}
+
+{% if view %}
+{% set places = view.geographies() %}
+{% if places %}
+<div class="card">
+  <div class="card-head"><h2>Where this company is</h2></div>
+  <div class="card-body">
+    <p class="small">
+      Physical presence and commercial market are kept apart deliberately: a plant
+      in a city and selling into that city are different companies to approach.
+      Planned and former sites are shown and are never counted as current.
+    </p>
+    <table>
+      <thead><tr><th>Place</th><th>Relationship</th><th>Presence</th><th>Evidence</th></tr></thead>
+      <tbody>
+        {% for place in places %}
+        <tr>
+          <td>
+            <strong>{{ place.display_value }}</strong>
+            {% if place.city_name and place.country_name %}<div class="small muted-text">{{ place.country_name }} ({{ place.country_code }})</div>
+            {% elif place.country_code %}<div class="small muted-text">ISO {{ place.country_code }}</div>{% endif %}
+            {% if place.model_value and place.model_value != place.display_value %}
+            <div class="small muted-text">evidence wording: "{{ place.model_value }}"</div>
+            {% endif %}
+          </td>
+          <td class="small">{{ relationship_badge(place.geo_relationship) }}{{ reason_note(place.unresolved_reason) }}</td>
+          <td class="small">{{ presence_badge(place.presence_kind) }} {{ state_badge(place.state) }}</td>
+          <td class="small">
+            {{ evidence_badge(place.evidence_status, place.evidence | length) }}
+            {% for evidence in place.evidence %}
+            {% if evidence.source_url %}
+            <div class="small muted-text"><a href="{{ evidence.source_url }}" rel="noreferrer noopener nofollow">{{ evidence.source_url | truncate(50) }}</a></div>
+            {% endif %}
+            {% endfor %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="small muted-text">
+      Countries with a current presence: {{ view.countries() | join(", ") or "none settled" }}.
+      Every place here was found by exact matching against the evidence; the
+      producer chose the relationship and could not introduce a location.
+    </p>
+  </div>
+</div>
+{% endif %}
 {% endif %}
 
 {% if view and view.classifications %}

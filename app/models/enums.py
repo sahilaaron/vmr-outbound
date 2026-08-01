@@ -1222,3 +1222,59 @@ class IntelligenceBackfillOutcome(enum.StrEnum):
     ENQUEUED = "enqueued"
     SKIPPED = "skipped"
     FAILED = "failed"
+
+
+# ---------------------------------------------------------------------------
+# Company Intelligence: geography and specialty hardening (CI-002)
+# ---------------------------------------------------------------------------
+
+
+class IntelligenceGeoRelationship(enum.StrEnum):
+    """How a Company relates to a place.
+
+    A city without a relationship is not intelligence, it is a word that
+    appeared. "Headquartered in London", "serves customers across Germany" and
+    "presented at a conference in Berlin" all put a place next to a company and
+    only one of them is an address.
+
+    The set is closed and bounded because it is what downstream targeting will
+    filter on. ``UNCLEAR`` is a first-class member, not a gap: the evidence
+    genuinely does mention the place, and saying so beats both guessing and
+    discarding.
+    """
+
+    HEADQUARTERS = "headquarters"
+    OFFICE = "office"
+    BRANCH = "branch"
+    FACILITY = "facility"
+    MANUFACTURING = "manufacturing"
+    RESEARCH_AND_DEVELOPMENT = "research_and_development"
+    WAREHOUSE = "warehouse"
+    DISTRIBUTION = "distribution"
+    #: Material business operations that are not one of the named site types.
+    OPERATIONS = "operations"
+    #: Sells into the market without evidence of a site there.
+    COMMERCIAL_MARKET = "commercial_market"
+    PLANNED_PRESENCE = "planned_presence"
+    HISTORICAL_PRESENCE = "historical_presence"
+    UNCLEAR = "unclear"
+
+
+class IntelligencePresenceKind(enum.StrEnum):
+    """What kind of presence a relationship actually asserts.
+
+    Derived deterministically from the relationship and stored beside it, so a
+    consumer asking "where is this company physically" never has to
+    re-implement the mapping — and so the difference between a factory in Pune
+    and selling into Pune cannot be lost by a reader who did not know to look.
+
+    ``PROSPECTIVE`` and ``FORMER`` are deliberately not physical. A plant that
+    is announced and a plant that closed are both real facts and neither is a
+    place the company is today.
+    """
+
+    PHYSICAL = "physical"
+    COMMERCIAL = "commercial"
+    PROSPECTIVE = "prospective"
+    FORMER = "former"
+    UNKNOWN = "unknown"

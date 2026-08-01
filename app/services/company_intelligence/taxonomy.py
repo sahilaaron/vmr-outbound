@@ -65,12 +65,23 @@ NORMALIZING_DIMENSION: dict[IntelligenceDimension, IntelligenceDimension] = {
     IntelligenceDimension.COMPANY_TYPE: IntelligenceDimension.COMPANY_TYPE,
     IntelligenceDimension.CUSTOMER_SEGMENT: IntelligenceDimension.CUSTOMER_SEGMENT,
     IntelligenceDimension.OPERATING_MARKET: IntelligenceDimension.OPERATING_MARKET,
+    # CI-002. Geography was free text in the first release, which was honest and
+    # useless: "EMEA", "our London office" and "Berlin" all landed in the same
+    # shapeless column. It now normalizes against a versioned reference edition
+    # of countries and cities. Both depths belong to one edition, exactly as
+    # industry and subindustry do — a country list and a city list that could
+    # disagree about which countries exist would be two vocabularies pretending
+    # to be one.
+    IntelligenceDimension.GEOGRAPHY: IntelligenceDimension.GEOGRAPHY,
 }
 
 #: Dimensions that read the *category* level of a hierarchy, and those that read
 #: the *child* level. A value resolved at the wrong depth would put a
 #: subcategory where a category belongs, which reads as a taxonomy that
 #: contradicts itself.
+#: GEOGRAPHY is deliberately absent: a geography value may legitimately be a
+#: country (depth 0) or a city (depth 1), and pinning it to one depth would make
+#: "United Kingdom" or "London" unresolvable depending on which was chosen.
 _DEPTH_FOR_DIMENSION: dict[IntelligenceDimension, int | None] = {
     IntelligenceDimension.INDUSTRY: 0,
     IntelligenceDimension.SUBINDUSTRY: 1,
@@ -435,3 +446,24 @@ def list_aliases(
             .order_by(IntelligenceTaxonomyAlias.alias)
         ).all()
     )
+
+
+def term_by_code(
+    session: Session, *, dimension: IntelligenceDimension, code: str
+) -> IntelligenceTaxonomyTerm | None:
+    """One term of the active edition, by its stable code.
+
+    Used where a caller already knows exactly which canonical value it means —
+    geography, where deterministic extraction has already resolved the place —
+    so there is nothing to match and nothing to guess.
+    """
+
+    edition = active_taxonomy(session, dimension=dimension)
+    if edition is None:
+        return None
+    return session.scalars(
+        select(IntelligenceTaxonomyTerm).where(
+            IntelligenceTaxonomyTerm.taxonomy_id == edition.id,
+            IntelligenceTaxonomyTerm.code == code,
+        )
+    ).first()

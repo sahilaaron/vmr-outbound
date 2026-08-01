@@ -58,10 +58,13 @@ from app.models.enums import (
     IntelligenceDecisionAction,
     IntelligenceDimension,
     IntelligenceEvidenceStatus,
+    IntelligenceGeoRelationship,
     IntelligenceNormalization,
+    IntelligencePresenceKind,
     IntelligenceValueSource,
     IntelligenceValueState,
 )
+from app.services.company_intelligence.geography import CURRENT_PRESENCE_KINDS
 from app.services.company_intelligence.review import target_key_for
 
 
@@ -104,6 +107,20 @@ class ClassificationView:
     unresolved_reason: str | None
     evidence: tuple[EvidenceView, ...] = ()
     classification_id: uuid.UUID | None = None
+    #: CI-002. The deterministically cleaned wording, when hygiene removed a
+    #: promotional modifier. ``display_value`` already prefers it; this is here so
+    #: a reviewer can see that cleaning happened at all.
+    cleaned_value: str | None = None
+    #: CI-002 geography. Null on every other dimension.
+    geo_relationship: IntelligenceGeoRelationship | None = None
+    presence_kind: IntelligencePresenceKind | None = None
+    #: ISO 3166-1 alpha-2, upper case, for a geography value. The country's own
+    #: code for a country row, its parent's for a city.
+    country_code: str | None = None
+    country_name: str | None = None
+    #: The city, when this geography value is one. Null for a country row, so a
+    #: reader never has to guess which level they are looking at.
+    city_name: str | None = None
     #: True when this value exists only because an operator asserted it and the
     #: current model version does not propose it. Surfaced rather than hidden:
     #: it is exactly the case where model and human disagree.
@@ -121,6 +138,23 @@ class ClassificationView:
             self.evidence_status is IntelligenceEvidenceStatus.SUPPORTED
             or self.source is not IntelligenceValueSource.MODEL
         )
+
+    @property
+    def is_physical_presence(self) -> bool:
+        """A place the company actually is, now.
+
+        The distinction targeting needs: a factory in Pune and selling into Pune
+        are different companies to approach, and a filter that cannot tell them
+        apart will book the wrong meetings.
+        """
+
+        return self.presence_kind is IntelligencePresenceKind.PHYSICAL and self.settled
+
+    @property
+    def is_current_presence(self) -> bool:
+        """Physical or commercial, and settled. Never planned, never former."""
+
+        return self.presence_kind in CURRENT_PRESENCE_KINDS and self.settled
 
     @property
     def operator_confirmed(self) -> bool:
@@ -213,6 +247,51 @@ class CompanyIntelligenceRead:
         """
 
         return tuple(item.display_value for item in self.for_dimension(dimension) if item.settled)
+
+    def geographies(
+        self,
+        *,
+        presence: IntelligencePresenceKind | None = None,
+        current_only: bool = False,
+    ) -> tuple[ClassificationView, ...]:
+        """Geography values, optionally narrowed to one kind of presence.
+
+        ``current_only`` drops planned and former sites. A caller that wants
+        "where are they" should use it; a caller building a history should not.
+        """
+
+        rows = self.for_dimension(IntelligenceDimension.GEOGRAPHY)
+        if presence is not None:
+            rows = tuple(row for row in rows if row.presence_kind is presence)
+        if current_only:
+            rows = tuple(row for row in rows if row.is_current_presence)
+        return rows
+
+    def headquarters(self) -> ClassificationView | None:
+        """The settled headquarters city, or None. Never a guess.
+
+        Returns None when the evidence names two, because a company with two
+        headquarters is a disagreement to look at rather than a value to pick
+        from.
+        """
+
+        found = [
+            row
+            for row in self.geographies()
+            if row.geo_relationship is IntelligenceGeoRelationship.HEADQUARTERS
+            and row.city_name
+            and row.settled
+        ]
+        return found[0] if len(found) == 1 else None
+
+    def countries(self, *, current_only: bool = True) -> tuple[str, ...]:
+        """Distinct ISO alpha-2 codes this company has a presence in."""
+
+        seen: list[str] = []
+        for row in self.geographies(current_only=current_only):
+            if row.country_code and row.country_code not in seen:
+                seen.append(row.country_code)
+        return tuple(seen)
 
     def unresolved(self) -> tuple[ClassificationView, ...]:
         return tuple(
@@ -493,7 +572,10 @@ def _view_for(
 ) -> ClassificationView | None:
     state = row.state
     source = IntelligenceValueSource.MODEL
-    display = row.term_label or row.model_value
+    # A cleaned value outranks the raw wording for display and is outranked in
+    # turn by a canonical term. The producer's own words are never lost: they
+    # stay in `model_value`, which every screen shows beside this.
+    display = row.term_label or row.normalized_value or row.model_value
     term_code = row.term_code
     term_label = row.term_label
     normalization = row.normalization
@@ -547,6 +629,24 @@ def _view_for(
         unresolved_reason=row.unresolved_reason,
         evidence=tuple(evidence),
         classification_id=row.id,
+        cleaned_value=row.normalized_value,
+        geo_relationship=row.geo_relationship,
+        presence_kind=row.presence_kind,
+        country_code=(
+            (row.parent_term_code or row.term_code or "").upper() or None
+            if row.dimension is IntelligenceDimension.GEOGRAPHY
+            else None
+        ),
+        country_name=(
+            row.term_label
+            if row.dimension is IntelligenceDimension.GEOGRAPHY and not row.parent_term_code
+            else None
+        ),
+        city_name=(
+            row.term_label
+            if row.dimension is IntelligenceDimension.GEOGRAPHY and row.parent_term_code
+            else None
+        ),
         decision_note=note,
         decided_at=decided_at,
         decided_by=decided_by,

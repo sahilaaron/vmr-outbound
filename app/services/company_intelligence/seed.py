@@ -36,6 +36,7 @@ from sqlalchemy.orm import Session
 
 from app.models.enums import IntelligenceDimension, TaxonomyAliasSource
 from app.models.intelligence_taxonomy import IntelligenceTaxonomy
+from app.services.company_intelligence import geography as geography_module
 from app.services.company_intelligence import taxonomy as taxonomy_service
 from app.services.company_intelligence.normalization import slugify_code
 
@@ -115,6 +116,13 @@ def seed_vocabularies(
     (created if industry_created else skipped).append(IntelligenceDimension.INDUSTRY.value)
     terms += industry_terms
     aliases += industry_aliases
+
+    geo_created, geo_terms, geo_aliases = _seed_geography(
+        session, activate=activate, created_by=created_by
+    )
+    (created if geo_created else skipped).append(IntelligenceDimension.GEOGRAPHY.value)
+    terms += geo_terms
+    aliases += geo_aliases
 
     supporting = _load(SUPPORTING_FILE)
     for key, dimension in _SUPPORTING_DIMENSIONS.items():
@@ -301,6 +309,93 @@ def _seed_flat(
                 created_by=created_by,
             )
             aliases += 1
+    if activate:
+        taxonomy_service.activate_taxonomy(session, taxonomy=edition)
+    return True, terms, aliases
+
+
+def _seed_geography(
+    session: Session,
+    *,
+    activate: bool,
+    created_by: str | None,
+) -> tuple[bool, int, int]:
+    """Publish the CI-002 geography edition from the vendored reference base.
+
+    The edition label comes from the data file rather than from ``SEED_VERSION``:
+    the geography base has its own release cadence, and a correction to a city
+    list should not have to pretend to be a new industry taxonomy.
+
+    Countries become depth-0 terms coded by their ISO alpha-2; cities become
+    their children. The alpha-3 code and every recorded alternate or former name
+    become seed aliases, which is what makes "DEU", "Germany" and "Deutschland"
+    one answer without the producer having to guess.
+    """
+
+    base = geography_module.load_base()
+    existing = _existing(session, IntelligenceDimension.GEOGRAPHY, base.edition)
+    if existing is not None:
+        if activate and not existing.is_active:
+            taxonomy_service.activate_taxonomy(session, taxonomy=existing)
+        return False, 0, 0
+
+    edition = taxonomy_service.create_taxonomy(
+        session,
+        dimension=IntelligenceDimension.GEOGRAPHY,
+        version=base.edition,
+        title=base.title,
+        # The full provenance, licence reasoning and selection criteria live in
+        # the data file and in docs/COMPANY_INTELLIGENCE_TAXONOMY.md. The column
+        # gets the pointer and the criteria, not a wall of prose.
+        description=f"{base.criteria}\n\nProvenance: {base.source}\n\nLicence: {base.license}",
+        source=f"geography_base.json edition {base.edition}",
+        created_by=created_by,
+    )
+
+    raw = _load(geography_module.DATA_FILE)
+    terms = 0
+    aliases = 0
+    for country_order, country in enumerate(raw["countries"]):
+        code = str(country["alpha2"]).lower()
+        parent = taxonomy_service.add_term(
+            session,
+            taxonomy=edition,
+            code=code,
+            canonical_label=str(country["name"]),
+            sort_order=country_order,
+            description=f"ISO 3166-1 {country['alpha2']} / {country['alpha3']}",
+        )
+        terms += 1
+        for alias in (str(country["alpha3"]), *country.get("aliases", ())):
+            taxonomy_service.add_alias(
+                session,
+                term=parent,
+                alias=str(alias),
+                source=TaxonomyAliasSource.SEED,
+                created_by=created_by,
+            )
+            aliases += 1
+
+        for city_order, city in enumerate(country.get("cities", ())):
+            child = taxonomy_service.add_term(
+                session,
+                taxonomy=edition,
+                code=str(city["code"]),
+                canonical_label=str(city["name"]),
+                parent=parent,
+                sort_order=city_order,
+            )
+            terms += 1
+            for alias in city.get("aliases", ()):
+                taxonomy_service.add_alias(
+                    session,
+                    term=child,
+                    alias=str(alias),
+                    source=TaxonomyAliasSource.SEED,
+                    created_by=created_by,
+                )
+                aliases += 1
+
     if activate:
         taxonomy_service.activate_taxonomy(session, taxonomy=edition)
     return True, terms, aliases

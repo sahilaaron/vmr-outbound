@@ -86,8 +86,10 @@ from app.models.enums import (
     IntelligenceDimension,
     IntelligenceEvidenceStatus,
     IntelligenceEvidenceSupport,
+    IntelligenceGeoRelationship,
     IntelligenceJobStatus,
     IntelligenceNormalization,
+    IntelligencePresenceKind,
     IntelligenceValueState,
 )
 
@@ -296,6 +298,20 @@ class CompanyIntelligenceClassification(Base):
             "conflict_group IS NULL OR state = 'CONFLICTED'",
             name="conflict_group_state",
         ),
+        # Relationship and presence belong to geography and nowhere else. A
+        # `business_model` row carrying a `headquarters` relationship would be
+        # meaningless, and meaningless-but-representable is how a column stops
+        # being trustworthy.
+        CheckConstraint(
+            "(geo_relationship IS NULL AND presence_kind IS NULL) OR dimension = 'GEOGRAPHY'",
+            name="geo_fields_are_geography_only",
+        ),
+        # The two travel together: presence is derived from the relationship, so
+        # one without the other is a half-written row.
+        CheckConstraint(
+            "(geo_relationship IS NULL) = (presence_kind IS NULL)",
+            name="geo_relationship_and_presence_paired",
+        ),
         # Primary is a property of the industry dimension's top-ranked value.
         # Enforcing it here keeps "primary industry" a rank rather than a second
         # dimension that could disagree with the first.
@@ -394,8 +410,38 @@ class CompanyIntelligenceClassification(Base):
     )
     conflict_group: Mapped[int | None] = mapped_column(Integer, nullable=True)
     #: Truthful reason a value is not resolved: ``no_evidence``,
-    #: ``unmapped_value``, ``conflicting_evidence``, ``evidence_silent``.
+    #: ``unmapped_value``, ``conflicting_evidence``, ``evidence_silent``, and the
+    #: CI-002 additions ``unclear_relationship``, ``ambiguous_location``,
+    #: ``not_current_presence``, ``promotional_language``, ``too_broad``.
     unresolved_reason: Mapped[str | None] = mapped_column(String(96), nullable=True)
+
+    # --- CI-002 -------------------------------------------------------------
+    #
+    #: The deterministically cleaned form of ``model_value``, when cleaning was
+    #: safe. Separate from ``term_label`` on purpose: a term label is the name of
+    #: something in a controlled vocabulary, and a cleaned specialty belongs to
+    #: no vocabulary. Writing one into the other would make "this matched a
+    #: canonical term" and "we removed the word *leading*" indistinguishable.
+    #: NULL means no cleaning applied, which is the common case.
+    normalized_value: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    #: How the Company relates to this place. GEOGRAPHY only, and the reason it
+    #: is a column rather than an encoded string is that a relationship is what
+    #: every downstream reader actually filters on: "has a plant in Pune" and
+    #: "sells into Pune" are different companies to talk to. Squeezing it into
+    #: ``unresolved_reason`` would have been exactly the lossy-string shortcut
+    #: this schema exists to avoid.
+    geo_relationship: Mapped[IntelligenceGeoRelationship | None] = mapped_column(
+        Enum(IntelligenceGeoRelationship, name="intelligence_geo_relationship"), nullable=True
+    )
+
+    #: What that relationship asserts, derived deterministically from it. Stored
+    #: rather than computed at read time so a consumer can filter on physical
+    #: presence without re-implementing the mapping, and so the difference
+    #: survives in the row itself.
+    presence_kind: Mapped[IntelligencePresenceKind | None] = mapped_column(
+        Enum(IntelligencePresenceKind, name="intelligence_presence_kind"), nullable=True
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

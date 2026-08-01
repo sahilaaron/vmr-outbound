@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "company_intelligence/_ci_macros.html" import state_badge, normalization_badge, evidence_badge, confidence_badge %}
+{% from "company_intelligence/_ci_macros.html" import state_badge, normalization_badge, evidence_badge, confidence_badge, presence_badge, relationship_badge, reason_note %}
 {% set ci_section = "companies" %}
 {% block content %}
 {% include "company_intelligence/_ci_nav.html" %}
@@ -44,15 +44,15 @@
       <tr>
         <td class="small">{{ row.dimension.value.replace("_", " ") }} <span class="muted-text">#{{ row.rank }}</span></td>
         <td>{{ row.model_value }}{% if row.is_primary %} <span class="badge ok">primary</span>{% endif %}
+          {% if row.normalized_value %}<div class="small muted-text">cleaned to: "{{ row.normalized_value }}"</div>{% endif %}
+          {{ relationship_badge(row.geo_relationship) }} {{ presence_badge(row.presence_kind) }}
           {% if row.rationale %}<div class="small muted-text">{{ row.rationale }}</div>{% endif %}
         </td>
         <td class="small">
           {{ row.term_label or "—" }} {{ normalization_badge(row.normalization) }}
           {% if row.taxonomy_version %}<div class="small muted-text">{{ row.taxonomy_version }}</div>{% endif %}
         </td>
-        <td class="small">{{ state_badge(row.state) }}
-          {% if row.unresolved_reason %}<div class="small muted-text">{{ row.unresolved_reason.replace("_", " ") }}</div>{% endif %}
-        </td>
+        <td class="small">{{ state_badge(row.state) }}{{ reason_note(row.unresolved_reason) }}</td>
         <td class="small">{{ evidence_badge(row.evidence_status, row.evidence_count) }} {{ confidence_badge(row.confidence_band, row.confidence) }}</td>
       </tr>
       {% endfor %}

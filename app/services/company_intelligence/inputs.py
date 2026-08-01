@@ -32,7 +32,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from sqlalchemy import select
@@ -43,6 +43,7 @@ from app.models.company_dossier import CompanyDossierVersion
 from app.models.enums import InsightState, InsightSubject
 from app.models.insight import Insight, InsightEvidence
 from app.services.companies import dossiers
+from app.services.company_intelligence import geography as geography_module
 from app.services.company_intelligence import taxonomy as taxonomy_service
 from app.services.resolution import store as resolution_store
 
@@ -132,6 +133,14 @@ class IntelligenceInput:
     producer: str
     producer_version: str
     policy_version: str
+    #: CI-002. The places this company's evidence actually names, found
+    #: deterministically before the model is asked anything. The model chooses
+    #: relationships from these handles and cannot introduce a place that is not
+    #: here — which is what makes "the model did not invent a location" a
+    #: property of the input rather than a hope about the answer.
+    geography: geography_module.ExtractionResult = field(
+        default_factory=lambda: geography_module.ExtractionResult(candidates=())
+    )
     digest: str = field(default="", compare=False)
 
     @property
@@ -232,7 +241,7 @@ def assemble(
         policy_version=policy_version,
     )
 
-    return IntelligenceInput(
+    assembled = IntelligenceInput(
         company_id=company.id,
         company_name=company.name,
         company_domain=company.domain,
@@ -247,6 +256,11 @@ def assemble(
         policy_version=policy_version,
         digest=digest,
     )
+    # Extraction reads the assembled facts, so it runs once the input exists and
+    # is attached to it. It changes nothing about the digest: the facts and the
+    # geography edition already determine the candidates, and the extraction
+    # rules themselves are covered by the producer's policy version.
+    return replace(assembled, geography=geography_module.extract_candidates(assembled))
 
 
 def _sections(version: CompanyDossierVersion) -> dict[str, Any]:
