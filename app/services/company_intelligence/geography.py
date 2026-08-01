@@ -70,39 +70,28 @@ MAX_SURFACE_TOKENS = 6
 _WORD = re.compile(r"[^\W_]+", re.UNICODE)
 _SENTENCE_BREAK = re.compile(r"[.;:!?\n\r]")
 
-#: Words that, near an ambiguous surface, make it a place rather than a word.
-#: Deliberately about *location*, not about the company: "in", "based in" and
-#: "site" are what turn "Reading" into a town.
-_LOCATION_INDICATORS = frozenset(
+#: The only words that may turn an ambiguous surface into a place, and they must
+#: sit **immediately before** it.
+#:
+#: This started as a wider set matched anywhere within six tokens, and that was
+#: wrong in a way worth recording: "Michael Jordan joined as operations director"
+#: put the location word "operations" four tokens from "Jordan" and produced a
+#: country. A preposition directly in front of a capitalised ambiguous name is a
+#: much narrower claim and a much better one — "in Reading", "at Bath", "from
+#: Nice" — and the cost of the narrowness is that "our Reading site" is missed,
+#: which is the right way round to be wrong.
+_TIGHT_INDICATORS = frozenset(
     {
         "in",
         "at",
         "near",
-        "based",
-        "headquartered",
-        "headquarters",
-        "hq",
-        "located",
-        "location",
-        "office",
-        "offices",
-        "branch",
-        "facility",
-        "facilities",
-        "plant",
-        "site",
-        "campus",
-        "laboratory",
-        "lab",
-        "warehouse",
-        "centre",
-        "center",
-        "operations",
-        "presence",
-        "region",
         "from",
-        "serving",
-        "serves",
+        "into",
+        "throughout",
+        "across",
+        "outside",
+        "toward",
+        "towards",
     }
 )
 
@@ -551,7 +540,7 @@ def _scan(
                 # makes it a place.
                 capitalized = _starts_capitalized(surface_text)
                 country_named = _country_named(base, tokens, place)
-                indicated = bool(context & _LOCATION_INDICATORS)
+                indicated = index > 0 and tokens[index - 1].text in _TIGHT_INDICATORS
                 if not (capitalized and (country_named or indicated)):
                     suppressed.append(
                         f"{surface_text!r} in {evidence_handle} was not offered as a geography "
@@ -589,14 +578,20 @@ def _starts_capitalized(surface: str) -> bool:
 
 
 def _country_named(base: GeographyBase, tokens: list[_Token], place: Place) -> bool:
-    """True when the place's own country is named anywhere in the same text.
+    """True when a *city's* own country is named anywhere in the same text.
 
-    "Cambridge, United Kingdom" and "our Cambridge site in the UK" both qualify;
-    "Cambridge" alone does not. Co-occurrence is a weak signal on its own, which
-    is why it only ever *unlocks* an ambiguous surface rather than asserting
-    anything by itself.
+    "Cambridge, United Kingdom" qualifies; "Cambridge" alone does not.
+    Co-occurrence is a weak signal on its own, which is why it only ever
+    *unlocks* an ambiguous surface rather than asserting anything by itself.
     """
 
+    if place.is_country:
+        # A country cannot vouch for itself. Without this, "Michael Jordan joined
+        # as operations director" unlocked the country Jordan: the co-occurrence
+        # check found "Jordan" in the text and concluded that Jordan's country
+        # had been named. An ambiguous *country* therefore has only one route to
+        # becoming a candidate — a preposition directly in front of it.
+        return False
     country = base.by_code.get(place.country_code)
     if country is None:  # pragma: no cover - load-time validation prevents this
         return False

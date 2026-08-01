@@ -243,6 +243,8 @@ _TRAILING_ROLE_NOUNS = (
     "solutions provider",
     "service provider",
     "solutions",
+    "services",
+    "service",
     "provider",
     "providers",
     "specialist",
@@ -501,24 +503,50 @@ def evaluate(value: str) -> SpecialtyVerdict:
     return SpecialtyVerdict(action=SpecialtyAction.ACCEPT)
 
 
+#: Latin plurals this vocabulary actually contains. A curated list rather than a
+#: rule, because the rule that folds "analyses" onto "analysis" also folds
+#: "houses" onto "housis", and a stemmer confident enough to do both is
+#: confident enough to merge two different competences.
+_IRREGULAR_PLURALS = {
+    "analyses": "analysis",
+    "bases": "basis",
+    "diagnoses": "diagnosis",
+    "hypotheses": "hypothesis",
+    "prostheses": "prosthesis",
+    "syntheses": "synthesis",
+    "theses": "thesis",
+}
+
+#: Endings where a trailing "s" is part of the word, not a plural marker.
+_NOT_PLURAL_ENDINGS = ("is", "us", "ss", "as", "os", "ics")
+
+
 def duplicate_key(value: str, cleaned: str | None = None) -> str:
     """The identity used for duplicate detection.
 
     Singular/plural is folded here and nowhere else: "battery pack assemblies"
     and "battery pack assembly" are the same competence written twice, and
-    storing both would double-count it in every later summary. The fold is
-    deliberately naive — a trailing ``s``/``es`` on the last token only — because
-    a real stemmer would also fold words that are genuinely different.
+    storing both would double-count it in every later summary.
+
+    The fold is deliberately conservative — the last token only, a curated list
+    of Latin plurals, and no stripping at all when the word merely ends in a
+    sibilant. "Analysis" must not become "analysi", and "diagnostics" must not
+    become "diagnostic": both would be a stemmer inventing a relationship the
+    language does not have.
     """
 
     tokens = _tokens(cleaned or value)
     if not tokens:
         return ""
     last = tokens[-1]
-    if len(last) > 3 and last.endswith("ies"):
+    if last in _IRREGULAR_PLURALS:
+        last = _IRREGULAR_PLURALS[last]
+    elif len(last) > 3 and last.endswith("ies"):
         last = last[:-3] + "y"
-    elif len(last) > 3 and last.endswith("es") and not last.endswith("ses"):
+    elif len(last) > 3 and last.endswith(_NOT_PLURAL_ENDINGS):
+        pass
+    elif len(last) > 3 and last.endswith("es"):
         last = last[:-2]
-    elif len(last) > 3 and last.endswith("s") and not last.endswith("ss"):
+    elif len(last) > 3 and last.endswith("s"):
         last = last[:-1]
     return " ".join([*tokens[:-1], last])

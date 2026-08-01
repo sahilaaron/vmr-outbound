@@ -135,14 +135,23 @@
           <strong>{{ item.display_value }}</strong>
           {% if item.is_primary %}<span class="badge ok">primary</span>{% endif %}
           {% if item.operator_only %}<span class="badge warn">operator only</span>{% endif %}
-          {% if item.term_label and item.model_value != item.term_label %}
+          {% if item.city_name and item.country_name %}
+          <div class="small muted-text">{{ item.country_name }}{% if item.country_code %} ({{ item.country_code }}){% endif %}</div>
+          {% elif item.country_code %}
+          <div class="small muted-text">ISO {{ item.country_code }}</div>
+          {% endif %}
+          {% if item.cleaned_value and item.cleaned_value != item.model_value %}
+          <div class="small muted-text">cleaned from: “{{ item.model_value }}”</div>
+          {% elif item.term_label and item.model_value != item.term_label %}
           <div class="small muted-text">model wrote: “{{ item.model_value }}”</div>
           {% endif %}
-          {% if item.parent_term_code %}<div class="small muted-text">under {{ item.parent_term_code }}</div>{% endif %}
+          {% if item.parent_term_code and not item.city_name %}<div class="small muted-text">under {{ item.parent_term_code }}</div>{% endif %}
         </td>
         <td class="small">
           {{ state_badge(item.state) }}
-          {% if item.unresolved_reason %}<div class="small muted-text">{{ item.unresolved_reason.replace("_", " ") }}</div>{% endif %}
+          {{ relationship_badge(item.geo_relationship) }}
+          {{ presence_badge(item.presence_kind) }}
+          {{ reason_note(item.unresolved_reason) }}
         </td>
         <td class="small">
           {{ source_badge(item.source) }} {{ normalization_badge(item.normalization) }}

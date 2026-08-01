@@ -464,3 +464,182 @@ def test_no_canonical_company_field_is_written_by_any_admin_action(
         "country": refreshed.country,
         "company_size": refreshed.company_size,
     } == before
+
+
+# --- CI-002: geography and specialty on the review screens -------------------
+
+
+def geography_company(session: Session, *, name: str = "Placed Systems") -> Company:
+    """A company whose evidence names a headquarters, a plant and a market."""
+
+    seeded(session)
+    company = make_company(session, name=name)
+    make_dossier(session, company=company)
+    make_fact(
+        session,
+        company=company,
+        claim="headquarters: headquartered in London, United Kingdom",
+        key=f"web-geo:{name}:1",
+    )
+    make_fact(
+        session,
+        company=company,
+        claim="office_locations: runs a manufacturing plant in Pune",
+        key=f"web-geo:{name}:2",
+    )
+    make_fact(
+        session,
+        company=company,
+        claim="overview: serves customers across Germany",
+        key=f"web-geo:{name}:3",
+    )
+    source = assemble(session, company)
+    handles = {item.place.label: item.handle for item in source.geography.candidates}
+    ci_producer.produce(
+        session,
+        company=company,
+        source=source,
+        answer={
+            "classifications": [
+                {
+                    "dimension": "specialty",
+                    "value": "leading kiln control engineering provider",
+                    "evidence": ["F1"],
+                    "confidence": 0.8,
+                },
+                {"dimension": "specialty", "value": "technology", "evidence": ["F1"]},
+            ],
+            "geography": [
+                {
+                    "candidate": handles["London"],
+                    "relationship": "headquarters",
+                    "evidence": ["F1"],
+                    "confidence": 0.9,
+                },
+                {
+                    "candidate": handles["Pune"],
+                    "relationship": "manufacturing",
+                    "evidence": ["F2"],
+                    "confidence": 0.85,
+                },
+                {
+                    "candidate": handles["Germany"],
+                    "relationship": "commercial_market",
+                    "evidence": ["F3"],
+                    "confidence": 0.7,
+                },
+            ],
+        },
+        raw_answer="{}",
+    )
+    session.commit()
+    return company
+
+
+def test_the_detail_page_separates_physical_presence_from_market(
+    workbench_env: None, committed_session: Session
+) -> None:
+    company = geography_company(committed_session)
+    with client() as http:
+        body = http.get(f"/admin/companies/{company.id}/intelligence").text
+
+    assert "Where this company is" in body
+    assert "London" in body and "Pune" in body and "Germany" in body
+    assert "headquarters" in body
+    assert "manufacturing" in body
+    # The two presence kinds render differently, which is the whole point.
+    assert "physical" in body
+    assert "market" in body
+    # Country codes are shown so an operator can see what a filter would match.
+    assert "GB" in body and "IN" in body
+
+
+def test_the_detail_page_explains_why_a_value_is_unresolved(
+    workbench_env: None, committed_session: Session
+) -> None:
+    company = geography_company(committed_session, name="Explained Systems")
+    with client() as http:
+        body = http.get(f"/admin/companies/{company.id}/intelligence").text
+
+    assert "names a whole field rather than a concentration" in body, (
+        "a reason code alone is not an explanation an operator can act on"
+    )
+
+
+def test_the_detail_page_shows_a_cleaned_specialty_beside_its_original(
+    workbench_env: None, committed_session: Session
+) -> None:
+    company = geography_company(committed_session, name="Cleaned Systems")
+    with client() as http:
+        body = http.get(f"/admin/companies/{company.id}/intelligence").text
+
+    assert "kiln control engineering" in body
+    assert "cleaned from" in body
+    assert "leading kiln control engineering provider" in body
+
+
+def test_a_geography_value_can_be_confirmed_through_the_existing_review_flow(
+    workbench_env: None, committed_session: Session
+) -> None:
+    company = geography_company(committed_session, name="Reviewed Systems")
+    row = committed_session.scalars(
+        select(CompanyIntelligenceClassification).where(
+            CompanyIntelligenceClassification.company_id == company.id,
+            CompanyIntelligenceClassification.term_code == "gb-london",
+        )
+    ).one()
+    before = (row.geo_relationship, row.presence_kind, row.state)
+
+    with client() as http:
+        response = http.post(
+            f"/admin/companies/{company.id}/intelligence/decisions",
+            data={
+                "dimension": "geography",
+                "action": "confirm",
+                "target_key": "gb-london",
+                "target_label": "London",
+                "classification_id": str(row.id),
+                "note": "the about page says so",
+            },
+            follow_redirects=False,
+        )
+    assert response.status_code == 303
+
+    committed_session.expire_all()
+    refreshed = committed_session.get(CompanyIntelligenceClassification, row.id)
+    assert refreshed is not None
+    assert (refreshed.geo_relationship, refreshed.presence_kind, refreshed.state) == before
+
+    decisions = ci_review.current_decisions(committed_session, company_id=company.id)
+    assert [decision.dimension.value for decision in decisions] == ["geography"]
+    assert decisions[0].target_label == "London"
+
+
+def test_the_version_page_shows_the_relationship_as_produced(
+    workbench_env: None, committed_session: Session
+) -> None:
+    company = geography_company(committed_session, name="Versioned Systems")
+    row = committed_session.scalars(
+        select(CompanyIntelligenceClassification).where(
+            CompanyIntelligenceClassification.company_id == company.id,
+            CompanyIntelligenceClassification.term_code == "in-pune",
+        )
+    ).one()
+    with client() as http:
+        body = http.get(
+            f"/admin/companies/{company.id}/intelligence/versions/{row.intelligence_version_id}"
+        ).text
+    assert "manufacturing" in body
+    assert "exactly as it was produced" in body
+
+
+def test_the_vocabulary_browser_shows_the_geography_edition(
+    workbench_env: None, committed_session: Session
+) -> None:
+    seeded(committed_session)
+    committed_session.commit()
+    with client() as http:
+        body = http.get("/admin/company-intelligence/taxonomy?dimension=geography").text
+    assert "United Kingdom" in body
+    assert "London" in body
+    assert "released edition" in body
