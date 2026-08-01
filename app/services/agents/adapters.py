@@ -37,6 +37,7 @@ from app.services.insights import lineage as insights_lineage
 from app.services.insights.evidence import InsightError
 from app.services.personalization import generation as personalization_generation
 from app.services.personalization import policy as personalization_policy
+from app.services.resolution import gates as resolution_gates
 from app.services.resolution import store as resolution_store
 from app.services.seller import context as seller_context
 from app.services.seller.context import SellerContext
@@ -242,31 +243,50 @@ class CompanyAgentAdapter:
             else None
         )
         linked_by_agent = False
+        candidate_ids: list[str] = []
+        identity_match_key = "contact.company_id"
         if company is None:
             if not contact.company_domain:
                 raise AgentBlocked(
                     "company_domain_missing",
                     "Company resolution needs an observed or approved domain.",
+                    detail=self._blocked_detail(
+                        context,
+                        match_key="contact.company_domain",
+                        candidate_ids=(),
+                        reason="No observed or approved Contact company domain was available.",
+                    ),
                 )
+            identity_match_key = "company.domain"
             candidates = list(
                 context.session.scalars(
-                    select(Company).where(Company.domain == contact.company_domain)
+                    select(Company)
+                    .where(Company.domain == contact.company_domain)
+                    .order_by(Company.id.asc())
                 ).all()
             )
+            candidate_ids = [str(candidate.id) for candidate in candidates]
             if not candidates:
                 raise AgentBlocked(
                     "company_missing",
                     "No permanent Company matches the Contact's exact normalized domain.",
-                    detail={"domain": contact.company_domain},
+                    detail=self._blocked_detail(
+                        context,
+                        match_key=identity_match_key,
+                        candidate_ids=(),
+                        reason="No exact permanent Company domain matched.",
+                    ),
                 )
             if len(candidates) > 1:
                 raise AgentBlocked(
                     "company_ambiguous",
                     "Several permanent Companies share the Contact's domain.",
-                    detail={
-                        "domain": contact.company_domain,
-                        "candidate_ids": [str(candidate.id) for candidate in candidates],
-                    },
+                    detail=self._blocked_detail(
+                        context,
+                        match_key=identity_match_key,
+                        candidate_ids=tuple(candidate_ids),
+                        reason="Several permanent Companies shared the exact domain.",
+                    ),
                 )
             company = candidates[0]
             contact.company_id = company.id
@@ -281,9 +301,107 @@ class CompanyAgentAdapter:
                 reason="linked by exact unique normalized company domain",
                 context={"domain": contact.company_domain},
             )
+        else:
+            candidate_ids = [str(company.id)]
 
         conflicts = company_conflicts.for_company(context.session, company=company)
         resolution_state = resolution_store.company_state(context.session, company.id)
+        capture_decision = (
+            resolution_store.current_decision(context.session, context.job.capture_id)
+            if context.job.capture_id is not None
+            else None
+        )
+        aggregate_decisions = resolution_store.current_decisions_for_company(
+            context.session, company.id
+        )
+        aggregate_decision = aggregate_decisions[0] if aggregate_decisions else None
+        research_gate = resolution_gates.research_readiness(
+            context.session, company_id=company.id, domain=company.domain
+        )
+        later_gate = resolution_gates.authorize_company(
+            context.session,
+            company_id=company.id,
+            stage=resolution_gates.DownstreamStage.EMAIL_DISCOVERY,
+            campaign=context.campaign,
+        )
+        policy = {
+            "allow_provisional_domains": context.campaign.allow_provisional_domains,
+            "campaign_settings_version": context.campaign.settings_version,
+            "source": "execution_snapshot",
+        }
+        continuation_action = (
+            "block"
+            if not research_gate.ready
+            else "review_required"
+            if not later_gate.allowed
+            else "continue"
+        )
+        lineage = {
+            "schema_version": "company-agent-report/1",
+            "identity": {
+                "match_key": identity_match_key,
+                "match_value": (
+                    str(company.id)
+                    if identity_match_key == "contact.company_id"
+                    else contact.company_domain
+                ),
+                "candidate_company_ids": candidate_ids,
+                "selected_company_id": str(company.id),
+                "company_action": "reused",
+                "contact_link_action": "linked" if linked_by_agent else "already_linked",
+                "reason": (
+                    "Selected the one permanent Company with the exact normalized domain."
+                    if linked_by_agent
+                    else "Reused the Contact's existing permanent Company association."
+                ),
+                "evidence_references": [
+                    f"capture:{context.job.capture_id}"
+                    if context.job.capture_id is not None
+                    else "contact:permanent_record"
+                ],
+            },
+            "historical_company": {
+                "company_id": str(company.id),
+                "name": company.name,
+                "company_record_domain": company.domain,
+                "canonical_domain": (
+                    aggregate_decision.selected_domain
+                    if aggregate_decision is not None
+                    else company.domain
+                ),
+                "domain_resolution_state": (
+                    resolution_state.value if resolution_state is not None else None
+                ),
+            },
+            "capture_domain_resolution_id": (
+                str(capture_decision.id) if capture_decision is not None else None
+            ),
+            "company_aggregate_domain_resolution_id": (
+                str(aggregate_decision.id) if aggregate_decision is not None else None
+            ),
+            "domain_resolution_source": (
+                "company_aggregate_decision"
+                if aggregate_decision is not None
+                else "no_automatic_decision"
+            ),
+            "conflict_kinds": [conflict.kind.value for conflict in conflicts],
+            "campaign_policy": policy,
+            "continuation": {
+                "action": continuation_action,
+                "research_allowed": research_gate.ready,
+                "research_reason": research_gate.reason,
+                "later_stages_allowed": later_gate.allowed,
+                "later_stages_reason": later_gate.reason,
+            },
+        }
+        context.job.company_id = company.id
+        if not research_gate.ready:
+            raise AgentBlocked(
+                "company_domain_unresolved",
+                research_gate.reason,
+                detail=lineage,
+                preserve_outcome=True,
+            )
         context.session.flush()
         output = {
             "company_id": str(company.id),
@@ -294,12 +412,51 @@ class CompanyAgentAdapter:
             "research_state": company.research_state.value,
             "linked_by_agent": linked_by_agent,
             "conflict_kinds": [conflict.kind.value for conflict in conflicts],
+            **lineage,
         }
         return AgentExecutionResult(
             outcome_committed=True,
             result={"domain_outcome": "company_resolved", **output},
             output_reference=output,
         )
+
+    @staticmethod
+    def _blocked_detail(
+        context: AgentExecutionContext,
+        *,
+        match_key: str,
+        candidate_ids: tuple[str, ...],
+        reason: str,
+    ) -> dict[str, Any]:
+        return {
+            "schema_version": "company-agent-report/1",
+            "identity": {
+                "match_key": match_key,
+                "match_value": context.contact.company_domain,
+                "candidate_company_ids": list(candidate_ids),
+                "selected_company_id": None,
+                "company_action": "unresolved",
+                "contact_link_action": "unchanged",
+                "reason": reason,
+                "evidence_references": [
+                    f"capture:{context.job.capture_id}"
+                    if context.job.capture_id is not None
+                    else "contact:permanent_record"
+                ],
+            },
+            "campaign_policy": {
+                "allow_provisional_domains": context.campaign.allow_provisional_domains,
+                "campaign_settings_version": context.campaign.settings_version,
+                "source": "execution_snapshot",
+            },
+            "continuation": {
+                "action": "block",
+                "research_allowed": False,
+                "research_reason": reason,
+                "later_stages_allowed": False,
+                "later_stages_reason": reason,
+            },
+        }
 
 
 class EmailAgentAdapter:
