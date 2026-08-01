@@ -50,7 +50,7 @@ Capture
 | Research | Registered deterministic research workers | Operational; live acceptance pending |
 | Email | Deterministic candidate policy | Operational |
 | Verification | Durable exact-address verification using the existing MillionVerifier boundary | Operational; live authority required |
-| Insights | Claude CLI through the bounded thinking seam, `allowed_tools=()` | Operational; live acceptance pending |
+| Insights | One bounded no-tools thinking call plus deterministic evidence validation and Employee Size normalization | Operational; live acceptance pending |
 | Personalization | Claude CLI through the bounded thinking seam, `allowed_tools=()` and immutable Personalization Policy versions | Operational; live acceptance pending |
 | Sending | Contract only | Disabled; post-MVP |
 
@@ -66,6 +66,14 @@ It writes:
 - an operator-facing outcome derived from what the workers actually found.
 
 Research does not use a language model and does not silently rewrite canonical Company fields. Claude first enters the pipeline at Insights, after evidence has been persisted.
+
+Insights pins the exact Research job, raw submission and dossier it consumed,
+stores attributable claims through the shared evidence model, and derives an
+append-only structured Employee Size fact. Supported Employee Size uses fixed
+v1 bands from `1_10` through `10001_plus`; exact counts remain absent when only
+a range or approximation is supported. Conflicted, stale, unresolved and
+unavailable values are visible but ineligible downstream. Email candidate order
+and Verification waterfall behavior do not use Employee Size.
 
 ## Email and verification policy
 

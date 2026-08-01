@@ -187,8 +187,9 @@ do not require employee-size evidence. A learned format is append-only evidence,
 not proof that another mailbox exists, and is created only from live, accepted,
 non-role exact-address evidence.
 
-Structured Employee Size derivation from Research evidence is deliberately
-deferred to Insights issue #238; it is not an Email discovery dependency.
+Structured Employee Size derivation now belongs to the Insights Agent. It is
+still not an Email discovery dependency: Email candidate order, candidate
+count, blocking and the Verification waterfall remain independent.
 
 The Verification page owns:
 
@@ -225,12 +226,61 @@ handoff. Catch-all remains uncertainty, not accepted-mailbox evidence.
 Both execution-report APIs are mounted only with the local Admin Workbench:
 
 * `GET /api/admin/agent-studio/email/jobs/{agent_job_id}/report`;
-* `GET /api/admin/agent-studio/verification/jobs/{agent_job_id}/report`.
+* `GET /api/admin/agent-studio/verification/jobs/{agent_job_id}/report`;
+* `GET /api/admin/agent-studio/insights/jobs/{agent_job_id}/report`.
 
 HTML and JSON use the same frozen dataclass graph. Raw provider bodies,
 credentials, authorization material, environment values, shell commands, local
 paths, and private model reasoning are never returned. Loading a report performs
 no write.
+
+## Insights execution report and Employee Size
+
+`/admin/agents/studio/insights` is an operator-only, read-only report surface.
+Its exact-job API is
+`GET /api/admin/agent-studio/insights/jobs/{agent_job_id}/report`. HTML and JSON
+use the same frozen dataclass graph. A report is `complete` when the execution,
+its exact Research submission/dossier lineage, attributable claims and their
+evidence are durable; `partial` when some of that lineage is missing; and
+`unavailable` when neither exact Research lineage nor historical job output can
+be attributed. The reader runs under `no_autoflush` and cannot queue, retry,
+mutate claims/evidence, update Employee Size, or advance pipeline state.
+Malformed, unknown, wrong-Agent and cross-owner identifiers share one safe 404.
+
+Research owns collection, raw submissions, dossiers, sourced facts, sources and
+collection warnings. Insights owns derived claims, confidence/state, evidence
+links, downstream eligibility and structured Employee Size. A new Insights job
+pins the exact preceding Research job, submission and dossier; the Company's
+latest dossier is never substituted for historical input. Historical jobs
+without durable links stay explicitly partial or unavailable.
+
+Employee Size is a typed `Insight` with the existing `InsightEvidence` lineage,
+not a second claim system or mutable Company field. Its v1 normalized taxonomy
+is `1_10`, `11_50`, `51_100`, `101_250`, `251_500`, `501_1000`,
+`1001_5000`, `5001_10000`, `10001_plus`, and `unknown`. Exact counts are stored
+only for explicit exact wording. Approximate counts and ranges may settle a band
+without fabricating an exact value. Lower/upper bounds settle only when they fit
+one band truthfully.
+
+Every supported value cites valid evidence handles from the exact Research job
+and retains source wording, observation/derivation dates, derivation version,
+confidence and a public rationale. Deterministic code—not model numbers—owns
+handle validity, parsing, normalization, subject relevance, dates, duplicates,
+conflicts and final status. Current incompatible observations produce
+`conflicted` with both evidence sets and no downstream value. Explicitly older
+observations remain in append-only history; stale-only evidence produces
+`stale`. Other states are `supported`, `unresolved`, and `unavailable`.
+
+Company Intelligence remains a separate company-scoped classifier. INS-002
+does not add its taxonomy, queue, worker, review, geography or specialties.
+Personalization keeps its existing evidence-aware selection contract and sees
+only eligible current claims. Employee Size is not connected to Email policy or
+Verification execution.
+
+Known limitations are reported rather than reconstructed: no customer-account
+entity, no per-attempt retry/lease ledger, no universal dropped/rejected claim
+ledger, and no safe way to classify historical claims that predate exact job
+lineage.
 
 ## Adding a future Agent page
 

@@ -6,26 +6,17 @@ decides what each exact address means.
 
 ## Versioned discovery policy
 
-Policy `policy-bounded-work-email`, version `email-discovery-v1`, classifies
-sourced Company employee-count evidence into exactly three values:
+The active immutable `email-pattern-policy/v1` version orders a bounded subset
+of `firstname.lastname`, `finitiallastname`, and `lastnamefinitial`. A valid
+learned format from accepted, live, non-role evidence on the same Company domain
+may be placed first. The policy then appends the canonical normalized Company
+domain, normalizes through the existing identity rules, removes equivalent
+addresses while preserving first occurrence, and never exceeds its configured
+candidate bound. There are no ungoverned fallback permutations.
 
-| Classification | Evidence | Ordered formats |
-| --- | --- | --- |
-| `more_than_50` | integer count greater than 50 | `firstname.lastname`, `finitiallastname`, `lastnamefinitial` |
-| `50_or_fewer` | integer count from 0 through 50 | `firstname`, `firstname.lastname`, `finitiallastname` |
-| `unknown` | absent, unparseable, contradictory, or unsourced count | no candidates; explicit block |
-
-The policy appends the canonical normalized Company domain, normalizes through
-the existing `eml-1` identity rules, removes equivalent normalized addresses
-while preserving the first occurrence, and never produces more than three.
-There are no fallback permutations.
-
-The stored execution records the policy identifier/version, classification,
-Company field-evidence row and source reference, evidence timestamp/freshness,
-domain, ordered formats, and normalized candidates. The shared
-`freshness-v1` policy chooses the current Company field observation and defines
-no age TTL; Email does not invent one. An explicit Company research state of
-`stale` blocks discovery.
+Employee Size is not an input to candidate selection, ordering, count, blocking
+or execution. INS-002 may derive it for Insights, but Email and Verification do
+not consume it.
 
 ## Durable orchestration
 
@@ -33,7 +24,7 @@ no age TTL; Email does not invent one. An explicit Company research state of
 `EmailCandidateAttempt` records the Email-specific facts for one locked
 candidate:
 
-- immutable policy, employee-evidence, domain, format, and index;
+- immutable policy, domain, format, and index;
 - the existing `EmailCandidate` reference;
 - exactly one requesting relationship to a child Verification Agent Job;
 - the committed authoritative `VerificationDecision`;
@@ -46,7 +37,7 @@ attempt, and permits only one accepted attempt per Email job.
 The execution sequence is:
 
 1. Lock and recheck the permanent Contact, Campaign eligibility, Company/domain
-   gate, current suppression, employee evidence, and existing accepted email.
+   gate, current suppression, active pattern policy, and existing accepted email.
 2. Persist the versioned candidate plan and current attempt.
 3. Idempotently enqueue one Verification child on the shared queue and pause the
    Email parent as `waiting_on_verification`.
@@ -81,8 +72,8 @@ idempotently-scoped `refresh_scope`. Both are durable and auditable.
 For Campaign work, Email runs only after its configured dependencies and
 controls permit it. A live accepted child (or eligible reused evidence) completes
 the Email stage and projects the same committed evidence onto the Verification
-stage. No-result, unknown Company size, stale evidence, refusal, simulation,
-suppression, and disabled controls do not advance the Campaign Contact.
+stage. No-result, refusal, simulation, suppression, and disabled controls do not
+advance the Campaign Contact. Employee Size has no transition authority.
 
 Nested Verification lifecycle events are append-only but do not mutate the
 top-level Verification stage while Email is still running. This prevents the

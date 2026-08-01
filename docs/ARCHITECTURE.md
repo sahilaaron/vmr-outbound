@@ -219,6 +219,23 @@ The customer Review surface:
 - Missing evidence remains missing; unknown is not false and provisional is not confirmed.
 - Historical jobs, evidence and draft versions remain readable after retries or regeneration.
 
+### Durable Insights derivation boundary
+
+The Insights Agent consumes only the exact committed Research execution pinned
+to its job. Its one existing bounded model call receives the dossier plus a
+catalog of opaque Research evidence handles and has no tools. The model may
+propose claims and Employee Size candidates, but deterministic application code
+validates every handle and owns numeric parsing, subject relevance, taxonomy,
+freshness, duplicate/conflict decisions and persistence.
+
+Structured Employee Size extends the shared append-only `Insight` record with a
+typed JSON payload and exact producing-job/dossier lineage. No mutable
+`Company.employee_size`, second evidence system, new Agent identifier, queue or
+pipeline stage is introduced. The current typed projection is computed from
+append-only derivations; conflicts and historical observations remain readable.
+Company Intelligence remains a separate bounded system and Email/Verification
+policy remains independent.
+
 ## Current MVP boundary
 
 Included:
