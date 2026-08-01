@@ -226,6 +226,17 @@ def prepare_and_enqueue_contact(
         contact_id=contact.id,
         campaign_id=campaign_id,
     )
+    if created:
+        # Pin immutable provider order at enqueue when Studio policy is present.
+        # Imported lazily to keep the legacy verification service import graph
+        # independent from Agent Studio configuration.
+        from app.services.verification.studio import active_waterfall
+
+        waterfall = active_waterfall(session)
+        if waterfall is not None:
+            reference = dict(job.input_reference or {})
+            reference["waterfall_policy_version_id"] = str(waterfall.id)
+            job.input_reference = reference
     return EnqueueOutcome(email=email, job=job, created=created)
 
 
@@ -368,6 +379,8 @@ def verify_exact_address(
     policy: VerificationPolicy | None = None,
     reuse_fresh: bool = True,
     record_attempt: bool = True,
+    record_retry_hint: bool = True,
+    allow_cross_provider_reuse: bool = False,
 ) -> VerificationOutcome:
     """Obtain one normalized verification outcome for one claimed job's address.
 
@@ -445,7 +458,7 @@ def verify_exact_address(
             reason="verification job has no exact email address",
         )
 
-    if jobs.lease_was_reclaimed(job):
+    if jobs.lease_was_reclaimed(job) and (record_attempt or reuse_fresh):
         usage.record_usage(
             session,
             event_type=VerificationUsageEventType.RECOVERED,
@@ -477,7 +490,7 @@ def verify_exact_address(
             email,
             policy,
             now,
-            required_provider_label=provider_label,
+            required_provider_label=(None if allow_cross_provider_reuse else provider_label),
         )
         if may_reuse
         else None
@@ -532,7 +545,8 @@ def verify_exact_address(
             job_id=job.id,
             reason=f"transport failure: {detail}",
         )
-        _maybe_retry_usage(session, job, provider_name)
+        if record_retry_hint:
+            _maybe_retry_usage(session, job, provider_name)
         _ledger_for_job(
             session,
             job,
@@ -652,7 +666,8 @@ def verify_exact_address(
             job_id=job.id,
             reason=mapped.reason,
         )
-        _maybe_retry_usage(session, job, provider_name)
+        if record_retry_hint:
+            _maybe_retry_usage(session, job, provider_name)
         _ledger_for_job(
             session,
             job,

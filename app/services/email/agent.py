@@ -230,7 +230,9 @@ def enqueue_email_job(
         clean_refresh_scope = None
 
     suffix = f"refresh:{clean_refresh_scope}" if force_refresh else f"standard:{clean_scope}"
-    key = f"email:{contact_id}:{POLICY_VERSION}:{suffix}"
+    pattern_policy = verification_studio.active_pattern_policy(session)
+    pattern_token = str(pattern_policy.id) if pattern_policy else "legacy-default"
+    key = f"email:{contact_id}:{POLICY_VERSION}:patterns:{pattern_token}:{suffix}"
     return jobs.enqueue_job(
         session,
         agent_id=AgentIdentifier.EMAIL,
@@ -252,6 +254,12 @@ def enqueue_email_job(
             "refresh_scope": clean_refresh_scope,
             "policy_identifier": POLICY_IDENTIFIER,
             "policy_version": POLICY_VERSION,
+            "pattern_policy_version_id": (
+                str(pattern_policy.id) if pattern_policy is not None else None
+            ),
+            "pattern_policy_version_number": (
+                pattern_policy.version_number if pattern_policy is not None else None
+            ),
         },
         parent_job_id=parent_job_id,
         actor=actor,
@@ -292,6 +300,10 @@ def _ensure_verification_child(
         parent_job=parent_job,
         attempt=attempt,
         verification_policy=verification_policy,
+    )
+    waterfall_policy = verification_studio.active_waterfall(session)
+    input_reference["waterfall_policy_version_id"] = (
+        str(waterfall_policy.id) if waterfall_policy is not None else None
     )
     child, created = jobs.enqueue_job(
         session,
@@ -1314,9 +1326,19 @@ def execute_step(
                     reason=reuse_decision.reason,
                 )
 
-        pattern_policy, pattern_plan, max_candidates = verification_studio.pattern_plan(
-            session, canonical_domain
-        )
+        raw_pattern_policy_id = (job.input_reference or {}).get("pattern_policy_version_id")
+        requested_pattern_policy_id = _uuid(raw_pattern_policy_id)
+        if raw_pattern_policy_id is not None and requested_pattern_policy_id is None:
+            raise EmailAgentStateError("queued Email pattern policy id is malformed")
+        try:
+            pattern_policy, pattern_plan, max_candidates = verification_studio.pattern_plan(
+                session,
+                canonical_domain,
+                policy_version_id=requested_pattern_policy_id,
+                use_active=False,
+            )
+        except verification_studio.StudioConfigurationError as exc:
+            raise EmailAgentStateError(str(exc)) from exc
         decision = evaluate(
             first_name=contact.first_name,
             last_name=contact.last_name,

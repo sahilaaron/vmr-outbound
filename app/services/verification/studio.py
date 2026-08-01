@@ -235,11 +235,21 @@ def active_pattern_policy(session: Session) -> EmailPatternPolicyVersion | None:
 
 
 def pattern_plan(
-    session: Session, domain: str
+    session: Session,
+    domain: str,
+    *,
+    policy_version_id: uuid.UUID | None = None,
+    use_active: bool = True,
 ) -> tuple[EmailPatternPolicyVersion | None, tuple[tuple[str, str], ...], int]:
     """Return learned-first patterns, source labels and the configured bound."""
 
-    policy = active_pattern_policy(session)
+    policy = (
+        session.get(EmailPatternPolicyVersion, policy_version_id)
+        if policy_version_id is not None
+        else (active_pattern_policy(session) if use_active else None)
+    )
+    if policy_version_id is not None and policy is None:
+        raise StudioConfigurationError("The queued Email pattern policy no longer exists.")
     configuration: dict[str, Any]
     if policy:
         configuration = dict(policy.configuration)

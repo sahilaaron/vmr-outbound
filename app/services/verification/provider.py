@@ -79,6 +79,18 @@ _ROLE_LOCALPARTS = frozenset(
 _DISPOSABLE_DOMAINS = frozenset({"mailinator.com", "guerrillamail.com", "tempmail.com"})
 
 
+def _as_optional_bool(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.casefold().strip()
+        if normalized in {"true", "1", "yes"}:
+            return True
+        if normalized in {"false", "0", "no"}:
+            return False
+    return None
+
+
 class ProviderTransientError(Exception):
     """A transport-level failure (no HTTP response): connection error or timeout.
 
@@ -430,14 +442,29 @@ class HttpDebounce:
         result = {3: "disposable", 4: "catch_all", 5: "ok", 7: "unknown"}.get(code, "invalid")
         nested = data.get("debounce") if isinstance(data.get("debounce"), dict) else data
         assert isinstance(nested, dict)
-        role = bool(nested.get("role"))
+        role = _as_optional_bool(nested.get("role"))
+        safe_raw = {
+            key: value
+            for key, value in nested.items()
+            if key
+            in {
+                "email",
+                "code",
+                "result",
+                "reason",
+                "role",
+                "free_email",
+                "did_you_mean",
+                "balance",
+            }
+        }
         return ProviderResponse(
             email=str(nested.get("email", email)),
             result=result,
             resultcode=code,
             subresult=str(nested.get("reason")) if nested.get("reason") else None,
             quality=str(nested.get("result")) if nested.get("result") else None,
-            free=bool(nested.get("free_email")) if "free_email" in nested else None,
+            free=_as_optional_bool(nested.get("free_email")),
             role=role,
             didyoumean=nested.get("did_you_mean") or None,
             credits=int(nested["balance"]) if str(nested.get("balance", "")).isdigit() else None,
@@ -445,7 +472,7 @@ class HttpDebounce:
                 _redact(str(nested.get("error")), self._api_key) if nested.get("error") else None
             ),
             livemode=True,
-            raw={k: v for k, v in nested.items() if k != "api"},
+            raw=safe_raw,
         )
 
 

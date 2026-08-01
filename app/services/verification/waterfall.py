@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -9,7 +10,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
-from app.models.email_verification_studio import VerificationProviderAttempt
+from app.models.email_verification_studio import (
+    VerificationProviderAttempt,
+    VerificationWaterfallPolicyVersion,
+)
 from app.models.enums import EmailPreciseStatus, VerificationFailureClass
 from app.models.usage_ledger import UsageLedgerEntry
 from app.models.verification_job import VerificationJob
@@ -56,7 +60,22 @@ def verify(
 ) -> WaterfallOutcome:
     """Traverse the active policy while preserving one Agent attempt lifecycle."""
 
-    configured = active_waterfall(session)
+    raw_policy_id = (job.input_reference or {}).get("waterfall_policy_version_id")
+    requested_policy_id: uuid.UUID | None = None
+    if raw_policy_id is not None:
+        if not isinstance(raw_policy_id, str):
+            raise WaterfallUnavailable("Queued waterfall policy id is malformed.")
+        try:
+            requested_policy_id = uuid.UUID(raw_policy_id)
+        except ValueError:
+            raise WaterfallUnavailable("Queued waterfall policy id is malformed.") from None
+    configured = (
+        session.get(VerificationWaterfallPolicyVersion, requested_policy_id)
+        if requested_policy_id is not None
+        else active_waterfall(session)
+    )
+    if requested_policy_id is not None and configured is None:
+        raise WaterfallUnavailable("The queued waterfall policy no longer exists.")
     configuration = (
         dict(configured.configuration)
         if configured
@@ -94,6 +113,8 @@ def verify(
             policy=policy,
             reuse_fresh=not rows,
             record_attempt=False,
+            record_retry_hint=False,
+            allow_cross_provider_reuse=True,
         )
         step_finished = datetime.now(UTC)
         rows.append((provider_id, outcome, step_started, step_finished))

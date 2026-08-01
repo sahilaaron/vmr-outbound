@@ -224,6 +224,22 @@ class EmailVerificationReportReader:
             sanitized_payload = _sanitize_mapping(dict(job.error)) if job.error else None
             if sanitized_error is None and sanitized_payload:
                 sanitized_error = _sanitize_text(str(sanitized_payload))
+            if expected is AgentIdentifier.EMAIL:
+                number = state_map.get("pattern_policy_version_number")
+                identifier = state_map.get("pattern_policy_version_id")
+                policy_version = (
+                    f"Email pattern v{number} ({identifier})"
+                    if number is not None and identifier is not None
+                    else str(
+                        state_map.get("policy_version") or job.policy_version or "legacy default"
+                    )
+                )
+            else:
+                waterfall_id = (job.input_reference or {}).get("waterfall_policy_version_id")
+                policy_version = (
+                    f"Verification {job.policy_version or 'policy not persisted'}; "
+                    f"waterfall {waterfall_id or 'legacy active/default'}"
+                )
             completeness = "complete"
             if expected is AgentIdentifier.EMAIL and not candidates:
                 completeness = "partial"
@@ -256,7 +272,7 @@ class EmailVerificationReportReader:
                 domain=domain,
                 catch_all=domain_observation.is_catch_all if domain_observation else None,
                 selected_email=(contact.email if contact else None) or job.email,
-                policy_version=job.policy_version,
+                policy_version=policy_version,
                 error_summary=sanitized_error,
                 candidates=candidates,
                 provider_steps=provider_steps,
