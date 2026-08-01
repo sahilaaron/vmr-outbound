@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterator
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -17,6 +18,7 @@ from app.services.agent_studio.extensions import AGENT_STUDIO_MODULES
 from app.services.agent_studio.research_report import (
     ResearchFactView,
     ResearchReport,
+    ResearchReportState,
     ResearchRetryView,
     ResearchSourceRead,
 )
@@ -169,13 +171,22 @@ def test_studio_exists_only_under_admin_and_is_absent_when_admin_is_not_mounted(
     app.dependency_overrides[get_db] = _override
     with TestClient(app) as client:
         assert client.get("/admin/agents/studio").status_code == 404
+        assert (
+            client.get(f"/api/admin/agent-studio/research/jobs/{uuid.uuid4()}/report").status_code
+            == 404
+        )
 
 
 class _Reader:
-    def __init__(self, report: ResearchReport) -> None:
+    def __init__(self, report: ResearchReport | None) -> None:
         self.report = report
 
-    def read(self, _campaign_contact_id: uuid.UUID) -> ResearchReport:
+    def read(self, _campaign_contact_id: uuid.UUID) -> ResearchReport | None:
+        return self.report
+
+    def read_job(self, agent_job_id: uuid.UUID) -> ResearchReport | None:
+        if self.report is None or self.report.job_id != agent_job_id:
+            return None
         return self.report
 
 
@@ -247,11 +258,19 @@ def _report(*, complete: bool) -> ResearchReport:
             "No persisted Research Agent Job exists for this Campaign Contact.",
             "Worker-level collection detail was not persisted for this run.",
         ),
+        report_state=(
+            ResearchReportState.COMPLETE if complete else ResearchReportState.UNAVAILABLE
+        ),
+        report_reason=(
+            "The selected job and its committed Research artifacts are durably available."
+            if complete
+            else "No Research execution has been durably recorded."
+        ),
     )
 
 
 @pytest.mark.parametrize("complete", [True, False])
-def test_research_report_renders_complete_and_partial_stable_read_models(
+def test_research_report_renders_complete_and_unavailable_stable_read_models(
     studio_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
     complete: bool,
@@ -274,6 +293,68 @@ def test_research_report_renders_complete_and_partial_stable_read_models(
         assert "Unavailable in current persistence" in response.text
         assert "Worker-level collection detail was not persisted" in response.text
         assert "console logs" in response.text
+
+
+def test_research_report_renders_an_explicit_partial_state(
+    studio_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = replace(
+        _report(complete=True),
+        report_state=ResearchReportState.PARTIAL,
+        report_reason="The job exists, but its exact dossier is unavailable.",
+        dossier_version=None,
+        unavailable=("No exact dossier version is linked to this job.",),
+    )
+    from app.web import routes
+
+    monkeypatch.setattr(routes, "_research_report_reader", lambda _db: _Reader(report))
+    response = studio_client.get(
+        f"/admin/agents/studio/research?campaign_contact={report.campaign_contact_id}"
+    )
+    assert response.status_code == 200
+    assert "Report partial" in response.text
+    assert "exact dossier is unavailable" in response.text
+
+
+def test_research_api_and_html_share_the_typed_reader(
+    studio_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = _report(complete=True)
+    assert report.job_id is not None
+    reader = _Reader(report)
+    from app.web import routes
+
+    monkeypatch.setattr(routes, "_research_report_reader", lambda _db: reader)
+    html = studio_client.get(
+        f"/admin/agents/studio/research?campaign_contact={report.campaign_contact_id}"
+    )
+    api = studio_client.get(f"/api/admin/agent-studio/research/jobs/{report.job_id}/report")
+
+    assert html.status_code == 200
+    assert str(report.job_id) in html.text
+    assert api.status_code == 200
+    assert api.json()["job_id"] == str(report.job_id)
+    assert api.json()["report_state"] == "complete"
+    assert (
+        studio_client.get(f"/app/agents/studio/research/jobs/{report.job_id}/report").status_code
+        == 404
+    )
+
+
+def test_research_api_hides_unknown_and_non_research_jobs(
+    studio_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.web import routes
+
+    monkeypatch.setattr(routes, "_research_report_reader", lambda _db: _Reader(None))
+    missing = studio_client.get(f"/api/admin/agent-studio/research/jobs/{uuid.uuid4()}/report")
+    malformed = studio_client.get("/api/admin/agent-studio/research/jobs/not-a-uuid/report")
+    assert missing.status_code == 404
+    assert malformed.status_code == 404
+    assert missing.json() == malformed.json() == {"detail": "Not found."}
 
 
 def test_every_registered_agent_has_exactly_one_studio_module() -> None:

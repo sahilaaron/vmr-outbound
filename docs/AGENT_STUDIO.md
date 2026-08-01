@@ -78,18 +78,98 @@ commit path and never activates the previewed version.
 
 ## Research report boundary
 
-The Research page is read-only. `ResearchReportReader` is the stable port for a
-report containing subject, domain state, Agent Job, attempts, timing, workers,
-collection reads/failures, raw submission, dossier, sourced facts, rejected
-evidence, retries, final outcome and stored error. The current
-`PersistedResearchReportReader` maps only existing RES-001 records and labels
-missing attempt-level details unavailable. It never treats console logs as
-observability and sanitizes local filesystem paths.
+The Research page is read-only. `ResearchReportReader` remains the stable typed
+port and `DurableResearchReportReader` is its sole production implementation.
+It projects the existing RES-001 tables; there is no second report service and
+no report-specific persistence. The same reader backs both:
 
-The independently developed Research report read-model branch can implement
-the protocol or adapt its result into the dataclasses without changing the
-route or template. Research prompts, worker source, code and collection rules
-remain outside this interface.
+* `GET /admin/agents/studio/research?campaign_contact={campaign_contact_id}`;
+* `GET /api/admin/agent-studio/research/jobs/{agent_job_id}/report`.
+
+Both routes are part of the local-only Admin Workbench. They are absent from
+`/app`, and the API returns the same frozen dataclass graph the HTML template
+receives. Loading either route performs queries only: it cannot enqueue or
+retry Research, change pipeline state, select a dossier, mutate an Insight, or
+edit any worker/configuration.
+
+### Artifact identity and persisted truth
+
+The exact `AgentJob.result.submission_id` and `dossier_version` are the
+authoritative links for a completed execution. This matters because raw
+submissions are deduplicated by Company and content hash: a later job may
+truthfully reuse a submission whose immutable `request_context.agent_job_id`
+names the first job that submitted those bytes. Exact request context is used
+only as a compatibility fallback when an older job has no result link. The
+reader never substitutes the Company's current/latest dossier for the selected
+job's dossier.
+
+The durable report exposes, when present:
+
+* Campaign, Campaign Contact, Contact, and the Company recorded by the job;
+* the current capture-scoped domain decision, with a clearly labelled
+  current-Company aggregate fallback when the execution capture has no current
+  decision (the execution's own domain remains the historical value in its job
+  result);
+* public job status, attempts/max attempts, queue timestamps, next-run time,
+  current lease owner/expiry, sanitized stored error and retryability;
+* queue worker identity from job-linked `JOB_LEASED`/`JOB_STARTED` events and a
+  bounded event timeline (never raw event detail);
+* Research source-worker/version, successful pages and structured collection
+  failures from the immutable raw submission;
+* the exact submission reference and exact dossier version/status/sections;
+* Research-produced Insights selected by the job-derived idempotency prefix,
+  plus typed evidence IDs, safe source metadata and source-record references;
+* related Research job generations. Queue retries stay on the same job and are
+  represented by that job's persisted attempt count rather than invented as
+  separate runs.
+
+`complete`, `partial`, and `unavailable` are deterministic report states. A
+successful job is complete only when its exact submission, exact dossier, and
+worker payload persist. A non-terminal/failed job or a job missing one of those
+artifacts is partial. A Campaign Contact with no Research job is unavailable.
+General observability limitations remain listed even on an otherwise complete
+report; a complete report does not imply that unpersisted telemetry exists.
+
+### Sanitization and known limits
+
+Only typed, bounded fields leave the service. Existing Workbench sanitizers
+redact credential-shaped values and authorization material. A narrow display
+adapter additionally removes local filesystem paths and strips URL user info,
+query strings and fragments before a link reaches HTML or JSON. Raw job input,
+raw result/error mappings, raw worker output, environment variables, shell
+commands, console logs, authorization headers and private model reasoning are
+never returned.
+
+Current persistence cannot truthfully supply:
+
+* a complete discovered/attempted URL ledger (only successful reads and
+  structured collection failures persist);
+* a dedicated attempt-by-attempt lease-expiry ledger (current lease state and
+  append-only pipeline events persist, while terminal transitions clear the
+  job's lease owner); the single job `started_at`/`finished_at` pair describes
+  the latest persisted attempt interval, not a complete attempt timeline;
+* a structured dropped/rejected-evidence ledger (dossier warnings persist, but
+  they are not relabelled as rejected evidence);
+* unbounded worker stdout/stderr or runtime-only collection detail.
+
+No migration was needed. Adding logging tables merely to imitate those missing
+signals would weaken the truth boundary; the report labels them unavailable.
+
+### GLM reconnaissance outcome
+
+The planned GLM 5.2 task on
+`feat/agent-studio-research-report-read-model` exhausted its 3M-token free-tier
+allowance after branch/isolation confirmation and repository/Admin API
+exploration. It was still mapping Research job schema, persistence, Company
+dossiers and sourced facts. It did not reach branch creation, completed
+read-model design, implementation, tests, validation, documentation, commits,
+push, bundle, SHA-256 or handoff; there is no partial implementation, patch or
+migration either. Those findings were reconnaissance only. The durable reader
+therefore lives directly on the Agent Studio integration branch; there is no
+future GLM integration artifact to merge.
+
+Research prompts, worker source, code and collection rules remain outside this
+interface.
 
 ## Adding a future Agent page
 

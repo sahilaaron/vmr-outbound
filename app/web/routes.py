@@ -20,7 +20,8 @@ from typing import Any
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
@@ -51,7 +52,10 @@ from app.models.linkedin_profile import LinkedInProfileSnapshot
 from app.models.personalization_policy import PersonalizationPolicyVersion
 from app.services import agent_studio as agent_studio_service
 from app.services import campaign_contacts, devtools, identity, workbench, workbench_agents
-from app.services.agent_studio.research_report import PersistedResearchReportReader
+from app.services.agent_studio.research_report import (
+    DurableResearchReportReader,
+    ResearchReportReader,
+)
 from app.services.agents.registry import AGENT_SPECS
 from app.services.campaign_contacts import CampaignContactError
 from app.services.campaigns import (
@@ -4209,8 +4213,8 @@ async def personalization_preview(request: Request, db: Session = Depends(get_db
     )
 
 
-def _research_report_reader(db: Session) -> PersistedResearchReportReader:
-    return PersistedResearchReportReader(db)
+def _research_report_reader(db: Session) -> ResearchReportReader:
+    return DurableResearchReportReader(db)
 
 
 @router.get("/admin/agents/studio/research", response_class=HTMLResponse)
@@ -4232,6 +4236,24 @@ def research_agent_report_page(request: Request, db: Session = Depends(get_db)) 
             "page_title": "Company Research report",
         },
     )
+
+
+@router.get("/api/admin/agent-studio/research/jobs/{agent_job_id}/report")
+def research_agent_report_api(agent_job_id: str, db: Session = Depends(get_db)) -> JSONResponse:
+    """Return the exact typed report used by the Admin HTML surface.
+
+    This router is mounted only with the local-only operator Workbench.  A
+    missing, malformed, non-Research or cross-owner job receives the same
+    generic response so the endpoint never leaks another Agent's existence.
+    """
+
+    if not _agent_workbench_available():
+        return JSONResponse(status_code=404, content={"detail": "Not found."})
+    parsed = _parse_uuid(agent_job_id)
+    report = _research_report_reader(db).read_job(parsed) if parsed else None
+    if report is None:
+        return JSONResponse(status_code=404, content={"detail": "Not found."})
+    return JSONResponse(content=jsonable_encoder(report))
 
 
 @router.get("/admin/agents/studio/{agent_id}", response_class=HTMLResponse)

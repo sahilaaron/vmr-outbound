@@ -1,15 +1,148 @@
 {% extends "base.html" %}
 {% from "_agent_macros.html" import job_status_badge %}
 {% block content %}
-<div class="page-head"><div class="crumbs"><a href="/admin">Admin</a><span>/</span><a href="/admin/agents/studio">Agent Studio</a><span>/</span>Research</div><h1>Company Research report</h1><div class="sub">Read-only projection of persisted Research records. Missing detail stays unavailable; console logs are not observability.</div></div>
-<div class="notice info"><div><strong>Read-only.</strong> Research prompts, workers, code and collection rules cannot be edited here.</div></div>
-<div class="card"><div class="card-head"><h2>Select a Campaign Contact</h2></div><div class="card-body"><form method="get" action="/admin/agents/studio/research" class="action-row"><select name="campaign_contact" required><option value="">Select…</option>{% for row in campaign_contacts %}<option value="{{ row.membership.id }}" {{ 'selected' if report and report.campaign_contact_id == row.membership.id else '' }}>{{ row.campaign.name }} · {{ row.contact.first_name or '' }} {{ row.contact.last_name or '' }} · {{ row.contact.company_name or 'Company unknown' }}</option>{% endfor %}</select><button class="btn small" type="submit">Open report</button></form></div></div>
+<div class="page-head">
+  <div class="crumbs"><a href="/admin">Admin</a><span>/</span><a href="/admin/agents/studio">Agent Studio</a><span>/</span>Research</div>
+  <h1>Company Research report</h1>
+  <div class="sub">Durable, read-only projection of persisted Research records. Missing detail stays unavailable; console logs and runtime logs are not observability.</div>
+</div>
+<div class="notice info"><div><strong>Read-only.</strong> Loading this report never triggers Research, queues or retries a job, changes a dossier or Insight, or edits prompts, workers, code or collection rules.</div></div>
+
+<div class="card">
+  <div class="card-head"><h2>Select a Campaign Contact</h2></div>
+  <div class="card-body">
+    <form method="get" action="/admin/agents/studio/research" class="action-row">
+      <select name="campaign_contact" required>
+        <option value="">Select…</option>
+        {% for row in campaign_contacts %}
+        <option value="{{ row.membership.id }}" {{ 'selected' if report and report.campaign_contact_id == row.membership.id else '' }}>{{ row.campaign.name }} · {{ row.contact.first_name or '' }} {{ row.contact.last_name or '' }} · {{ row.contact.company_name or 'Company unknown' }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn small" type="submit">Open report</button>
+    </form>
+  </div>
+</div>
+
 {% if report %}
-<div class="stat-grid"><div class="stat accent"><div class="label">Job</div><div class="value small-value">{{ report.job_status or 'not run' }}</div></div><div class="stat"><div class="label">Attempts</div><div class="value">{{ report.attempts if report.attempts is not none else '—' }}</div></div><div class="stat"><div class="label">Duration</div><div class="value small-value">{{ ('%.1f s' | format(report.duration_seconds)) if report.duration_seconds is not none else 'unavailable' }}</div></div><div class="stat"><div class="label">Reads</div><div class="value">{{ report.successful_reads | length if report.successful_reads is not none else '—' }}</div></div></div>
-<div class="card"><div class="card-head"><h2>Subject and outcome</h2></div><div class="card-body"><dl class="kv"><dt>Campaign Contact</dt><dd>{{ report.contact_label }} · {{ report.campaign_name }}</dd><dt>Company</dt><dd>{{ report.company_name or 'Unavailable' }} · {{ report.company_id or 'no permanent Company' }}</dd><dt>Domain</dt><dd>{{ report.domain or 'Unavailable' }} · {{ report.domain_state or 'no automatic resolution record' }}</dd><dt>Research job</dt><dd>{% if report.job_id %}<a href="/workbench/jobs/{{ report.job_id }}">{{ report.job_id }}</a>{% else %}Unavailable{% endif %}</dd><dt>Worker identity</dt><dd>{{ report.worker_identity | join(', ') if report.worker_identity else 'Unavailable' }}</dd><dt>Timing</dt><dd>{{ report.started_at | dt }} → {{ report.finished_at | dt }}</dd><dt>Final pipeline outcome</dt><dd>{{ report.final_outcome or 'Unavailable' }}</dd><dt>Stored error</dt><dd>{{ report.error_type or 'None' }}{% if report.error_detail %}: {{ report.error_detail }}{% endif %}</dd></dl></div></div>
-{% if report.unavailable %}<div class="notice warn"><div><strong>Unavailable in current persistence</strong><ul>{% for item in report.unavailable %}<li>{{ item }}</li>{% endfor %}</ul></div></div>{% endif %}
-<div class="card"><div class="card-head"><h2>Collection</h2></div><div class="card-body"><h3>URLs attempted</h3>{% if report.urls_attempted is not none %}<ul>{% for url in report.urls_attempted %}<li><a href="{{ url }}" rel="noreferrer">{{ url }}</a></li>{% else %}<li>No URL recorded.</li>{% endfor %}</ul>{% else %}<p class="muted-text">Unavailable.</p>{% endif %}<h3>Successful reads</h3>{% if report.successful_reads is not none %}<table><thead><tr><th>URL</th><th>Title</th><th>Method</th><th>Retrieved</th></tr></thead><tbody>{% for item in report.successful_reads %}<tr><td><a href="{{ item.url }}" rel="noreferrer">{{ item.url }}</a></td><td>{{ item.title or '—' }}</td><td>{{ item.retrieval_method or '—' }}</td><td>{{ item.retrieved_at or '—' }}</td></tr>{% endfor %}</tbody></table>{% else %}<p class="muted-text">Unavailable.</p>{% endif %}<h3>Collection failures</h3>{% if report.collection_failures is not none %}<ul>{% for item in report.collection_failures %}<li>{{ item }}</li>{% else %}<li>None recorded.</li>{% endfor %}</ul>{% else %}<p class="muted-text">Unavailable.</p>{% endif %}</div></div>
-<div class="card"><div class="card-head"><h2>Stored research</h2></div><div class="card-body"><dl class="kv"><dt>Raw submission</dt><dd>{{ report.submission_id or 'Unavailable' }}</dd><dt>Dossier version</dt><dd>{{ report.dossier_version or 'Unavailable' }}</dd></dl><h3>Sourced facts</h3>{% if report.sourced_facts is not none %}<table><thead><tr><th>Claim</th><th>Sources</th><th>Confidence</th></tr></thead><tbody>{% for fact in report.sourced_facts %}<tr><td>{{ fact.claim }}</td><td>{% for url in fact.source_urls %}<a href="{{ url }}" rel="noreferrer">source {{ loop.index }}</a>{{ ', ' if not loop.last }}{% endfor %}</td><td>{{ ('%.2f' | format(fact.confidence)) if fact.confidence is not none else '—' }}</td></tr>{% endfor %}</tbody></table>{% else %}<p class="muted-text">Unavailable.</p>{% endif %}<h3>Dropped or rejected evidence</h3>{% if report.rejected_evidence is not none %}<ul>{% for item in report.rejected_evidence %}<li>{{ item }}</li>{% else %}<li>None recorded.</li>{% endfor %}</ul>{% else %}<p class="muted-text">Unavailable.</p>{% endif %}</div></div>
-<div class="table-wrap"><div class="toolbar"><strong class="small">Retry history</strong></div>{% if report.retry_history %}<table><thead><tr><th>Job</th><th>Status</th><th>Attempts</th><th>Error</th><th>Created</th></tr></thead><tbody>{% for item in report.retry_history %}<tr><td><a href="/workbench/jobs/{{ item.job_id }}">{{ item.job_id }}</a></td><td>{{ job_status_badge(item.public_status) }}</td><td>{{ item.attempts }}/{{ item.max_attempts }}</td><td>{{ item.error_type or '—' }}{% if item.error_detail %}: {{ item.error_detail }}{% endif %}</td><td>{{ item.created_at | dt }}</td></tr>{% endfor %}</tbody></table>{% else %}<div class="empty"><div class="empty-title">No persisted run history</div></div>{% endif %}</div>
+<div class="notice {{ 'info' if report.report_state.value == 'complete' else 'warn' }}">
+  <div><strong>Report {{ report.report_state.value }}</strong> — {{ report.report_reason }}</div>
+</div>
+<div class="stat-grid">
+  <div class="stat accent"><div class="label">Job</div><div class="value small-value">{{ report.job_status or 'not run' }}</div></div>
+  <div class="stat"><div class="label">Attempts on this job</div><div class="value">{{ report.attempts if report.attempts is not none else '—' }}{% if report.max_attempts is not none %}/{{ report.max_attempts }}{% endif %}</div></div>
+  <div class="stat"><div class="label">Last-attempt duration</div><div class="value small-value">{{ ('%.1f s' | format(report.duration_seconds)) if report.duration_seconds is not none else 'unavailable' }}</div></div>
+  <div class="stat"><div class="label">Successful reads</div><div class="value">{{ report.successful_reads | length if report.successful_reads is not none else '—' }}</div></div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Execution identity and outcome</h2></div>
+  <div class="card-body">
+    <dl class="kv">
+      <dt>Campaign Contact</dt><dd>{{ report.contact_label }} · {{ report.campaign_name }}<br><span class="muted-text">{{ report.campaign_contact_id }}</span></dd>
+      <dt>Company at execution</dt><dd>{{ report.company_name or 'Unavailable' }} · {{ report.company_id or 'no permanent Company' }}</dd>
+      <dt>Execution domain / current fallback</dt><dd>{{ report.domain or 'Unavailable' }}</dd>
+      <dt>Current resolution state</dt><dd>{{ report.domain_state or 'No persisted resolution state' }}</dd>
+      {% if report.domain_resolution %}
+      <dt>Domain decision</dt><dd>{{ report.domain_resolution.scope }} · {{ report.domain_resolution.state }} · {{ report.domain_resolution.decision_kind or 'kind unavailable' }} · policy {{ report.domain_resolution.policy_version or 'unavailable' }} · {{ report.domain_resolution.decided_at | dt }}</dd>
+      {% endif %}
+      <dt>Research job</dt><dd>{% if report.job_id %}<a href="/workbench/jobs/{{ report.job_id }}">{{ report.job_id }}</a>{% else %}Unavailable{% endif %}{% if report.selection_reason %}<br><span class="muted-text">{{ report.selection_reason }}</span>{% endif %}</dd>
+      <dt>Research source workers</dt><dd>{{ report.worker_identity | join(', ') if report.worker_identity else 'Unavailable' }}</dd>
+      <dt>Executing queue workers</dt><dd>{{ report.execution_workers | join(', ') if report.execution_workers else 'Unavailable — no persisted lease/start event' }}</dd>
+      <dt>Job timing</dt><dd>created {{ report.job_created_at | dt }} · started {{ report.started_at | dt }} · finished {{ report.finished_at | dt }} · updated {{ report.job_updated_at | dt }}{% if report.job_status in ('queued', 'retrying') %} · next run {{ report.next_run_at | dt }}{% endif %}</dd>
+      <dt>Current lease</dt><dd>{{ report.lease_state or 'Unavailable' }}{% if report.lease_owner %} · {{ report.lease_owner }}{% endif %}{% if report.lease_expires_at %} · expires {{ report.lease_expires_at | dt }}{% endif %}</dd>
+      <dt>Pipeline projection</dt><dd>{{ report.pipeline_status or 'Unavailable for this historical job' }}{% if report.pipeline_reason %}: {{ report.pipeline_reason }}{% endif %}</dd>
+      <dt>Final domain outcome</dt><dd>{{ report.final_outcome or 'Unavailable — no persisted domain outcome' }}</dd>
+      <dt>Stored error</dt><dd>{{ report.error_type or 'None' }}{% if report.error_detail %}: {{ report.error_detail }}{% endif %}{% if report.retryable_error is not none %} · retryable={{ 'yes' if report.retryable_error else 'no' }}{% endif %}</dd>
+      {% if report.job_id %}<dt>Admin API</dt><dd><a href="/api/admin/agent-studio/research/jobs/{{ report.job_id }}/report">Exact job report JSON</a></dd>{% endif %}
+    </dl>
+  </div>
+</div>
+
+{% if report.unavailable %}
+<div class="notice warn"><div><strong>Unavailable in current persistence</strong><ul>{% for item in report.unavailable %}<li>{{ item }}</li>{% endfor %}</ul></div></div>
+{% endif %}
+
+<div class="card">
+  <div class="card-head"><h2>Collection</h2></div>
+  <div class="card-body">
+    <h3>Recorded URL attempts</h3>
+    <p class="muted-text">Successful reads plus structured collection failures only. The complete discovered or attempted URL set is not persisted.</p>
+    {% if report.urls_attempted is not none %}
+    <ul>{% for url in report.urls_attempted %}<li><a href="{{ url }}" rel="noreferrer">{{ url }}</a></li>{% else %}<li>No URL recorded.</li>{% endfor %}</ul>
+    {% else %}<p class="muted-text">Unavailable.</p>{% endif %}
+
+    <h3>Successful reads</h3>
+    {% if report.successful_reads is not none %}
+    <table>
+      <thead><tr><th>URL</th><th>Title</th><th>Research worker</th><th>Page / method</th><th>Retrieved</th></tr></thead>
+      <tbody>{% for item in report.successful_reads %}<tr><td><a href="{{ item.url }}" rel="noreferrer">{{ item.url }}</a></td><td>{{ item.title or '—' }}</td><td>{{ item.research_worker or '—' }}</td><td>{{ item.page_type or '—' }} / {{ item.retrieval_method or '—' }}</td><td>{{ item.retrieved_at or '—' }}</td></tr>{% else %}<tr><td colspan="5">No successful page read was recorded.</td></tr>{% endfor %}</tbody>
+    </table>
+    {% else %}<p class="muted-text">Unavailable.</p>{% endif %}
+
+    <h3>Structured collection failures</h3>
+    {% if report.collection_failure_details is not none %}
+    <table>
+      <thead><tr><th>URL</th><th>Stage</th><th>Research worker</th><th>Error</th><th>Recorded</th></tr></thead>
+      <tbody>{% for item in report.collection_failure_details %}<tr><td>{% if item.url %}<a href="{{ item.url }}" rel="noreferrer">{{ item.url }}</a>{% else %}—{% endif %}</td><td>{{ item.stage or '—' }}</td><td>{{ item.research_worker or '—' }}</td><td>{{ item.error }}</td><td>{{ item.occurred_at or '—' }}</td></tr>{% else %}<tr><td colspan="5">No structured collection failure was recorded.</td></tr>{% endfor %}</tbody>
+    </table>
+    {% elif report.collection_failures is not none %}
+    <ul>{% for item in report.collection_failures %}<li>{{ item }}</li>{% else %}<li>None recorded.</li>{% endfor %}</ul>
+    {% else %}<p class="muted-text">Unavailable.</p>{% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Committed research artifacts</h2></div>
+  <div class="card-body">
+    <dl class="kv">
+      <dt>Raw submission reference</dt><dd>{% if report.submission %}{{ report.submission.submission_id }} · {{ report.submission.producer }}/{{ report.submission.producer_version or 'version unavailable' }} · {{ report.submission.submitted_at | dt }}<br><span class="muted-text">linked by {{ report.submission.link_source }}</span>{% else %}{{ report.submission_id or 'Unavailable' }}{% endif %}</dd>
+      <dt>Exact dossier</dt><dd>{% if report.dossier %}v{{ report.dossier.version_number }} · {{ report.dossier.status }} · {{ report.dossier.interpreter }}/{{ report.dossier.interpreter_version or 'version unavailable' }} · {{ report.dossier.created_at | dt }}<br><span class="muted-text">sections: {{ report.dossier.sections_present | join(', ') if report.dossier.sections_present else 'none addressed' }}</span>{% else %}{{ report.dossier_version or 'Unavailable' }}{% endif %}</dd>
+    </dl>
+
+    <h3>Resulting Insights and evidence</h3>
+    {% if report.sourced_facts is not none %}
+    <table>
+      <thead><tr><th>Insight</th><th>Claim</th><th>State</th><th>Evidence references</th><th>Confidence</th></tr></thead>
+      <tbody>
+      {% for fact in report.sourced_facts %}
+      <tr>
+        <td>{{ fact.insight_id or '—' }}{% if fact.version %}<br><span class="muted-text">v{{ fact.version }}</span>{% endif %}</td>
+        <td>{{ fact.claim }}</td>
+        <td>{{ fact.kind or '—' }} / {{ fact.state or '—' }}</td>
+        <td>{% if fact.evidence %}{% for evidence in fact.evidence %}<a href="{{ evidence.source_url }}" rel="noreferrer">{{ evidence.evidence_id }}</a>{% if evidence.source_title %} · {{ evidence.source_title }}{% endif %}{% if evidence.extraction_method %} · {{ evidence.extraction_method }}{% endif %}{% if not loop.last %}<br>{% endif %}{% endfor %}{% else %}{% for url in fact.source_urls %}<a href="{{ url }}" rel="noreferrer">source {{ loop.index }}</a>{{ ', ' if not loop.last }}{% else %}No displayable evidence URL{% endfor %}{% endif %}</td>
+        <td>{{ ('%.2f' | format(fact.confidence)) if fact.confidence is not none else '—' }}</td>
+      </tr>
+      {% else %}<tr><td colspan="5">No Insight was stored for this job.</td></tr>{% endfor %}
+      </tbody>
+    </table>
+    {% else %}<p class="muted-text">Unavailable.</p>{% endif %}
+
+    <h3>Dossier and projection warnings</h3>
+    {% if report.warnings %}<ul>{% for item in report.warnings %}<li>{{ item }}</li>{% endfor %}</ul>{% else %}<p class="muted-text">None recorded.</p>{% endif %}
+
+    <h3>Dropped or rejected evidence</h3>
+    <p class="muted-text">Not persisted as a structured ledger. Dossier warnings above are not relabelled as rejected evidence.</p>
+  </div>
+</div>
+
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Related Research jobs</strong><span class="muted-text">Retries stay on one job and increase its attempt count; separate rows are re-runs or later generations.</span></div>
+  {% if report.retry_history %}
+  <table>
+    <thead><tr><th>Job</th><th>Generation</th><th>Status</th><th>Attempts</th><th>Error</th><th>Timing</th></tr></thead>
+    <tbody>{% for item in report.retry_history %}<tr><td><a href="/api/admin/agent-studio/research/jobs/{{ item.job_id }}/report">{{ item.job_id }}</a>{% if item.selected %}<br><strong>selected</strong>{% endif %}</td><td>{{ item.generation or '—' }}</td><td>{{ job_status_badge(item.public_status) }}</td><td>{{ item.attempts }}/{{ item.max_attempts }}</td><td>{{ item.error_type or '—' }}{% if item.error_detail %}: {{ item.error_detail }}{% endif %}{% if item.retryable_error is not none %}<br>retryable={{ 'yes' if item.retryable_error else 'no' }}{% endif %}</td><td>created {{ item.created_at | dt }}<br>started {{ item.started_at | dt }}<br>finished {{ item.finished_at | dt }}{% if item.public_status in ('queued', 'retrying') %}<br>next run {{ item.next_run_at | dt }}{% endif %}</td></tr>{% endfor %}</tbody>
+  </table>
+  {% else %}<div class="empty"><div class="empty-title">No persisted run history</div></div>{% endif %}
+</div>
+
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">Persisted job events</strong><span class="muted-text">Bounded transition fields only; raw event detail is not exposed.</span></div>
+  {% if report.job_events %}
+  <table>
+    <thead><tr><th>Time</th><th>Event</th><th>Attempt</th><th>Transition</th><th>Actor</th><th>Reason</th></tr></thead>
+    <tbody>{% for item in report.job_events %}<tr><td>{{ item.occurred_at | dt }}</td><td>{{ item.event_type }}</td><td>{{ item.attempt or '—' }}</td><td>{{ item.from_status or '—' }} → {{ item.to_status or '—' }}</td><td>{{ item.actor }}</td><td>{{ item.reason_code or '—' }}{% if item.reason_detail %}: {{ item.reason_detail }}{% endif %}</td></tr>{% endfor %}</tbody>
+  </table>
+  {% else %}<div class="empty"><div class="empty-title">No job-linked events persisted</div></div>{% endif %}
+</div>
 {% endif %}
 {% endblock %}
