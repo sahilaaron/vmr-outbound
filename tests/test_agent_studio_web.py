@@ -167,6 +167,7 @@ def test_studio_exists_only_under_admin_and_is_absent_when_admin_is_not_mounted(
     studio_client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     assert studio_client.get("/app/agents/studio").status_code == 404
+    assert studio_client.get("/app/agents/studio/company").status_code == 404
     assert studio_client.get("/app/agents/studio/insights").status_code == 404
 
     monkeypatch.setenv("FEATURES__WORKBENCH", "false")
@@ -182,6 +183,10 @@ def test_studio_exists_only_under_admin_and_is_absent_when_admin_is_not_mounted(
         assert client.get("/admin/agents/studio").status_code == 404
         assert (
             client.get(f"/api/admin/agent-studio/research/jobs/{uuid.uuid4()}/report").status_code
+            == 404
+        )
+        assert (
+            client.get(f"/api/admin/agent-studio/company/jobs/{uuid.uuid4()}/report").status_code
             == 404
         )
         assert (
@@ -410,9 +415,40 @@ def test_insights_api_uses_one_generic_safe_not_found(studio_client: TestClient)
     assert missing.json() == malformed.json() == {"detail": "Not found."}
 
 
+def test_company_html_and_api_share_exact_historical_truth(
+    studio_client: TestClient, db_session: Session
+) -> None:
+    from tests.test_agent_studio_company_report import _subject as company_subject
+
+    _, company, _, _, _, _, job = company_subject(db_session)
+    html = studio_client.get(f"/admin/agents/studio/company?job={job.id}")
+    api = studio_client.get(f"/api/admin/agent-studio/company/jobs/{job.id}/report")
+
+    assert html.status_code == 200
+    assert "Company Agent Studio" in html.text
+    assert str(job.id) in html.text
+    assert company.domain in html.text
+    assert "Historical execution truth versus current truth" in html.text
+    assert "Company Intelligence remains separate" in html.text
+    assert api.status_code == 200
+    assert api.json()["job_id"] == str(job.id)
+    assert api.json()["historical"]["canonical_domain"] == company.domain
+    assert api.json()["historical"]["domain_outcome"] == "confirmed"
+    assert studio_client.get(f"/app/agents/studio/company?job={job.id}").status_code == 404
+
+
+def test_company_api_uses_one_generic_safe_not_found(studio_client: TestClient) -> None:
+    missing = studio_client.get(f"/api/admin/agent-studio/company/jobs/{uuid.uuid4()}/report")
+    malformed = studio_client.get("/api/admin/agent-studio/company/jobs/not-a-uuid/report")
+    assert missing.status_code == malformed.status_code == 404
+    assert missing.json() == malformed.json() == {"detail": "Not found."}
+    assert studio_client.get("/admin/agents/studio/company?job=not-a-uuid").status_code == 404
+
+
 def test_every_registered_agent_has_exactly_one_studio_module() -> None:
     assert tuple(AGENT_STUDIO_MODULES) == PIPELINE_ORDER
     assert AGENT_STUDIO_MODULES[AgentIdentifier.PERSONALIZATION].capabilities.configuration
     assert AGENT_STUDIO_MODULES[AgentIdentifier.RESEARCH].capabilities.reporting
+    assert AGENT_STUDIO_MODULES[AgentIdentifier.COMPANY].capabilities.reporting
     assert not AGENT_STUDIO_MODULES[AgentIdentifier.RESEARCH].capabilities.configuration
     assert not AGENT_STUDIO_MODULES[AgentIdentifier.SENDING].capabilities.live_execution

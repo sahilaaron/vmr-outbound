@@ -60,7 +60,15 @@ def _module(
 AGENT_STUDIO_MODULES: dict[AgentIdentifier, AgentStudioModule] = {
     AgentIdentifier.CAPTURE: _module(AgentIdentifier.CAPTURE),
     AgentIdentifier.IDENTITY: _module(AgentIdentifier.IDENTITY),
-    AgentIdentifier.COMPANY: _module(AgentIdentifier.COMPANY),
+    AgentIdentifier.COMPANY: _module(
+        AgentIdentifier.COMPANY,
+        reporting=True,
+        configuration_boundary=(
+            "Company identity and domain decisions are read-only here; audited resolution "
+            "services remain authoritative."
+        ),
+        preview_boundary=("No retrospective matching or provider lookup runs from Studio reports."),
+    ),
     AgentIdentifier.RESEARCH: _module(
         AgentIdentifier.RESEARCH,
         reporting=True,
