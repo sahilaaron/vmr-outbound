@@ -268,12 +268,12 @@ def upgrade() -> None:
     op.alter_column("email_candidate_attempts", "employee_count_class", nullable=True)
     op.alter_column("email_candidate_attempts", "employee_evidence_freshness", nullable=True)
     op.drop_constraint(
-        op.f("ck_email_candidate_attempts_candidate_index_bounded"),
+        "ck_email_candidate_attempts_ck_email_candidate_attempts_257a",
         "email_candidate_attempts",
         type_="check",
     )
     op.create_check_constraint(
-        "candidate_index_bounded",
+        "ck_email_candidate_attempts_ck_email_candidate_attempts_257a",
         "email_candidate_attempts",
         "candidate_index >= 0 AND candidate_index < 24",
     )
