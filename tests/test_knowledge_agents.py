@@ -429,9 +429,20 @@ def test_an_unsourced_claim_is_dropped_rather_than_stored_as_a_weaker_fact(
     assert result.output_reference["claims_dropped"] == 2
     assert result.output_reference["employee_size_status"] == "unavailable"
     stored = insights_evidence.list_for_company(db_session, company_id=company.id)
-    supported = [row for row in stored if row.state is InsightState.SUPPORTED]
+    supported = [
+        row
+        for row in stored
+        if row.state is InsightState.SUPPORTED and row.producer_job_id == context.job.id
+    ]
     assert len(supported) == 1
     assert supported[0].claim == "Opened a second plant in Pune."
+    # The bounded Research fact remains an independent source record; Insights
+    # reads it through evidence lineage and never rewrites or substitutes it.
+    assert any(
+        row.idempotency_key
+        and row.idempotency_key.startswith(f"research:{context.job.parent_job_id}:")
+        for row in stored
+    )
     # The gap the model named is kept as an explicit unknown, not omitted.
     assert any(row.state is InsightState.UNKNOWN for row in stored)
 
