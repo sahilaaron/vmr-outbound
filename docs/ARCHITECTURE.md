@@ -45,6 +45,12 @@ durable queue. Agent-specific modules own their own typed configuration and
 preview contracts; Personalization Policy is intentionally not a universal
 Agent schema. See [AGENT_STUDIO.md](AGENT_STUDIO.md).
 
+The Company module is an exact-job read model over the existing Company Agent,
+append-only domain-decision ledger, capture evidence, Campaign policy and child
+Research job. Historical execution truth is pinned in the job; current capture,
+Contact/Company aggregate and Campaign state are separate projections. Studio
+does not invoke resolution or edit canonical records.
+
 ## Core entities
 
 ### Contact
@@ -235,6 +241,22 @@ pipeline stage is introduced. The current typed projection is computed from
 append-only derivations; conflicts and historical observations remain readable.
 Company Intelligence remains a separate bounded system and Email/Verification
 policy remains independent.
+
+### Company identity and domain boundary
+
+Identity owns person matching and merge/create/assign decisions. Company owns
+the Contact-to-Company edge, employer identity choice, canonical domain and the
+existing confirmed/provisional/unresolved gate. Research and Email consume that
+choice; neither may become the authority that selects it.
+
+Company executions reuse the permanent `Company` model, exact-domain adapter,
+`SalesNavCompanyEnrichment` candidate store and append-only
+`CompanyDomainResolution` ledger. The job result pins the decision ids and
+effective Campaign policy needed to explain that execution later. A report may
+also label unconfirmed stored candidates `provider_only`, but that display term
+does not change the three-state authoritative domain contract. Company
+Intelligence is a separate classification bounded context and is not part of
+identity or domain resolution.
 
 ## Current MVP boundary
 

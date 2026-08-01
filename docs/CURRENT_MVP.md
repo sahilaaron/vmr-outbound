@@ -46,7 +46,7 @@ Capture
 | --- | --- | --- |
 | Capture | Existing contact-first capture and promotion path | Operational |
 | Identity | Shared Agent adapter over authoritative identity services | Operational |
-| Company | Shared Agent adapter over permanent Company/domain services | Operational |
+| Company | Exact permanent-Company linking, canonical-domain gates and durable execution lineage | Operational; live acceptance pending |
 | Research | Registered deterministic research workers | Operational; live acceptance pending |
 | Email | Deterministic candidate policy | Operational |
 | Verification | Durable exact-address verification using the existing MillionVerifier boundary | Operational; live authority required |
@@ -66,6 +66,16 @@ It writes:
 - an operator-facing outcome derived from what the workers actually found.
 
 Research does not use a language model and does not silently rewrite canonical Company fields. Claude first enters the pipeline at Insights, after evidence has been persisted.
+
+The Company Agent reuses the existing permanent Company, capture candidate and
+append-only domain-decision systems. New jobs durably pin the historical
+Company/domain, exact decision ids, effective provisional-domain policy and
+Research handoff. Admin Studio shows that execution separately from current
+capture and Company aggregate state. `confirmed`, `provisional`, `unresolved`
+and report-only `provider_only` remain distinct; unresolved blocks Research,
+while provisional may start Research and reaches later stages only when the
+Campaign's existing setting permits it. Company Intelligence remains outside
+this pipeline slice.
 
 Insights pins the exact Research job, raw submission and dossier it consumed,
 stores attributable claims through the shared evidence model, and derives an

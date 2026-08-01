@@ -28,6 +28,68 @@ retry and lease facts already persisted by the queue. It must show an explicit
 unavailable state for facts or capabilities the persistence model does not
 contain.
 
+## Company execution report
+
+`/admin/agents/studio/company` is the read-only Company Agent module. Its
+exact-job API is
+`GET /api/admin/agent-studio/company/jobs/{agent_job_id}/report`. HTML and JSON
+receive the same frozen dataclass projection. Both run under `no_autoflush` and
+cannot enqueue or retry a job, resolve a company, alter the Contact-to-Company
+edge, write a domain decision, change Campaign policy, or advance the pipeline.
+Malformed, unknown, wrong-Agent and cross-owner ids share one safe 404.
+
+The authority split is explicit:
+
+- Identity resolves the permanent person and LinkedIn member identity;
+- Company links that person to the exact permanent Company, explains the
+  canonical domain decision, and applies existing downstream gates;
+- Research consumes the resulting Company/domain handoff and does not choose
+  either identity;
+- Email consumes the canonical domain through its existing gate and does not
+  become domain authority;
+- Company Intelligence remains a separate company-scoped classification
+  system and contributes no taxonomy, geography, specialties, queue or review
+  state to this report.
+
+Future Company executions persist a bounded `company-agent-report/1` snapshot
+inside the existing durable job result (or classified blocked error detail).
+It pins the selected/reused Company, exact-match candidates and key, exact
+capture and Company-aggregate decision ids, historical canonical domain, the
+effective Campaign provisional-domain setting, and the Research/later-stage
+gate reasons. The existing append-only `company_domain_resolutions` ledger
+continues to own candidates, reason codes, provider provenance and superseded
+decisions; no second ledger or migration was added.
+
+The report never collapses these views:
+
+1. historical Company/domain and decision pinned by the selected execution;
+2. today's current capture-scoped decision;
+3. today's Contact association and strongest current Company aggregate state;
+4. the historical Campaign policy snapshot versus today's Campaign setting.
+
+A later correction may therefore make the current Company/domain differ from
+the execution without changing its story. Candidate ordering, confidence and
+provider evidence are shown only when persisted. Current stored provider/model
+candidates without an authoritative decision are labelled `provider_only`; this
+is a report observation, never `confirmed` and never a new resolution enum.
+
+The authoritative decision states retain their existing meanings:
+
+- `confirmed`: established evidence; normal downstream use may continue;
+- `provisional`: provider-backed and uncorroborated; Research may continue,
+  while later stages require the Campaign to accept provisional domains;
+- `unresolved`: no selected domain; Company blocks before Research;
+- `provider_only`: candidates exist but no authoritative decision exists, so
+  the report must not upgrade the evidence.
+
+Report state is deterministic. `complete` requires the CMP-003 execution
+snapshot and an exact pinned domain decision. `partial` means an execution
+outcome exists but one or more historical links do not. `unavailable` means the
+job has no durable execution outcome. Older jobs are not retrospectively fuzzy
+matched: absent candidate, creation, policy or confidence facts remain in the
+explicit unavailable list. Customer/account ownership also remains unavailable
+because this repository has no authoritative account entity in this context.
+
 ## Personalization Policy Studio
 
 Personalization owns a specialized policy schema. It is not a universal Agent
