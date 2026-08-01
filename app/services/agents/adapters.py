@@ -5,7 +5,6 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from sqlalchemy import func, select
@@ -32,7 +31,9 @@ from app.services.audit import record_audit_event
 from app.services.companies import conflicts as company_conflicts
 from app.services.companies import dossiers
 from app.services.imports.normalization import is_valid_email, normalize_email
+from app.services.insights import employee_size
 from app.services.insights import evidence as insights_evidence
+from app.services.insights import lineage as insights_lineage
 from app.services.insights.evidence import InsightError
 from app.services.personalization import generation as personalization_generation
 from app.services.personalization import policy as personalization_policy
@@ -786,26 +787,6 @@ def _text(value: Any, *, limit: int) -> str | None:
     return cleaned[:limit] if cleaned else None
 
 
-def _url(value: Any) -> str | None:
-    """Accept only an absolute http(s) URL — the insight store requires one."""
-
-    candidate = _text(value, limit=1024)
-    if candidate is None:
-        return None
-    lowered = candidate.lower()
-    if lowered.startswith("http://") or lowered.startswith("https://"):
-        return candidate
-    return None
-
-
-def _confidence(value: Any) -> float:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return 0.5
-    return min(1.0, max(0.0, number))
-
-
 def _seller_summary(seller: SellerContext) -> str:
     """Flatten trusted seller context into the prompt's first block."""
 
@@ -856,10 +837,10 @@ class InsightsAgentAdapter:
 
     Every claim is written through ``insights.create_insight``, which refuses a
     supported claim that has no traceable source. A claim the model offered
-    without a usable URL is therefore not stored as a weaker fact — it is
-    dropped and counted, and the gaps the model named are stored as explicit
-    unknowns. That asymmetry is the point: this stage may reduce what is
-    asserted, never expand it.
+    without a valid handle from this execution's committed Research catalog is
+    therefore not stored as a weaker fact — it is dropped and counted, and the
+    gaps the model named are stored as explicit unknowns. That asymmetry is the
+    point: this stage may reduce what is asserted, never expand it.
     """
 
     agent_id = AgentIdentifier.INSIGHTS
@@ -882,19 +863,30 @@ class InsightsAgentAdapter:
                 "company_missing",
                 "Insights needs the permanent Company the Company Agent resolves.",
             )
-        current = dossiers.current_version(context.session, company_id=company.id)
-        if current is None:
+        lineage = insights_lineage.resolve(
+            context.session,
+            insights_job=context.job,
+            company_id=company.id,
+        )
+        if lineage is None:
             raise AgentBlocked(
-                "research_missing",
-                "Insights needs a current company dossier. Run the Research Agent first, "
-                "or skip Insights for this Contact.",
+                "research_lineage_unavailable",
+                "Insights needs the exact committed Research submission and dossier for this "
+                "execution. Current Company state is not a historical substitute.",
             )
 
         dossier = {
-            name: getattr(current, name)
+            name: getattr(lineage.dossier, name)
             for name in dossiers.SECTION_COLUMNS
-            if getattr(current, name) is not None
+            if getattr(lineage.dossier, name) is not None
         }
+        catalog = employee_size.research_evidence_catalog(
+            context.session,
+            research_job_id=lineage.research_job.id,
+            company_id=company.id,
+        )
+        prompt_catalog = employee_size.bounded_prompt_catalog(catalog)
+        evidence_by_handle = {item.handle: item for item in prompt_catalog}
         seller = seller_context.assemble(context.session, campaign_id=context.campaign.id)
 
         settings = get_settings()
@@ -904,6 +896,7 @@ class InsightsAgentAdapter:
                 seller_summary=_seller_summary(seller),
                 company_name=company.name,
                 dossier=dossier,
+                evidence_catalog=[item.prompt_value() for item in prompt_catalog],
                 contact_title=contact.title,
             ),
             purpose="company_insights",
@@ -920,7 +913,6 @@ class InsightsAgentAdapter:
 
         raw_claims = answer.payload.get("claims")
         raw_claims = raw_claims if isinstance(raw_claims, list) else []
-        retrieved_at = datetime.now(UTC)
         stored: list[dict[str, Any]] = []
         dropped: list[dict[str, Any]] = []
         max_claims = int(context.config.get("max_claims", 5))
@@ -930,14 +922,52 @@ class InsightsAgentAdapter:
                 dropped.append({"index": index, "reason": "not_an_object"})
                 continue
             claim = _text(item.get("claim"), limit=2000)
-            source_url = _url(item.get("source_url"))
-            evidence_summary = _text(item.get("evidence_summary"), limit=2000)
             if claim is None:
                 dropped.append({"index": index, "reason": "empty_claim"})
                 continue
-            if source_url is None or evidence_summary is None:
-                # Unsourced is not stored as a lesser fact. It is not stored.
+            raw_handles = item.get("evidence_handles")
+            handle_values = raw_handles if isinstance(raw_handles, list) else []
+            try:
+                handles = (
+                    tuple(dict.fromkeys(uuid.UUID(value) for value in handle_values))
+                    if 0 < len(handle_values) <= 10
+                    else ()
+                )
+            except (TypeError, ValueError, AttributeError):
+                handles = ()
+            if not handles or any(handle not in evidence_by_handle for handle in handles):
                 dropped.append({"index": index, "reason": "unsourced", "claim": claim[:200]})
+                continue
+            evidence_inputs: list[insights_evidence.EvidenceInput] = []
+            invalid_evidence = False
+            for handle in handles:
+                source = evidence_by_handle[handle].evidence
+                if (
+                    source.retrieved_at is None
+                    or not source.evidence_summary
+                    or source.confidence is None
+                    or not source.extraction_method
+                ):
+                    invalid_evidence = True
+                    break
+                evidence_inputs.append(
+                    insights_evidence.EvidenceInput(
+                        source_url=source.source_url,
+                        source_title=source.source_title,
+                        published_at=source.published_at,
+                        retrieved_at=source.retrieved_at,
+                        excerpt=source.excerpt,
+                        evidence_summary=source.evidence_summary,
+                        confidence=source.confidence,
+                        extraction_method=source.extraction_method,
+                        freshness_at=source.freshness_at,
+                        source_record_type="insight_evidence",
+                        source_record_id=source.id,
+                        version=source.version,
+                    )
+                )
+            if invalid_evidence:
+                dropped.append({"index": index, "reason": "invalid_evidence"})
                 continue
             kind = (
                 InsightKind.INTERPRETATION
@@ -950,22 +980,15 @@ class InsightsAgentAdapter:
                     claim=claim,
                     kind=kind,
                     state=InsightState.SUPPORTED,
-                    evidence=[
-                        insights_evidence.EvidenceInput(
-                            source_url=source_url,
-                            retrieved_at=retrieved_at,
-                            evidence_summary=evidence_summary,
-                            confidence=_confidence(item.get("confidence")),
-                            extraction_method=f"{answer.producer}/{answer.producer_version}",
-                            source_record_type="company_dossier_version",
-                            source_record_id=current.id,
-                        )
-                    ],
+                    evidence=evidence_inputs,
                     company_id=company.id,
                     # Stable per job and position, so a retried job re-uses the
                     # same records rather than duplicating them.
                     idempotency_key=f"insights-agent:{context.job.id}:{index}",
                     actor=context.worker_id,
+                    producer_job_id=context.job.id,
+                    dossier_version_id=lineage.dossier.id,
+                    derivation_version=f"{answer.producer}/{answer.producer_version}"[:64],
                 )
             except InsightError as exc:
                 dropped.append({"index": index, "reason": "rejected", "detail": str(exc)[:200]})
@@ -975,7 +998,7 @@ class InsightsAgentAdapter:
                     "insight_id": str(insight.id),
                     "claim": claim,
                     "kind": kind.value,
-                    "source_url": source_url,
+                    "evidence_handles": [str(handle) for handle in handles],
                     "relevance": _text(item.get("relevance"), limit=600),
                 }
             )
@@ -1000,29 +1023,57 @@ class InsightsAgentAdapter:
                     company_id=company.id,
                     idempotency_key=f"insights-agent:{context.job.id}:unknown:{index}",
                     actor=context.worker_id,
+                    producer_job_id=context.job.id,
+                    dossier_version_id=lineage.dossier.id,
+                    derivation_version=f"{answer.producer}/{answer.producer_version}"[:64],
                 )
             except InsightError:
                 # A gap that will not store is not worth failing the stage over.
                 continue
 
-        if not stored:
+        employee_insight = employee_size.derive_and_store(
+            context.session,
+            company_id=company.id,
+            insights_job=context.job,
+            dossier=lineage.dossier,
+            catalog=prompt_catalog,
+            model_output=answer.payload.get("employee_size"),
+            actor=context.worker_id,
+        )
+        employee_payload = employee_insight.structured_payload or {}
+        employee_eligible, employee_reason = employee_size.downstream_eligible(employee_insight)
+
+        if not stored and not employee_eligible:
             raise AgentBlocked(
                 "insufficient_evidence",
                 "No claim in the answer carried a usable source, so nothing was stored. "
                 "The Contact cannot be personalized from evidence that does not exist.",
-                detail={"dropped": dropped[:10], "unknowns_recorded": len(unknown_texts)},
+                detail={
+                    "dropped": dropped[:10],
+                    "unknowns_recorded": len(unknown_texts),
+                    "employee_size_insight_id": str(employee_insight.id),
+                    "employee_size_status": employee_payload.get("status"),
+                },
                 # The unknown records above are real writes worth keeping.
                 preserve_outcome=True,
             )
 
         output = {
             "company_id": str(company.id),
-            "dossier_version": current.version_number,
+            "research_job_id": str(lineage.research_job.id),
+            "submission_id": str(lineage.submission.id),
+            "dossier_version_id": str(lineage.dossier.id),
+            "dossier_version": lineage.dossier.version_number,
             "insights_stored": len(stored),
             "claims_dropped": len(dropped),
             "unknowns_recorded": len(unknown_texts),
             "insights": stored,
             "dropped": dropped[:10],
+            "employee_size_insight_id": str(employee_insight.id),
+            "employee_size_status": employee_payload.get("status"),
+            "employee_size_band": employee_payload.get("normalized_band"),
+            "employee_size_downstream_eligible": employee_eligible,
+            "employee_size_eligibility_reason": employee_reason,
             "producer": answer.producer,
         }
         return AgentExecutionResult(

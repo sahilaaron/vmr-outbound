@@ -20,6 +20,7 @@ import inspect
 import uuid
 from collections.abc import Iterator
 from copy import deepcopy
+from datetime import UTC, datetime
 
 import pytest
 from app.core.config import get_settings
@@ -30,7 +31,9 @@ from app.models.draft import DraftVersion
 from app.models.enums import (
     AgentControlStatus,
     AgentIdentifier,
+    AgentJobStatus,
     CampaignStatus,
+    InsightKind,
     InsightState,
     SuppressionReason,
     SuppressionType,
@@ -158,6 +161,57 @@ def _context(
         db.scalars(select(Company).where(Company.domain == contact.company_domain)).one().id
     )
     db.flush()
+    parent_job = None
+    input_reference: dict[str, object] = {}
+    if agent_id is AgentIdentifier.INSIGHTS:
+        current = dossiers.current_version(db, company_id=contact.company_id)
+        if current is not None:
+            parent_job, _ = enqueue_job(
+                db,
+                agent_id=AgentIdentifier.RESEARCH,
+                idempotency_key=f"test:research:{uuid.uuid4()}",
+                task_kind="advance_campaign_contact",
+                max_attempts=3,
+                campaign_id=campaign.id,
+                campaign_contact_id=enrolled.membership.id,
+                contact_id=contact.id,
+                company_id=contact.company_id,
+            )
+            parent_job.status = AgentJobStatus.SUCCEEDED
+            parent_job.finished_at = datetime.now(UTC)
+            parent_job.result = {
+                "company_id": str(contact.company_id),
+                "submission_id": str(current.submission_id),
+                "dossier_version": current.version_number,
+            }
+            research_fact = insights_evidence.create_insight(
+                db,
+                claim="Opened a second plant in Pune.",
+                kind=InsightKind.FACT,
+                state=InsightState.SUPPORTED,
+                evidence=[
+                    insights_evidence.EvidenceInput(
+                        source_url="https://kiln.example/news/pune",
+                        retrieved_at=datetime.now(UTC),
+                        evidence_summary="The newsroom announced the Pune plant.",
+                        confidence=0.8,
+                        extraction_method="research-test/v1",
+                    )
+                ],
+                company_id=contact.company_id,
+                idempotency_key=f"research:{parent_job.id}:website:0",
+            )
+            evidence_row = db.scalars(
+                select(insights_evidence.InsightEvidence).where(
+                    insights_evidence.InsightEvidence.insight_id == research_fact.id
+                )
+            ).one()
+            input_reference = {
+                "research_job_id": str(parent_job.id),
+                "research_submission_id": str(current.submission_id),
+                "research_dossier_version_id": str(current.id),
+                "test_evidence_handle": str(evidence_row.id),
+            }
     job, _ = enqueue_job(
         db,
         agent_id=agent_id,
@@ -167,6 +221,9 @@ def _context(
         campaign_id=campaign.id,
         campaign_contact_id=enrolled.membership.id,
         contact_id=contact.id,
+        company_id=contact.company_id,
+        input_reference=input_reference,
+        parent_job_id=parent_job.id if parent_job else None,
     )
     return AgentExecutionContext(
         session=db,
@@ -177,6 +234,12 @@ def _context(
         config={"live": True, **(config or {})},
         worker_id=WORKER,
     )
+
+
+def _test_evidence_handle(context: AgentExecutionContext) -> str:
+    value = context.job.input_reference.get("test_evidence_handle")
+    assert isinstance(value, str)
+    return value
 
 
 # --- The boundary between gathering and reasoning ---------------------------
@@ -227,11 +290,18 @@ def test_the_two_model_agents_get_no_tools(db_session: Session) -> None:
         sections={"overview": {"summary": "s"}},
     )
 
-    insights_thinker = ScriptedThinker(
-        {"claims": [{"claim": "c", "source_url": "https://kiln.example", "evidence_summary": "e"}]}
-    )
     context = _context(
         db_session, campaign=campaign, contact=contact, agent_id=AgentIdentifier.INSIGHTS
+    )
+    insights_thinker = ScriptedThinker(
+        {
+            "claims": [
+                {
+                    "claim": "c",
+                    "evidence_handles": [_test_evidence_handle(context)],
+                }
+            ]
+        }
     )
     InsightsAgentAdapter(thinker_factory=lambda _s: insights_thinker).execute(context)
     assert insights_thinker.requests[0].allowed_tools == ()
@@ -303,7 +373,10 @@ def test_a_model_timeout_is_retryable_and_stores_nothing(db_session: Session) ->
     with pytest.raises(Exception) as caught:  # noqa: PT011 - class asserted below
         adapter.execute(context)
     assert caught.value.retryable is True  # type: ignore[attr-defined]
-    assert insights_evidence.list_for_company(db_session, company_id=company.id) == []
+    assert not any(
+        (item.idempotency_key or "").startswith(f"insights-agent:{context.job.id}:")
+        for item in insights_evidence.list_for_company(db_session, company_id=company.id)
+    )
 
 
 # --- Insights ---------------------------------------------------------------
@@ -313,9 +386,6 @@ def test_an_unsourced_claim_is_dropped_rather_than_stored_as_a_weaker_fact(
     db_session: Session,
 ) -> None:
     campaign, company, contact = _records(db_session)
-    context = _context(
-        db_session, campaign=campaign, contact=contact, agent_id=AgentIdentifier.INSIGHTS
-    )
     dossiers.interpret(
         db_session,
         company=company,
@@ -325,14 +395,16 @@ def test_an_unsourced_claim_is_dropped_rather_than_stored_as_a_weaker_fact(
         interpreter="test",
         sections={"overview": {"summary": "s"}},
     )
+    context = _context(
+        db_session, campaign=campaign, contact=contact, agent_id=AgentIdentifier.INSIGHTS
+    )
     thinker = ScriptedThinker(
         {
             "claims": [
                 {
                     "claim": "Opened a second plant in Pune.",
                     "kind": "fact",
-                    "source_url": "https://kiln.example/news/pune",
-                    "evidence_summary": "The newsroom announced the Pune plant.",
+                    "evidence_handles": [_test_evidence_handle(context)],
                     "confidence": 0.8,
                 },
                 {
@@ -352,8 +424,10 @@ def test_an_unsourced_claim_is_dropped_rather_than_stored_as_a_weaker_fact(
     )
     result = InsightsAgentAdapter(thinker_factory=lambda _s: thinker).execute(context)
 
+    assert len(thinker.requests) == 1
     assert result.output_reference["insights_stored"] == 1
     assert result.output_reference["claims_dropped"] == 2
+    assert result.output_reference["employee_size_status"] == "unavailable"
     stored = insights_evidence.list_for_company(db_session, company_id=company.id)
     supported = [row for row in stored if row.state is InsightState.SUPPORTED]
     assert len(supported) == 1
@@ -364,9 +438,6 @@ def test_an_unsourced_claim_is_dropped_rather_than_stored_as_a_weaker_fact(
 
 def test_insights_blocks_when_nothing_survives_the_evidence_gate(db_session: Session) -> None:
     campaign, company, contact = _records(db_session)
-    context = _context(
-        db_session, campaign=campaign, contact=contact, agent_id=AgentIdentifier.INSIGHTS
-    )
     dossiers.interpret(
         db_session,
         company=company,
@@ -375,6 +446,9 @@ def test_insights_blocks_when_nothing_survives_the_evidence_gate(db_session: Ses
         )[0],
         interpreter="test",
         sections={"overview": {}},
+    )
+    context = _context(
+        db_session, campaign=campaign, contact=contact, agent_id=AgentIdentifier.INSIGHTS
     )
     thinker = ScriptedThinker({"claims": [{"claim": "Unsourced."}], "unknowns": ["everything"]})
     with pytest.raises(AgentBlocked) as caught:
@@ -389,7 +463,7 @@ def test_insights_needs_research_first(db_session: Session) -> None:
     )
     with pytest.raises(AgentBlocked) as caught:
         InsightsAgentAdapter(thinker_factory=lambda _s: ScriptedThinker()).execute(context)
-    assert caught.value.code == "research_missing"
+    assert caught.value.code == "research_lineage_unavailable"
 
 
 # --- Personalization --------------------------------------------------------

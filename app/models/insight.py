@@ -29,7 +29,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -45,6 +45,8 @@ class Insight(Base):
         Index("ix_insights_company_id", "company_id"),
         Index("ix_insights_subject", "subject"),
         Index("ix_insights_state", "state"),
+        Index("ix_insights_producer_job_id", "producer_job_id"),
+        Index("ix_insights_company_type_created", "company_id", "insight_type", "created_at"),
         CheckConstraint(
             "(subject = 'COMPANY' AND company_id IS NOT NULL AND contact_id IS NULL) "
             "OR (subject = 'CONTACT' AND contact_id IS NOT NULL AND company_id IS NULL)",
@@ -52,6 +54,17 @@ class Insight(Base):
         ),
         CheckConstraint("btrim(claim) <> ''", name="insight_claim_not_blank"),
         CheckConstraint("version > 0", name="insight_version_positive"),
+        CheckConstraint(
+            "(insight_type IS NULL AND structured_payload IS NULL) "
+            "OR (insight_type IS NOT NULL AND structured_payload IS NOT NULL)",
+            name="insight_structured_pair",
+        ),
+        CheckConstraint(
+            "insight_type IS NULL OR (producer_job_id IS NOT NULL "
+            "AND dossier_version_id IS NOT NULL AND derivation_version IS NOT NULL "
+            "AND btrim(insight_type) <> '' AND btrim(derivation_version) <> '')",
+            name="insight_structured_lineage",
+        ),
         UniqueConstraint(
             "company_id",
             "idempotency_key",
@@ -91,6 +104,22 @@ class Insight(Base):
     created_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # INS-002 extends the shared claim record rather than creating a parallel
+    # firmographic fact system.  These fields are nullable for every historical
+    # INS-001 row and for ordinary unstructured claims.
+    insight_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    structured_payload: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
+    producer_job_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("verification_jobs.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    dossier_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("company_dossier_versions.id", ondelete="NO ACTION"),
+        nullable=True,
+    )
+    derivation_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # DAT-001 compatibility only. New source material is stored on
     # InsightEvidence, where several observations can support one claim.
