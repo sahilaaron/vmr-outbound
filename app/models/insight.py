@@ -108,7 +108,12 @@ class Insight(Base):
     # firmographic fact system.  These fields are nullable for every historical
     # INS-001 row and for ordinary unstructured claims.
     insight_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    structured_payload: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
+    # ``JSONB`` otherwise serializes Python ``None`` as JSON ``null``.  Legacy
+    # and ordinary untyped Insights require a real SQL NULL so the additive
+    # typed-pair constraint continues to accept them.
+    structured_payload: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
     producer_job_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("verification_jobs.id", ondelete="RESTRICT"),
