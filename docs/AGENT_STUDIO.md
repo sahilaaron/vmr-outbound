@@ -171,6 +171,67 @@ future GLM integration artifact to merge.
 Research prompts, worker source, code and collection rules remain outside this
 interface.
 
+## Email Discovery and Verification Studio
+
+Email and Verification keep their existing positions, parent/child Agent Jobs,
+controls, Campaign overrides, pipeline state, and authoritative
+`VerificationDecision`. EV-001 adds operator configuration and observability;
+it does not create another Agent, queue, attempt lifecycle, or execution-control
+system.
+
+The Email page owns one immutable, explicitly activated pattern-policy history.
+It orders a bounded set of allowed patterns and may place accepted, learned
+Company-domain formats first. Employee size is not an input to selection or
+sequencing. Historical attempt columns remain readable, but new policy decisions
+do not require employee-size evidence. A learned format is append-only evidence,
+not proof that another mailbox exists, and is created only from live, accepted,
+non-role exact-address evidence.
+
+Structured Employee Size derivation from Research evidence is deliberately
+deferred to Insights issue #238; it is not an Email discovery dependency.
+
+The Verification page owns:
+
+* a fixed typed registry initially containing MillionVerifier and DeBounce;
+* immutable encrypted credential versions with append-only activation/rotation;
+* immutable ordered provider-waterfall versions and explicit activation;
+* one-address simulated or live tests invoked only by an operator;
+* read-only Email and Verification execution reports;
+* shared usage, cost, balance, cache, provider-step, catch-all, and conflict views
+  where those facts are durably available.
+
+Live Studio tests can be billable. They make exactly one selected-provider call,
+record `agent_studio` origin, and create no Agent Job, exact-address evidence,
+pipeline event, retry, approval, or Sending side effect. Production Agent calls
+record `customer_operation`; future admin-initiated calls use
+`admin_operation`. `campaign_id`, `campaign_contact_id`, `contact_id`, and
+`account_reference` remain separate attribution fields. The current repository
+has no customer-account entity, so the account reference is explicitly absent
+instead of inferred.
+
+Credential values are write-only. Agent Studio stores Fernet-encrypted versions
+only when `PROVIDER_CREDENTIAL_ENCRYPTION_KEY` is explicitly configured; there
+is no fallback encryption key. Pages and reports expose only a label and short
+one-way fingerprint. Existing environment-based MillionVerifier configuration
+remains a read-only compatibility source for production execution and is never
+copied into Studio storage or displayed.
+
+Provider-specific strings are normalized by adapters and never become pipeline
+logic. Verification owns waterfall traversal and appends each provider step
+below the existing `VerificationAttempt`; the common Agent worker still owns
+leases, attempt count, retry scheduling, terminal state, and Email-child
+handoff. Catch-all remains uncertainty, not accepted-mailbox evidence.
+
+Both execution-report APIs are mounted only with the local Admin Workbench:
+
+* `GET /api/admin/agent-studio/email/jobs/{agent_job_id}/report`;
+* `GET /api/admin/agent-studio/verification/jobs/{agent_job_id}/report`.
+
+HTML and JSON use the same frozen dataclass graph. Raw provider bodies,
+credentials, authorization material, environment values, shell commands, local
+paths, and private model reasoning are never returned. Loading a report performs
+no write.
+
 ## Adding a future Agent page
 
 1. Keep execution registration in `app.services.agents.registry`; Studio does

@@ -53,11 +53,16 @@ Sending is registered for compatibility with the durable pipeline but has no pro
 
 ## Email policy
 
-Attempt at most three candidates in this order and stop after the first verified result:
+The seeded generic pattern policy begins in this order and stops after the first
+verified result:
 
 1. `firstname.lastname`
 2. `firstname`
 3. `finitiallastname`
+
+Agent Studio may activate a new immutable bounded ordering and may place learned
+Company-domain formats first. Employee size does not select or sequence formats.
+Each candidate still receives one child Verification job at a time.
 
 The Email Agent enqueues one child Verification Agent Job at a time and resumes from the committed Verification outcome.
 

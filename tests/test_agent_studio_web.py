@@ -75,8 +75,16 @@ def test_personalization_has_a_dedicated_policy_page_and_other_agents_are_explic
 
     email = studio_client.get("/admin/agents/studio/email")
     assert email.status_code == 200
-    assert "No editable Agent-specific configuration is available" in email.text
-    assert "No side-effect-free preview is implemented" in email.text
+    assert "Email Agent Studio" in email.text
+    assert "Employee size does not select or sequence patterns" in email.text
+    assert "Read-only execution inspection" in email.text
+
+    verification = studio_client.get("/admin/agents/studio/verification")
+    assert verification.status_code == 200
+    assert "Verification Agent Studio" in verification.text
+    assert "Provider Test Console can be billable" in verification.text
+    assert "Customer Operation" in verification.text
+    assert "Agent Studio" in verification.text
 
 
 def test_wording_revision_is_versioned_and_preserves_every_other_policy_field(
@@ -173,6 +181,16 @@ def test_studio_exists_only_under_admin_and_is_absent_when_admin_is_not_mounted(
         assert client.get("/admin/agents/studio").status_code == 404
         assert (
             client.get(f"/api/admin/agent-studio/research/jobs/{uuid.uuid4()}/report").status_code
+            == 404
+        )
+        assert (
+            client.get(f"/api/admin/agent-studio/email/jobs/{uuid.uuid4()}/report").status_code
+            == 404
+        )
+        assert (
+            client.get(
+                f"/api/admin/agent-studio/verification/jobs/{uuid.uuid4()}/report"
+            ).status_code
             == 404
         )
 

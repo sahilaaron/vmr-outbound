@@ -31,6 +31,11 @@ from app.core.config import Settings, get_settings
 from app.models.campaign import Campaign, CampaignContact
 from app.models.contact import Contact
 from app.models.contact_capture import ContactCaptureNote, ContactCaptureSubmission
+from app.models.email_verification_studio import (
+    EmailPatternPolicyVersion,
+    ProviderTestRun,
+    VerificationWaterfallPolicyVersion,
+)
 from app.models.enums import (
     AgentControlStatus,
     AgentIdentifier,
@@ -50,8 +55,10 @@ from app.models.enums import (
 from app.models.linkedin_company import LinkedInCompanySnapshot
 from app.models.linkedin_profile import LinkedInProfileSnapshot
 from app.models.personalization_policy import PersonalizationPolicyVersion
+from app.models.verification_job import AgentJob
 from app.services import agent_studio as agent_studio_service
 from app.services import campaign_contacts, devtools, identity, workbench, workbench_agents
+from app.services.agent_studio.email_verification_report import EmailVerificationReportReader
 from app.services.agent_studio.research_report import (
     DurableResearchReportReader,
     ResearchReportReader,
@@ -103,8 +110,10 @@ from app.services.thinking.contracts import ThinkingError
 from app.services.verification import console as verification_console
 from app.services.verification import queue as verification_queue
 from app.services.verification import service as verification_service
+from app.services.verification import studio as verification_studio
 from app.services.verification import usage as verification_usage
 from app.services.verification.provider import VerificationProvider
+from app.services.verification.provider_registry import PROVIDERS
 from app.services.workbench_agents import views as workbench_views
 
 router = APIRouter(include_in_schema=False)
@@ -4215,6 +4224,276 @@ async def personalization_preview(request: Request, db: Session = Depends(get_db
 
 def _research_report_reader(db: Session) -> ResearchReportReader:
     return DurableResearchReportReader(db)
+
+
+def _email_verification_context(
+    request: Request,
+    db: Session,
+    *,
+    agent_id: AgentIdentifier,
+    test_run: ProviderTestRun | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    jobs = list(
+        db.scalars(
+            select(AgentJob)
+            .where(AgentJob.agent_id == agent_id)
+            .order_by(AgentJob.created_at.desc())
+            .limit(100)
+        ).all()
+    )
+    selected_id = _parse_uuid(request.query_params.get("job"))
+    report = EmailVerificationReportReader(db).read(selected_id, agent_id) if selected_id else None
+    context: dict[str, Any] = {
+        "agent_id": agent_id,
+        "jobs": jobs,
+        "report": report,
+        "test_run": test_run,
+        "flash_err": error or request.query_params.get("err"),
+        "active_nav": "agent-studio",
+        "page_title": f"{agent_id.value.title()} Agent Studio",
+    }
+    if agent_id is AgentIdentifier.VERIFICATION:
+        context.update(
+            {
+                "provider_cards": verification_studio.provider_cards(db),
+                "provider_usage": verification_studio.provider_usage_summaries(db, get_settings()),
+                "waterfall": verification_studio.active_waterfall(db),
+                "waterfall_versions": list(
+                    db.scalars(
+                        select(VerificationWaterfallPolicyVersion).order_by(
+                            VerificationWaterfallPolicyVersion.version_number.desc()
+                        )
+                    ).all()
+                ),
+                "usage_origins": verification_studio.usage_by_origin(db),
+                "providers": PROVIDERS,
+            }
+        )
+    else:
+        context.update(
+            {
+                "pattern_policy": verification_studio.active_pattern_policy(db),
+                "pattern_versions": list(
+                    db.scalars(
+                        select(EmailPatternPolicyVersion).order_by(
+                            EmailPatternPolicyVersion.version_number.desc()
+                        )
+                    ).all()
+                ),
+                "allowed_patterns": verification_studio.ALLOWED_PATTERNS,
+            }
+        )
+    return context
+
+
+@router.get("/admin/agents/studio/email", response_class=HTMLResponse)
+def email_agent_studio_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    if not _agent_workbench_available():
+        return _agent_workbench_unavailable(request, db)
+    return _render(
+        request,
+        db,
+        "email_agent_studio.html",
+        _email_verification_context(request, db, agent_id=AgentIdentifier.EMAIL),
+    )
+
+
+@router.get("/admin/agents/studio/verification", response_class=HTMLResponse)
+def verification_agent_studio_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    if not _agent_workbench_available():
+        return _agent_workbench_unavailable(request, db)
+    return _render(
+        request,
+        db,
+        "verification_agent_studio.html",
+        _email_verification_context(request, db, agent_id=AgentIdentifier.VERIFICATION),
+    )
+
+
+@router.post("/admin/agents/studio/verification/credentials/{provider_id}")
+async def verification_credential_rotate(
+    request: Request, provider_id: str, db: Session = Depends(get_db)
+) -> Response:
+    if not _agent_workbench_available() or provider_id not in PROVIDERS:
+        return _redirect("/admin/agents/studio/verification", err="Provider unavailable.")
+    form = await request.form()
+    try:
+        verification_studio.rotate_credential(
+            db,
+            provider_id=provider_id,
+            secret=str(form.get("secret", "")),
+            label=str(form.get("label", "")),
+            actor=OPERATOR_ACTOR,
+            reason=str(form.get("reason", "")) or None,
+            settings=get_settings(),
+        )
+        db.commit()
+    except verification_studio.StudioConfigurationError as exc:
+        db.rollback()
+        return _redirect("/admin/agents/studio/verification", err=str(exc))
+    return _redirect(
+        "/admin/agents/studio/verification",
+        ok=(
+            f"{PROVIDERS[provider_id].display_name} credential rotated; "
+            "its value will not be shown."
+        ),
+    )
+
+
+@router.post("/admin/agents/studio/verification/test", response_class=HTMLResponse)
+async def verification_provider_test(
+    request: Request, db: Session = Depends(get_db)
+) -> HTMLResponse:
+    if not _agent_workbench_available():
+        return _agent_workbench_unavailable(request, db)
+    form = await request.form()
+    run = None
+    error = None
+    try:
+        run = verification_studio.provider_test(
+            db,
+            provider_id=str(form.get("provider_id", "")),
+            email=str(form.get("email", "")),
+            live=str(form.get("mode", "simulated")) == "live",
+            actor=OPERATOR_ACTOR,
+            settings=get_settings(),
+        )
+        db.commit()
+    except verification_studio.StudioConfigurationError as exc:
+        db.rollback()
+        error = str(exc)
+    return _render(
+        request,
+        db,
+        "verification_agent_studio.html",
+        _email_verification_context(
+            request, db, agent_id=AgentIdentifier.VERIFICATION, test_run=run, error=error
+        ),
+    )
+
+
+@router.post("/admin/agents/studio/verification/waterfalls")
+async def verification_waterfall_create(
+    request: Request, db: Session = Depends(get_db)
+) -> Response:
+    form = await request.form()
+    order = [
+        item.strip() for item in str(form.get("provider_order", "")).split(",") if item.strip()
+    ]
+    try:
+        row = verification_studio.create_waterfall_version(
+            db,
+            configuration={"providers": [{"id": item, "enabled": True} for item in order]},
+            name=str(form.get("name", "")),
+            actor=OPERATOR_ACTOR,
+            based_on_version_id=_parse_uuid(str(form.get("based_on_version_id", ""))),
+            change_note=str(form.get("change_note", "")) or None,
+        )
+        db.commit()
+    except verification_studio.StudioConfigurationError as exc:
+        db.rollback()
+        return _redirect("/admin/agents/studio/verification", err=str(exc))
+    return _redirect(
+        "/admin/agents/studio/verification", ok=f"Waterfall v{row.version_number} saved inactive."
+    )
+
+
+@router.post("/admin/agents/studio/verification/waterfalls/{policy_id}/activate")
+async def verification_waterfall_activate(
+    request: Request, policy_id: str, db: Session = Depends(get_db)
+) -> Response:
+    parsed = _parse_uuid(policy_id)
+    if parsed is None:
+        return _redirect("/admin/agents/studio/verification", err="Invalid policy version.")
+    form = await request.form()
+    try:
+        verification_studio.activate_waterfall(
+            db,
+            policy_version_id=parsed,
+            actor=OPERATOR_ACTOR,
+            reason=str(form.get("reason", "")) or None,
+        )
+        db.commit()
+    except verification_studio.StudioConfigurationError as exc:
+        db.rollback()
+        return _redirect("/admin/agents/studio/verification", err=str(exc))
+    return _redirect("/admin/agents/studio/verification", ok="Waterfall policy activated.")
+
+
+@router.post("/admin/agents/studio/email/pattern-policies")
+async def email_pattern_policy_create(request: Request, db: Session = Depends(get_db)) -> Response:
+    form = await request.form()
+    order = [item.strip() for item in str(form.get("pattern_order", "")).split(",") if item.strip()]
+    try:
+        maximum = int(str(form.get("max_candidates", "8")))
+    except ValueError:
+        maximum = -1
+    try:
+        row = verification_studio.create_pattern_version(
+            db,
+            configuration={
+                "patterns": [{"id": item, "enabled": True} for item in order],
+                "learned_formats_first": "learned_formats_first" in form,
+                "max_candidates": maximum,
+            },
+            name=str(form.get("name", "")),
+            actor=OPERATOR_ACTOR,
+            based_on_version_id=_parse_uuid(str(form.get("based_on_version_id", ""))),
+            change_note=str(form.get("change_note", "")) or None,
+        )
+        db.commit()
+    except verification_studio.StudioConfigurationError as exc:
+        db.rollback()
+        return _redirect("/admin/agents/studio/email", err=str(exc))
+    return _redirect(
+        "/admin/agents/studio/email",
+        ok=f"Email pattern policy v{row.version_number} saved inactive.",
+    )
+
+
+@router.post("/admin/agents/studio/email/pattern-policies/{policy_id}/activate")
+async def email_pattern_policy_activate(
+    request: Request, policy_id: str, db: Session = Depends(get_db)
+) -> Response:
+    parsed = _parse_uuid(policy_id)
+    if parsed is None:
+        return _redirect("/admin/agents/studio/email", err="Invalid policy version.")
+    form = await request.form()
+    try:
+        verification_studio.activate_pattern_policy(
+            db,
+            policy_version_id=parsed,
+            actor=OPERATOR_ACTOR,
+            reason=str(form.get("reason", "")) or None,
+        )
+        db.commit()
+    except verification_studio.StudioConfigurationError as exc:
+        db.rollback()
+        return _redirect("/admin/agents/studio/email", err=str(exc))
+    return _redirect("/admin/agents/studio/email", ok="Email pattern policy activated.")
+
+
+def _agent_execution_report_response(
+    job_id: str, expected: AgentIdentifier, db: Session
+) -> JSONResponse:
+    if not _agent_workbench_available():
+        return JSONResponse(status_code=404, content={"detail": "Not found."})
+    parsed = _parse_uuid(job_id)
+    report = EmailVerificationReportReader(db).read(parsed, expected) if parsed else None
+    if report is None:
+        return JSONResponse(status_code=404, content={"detail": "Not found."})
+    return JSONResponse(content=jsonable_encoder(report))
+
+
+@router.get("/api/admin/agent-studio/email/jobs/{job_id}/report")
+def email_agent_report_api(job_id: str, db: Session = Depends(get_db)) -> JSONResponse:
+    return _agent_execution_report_response(job_id, AgentIdentifier.EMAIL, db)
+
+
+@router.get("/api/admin/agent-studio/verification/jobs/{job_id}/report")
+def verification_agent_report_api(job_id: str, db: Session = Depends(get_db)) -> JSONResponse:
+    return _agent_execution_report_response(job_id, AgentIdentifier.VERIFICATION, db)
 
 
 @router.get("/admin/agents/studio/research", response_class=HTMLResponse)

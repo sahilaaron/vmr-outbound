@@ -136,15 +136,29 @@ The model may not:
 
 ## Email and Verification policy
 
-The Email Agent tries no more than three candidate formats:
+The Email Agent uses the active immutable Email pattern policy. Its seeded
+generic order begins with:
 
 1. `firstname.lastname`
 2. `firstname`
 3. `finitiallastname`
 
+The policy bounds candidate count, stops after the first accepted exact address,
+and may put learned Company-domain formats first. Employee size does not select
+or sequence formats. A pattern observation ranks candidates; only exact-address
+Verification can accept one.
+
 It enqueues one child Verification Agent Job at a time and stops immediately after the first verified result.
 
 Verification is the authority for exact-address provider truth. Live completion requires the feature switch, provider credentials and effective `{"live": true}` Agent configuration. Simulated evidence cannot complete a live Campaign stage.
+
+Verification traverses the active immutable provider waterfall inside one
+existing Verification Agent attempt. Provider adapters normalize their own
+responses into the shared decision contract; provider result strings never
+drive pipeline state directly. Usage entries identify provider, operation,
+origin (`customer_operation`, `admin_operation`, or `agent_studio`), and the
+persisted Campaign/Contact context available for the call. Sending remains
+disabled and unchanged.
 
 ## Control and execution model
 

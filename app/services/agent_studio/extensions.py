@@ -68,8 +68,27 @@ AGENT_STUDIO_MODULES: dict[AgentIdentifier, AgentStudioModule] = {
             "Research worker and collection-rule editing are intentionally unavailable."
         ),
     ),
-    AgentIdentifier.EMAIL: _module(AgentIdentifier.EMAIL),
-    AgentIdentifier.VERIFICATION: _module(AgentIdentifier.VERIFICATION, reporting=True),
+    AgentIdentifier.EMAIL: _module(
+        AgentIdentifier.EMAIL,
+        configuration=True,
+        reporting=True,
+        configuration_boundary=(
+            "Versioned candidate-pattern policy only; execution authority stays in Agent controls."
+        ),
+    ),
+    AgentIdentifier.VERIFICATION: _module(
+        AgentIdentifier.VERIFICATION,
+        configuration=True,
+        preview=True,
+        reporting=True,
+        configuration_boundary=(
+            "Provider credentials and immutable waterfall policy only; job authority is unchanged."
+        ),
+        preview_boundary=(
+            "Explicit one-address provider tests record agent_studio usage but create no job "
+            "or evidence."
+        ),
+    ),
     AgentIdentifier.INSIGHTS: _module(AgentIdentifier.INSIGHTS, reporting=True),
     AgentIdentifier.PERSONALIZATION: _module(
         AgentIdentifier.PERSONALIZATION,
