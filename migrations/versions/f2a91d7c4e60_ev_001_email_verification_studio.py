@@ -273,7 +273,7 @@ def upgrade() -> None:
         type_="check",
     )
     op.create_check_constraint(
-        "ck_email_candidate_attempts_ck_email_candidate_attempts_257a",
+        "candidate_index_bounded",
         "email_candidate_attempts",
         "candidate_index >= 0 AND candidate_index < 24",
     )
@@ -364,7 +364,7 @@ def downgrade() -> None:
         type_="check",
     )
     op.create_check_constraint(
-        "candidate_index_bounded",
+        op.f("ck_email_candidate_attempts_ck_email_candidate_attempts_257a"),
         "email_candidate_attempts",
         "candidate_index >= 0 AND candidate_index < 3",
     )
