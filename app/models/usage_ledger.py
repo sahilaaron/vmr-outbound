@@ -96,6 +96,7 @@ class UsageLedgerEntry(Base):
     job_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     job_kind: Mapped[str | None] = mapped_column(String(50), nullable=True)
     # An optional provider-side request identifier (idempotency key, request id).
+    request_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # Attribution is explicit. This product currently persists no tenant/account
     # entity, so account_reference remains nullable rather than being fabricated.
     origin: Mapped[str] = mapped_column(String(32), nullable=False, default="customer_operation")
