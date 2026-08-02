@@ -223,7 +223,7 @@ class ResearchReportReader(Protocol):
     def read_job(self, agent_job_id: uuid.UUID) -> ResearchReport | None: ...
 
 
-_WINDOWS_PATH = re.compile(r"(?i)(?:[a-z]:\\|[a-z]:/|\\\\[^\s\\]+\\)[^\s,;]+")
+_WINDOWS_PATH = re.compile(r"(?i)(?<![a-z0-9+.-])(?:[a-z]:\\|[a-z]:/|\\\\[^\s\\]+\\)[^\s,;]+")
 _UNIX_PATH = re.compile(
     r"(?<!https:)(?<!http:)(?:/root|/home|/Users|/workspace|/tmp|/var|/etc|/opt|/srv|"
     r"/mnt|/private|/app)/[^\s,;]+"
