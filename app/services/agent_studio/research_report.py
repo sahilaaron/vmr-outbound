@@ -229,7 +229,7 @@ _UNIX_PATH = re.compile(
     r"/mnt|/private|/app)/[^\s,;]+"
 )
 _ENV_SECRET = re.compile(
-    r"(?i)\b([A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIALS?|"
+    r"(?i)\b((?:[A-Z][A-Z0-9_]*)?(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIALS?|"
     r"AUTHORIZATION|DATABASE_URL|DSN))\s*=\s*[^\s,;]+"
 )
 _GENERATION = re.compile(r"(?:^|:)v(?P<generation>[1-9][0-9]*)(?:$|:)")
