@@ -58,6 +58,7 @@ from app.models.personalization_policy import PersonalizationPolicyVersion
 from app.models.verification_job import AgentJob
 from app.services import agent_studio as agent_studio_service
 from app.services import campaign_contacts, devtools, identity, workbench, workbench_agents
+from app.services.agent_studio.capture_report import DurableCaptureReportReader
 from app.services.agent_studio.company_report import DurableCompanyReportReader
 from app.services.agent_studio.email_verification_report import EmailVerificationReportReader
 from app.services.agent_studio.insights_report import DurableInsightsReportReader
@@ -4228,6 +4229,10 @@ def _research_report_reader(db: Session) -> ResearchReportReader:
     return DurableResearchReportReader(db)
 
 
+def _capture_report_reader(db: Session) -> DurableCaptureReportReader:
+    return DurableCaptureReportReader(db)
+
+
 def _company_report_reader(db: Session) -> DurableCompanyReportReader:
     return DurableCompanyReportReader(db)
 
@@ -4540,6 +4545,55 @@ def research_agent_report_api(agent_job_id: str, db: Session = Depends(get_db)) 
         return JSONResponse(status_code=404, content={"detail": "Not found."})
     parsed = _parse_uuid(agent_job_id)
     report = _research_report_reader(db).read_job(parsed) if parsed else None
+    if report is None:
+        return JSONResponse(status_code=404, content={"detail": "Not found."})
+    return JSONResponse(content=jsonable_encoder(report))
+
+
+@router.get("/admin/agents/studio/capture", response_class=HTMLResponse)
+def capture_agent_report_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    if not _agent_workbench_available():
+        return _agent_workbench_unavailable(request, db)
+    raw_selected = request.query_params.get("job")
+    selected = _parse_uuid(raw_selected)
+    if raw_selected and selected is None:
+        return _not_found(request, db, "That Capture report is unavailable.")
+    reader = _capture_report_reader(db)
+    report = reader.read_job(selected) if selected else None
+    if selected and report is None:
+        return _not_found(request, db, "That Capture report is unavailable.")
+    studio = agent_studio_service.load_studio(db, campaign_id=_studio_campaign_id(request))
+    item = next(entry for entry in studio.agents if entry.card.agent_id is AgentIdentifier.CAPTURE)
+    recent_jobs = db.scalars(
+        select(AgentJob)
+        .where(AgentJob.agent_id == AgentIdentifier.CAPTURE)
+        .order_by(AgentJob.created_at.desc(), AgentJob.id.desc())
+        .limit(100)
+    ).all()
+    reports = {job.id: reader.read_job(job.id) for job in recent_jobs[:25]}
+    return _render(
+        request,
+        db,
+        "capture_agent_studio.html",
+        {
+            "item": item,
+            "jobs": recent_jobs,
+            "reports": reports,
+            "report": report,
+            "active_nav": "agent-studio",
+            "page_title": "Capture Agent Studio",
+        },
+    )
+
+
+@router.get("/api/admin/agent-studio/capture/jobs/{agent_job_id}/report")
+def capture_agent_report_api(agent_job_id: str, db: Session = Depends(get_db)) -> JSONResponse:
+    """Return the shared exact-job Capture report, or one generic safe 404."""
+
+    if not _agent_workbench_available():
+        return JSONResponse(status_code=404, content={"detail": "Not found."})
+    parsed = _parse_uuid(agent_job_id)
+    report = _capture_report_reader(db).read_job(parsed) if parsed else None
     if report is None:
         return JSONResponse(status_code=404, content={"detail": "Not found."})
     return JSONResponse(content=jsonable_encoder(report))

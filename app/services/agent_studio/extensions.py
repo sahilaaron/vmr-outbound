@@ -58,7 +58,18 @@ def _module(
 
 
 AGENT_STUDIO_MODULES: dict[AgentIdentifier, AgentStudioModule] = {
-    AgentIdentifier.CAPTURE: _module(AgentIdentifier.CAPTURE),
+    AgentIdentifier.CAPTURE: _module(
+        AgentIdentifier.CAPTURE,
+        reporting=True,
+        configuration_boundary=(
+            "Capture source, promotion and filing lineage is read-only; intake, suppression, "
+            "deduplication and Campaign enrollment services remain authoritative."
+        ),
+        preview_boundary=(
+            "No retrospective match, promotion, filing, retry, replay or Identity job runs from "
+            "Studio reports."
+        ),
+    ),
     AgentIdentifier.IDENTITY: _module(AgentIdentifier.IDENTITY),
     AgentIdentifier.COMPANY: _module(
         AgentIdentifier.COMPANY,

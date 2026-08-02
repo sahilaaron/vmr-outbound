@@ -1234,6 +1234,7 @@ def stage_contact_captures(
         counts["submitted"] = len(contacts)
         results: list[CaptureOutcome] = []
         seen_keys: dict[str, uuid.UUID] = {}
+        staged_snapshots: list[LinkedInProfileSnapshot] = []
         # Captures that reached no permanent Contact. These are the ones automatic
         # company-domain resolution can finish, and it runs after the loop rather
         # than inside it so a slow provider call cannot lengthen the transaction
@@ -1259,6 +1260,7 @@ def stage_contact_captures(
             )
             session.add(snapshot)
             session.flush()
+            staged_snapshots.append(snapshot)
             filing = (
                 campaign_filing.ensure_filing(
                     session,
@@ -1403,6 +1405,15 @@ def stage_contact_captures(
         counts["auto_resolved"] = _auto_resolve_captures(
             session, snapshots=awaiting_company, actor=actor, deadline=deadline
         )
+
+        # CAP-002. Capture is synchronous evidence intake, not a second queue.
+        # After every authoritative intake/promotion/filing write is staged, pin
+        # its bounded outcome in the common Agent Job envelope. Raw payloads stay
+        # exclusively on the immutable snapshot and never enter the job result.
+        from app.services.captures.execution_lineage import record_snapshot_execution
+
+        for snapshot in staged_snapshots:
+            record_snapshot_execution(session, snapshot=snapshot, actor=actor)
 
         result = SubmissionResult(
             submission_id=str(submission.id),
