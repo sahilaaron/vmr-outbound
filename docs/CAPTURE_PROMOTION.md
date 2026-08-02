@@ -134,10 +134,12 @@ Promotion requires a confirmed domain. Then, in order:
 
 ### What never happens
 
-No campaign or campaign membership · no email candidate or verification · no
-score or qualification · no draft or approval · no outreach readiness · no
+No Campaign choice invented by promotion · no email candidate or verification ·
+no score or qualification · no draft or approval · no outreach readiness · no
 change to the captured payload, profile fields, content hash, or experience
-observations · no suppression weakened · no automatic merge.
+observations · no suppression weakened · no automatic merge. An optional
+Campaign membership is created or reused only when the immutable capture
+already carries an explicit filing request.
 
 ## Idempotency and failure
 
@@ -146,6 +148,40 @@ impossible at the database level, not merely discouraged in code. A retry
 returns `already_promoted` with the original contact. A provider failure is
 retryable and records the attempt count. A mid-promotion failure rolls back to
 nothing — proven by a test that injects one.
+
+## Durable execution reporting (CAP-002)
+
+Admin Agent Studio reports the existing Capture workflow; it does not replace
+it. `/admin/agents/studio/capture` and the exact-job Admin API share one typed,
+frozen, query-only reader. Extension intake and each material promotion outcome
+record a terminal Capture Agent Job with bounded `capture-agent-report/1`
+lineage. Import rows and explicit manual/API Campaign enrollment use the same
+report contract with source-specific sections.
+
+The job result pins only safe decision facts and references:
+
+- immutable snapshot/import/source record id and capture time;
+- bounded captured person/employer fields, labels, note projection and field
+  provenance when present;
+- validation, exact duplicate candidates, suppression and rejection outcome;
+- exact promotion outcome and Contact id, including created versus reused;
+- filing request/status and exact Campaign Contact id when persisted;
+- the next Identity Agent Job when one was actually created.
+
+The extension payload and complete raw import mapping remain in their
+authoritative source tables and are never copied or returned wholesale. The job
+contains only the allowlisted bounded field projection described above. Safe
+URLs discard credentials, queries and fragments, and notes are bounded. The
+report does not rerun deduplication, query suppression providers, resolve
+Identity or Company, promote, file, retry, enqueue or mutate anything.
+
+Historical execution truth and current truth are deliberately independent. A
+later Contact edit, label change, suppression, Campaign membership change or
+merge may be shown as current state, but cannot rewrite the captured values,
+historical Contact, filing result or Campaign Contact recorded by that
+execution. If an older job never pinned a duplicate candidate or resulting
+membership, that lineage is `partial` or `unavailable`; current data is not used
+to fabricate it. No schema migration or guessed backfill was required.
 
 ## Operator workflow
 
@@ -174,58 +210,22 @@ needs `FEATURES__SALESNAV_DOMAIN_ENRICHMENT` and `LOGO_DEV_API_KEY`. Without a
 key the flow still works — the operator can enter a domain by hand or leave the
 capture pending.
 
-## APP-001 dependency (unresolved)
+## Current Contact and Company boundary
 
-`Contact` has no foreign key to `Company`; it carries `company_name` and
-`company_domain` strings, and `companies.domain` is uniquely indexed. DAT-014
-therefore retains the resolved company relationship on the **promotion record**
-(`resolved_company_id`, `resolved_domain`) and does not add a
-`Contact.company_id`.
+The application now has an authoritative `Contact.company_id` association.
+Promotion may set it only through the existing exact confirmed-domain path and
+also retains `resolved_company_id` and `resolved_domain` on the promotion row as
+historical capture lineage. Capture preserves the employer name, LinkedIn
+company hints and resolved promotion decision; the Company Agent remains the
+authority for later Company linking, correction and canonical-domain state.
+Capture reporting shows a later current Company association separately and does
+not rewrite the promotion record.
 
-That is a narrow compatibility seam, not a recommendation. Whether a contact
-should reference a company directly is an application-domain decision belonging
-to APP-001 (#157).
-
-**The issue body itself was not readable from the session that built this** —
-the GitHub API is not available to it — but the APP-001/APP-002 working notes
-carried over from the session doing that work record its substance, and they
-corroborate this seam rather than contradict it:
-
-* #157 forbids casually making `Contact.company_domain` nullable or bypassing
-  DAT-010. The sanctioned domain path is exactly the one implemented here:
-  captured company name → DAT-010 logo.dev candidates → operator confirmation →
-  canonical Company → promotion (DAT-014).
-* Pending captures must remain `LinkedInProfileSnapshot` rows and must **not**
-  become provisional `Contact` rows. DAT-014 creates a contact only on an
-  explicit operator promotion with a confirmed domain, so it holds that line.
-* `ContactWorkflowState` lives on `CampaignContact`, so a campaign-less contact
-  has no workflow state. That is APP-001's problem to solve; DAT-014 does not
-  invent a parallel one.
-
-DAT-014 consequently avoids every application-level choice it could:
-
-* no `Contact.company_id` column or relationship;
-* no changes to application navigation;
-* no contact-list or contact-detail redesign;
-* no new workflow states or transitions;
-* no changes to `ContactWorkflowState` or campaign membership.
-
-If APP-001 introduces a contact→company relationship, `resolved_company_id` is
-the migration source: it already records, per promoted contact, which company it
-resolved to and how.
-
-### Two DAT-013 anchor gaps that belong to APP-002 (#158), not here
-
-* `ContactLabelAssignment.contact_id` is `NOT NULL`, so a capture cannot be
-  labelled before it is promoted. DAT-014 works within that: requested labels
-  stay on the capture as evidence and are assigned at promotion.
-* `ContactCaptureNote.capture_id` is `NOT NULL`, so a contact with no capture
-  (a CSV import) cannot carry one of these notes.
-
-Both need an additive migration making each anchor nullable with a check that
-exactly one is set. That is APP-002 scope. DAT-014 deliberately does not change
-those constraints, because doing so from this branch would collide with the
-APP-002 migration.
+Person-level ambiguity and merge decisions remain Identity authority. A pending
+capture stays a `LinkedInProfileSnapshot`, and promotion creates or links a
+Contact only through exact persisted evidence. Existing label assignments and
+append-only capture notes keep their own provenance anchors; CAP-002 reads those
+records and adds no universal provenance framework or schema change.
 
 ## Known limitations
 

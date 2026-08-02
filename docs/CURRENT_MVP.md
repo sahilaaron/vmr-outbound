@@ -1,6 +1,6 @@
 # Current MVP
 
-**Status date:** 30 July 2026  
+**Status date:** 2 August 2026
 **Authoritative delivery:** PR #232 merged; PR #233 is the customer-interface merge gate.
 
 ## MVP outcome
@@ -44,7 +44,7 @@ Capture
 
 | Agent | Current implementation | Status |
 | --- | --- | --- |
-| Capture | Existing contact-first capture and promotion path | Operational |
+| Capture | Existing intake/promotion paths plus durable exact-execution reporting | Operational; live report acceptance pending |
 | Identity | Shared Agent adapter over authoritative identity services | Operational |
 | Company | Exact permanent-Company linking, canonical-domain gates and durable execution lineage | Operational; live acceptance pending |
 | Research | Registered deterministic research workers | Operational; live acceptance pending |
@@ -66,6 +66,16 @@ It writes:
 - an operator-facing outcome derived from what the workers actually found.
 
 Research does not use a language model and does not silently rewrite canonical Company fields. Claude first enters the pipeline at Insights, after evidence has been persisted.
+
+Capture reuses the existing immutable LinkedIn snapshots, staged import rows,
+promotion decisions, suppression ledger and Campaign filing services. Future
+extension, import and manual/API outcomes pin a bounded historical projection in
+one terminal Capture Agent Job; no second Capture queue or workflow was added.
+Admin Studio separates captured execution values and exact Contact/Campaign
+Contact lineage from today's Contact, merge survivor, labels, memberships and
+suppression state. Older telemetry that was never stored remains explicitly
+partial or unavailable. Capture hands permanent-person work to Identity and
+captured employer evidence to Company without absorbing either authority.
 
 The Company Agent reuses the existing permanent Company, capture candidate and
 append-only domain-decision systems. New jobs durably pin the historical

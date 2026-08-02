@@ -28,6 +28,91 @@ retry and lease facts already persisted by the queue. It must show an explicit
 unavailable state for facts or capabilities the persistence model does not
 contain.
 
+## Capture execution report
+
+`/admin/agents/studio/capture` is the read-only Capture Agent module. Its
+exact-job API is
+`GET /api/admin/agent-studio/capture/jobs/{agent_job_id}/report`. HTML and JSON
+use the same frozen dataclass reader under `no_autoflush`. Malformed, unknown,
+wrong-Agent and cross-owner ids receive one generic safe 404. Loading a report
+cannot intake or promote a capture, retry or enqueue work, change a Contact,
+label or note, alter suppression, file a Campaign membership, enqueue Identity,
+or advance pipeline state.
+
+Capture remains the intake authority, not a second identity or company
+resolver:
+
+- Capture preserves one authorized source observation, validates and
+  normalizes it through the existing path, applies exact duplicate and
+  suppression decisions, promotes or reuses a Contact when already permitted,
+  performs explicitly requested Campaign filing, and hands the membership to
+  Identity;
+- Identity remains the authority for person-level matching, ambiguity,
+  assignment, separation and merge decisions;
+- Company remains the authority for permanent Company association and
+  canonical-domain resolution;
+- customer-facing extension, import and `/app` intake surfaces remain separate
+  from Admin Studio.
+
+The existing Capture paths are synchronous. They do not acquire a second queue
+or worker for reporting. Future extension intake, import-row outcomes and
+manual/API Campaign enrollment finish one terminal Capture `AgentJob` with a
+bounded `capture-agent-report/1` result. The result pins references and decision
+facts: source type and record id, safe captured-field projection, typed field
+provenance, validation, duplicate/suppression result, promotion and exact
+Contact, filing and exact Campaign Contact, and the next Identity job when one
+was created. It never copies an unbounded extension payload or import row.
+Material promotion outcomes receive a related generation; another attempt on
+the same job remains an attempt rather than a new execution.
+
+Supported source discriminators reflect real paths rather than a forced common
+shape:
+
+- `extension`: immutable LinkedIn snapshot, safe profile/member identity,
+  captured person and employer fields, labels and bounded note projection;
+- `import`: batch and row lineage, mapped bounded fields, staged row outcome and
+  exact duplicate/suppression/promotion/filing result;
+- `manual` and `api`: operator/API enrollment source, supplied permanent Contact
+  projection, Campaign filing and Identity handoff;
+- unknown legacy values remain `unknown`; the reader does not guess their
+  origin.
+
+Outcome words retain the producing service's meaning. `accepted` means the
+source passed its staged checks; `rejected` preserves the source row and safe
+field/reason code when one exists; `duplicate` is an exact email, natural-key or
+in-submission result and never a fuzzy report-time match; `suppressed` points to
+the safe authoritative ledger record when that path retained it; `ambiguous`
+remains for import review or the next Identity boundary rather than being
+resolved by Capture; and `pending` says the existing workflow has not reached a
+terminal promotion decision. Suppression exposes separate promotion, filing and
+pipeline effects. An import or manual selection can truthfully create or reuse a
+Campaign membership in a blocked state: filing is then `applied` while Identity
+is not enqueued. Rejected or ambiguous import rows have a failed filing result
+and keep their immutable row evidence.
+
+Historical and current truth are separate. The historical section comes only
+from the exact execution result and its immutable source reference. The current
+section may show today's Contact fields, merge survivor, Company association,
+labels, Campaign memberships and suppression state, each explicitly labelled
+current. It never substitutes those values for captured fields, the historical
+Contact id or a missing historical Campaign Contact id. Exact duplicate
+candidates are shown only when the producing path persisted them; the reader
+does no fuzzy retrospective matching.
+
+Report state is deterministic:
+
+- `complete`: the job has the supported lineage schema, its exact source record
+  and source version agree, and required decision/link fields validate;
+- `partial`: exact source or execution facts exist, but one or more required
+  historical links were never persisted;
+- `unavailable`: the job has no safe durable execution outcome to project.
+
+Every absent fact also appears in an explicit unavailable list. Older Capture
+jobs are not backfilled from current records. Account/customer ownership is
+unavailable because this repository has no authoritative account entity in
+this context. Arbitrary source blobs, authorization data, stack traces,
+credentials and unbounded notes never leave the service.
+
 ## Company execution report
 
 `/admin/agents/studio/company` is the read-only Company Agent module. Its

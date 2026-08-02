@@ -45,6 +45,15 @@ durable queue. Agent-specific modules own their own typed configuration and
 preview contracts; Personalization Policy is intentionally not a universal
 Agent schema. See [AGENT_STUDIO.md](AGENT_STUDIO.md).
 
+The Capture module is an exact-job, read-only projection over the existing
+extension snapshot, import validation, promotion, suppression, Campaign filing
+and Campaign Contact source records. Because those authoritative paths are
+synchronous, they record a terminal Capture Agent Job rather than introducing a
+second Capture worker or queue. Its bounded versioned result pins historical
+decision facts and references; immutable source tables retain source evidence.
+Current Contact, merge, label, membership and suppression state is projected in
+a separate labelled section and never repairs missing execution history.
+
 The Company module is an exact-job read model over the existing Company Agent,
 append-only domain-decision ledger, capture evidence, Campaign policy and child
 Research job. Historical execution truth is pinned in the job; current capture,
@@ -82,6 +91,8 @@ Reusable grouping of Contacts. The extension may display Collections as Labels.
 ### Agent Job
 
 One resumable unit of work with stable identity, lease, attempts, structured inputs/results/errors and audit history.
+Synchronous Capture paths use the same envelope as a terminal execution record;
+that reporting use does not change pipeline order or create a Capture worker.
 
 ### Company dossier and evidence
 
