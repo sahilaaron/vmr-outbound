@@ -943,8 +943,12 @@ def test_reader_and_api_reject_wrong_agent_and_cross_owner_context(
     capture_studio_client: TestClient,
 ) -> None:
     campaign, contact, membership, _, _, _ = _extension_subject(db_session)
-    wrong = _identity_job(campaign, membership, contact)
-    db_session.add(wrong)
+    wrong = db_session.scalars(
+        select(AgentJob).where(
+            AgentJob.agent_id == AgentIdentifier.IDENTITY,
+            AgentJob.campaign_contact_id == membership.id,
+        )
+    ).one()
     other_campaign = Campaign(name=f"Other owner {uuid.uuid4()}", status=CampaignStatus.ACTIVE)
     db_session.add(other_campaign)
     db_session.flush()

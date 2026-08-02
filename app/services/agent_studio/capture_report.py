@@ -341,6 +341,15 @@ def _str(mapping: Mapping[str, object], key: str, *, limit: int = 1_000) -> str 
     return _safe_text(value if isinstance(value, str) else None, limit=limit)
 
 
+def _url_str(mapping: Mapping[str, object], key: str, *, limit: int = 2_000) -> str | None:
+    """Sanitize a bounded URL before generic path redaction can alter it."""
+
+    value = mapping.get(key)
+    if not isinstance(value, str) or len(value.strip()) > limit:
+        return None
+    return _safe_url(value)
+
+
 def _datetime(value: object) -> datetime | None:
     if not isinstance(value, str):
         return None
@@ -387,10 +396,12 @@ def _source_type(value: object) -> CaptureSourceType:
 
 
 def _safe_reference(value: object, *, limit: int = 1_000) -> str | None:
-    safe = _safe_text(value if isinstance(value, str) else None, limit=limit)
-    if safe and safe.lstrip().lower().startswith(("http://", "https://")):
-        return _safe_url(safe)
-    return safe
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if stripped.lower().startswith(("http://", "https://")):
+        return _safe_url(stripped) if len(stripped) <= limit else None
+    return _safe_text(value, limit=limit)
 
 
 def _empty_note() -> CaptureNoteReport:
@@ -696,10 +707,8 @@ class DurableCaptureReportReader:
                 sheet_name=_str(source_map, "sheet_name", limit=255),
                 schema_version=_str(source_map, "schema_version", limit=64),
                 captured_at=_datetime(source_map.get("captured_at")),
-                source_url=_safe_url(_str(source_map, "source_url", limit=2_000)),
-                linkedin_profile_url=_safe_url(
-                    _str(source_map, "linkedin_profile_url", limit=2_000)
-                ),
+                source_url=_url_str(source_map, "source_url"),
+                linkedin_profile_url=_url_str(source_map, "linkedin_profile_url"),
                 linkedin_public_identifier=_str(
                     source_map, "linkedin_public_identifier", limit=255
                 ),
@@ -885,7 +894,7 @@ class DurableCaptureReportReader:
                         field=field,
                         value=_str(row, "value"),
                         source_name=_str(row, "source_name", limit=256),
-                        source_reference=_str(row, "source_reference", limit=512),
+                        source_reference=_safe_reference(row.get("source_reference"), limit=512),
                         observed_at=_datetime(row.get("observed_at")),
                         ingested_at=_datetime(row.get("ingested_at")),
                         policy_version=_str(row, "policy_version", limit=50),
@@ -899,13 +908,13 @@ class DurableCaptureReportReader:
                 full_name=_str(person, "full_name", limit=512),
                 title=_str(person, "title", limit=512),
                 email=_str(person, "email", limit=320),
-                linkedin_url=_safe_url(_str(person, "linkedin_url", limit=2_000)),
+                linkedin_url=_url_str(person, "linkedin_url"),
                 location=_str(person, "location", limit=512),
             ),
             employer=CapturedEmployerReport(
                 name=_str(employer, "name", limit=512),
                 domain=_safe_domain(employer.get("domain")),
-                linkedin_url=_safe_url(_str(employer, "linkedin_url", limit=2_000)),
+                linkedin_url=_url_str(employer, "linkedin_url"),
                 linkedin_id=_str(employer, "linkedin_id", limit=255),
                 location=_str(employer, "location", limit=512),
             ),
@@ -1000,7 +1009,7 @@ class DurableCaptureReportReader:
             title=_str(value, "title", limit=512),
             company_name=_str(value, "company_name", limit=512),
             company_domain=_safe_domain(value.get("company_domain")),
-            linkedin_url=_safe_url(_str(value, "linkedin_url", limit=2_000)),
+            linkedin_url=_url_str(value, "linkedin_url"),
             email=_str(value, "email", limit=320),
             company_id=_uuid(value.get("company_id")),
             merged_into_id=_uuid(value.get("merged_into_id")),
