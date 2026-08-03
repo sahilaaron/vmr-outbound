@@ -80,6 +80,17 @@
       </a>
       {% endif %}
 
+      {# Company Intelligence sits with the prospect-knowledge areas rather than
+         with the pipeline: it describes what a company IS, and it cannot send,
+         schedule or make anybody eligible for anything. #}
+      {% if 'company_intelligence' in features_enabled %}
+      <div class="rail-section">Prospect knowledge</div>
+      <a href="/admin/company-intelligence" class="{{ 'active' if active_nav == 'company-intelligence' else '' }}">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M16.5 16.5L21 21"/><path d="M11 8v6"/><path d="M8 11h6"/></svg>
+        Company Intelligence
+      </a>
+      {% endif %}
+
       {% set verification_on = ('email_generation' in features_enabled) or ('millionverifier' in features_enabled) %}
       {% if verification_on %}
       <div class="rail-section">Pipeline</div>

@@ -36,6 +36,7 @@ from app.models import company as _company  # noqa: E402,F401
 from app.models import company_domain_resolution as _company_domain_resolution  # noqa: E402,F401
 from app.models import company_dossier as _company_dossier  # noqa: E402,F401
 from app.models import company_field_value as _company_field_value  # noqa: E402,F401
+from app.models import company_intelligence as _company_intelligence  # noqa: E402,F401
 from app.models import contact as _contact  # noqa: E402,F401
 from app.models import contact_capture as _contact_capture  # noqa: E402,F401
 from app.models import contact_field_value as _contact_field_value  # noqa: E402,F401
@@ -48,6 +49,7 @@ from app.models import external_event as _external_event  # noqa: E402,F401
 from app.models import identity_resolution as _identity_resolution  # noqa: E402,F401
 from app.models import import_batch as _import_batch  # noqa: E402,F401
 from app.models import insight as _insight  # noqa: E402,F401
+from app.models import intelligence_taxonomy as _intelligence_taxonomy  # noqa: E402,F401
 from app.models import linkedin_company as _linkedin_company  # noqa: E402,F401
 from app.models import linkedin_identity_link as _linkedin_identity_link  # noqa: E402,F401
 from app.models import linkedin_profile as _linkedin_profile  # noqa: E402,F401

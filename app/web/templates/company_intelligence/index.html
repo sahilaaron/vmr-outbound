@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% from "company_intelligence/_ci_macros.html" import job_badge %}
+{% set ci_section = "companies" %}
+{% block content %}
+{% include "company_intelligence/_ci_nav.html" %}
+
+<div class="card">
+  <div class="card-head"><h2>Company Intelligence</h2></div>
+  <div class="card-body">
+    <p class="small">
+      Structured, evidence-linked understanding of a Company, derived only from
+      Research that has already been committed. A classification here is
+      <strong>not</strong> verified until an operator confirms it, and nothing on
+      these pages makes a Contact eligible for outreach.
+    </p>
+    <p class="small muted-text">
+      Active vocabularies:
+      {% for dimension, version in taxonomy_versions.items() %}
+        <code>{{ dimension }} {{ version }}</code>{{ ", " if not loop.last }}
+      {% else %}
+        none published yet.
+      {% endfor %}
+    </p>
+    <p class="small muted-text">
+      Queue —
+      {% for status, count in queue.items() %}{{ status.replace("_", " ") }}: {{ count }}{{ " · " if not loop.last }}{% endfor %}
+    </p>
+  </div>
+</div>
+
+<div class="table-wrap">
+  <div class="toolbar">
+    <strong class="small">{{ total }} compan{{ "y" if total == 1 else "ies" }}</strong>
+    <div class="filter-chips" role="group" aria-label="Filter">
+      {% for key, label in [("all", "All"), ("produced", "Classified"), ("missing", "Not classified"), ("unresolved", "Has unresolved"), ("conflicted", "Has conflicts")] %}
+      <a class="chip {{ 'on' if state == key }}" href="/admin/company-intelligence?state={{ key }}">{{ label }}</a>
+      {% endfor %}
+    </div>
+  </div>
+  {% if rows %}
+  <table>
+    <thead>
+      <tr>
+        <th>Company</th><th>Version</th><th>Classifications</th>
+        <th>Unresolved</th><th>Conflicts</th><th>Produced</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>
+          <a href="/admin/companies/{{ row.company.id }}/intelligence">{{ row.company.name }}</a>
+          {% if row.company.domain %}<div class="small muted-text">{{ row.company.domain }}</div>{% endif %}
+        </td>
+        <td class="small">
+          {% if row.version %}v{{ row.version.version_number }}{% else %}<span class="badge muted">none</span>{% endif %}
+        </td>
+        <td class="small">{{ row.version.classification_count if row.version else "—" }}</td>
+        <td class="small">
+          {% if row.version and row.version.unresolved_count %}<span class="badge warn">{{ row.version.unresolved_count }}</span>{% else %}—{% endif %}
+        </td>
+        <td class="small">
+          {% if row.version and row.version.conflict_count %}<span class="badge warn">{{ row.version.conflict_count }}</span>{% else %}—{% endif %}
+        </td>
+        <td class="small muted-text">{{ row.version.created_at.strftime("%Y-%m-%d %H:%M") if row.version else "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">
+    <div class="empty-title">Nothing to show</div>
+    <p>No company matches this filter. Companies become classifiable once the
+       Research Agent has stored a current dossier for them.</p>
+  </div>
+  {% endif %}
+</div>
+
+{% if pages > 1 %}
+<div class="pager">
+  {% if page > 1 %}<a class="btn ghost" href="/admin/company-intelligence?state={{ state }}&page={{ page - 1 }}">Previous</a>{% endif %}
+  <span class="small muted-text">Page {{ page }} of {{ pages }}</span>
+  {% if page < pages %}<a class="btn ghost" href="/admin/company-intelligence?state={{ state }}&page={{ page + 1 }}">Next</a>{% endif %}
+</div>
+{% endif %}
+{% endblock %}

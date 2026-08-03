@@ -1,0 +1,127 @@
+{# Company Intelligence display macros.
+
+   Every badge here exists to keep four things visibly apart: what a model said,
+   what a vocabulary normalized it to, what a person confirmed, and what nobody
+   could settle. A screen that printed them all the same way would turn an
+   unverified guess into an apparent fact, which is the failure this whole area
+   is built to prevent. #}
+
+{% macro state_badge(state) -%}
+  {%- set v = state.value -%}
+  {%- if v == "resolved" -%}<span class="badge ok">resolved</span>
+  {%- elif v == "conflicted" -%}<span class="badge warn">conflicted</span>
+  {%- elif v == "unresolved" -%}<span class="badge warn">unresolved</span>
+  {%- else -%}<span class="badge muted">unknown</span>{%- endif -%}
+{%- endmacro %}
+
+{% macro source_badge(source) -%}
+  {%- set v = source.value -%}
+  {%- if v == "operator_confirmed" -%}<span class="badge ok">operator confirmed</span>
+  {%- elif v == "operator_corrected" -%}<span class="badge ok">operator corrected</span>
+  {%- elif v == "operator_unresolved" -%}<span class="badge warn">operator: unresolved</span>
+  {%- else -%}<span class="badge info">model</span>{%- endif -%}
+{%- endmacro %}
+
+{% macro normalization_badge(normalization) -%}
+  {%- set v = normalization.value -%}
+  {%- if v == "canonical" -%}<span class="badge ok">canonical</span>
+  {%- elif v == "alias" -%}<span class="badge info">via alias</span>
+  {%- elif v == "not_applicable" -%}<span class="badge muted">free text</span>
+  {%- else -%}<span class="badge warn">unmapped</span>{%- endif -%}
+{%- endmacro %}
+
+{% macro evidence_badge(status, count) -%}
+  {%- if status.value == "supported" -%}
+    <span class="badge ok">{{ count }} evidence</span>
+  {%- else -%}
+    <span class="badge err">no evidence</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro confidence_badge(band, value) -%}
+  {%- if band is none -%}<span class="badge muted">no confidence</span>
+  {%- else -%}
+    {# The number is a model opinion, never verification. The title says so where
+       an operator will actually read it. #}
+    <span class="badge {{ 'ok' if band.value == 'high' else ('info' if band.value == 'medium' else 'muted') }}"
+          title="Model self-reported confidence{{ ' (%.2f)' % value if value is not none }} — an opinion, not verification.">
+      {{ band.value }} confidence
+    </span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro job_badge(status) -%}
+  {%- set v = status.value -%}
+  {%- if v == "succeeded" -%}<span class="badge ok">succeeded</span>
+  {%- elif v == "failed" -%}<span class="badge err">failed</span>
+  {%- elif v == "cancelled" -%}<span class="badge muted">cancelled</span>
+  {%- elif v in ("leased", "in_progress") -%}<span class="badge info">{{ v.replace("_", " ") }}</span>
+  {%- else -%}<span class="badge warn">{{ v.replace("_", " ") }}</span>{%- endif -%}
+{%- endmacro %}
+
+{% macro backfill_badge(status) -%}
+  {%- set v = status.value -%}
+  {%- if v == "completed" -%}<span class="badge ok">completed</span>
+  {%- elif v == "running" -%}<span class="badge info">running</span>
+  {%- elif v == "preview" -%}<span class="badge muted">dry run</span>
+  {%- elif v == "paused" -%}<span class="badge warn">paused</span>
+  {%- else -%}<span class="badge muted">{{ v }}</span>{%- endif -%}
+{%- endmacro %}
+
+{% macro outcome_badge(outcome) -%}
+  {%- set v = outcome.value -%}
+  {%- if v == "enqueued" -%}<span class="badge ok">queued</span>
+  {%- elif v == "previewed" -%}<span class="badge info">would queue</span>
+  {%- elif v == "failed" -%}<span class="badge err">failed</span>
+  {%- else -%}<span class="badge muted">skipped</span>{%- endif -%}
+{%- endmacro %}
+
+{# --- CI-002 ---------------------------------------------------------------
+
+   Geography and specialty need their own badges for one reason: a place without
+   a relationship, and a specialty without its hygiene verdict, both read as
+   settled facts on a screen. These make the difference visible. #}
+
+{% macro presence_badge(presence) -%}
+  {%- if presence is none -%}
+  {%- else -%}
+    {%- set v = presence.value -%}
+    {%- if v == "physical" -%}<span class="badge ok" title="The company is physically there.">physical</span>
+    {%- elif v == "commercial" -%}<span class="badge info" title="Sells into this market; no evidence of a site.">market</span>
+    {%- elif v == "prospective" -%}<span class="badge warn" title="Announced, not yet there.">planned</span>
+    {%- elif v == "former" -%}<span class="badge warn" title="Was there; the evidence does not say it still is.">former</span>
+    {%- else -%}<span class="badge muted" title="The place is mentioned; the relationship is not established.">presence unknown</span>{%- endif -%}
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro relationship_badge(relationship) -%}
+  {%- if relationship is none -%}
+  {%- else -%}
+    {%- set v = relationship.value -%}
+    {%- if v == "headquarters" -%}<span class="badge ok">headquarters</span>
+    {%- elif v == "unclear" -%}<span class="badge warn">relationship unclear</span>
+    {%- else -%}<span class="badge info">{{ v.replace("_", " ") }}</span>{%- endif -%}
+  {%- endif -%}
+{%- endmacro %}
+
+{# Why a value is not settled, in words rather than a code. An operator should
+   not have to learn a vocabulary of reason codes to review a queue. #}
+{% macro reason_note(reason) -%}
+  {%- if reason -%}
+    {%- set explain = {
+      "no_evidence": "the producer proposed this but cited nothing that survived checking",
+      "unmapped_value": "no canonical value in the active vocabulary matches this wording",
+      "conflicting_evidence": "the evidence supports more than one incompatible answer",
+      "evidence_silent": "this dimension was looked at and the evidence said nothing",
+      "unclear_relationship": "the place is named; the evidence does not say what the company does there",
+      "ambiguous_location": "the name is also an ordinary word, and the relationship is not established",
+      "context_conflicts_with_relationship": "the place was found in a context that does not support this relationship",
+      "not_current_presence": "planned or former — real, but not where the company is today",
+      "promotional_language": "carries marketing wording that cannot be removed without changing the meaning",
+      "too_broad": "names a whole field rather than a concentration within one",
+      "dimension_boundary_unclear": "repeats a product, service or capability word for word",
+      "specialty_too_long": "long enough to be a description rather than a specialty",
+    } -%}
+    <div class="small muted-text">{{ explain.get(reason, reason.replace("_", " ")) }}</div>
+  {%- endif -%}
+{%- endmacro %}

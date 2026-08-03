@@ -151,6 +151,18 @@ class CompanyDossierVersion(Base):
             postgresql_where="is_current",
         ),
         CheckConstraint("version_number > 0", name="ck_company_dossier_version_positive"),
+        # Redundant against the primary key, and required anyway — the same
+        # reason `company_research_submissions` carries one. A composite foreign
+        # key needs a unique constraint on exactly the columns it references, and
+        # CI-001's `company_intelligence_versions` points at (id, company_id) so
+        # the database can check that an intelligence version and the dossier it
+        # read describe the same company. Additive: it constrains nothing that
+        # the primary key did not already guarantee.
+        UniqueConstraint(
+            "id",
+            "company_id",
+            name="uq_company_dossier_versions_id_company",
+        ),
         # Ownership, enforced by the database rather than by a service check.
         #
         # A dossier version must interpret a submission about the SAME company.

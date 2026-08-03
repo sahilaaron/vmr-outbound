@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% set ci_section = "taxonomy" %}
+{% block content %}
+{% include "company_intelligence/_ci_nav.html" %}
+
+<div class="card">
+  <div class="card-head"><h2>Intelligence vocabulary</h2></div>
+  <div class="card-body">
+    <p class="small">
+      A vocabulary is a <strong>released edition</strong>, not a list somebody
+      edits. Publishing a corrected list creates a new version and retires the old
+      one; classifications made under the old edition keep resolving, and nothing
+      already stored is rewritten.
+    </p>
+    <p class="small muted-text">
+      Dimensions not listed here — products, services, specialties, capabilities
+      and specific geographies — have no controlled vocabulary in this release.
+      They record the producer's own wording, which is honest rather than a gap:
+      a partial list of them would reject correct values while looking complete.
+    </p>
+    <div class="filter-chips" role="group" aria-label="Dimension">
+      {% for item in vocabulary_dimensions %}
+      <a class="chip {{ 'on' if item == dimension }}" href="/admin/company-intelligence/taxonomy?dimension={{ item.value }}">{{ item.value.replace("_", " ") }}</a>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+{% if edition %}
+<div class="table-wrap">
+  <div class="toolbar">
+    <strong class="small">{{ edition.title }} — version {{ edition.version }}</strong>
+    <span class="small muted-text">{{ terms | length }} term(s) · source: {{ edition.source or "unrecorded" }}</span>
+  </div>
+  <table>
+    <thead><tr><th>Canonical value</th><th>Code</th><th>Aliases</th></tr></thead>
+    <tbody>
+      {% for term in terms %}
+      <tr>
+        <td{% if term.depth %} class="small"{% endif %}>
+          {% if term.depth %}<span class="muted-text">↳ </span>{% endif %}{{ term.canonical_label }}
+          {% if not term.is_active %}<span class="badge muted">retired</span>{% endif %}
+        </td>
+        <td class="small muted-text"><code>{{ term.code }}</code></td>
+        <td class="small">
+          {% for alias in aliases.get(term.id, []) %}
+          <span class="badge {{ 'ok' if alias.approved_at else 'muted' }}"
+                title="{{ 'approved by ' ~ (alias.approved_by or 'unknown') if alias.approved_at else 'proposed by a model; not used for matching until approved' }}">
+            {{ alias.alias }}
+          </span>
+          {% endfor %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="empty">
+  <div class="empty-title">No active vocabulary for {{ dimension.value.replace("_", " ") }}</div>
+  <p>Values on this dimension will be recorded verbatim and reported as unmapped.</p>
+</div>
+{% endif %}
+{% endblock %}
