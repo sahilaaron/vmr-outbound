@@ -1,7 +1,7 @@
 """CI-001 Company Intelligence: versioned classifications over committed Research.
 
 Revision ID: c41a9d78e5b2
-Revises: d3b7e2f19c45
+Revises: 7b3e1c9a4d20
 Create Date: 2026-07-31 21:10:00.000000
 
 Eight new tables and one additive constraint on an existing one. Nothing here
@@ -39,6 +39,23 @@ existing data, and the downgrade removes it cleanly.
 Downgrade drops every table and every enum type this revision introduced, in
 dependency order, and restores the schema exactly. No pre-existing type is
 touched: all nine enum types below are new to this revision.
+
+Ancestry note (integration only). On ``feat/company-intelligence`` this revision
+sat directly on ``d3b7e2f19c45``, the baseline head that Agent Studio also built
+from. Both areas were therefore siblings of the same parent and produced two
+Alembic heads once assembled. This branch restacks CI-001 onto the Agent Studio
+head ``7b3e1c9a4d20`` instead, which is the whole of the linearisation: no
+migration body, table, enum type, constraint name or downgrade step changed.
+
+Restacking in this direction is safe because the two chains are disjoint. The
+Agent Studio chain touches ``personalization_policy_*``, ``usage_ledger_entries``
+and ``insights``, and creates no enum type at all; everything here is new and
+lives under ``company_intelligence_*`` / ``intelligence_taxonom*``. The only
+pre-existing table this revision touches is ``company_dossier_versions``, which
+Agent Studio never migrates. Nothing above this revision depends on it and it
+depends on nothing above it, so ordering the two chains one way or the other
+changes no resulting schema -- only the sequence in which two independent sets of
+statements run.
 """
 
 from collections.abc import Sequence
@@ -48,7 +65,10 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "c41a9d78e5b2"
-down_revision: str | Sequence[str] | None = "d3b7e2f19c45"
+#: Restacked from the shared baseline ``d3b7e2f19c45`` onto the Agent Studio head
+#: for integration, so the assembled branch has exactly one head. See the
+#: ancestry note in the module docstring.
+down_revision: str | Sequence[str] | None = "7b3e1c9a4d20"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
