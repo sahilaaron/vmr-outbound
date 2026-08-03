@@ -1,13 +1,31 @@
-"""Small typed registry of Agent-specific Studio capabilities.
+"""Small typed registry of Studio capabilities.
 
 This is intentionally not a plug-in runtime.  The authoritative Agent registry
-continues to define execution.  This map only tells the Admin presentation layer
-which dedicated inspection/configuration/test page exists for each registered
-Agent and which unavailable states must be shown truthfully.
+continues to define execution.  These maps only tell the Admin presentation layer
+which dedicated inspection/configuration/test page exists and which unavailable
+states must be shown truthfully.
+
+Two registries live here, and the split is the point:
+
+``AGENT_STUDIO_MODULES`` is keyed by :class:`AgentIdentifier` and covers the nine
+registered pipeline Agents.
+
+``STUDIO_CAPABILITY_MODULES`` covers operator areas that are **not** Agents.  An
+area belongs here when it is real operator work that an Admin reasonably expects
+to reach from the Studio, but it does not run as a Campaign Contact pipeline
+stage, has no ``AgentIdentifier``, and is not in ``PIPELINE_ORDER``.  Modelling
+those as Agents to get a Studio tile would be exactly backwards: the tile is
+presentation, the identifier is execution authority, and inventing an identifier
+to satisfy a link would put a company-scoped area into per-Contact pipeline
+ordering where it does not belong.
+
+Nothing in either registry executes anything.  Both describe where an operator
+can go and what the boundaries are once they get there.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from app.models.enums import AgentIdentifier
@@ -144,3 +162,152 @@ AGENT_STUDIO_MODULES: dict[AgentIdentifier, AgentStudioModule] = {
 
 def module_for(agent_id: AgentIdentifier) -> AgentStudioModule:
     return AGENT_STUDIO_MODULES[agent_id]
+
+
+# ---------------------------------------------------------------------------
+# Non-Agent Studio capability modules
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class StudioSurface:
+    """One existing Admin page this module links out to.
+
+    A link, not a projection.  Studio does not re-render the owning area's data,
+    so there is no second read model to keep in step with the first.
+    """
+
+    label: str
+    path: str
+    description: str
+
+
+@dataclass(frozen=True)
+class StudioDistinction:
+    """One neighbouring area this module is routinely confused with."""
+
+    name: str
+    difference: str
+
+
+@dataclass(frozen=True)
+class StudioCapabilityModule:
+    """An Admin Studio module that is deliberately not a pipeline Agent."""
+
+    key: str
+    display_name: str
+    #: What the module is, in the operator's terms.
+    summary: str
+    #: The feature flag that must be on for the owning area to exist at all.
+    #: While it is off the owning router is not mounted, so linking to it would
+    #: produce a 404 -- the module is therefore hidden rather than shown broken.
+    feature_flag: str
+    #: Where "open this module" goes.  An existing route owned by that area, never
+    #: a new Studio route.
+    entry_path: str
+    surfaces: tuple[StudioSurface, ...]
+    #: How this module's work is executed.  Stated because the whole reason it is
+    #: not an Agent is that it does not run on the Campaign Contact queue.
+    execution: str
+    scope: str
+    #: What Studio may and may not do here.
+    boundary: str
+    distinctions: tuple[StudioDistinction, ...]
+
+
+COMPANY_INTELLIGENCE_MODULE = StudioCapabilityModule(
+    key="company-intelligence",
+    display_name="Company Intelligence",
+    summary=(
+        "Versioned, evidence-linked classification of what a Company is -- industry, "
+        "specialty, geography, business model -- derived from Research evidence that "
+        "has already been committed, and reviewed by an operator."
+    ),
+    feature_flag="company_intelligence",
+    entry_path="/admin/company-intelligence",
+    surfaces=(
+        StudioSurface(
+            label="Review queue",
+            path="/admin/company-intelligence",
+            description=(
+                "Companies with produced classifications awaiting operator judgement, "
+                "including unresolved values and open conflicts."
+            ),
+        ),
+        StudioSurface(
+            label="Vocabulary browser",
+            path="/admin/company-intelligence/taxonomy",
+            description=(
+                "The controlled vocabularies and their editions. A new edition is a new "
+                "row, so a classification stored under an older vocabulary keeps resolving."
+            ),
+        ),
+        StudioSurface(
+            label="Backfill console",
+            path="/admin/company-intelligence/backfill",
+            description=(
+                "Bounded, resumable backfill runs. Preview never enqueues, and a skip "
+                "always carries a truthful reason code."
+            ),
+        ),
+    ),
+    execution=(
+        "Its own durable company-scoped queue and its own standalone worker "
+        "(scripts/run_company_intelligence_worker.py). It is not on the Campaign "
+        "Contact Agent queue and no Agent control governs it."
+    ),
+    scope="Company. Never a Contact, never a Campaign Contact, never a Campaign.",
+    boundary=(
+        "Studio links to the owning Admin pages and does not duplicate their read, "
+        "review, queue, taxonomy or persistence systems. Opening a Studio view reads "
+        "nothing from Company Intelligence and writes nothing to it: production, "
+        "operator decisions, alias promotion and backfill all stay on the owning "
+        "routes. Company Intelligence does not feed Personalization and is not a "
+        "Sending dependency."
+    ),
+    distinctions=(
+        StudioDistinction(
+            name="Company Agent",
+            difference=(
+                "Resolves identity and domain -- which real company this is, and which "
+                "website is authoritative for it. It answers WHO the company is. It is a "
+                "registered pipeline Agent."
+            ),
+        ),
+        StudioDistinction(
+            name="Research Agent",
+            difference=(
+                "Collects and commits evidence about a company from its website. It "
+                "answers WHAT WAS FOUND, and it does not classify. It is a registered "
+                "pipeline Agent."
+            ),
+        ),
+        StudioDistinction(
+            name="Company Intelligence",
+            difference=(
+                "Classifies committed Research evidence into structured, versioned, "
+                "reviewable values. It answers WHAT THE COMPANY IS, and it produces no "
+                "evidence of its own. It is not an Agent and has no AgentIdentifier."
+            ),
+        ),
+    ),
+)
+
+
+#: Every non-Agent Studio module, in display order.
+STUDIO_CAPABILITY_MODULES: tuple[StudioCapabilityModule, ...] = (COMPANY_INTELLIGENCE_MODULE,)
+
+
+def enabled_capability_modules(
+    enabled_features: Iterable[str],
+) -> tuple[StudioCapabilityModule, ...]:
+    """The non-Agent modules whose owning area currently exists.
+
+    A module whose flag is off is omitted rather than shown disabled. That is not
+    cosmetic: while the flag is off the owning router is never mounted, so every
+    path the module advertises returns 404, and a tile linking into a 404 is a
+    worse answer than no tile.
+    """
+
+    names = frozenset(enabled_features)
+    return tuple(module for module in STUDIO_CAPABILITY_MODULES if module.feature_flag in names)

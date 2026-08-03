@@ -429,6 +429,68 @@ entity, no per-attempt retry/lease ledger, no universal dropped/rejected claim
 ledger, and no safe way to classify historical claims that predate exact job
 lineage.
 
+## Non-Agent operator modules
+
+`app.services.agent_studio.extensions` holds a second, deliberately separate
+registry: `STUDIO_CAPABILITY_MODULES`. It covers operator areas an Admin
+reasonably expects to reach from Studio that are **not** pipeline Agents — no
+`AgentIdentifier`, no position in `PIPELINE_ORDER`, no Agent control, and no
+Campaign Contact job.
+
+The split is the point. A Studio tile is presentation; an `AgentIdentifier` is
+execution authority. Minting an identifier so an area can have a tile would put
+that area into per-Contact pipeline ordering, which is precisely where a
+company-scoped area does not belong. These modules therefore render in their own
+block below the Agent table, never as another row inside it.
+
+`load_studio` populates `AgentStudioView.capability_modules` from the feature
+flag list alone. It issues no query against any module's tables, so listing a
+module cannot load, lease or touch its state.
+
+A module whose flag is off is omitted rather than shown disabled: while the flag
+is off the owning router is never mounted, so every advertised path returns 404,
+and a tile linking into a 404 is a worse answer than no tile.
+
+### Company Intelligence
+
+The only current entry. Studio **links to** the pages Company Intelligence
+already owns — the review queue at `/admin/company-intelligence`, the vocabulary
+browser at `/admin/company-intelligence/taxonomy` and the backfill console at
+`/admin/company-intelligence/backfill`. Studio adds no Company Intelligence
+route, no second read model, and no second write path; production, operator
+decisions, alias promotion and backfill all stay on the owning routes.
+
+What it is not, stated on the page itself because the three are routinely
+confused:
+
+- **Company Agent** resolves identity and domain — *who* the company is. A
+  registered pipeline Agent.
+- **Research Agent** collects and commits evidence — *what was found*. A
+  registered pipeline Agent. It does not classify.
+- **Company Intelligence** classifies committed Research evidence into
+  versioned, reviewable values — *what the company is*. It produces no evidence
+  of its own, and it is not an Agent.
+
+Unchanged by this integration: Company Intelligence keeps its own durable
+company-scoped queue and its own standalone worker
+(`scripts/run_company_intelligence_worker.py`), its own `company_intelligence`
+feature gate, and its company scope. It does not feed Personalization, is not a
+Sending dependency, and appears nowhere under `/app`.
+
+### Adding another non-Agent module
+
+1. Add a `StudioCapabilityModule` to `STUDIO_CAPABILITY_MODULES`. Do not add an
+   `AgentIdentifier`.
+2. Point `entry_path` and every `StudioSurface` at routes the owning area
+   already serves. Studio does not mount routes on their behalf.
+3. Name the owning feature flag so the module hides when the area is not mounted.
+4. State the execution model and scope, because the reason it is not an Agent is
+   that it does not run on the Campaign Contact queue.
+5. List the neighbouring areas it is confused with, and how it differs.
+6. Add tests proving reachability, the `/app` absence, the absent
+   `AgentIdentifier`, an unchanged `PIPELINE_ORDER`, and that rendering Studio
+   mutates none of the module's rows.
+
 ## Adding a future Agent page
 
 1. Keep execution registration in `app.services.agents.registry`; Studio does
@@ -443,6 +505,9 @@ lineage.
    credentials, arbitrary tools, shell/Python execution or Sending authority.
 6. Add service, routing, authorization, unavailable-state and side-effect tests.
 
-Future Company Intelligence and Sending modules must remain separate from the
-current Company and Research boundaries. Sending stays non-live until its own
-authorized implementation exists.
+Company Intelligence is now integrated, as a non-Agent module rather than an
+Agent page — see *Non-Agent operator modules* above. It remains separate from the
+current Company and Research boundaries. A future Sending module must do the
+same; Sending stays non-live until its own authorized implementation exists.
+Identity Agent Studio remains deferred: Identity is served by the generic Agent
+page and has no dedicated route.

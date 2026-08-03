@@ -8,8 +8,14 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.models.campaign import Campaign
-from app.services.agent_studio.extensions import AgentStudioModule, module_for
+from app.services.agent_studio.extensions import (
+    AgentStudioModule,
+    StudioCapabilityModule,
+    enabled_capability_modules,
+    module_for,
+)
 from app.services.agents.registry import PIPELINE_ORDER
 from app.services.workbench_agents.reader import PhaseTwoWorkbenchReader
 from app.services.workbench_agents.views import AgentCardView, ControlView, JobView
@@ -47,6 +53,11 @@ class AgentStudioView:
     agents: tuple[AgentStudioCard, ...]
     campaigns: tuple[Campaign, ...]
     selected_campaign_id: uuid.UUID | None
+    #: Operator modules that are not pipeline Agents. Separate from ``agents`` on
+    #: purpose: these have no AgentIdentifier, no position in PIPELINE_ORDER, no
+    #: Agent control and no Campaign Contact job, so folding them into the same
+    #: tuple would misrepresent all four.
+    capability_modules: tuple[StudioCapabilityModule, ...] = ()
 
 
 def load_studio(session: Session, *, campaign_id: uuid.UUID | None = None) -> AgentStudioView:
@@ -83,8 +94,12 @@ def load_studio(session: Session, *, campaign_id: uuid.UUID | None = None) -> Ag
             )
         )
     campaigns = tuple(session.scalars(select(Campaign).order_by(Campaign.name, Campaign.id)).all())
+    # Reads the flag list only. No query is issued against any non-Agent module's
+    # tables, so listing a module here cannot load, lease or touch its state.
+    modules = enabled_capability_modules(get_settings().features.enabled())
     return AgentStudioView(
         agents=tuple(cards),
         campaigns=campaigns,
         selected_campaign_id=selected_campaign.id if selected_campaign else None,
+        capability_modules=modules,
     )

@@ -22,7 +22,7 @@
 </div>
 
 <div class="table-wrap">
-  <div class="toolbar"><strong class="small">{{ studio.agents | length }} registered Agents</strong><a class="chip" href="/workbench">Open execution Workbench</a></div>
+  <div class="toolbar"><strong class="small">{{ studio.agents | length }} registered Agents</strong><a class="chip" href="/workbench">Open execution Workbench</a>{% for module in studio.capability_modules %}<a class="chip" href="{{ module.entry_path }}">Open {{ module.display_name }}</a>{% endfor %}</div>
   <table>
     <thead><tr><th>Agent</th><th>Registry</th><th>Effective control</th><th>Latest run</th><th>Failures</th><th>Capabilities</th></tr></thead>
     <tbody>
@@ -45,6 +45,54 @@
     </tbody>
   </table>
 </div>
+
+{% if studio.capability_modules %}
+{# Deliberately a separate block below the Agent table, not another row in it.
+   These areas have no AgentIdentifier, no position in PIPELINE_ORDER, no Agent
+   control and no Campaign Contact job; showing them in the Agent table would
+   imply all four. Every link below goes to a page the owning area already owns
+   -- Studio adds no route of its own here and reads none of their data. #}
+<div class="table-wrap">
+  <div class="toolbar">
+    <strong class="small">{{ studio.capability_modules | length }} operator module{{ '' if studio.capability_modules | length == 1 else 's' }} (not pipeline Agents)</strong>
+    <span class="hint">Company-scoped Admin areas outside the Campaign Contact pipeline. No AgentIdentifier, no position in the Agent order, no Agent control.</span>
+  </div>
+  <table>
+    <thead><tr><th>Module</th><th>Scope</th><th>Execution</th><th>Surfaces</th></tr></thead>
+    <tbody>
+      {% for module in studio.capability_modules %}
+      <tr>
+        <td>
+          <a href="{{ module.entry_path }}"><strong>{{ module.display_name }}</strong></a>
+          <div class="small muted-text">{{ module.summary }}</div>
+        </td>
+        <td class="small">{{ module.scope }}</td>
+        <td class="small">{{ module.execution }}</td>
+        <td class="small">
+          {% for surface in module.surfaces %}
+          <div><a href="{{ surface.path }}">{{ surface.label }}</a> — {{ surface.description }}</div>
+          {% endfor %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% for module in studio.capability_modules %}
+<div class="card">
+  <div class="card-head"><h2>{{ module.display_name }} — what it is and is not</h2></div>
+  <div class="card-body small">
+    <p class="mt-0">{{ module.boundary }}</p>
+    <ul>
+      {% for distinction in module.distinctions %}
+      <li><strong>{{ distinction.name }}</strong> — {{ distinction.difference }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>
+{% endfor %}
+{% endif %}
 
 <div class="card">
   <div class="card-head"><h2>Boundary</h2></div>
