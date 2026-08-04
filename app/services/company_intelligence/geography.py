@@ -371,8 +371,21 @@ def _build(raw: dict[str, Any]) -> GeographyBase:
         alpha3_seen.add(alpha3)
 
         country_code = alpha2.lower()
+        # The ISO alpha-3 code is a matchable surface, and for eleven of these
+        # countries it is also an ordinary English word: ARE, BRA, CAN, COL,
+        # FIN, KEN, MAR, NOR, PAN, PER, POL. Matching is case-insensitive, so
+        # "deliveries are scheduled weekly" offered United Arab Emirates as a
+        # candidate and "quoted per unit" offered Peru — a place the evidence
+        # never named, handed to the model as though extraction had found it.
+        #
+        # Every alpha-3 is therefore an ambiguous surface, which is the rule
+        # this module already has for exactly this problem: it needs a capital
+        # letter *and* a preposition directly in front of it, or its country
+        # named nearby. "a site in ARE" still resolves; "are" never does. The
+        # cost is that a bare code in a list is missed, and that is the right
+        # way round to be wrong.
         country_ambiguous = frozenset(
-            normalize_term(item) for item in country.get("ambiguous_surfaces", ())
+            normalize_term(item) for item in (*country.get("ambiguous_surfaces", ()), alpha3)
         )
         country_place = Place(
             kind="country",

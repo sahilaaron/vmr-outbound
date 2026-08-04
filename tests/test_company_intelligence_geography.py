@@ -310,6 +310,58 @@ def test_ordinary_words_and_names_do_not_become_geographies(
 @pytest.mark.parametrize(
     "claim",
     [
+        # Eleven ISO alpha-3 codes are also ordinary English words. Matching is
+        # case-insensitive, so before these were treated as ambiguous surfaces
+        # each of these sentences handed the model a country the evidence never
+        # named: ARE, BRA, CAN, COL, FIN, KEN, MAR, NOR, PAN, PER, POL.
+        "overview: deliveries are scheduled weekly across the estate",
+        "overview: invoices are issued per shipment",
+        "overview: pricing is quoted per unit and per annum",
+        "overview: the product can be configured for high-temperature service",
+        "products: bra and garment finishing equipment",
+        "products: col-rolled sheet handling systems",
+        "products: fin-and-tube heat exchangers",
+        "leadership: Ken Alvarez leads the service desk",
+        "overview: the mar sediment analysis rig was retired",
+        "overview: neither the plant nor the depot was affected",
+        "products: pan and tray washing systems",
+        "overview: pol tested cabling is used throughout",
+    ],
+)
+def test_an_iso_code_that_is_an_english_word_is_not_a_place(
+    db_session: Session, claim: str
+) -> None:
+    """An alpha-3 code in ordinary lower-case prose is a word, not a country.
+
+    Regression for a UAT finding: "deliveries are scheduled weekly" offered
+    United Arab Emirates (ARE) and "quoted per unit" offered Peru (PER), because
+    the alpha-3 was registered as a plain surface and matched case-insensitively.
+    A candidate the evidence never named is the one failure this module exists to
+    prevent, so the codes are now ambiguous surfaces like "Reading".
+    """
+
+    found = extract(db_session, [claim])
+    assert found.candidates == (), f"{claim!r} produced {labels(found)}"
+
+
+def test_an_iso_code_written_as_a_code_still_resolves(db_session: Session) -> None:
+    """The fix must not cost the legitimate reading of a code.
+
+    Capitalised and preceded by a preposition is how a code actually appears in
+    evidence, and it must still produce the country.
+    """
+
+    found = extract(db_session, ["overview: a service centre in ARE supports the region"])
+    assert "United Arab Emirates" in labels(found)
+    candidate = next(
+        item for item in found.candidates if item.place.label == "United Arab Emirates"
+    )
+    assert candidate.qualified_ambiguous is True
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
         "sources: published by an academic publisher in Munich",
         "sources: appeared in a journal edited in Boston",
         "activity_signals: presented at a semiconductor conference in Berlin",
