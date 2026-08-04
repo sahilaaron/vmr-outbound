@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% from "_agent_macros.html" import control_badge, job_status_badge %}
+{% block content %}
+<div class="page-head">
+  <div class="crumbs"><a href="/admin">Admin</a><span>/</span>Agent Studio</div>
+  <h1>Agent Studio</h1>
+  <div class="sub">One global shell over the authoritative Agent registry, controls and durable jobs. Agent-specific policy lives only inside the Agent that owns it.</div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Effective control scope</h2><span class="hint">Campaign execution and overrides are shown without replacing the existing control system.</span></div>
+  <div class="card-body">
+    <form method="get" action="/admin/agents/studio" class="action-row">
+      <label for="studio-campaign">Campaign scope</label>
+      <select id="studio-campaign" name="campaign">
+        <option value="">Global controls</option>
+        {% for campaign in studio.campaigns %}<option value="{{ campaign.id }}" {{ "selected" if studio.selected_campaign_id == campaign.id else "" }}>{{ campaign.name }}</option>{% endfor %}
+      </select>
+      <button class="btn small secondary" type="submit">Inspect scope</button>
+    </form>
+  </div>
+</div>
+
+<div class="table-wrap">
+  <div class="toolbar"><strong class="small">{{ studio.agents | length }} registered Agents</strong><a class="chip" href="/workbench">Open execution Workbench</a>{% for module in studio.capability_modules %}<a class="chip" href="{{ module.entry_path }}">Open {{ module.display_name }}</a>{% endfor %}</div>
+  <table>
+    <thead><tr><th>Agent</th><th>Registry</th><th>Effective control</th><th>Latest run</th><th>Failures</th><th>Capabilities</th></tr></thead>
+    <tbody>
+      {% for item in studio.agents %}
+      <tr>
+        <td><a href="{{ item.module.dedicated_path }}{{ '?campaign=' ~ studio.selected_campaign_id if studio.selected_campaign_id else '' }}"><strong>{{ item.card.display_name }}</strong></a><div class="small muted-text">Position {{ item.card.position + 1 }}</div></td>
+        <td>{% if item.card.control.implemented %}<span class="badge ok">implemented</span>{% else %}<span class="badge muted">unavailable</span>{% endif %}<div class="small muted-text">Health: {{ item.health }}</div></td>
+        <td>{{ control_badge(item.effective_control.status) }}<div class="small muted-text">{{ item.effective_control.source | replace('_', ' ') }}</div>{% if item.card.overriding_campaigns %}<div class="small muted-text">{{ item.card.overriding_campaigns | length }} Campaign override{{ '' if item.card.overriding_campaigns | length == 1 else 's' }}</div>{% endif %}</td>
+        <td>{% if item.latest_run %}{{ job_status_badge(item.latest_run.public_status) }}<div class="small muted-text">{{ item.latest_run.updated_at | dt }} · {{ item.latest_run.attempt_count }}/{{ item.latest_run.max_attempts }} attempts{% if item.latest_run.lease_held %} · leased{% endif %}</div>{% else %}<span class="muted-text">No persisted run</span>{% endif %}</td>
+        <td>{% if item.recent_failures %}<span class="badge err">{{ item.recent_failures | length }} recent</span><div class="small muted-text">Latest {{ item.recent_failures[0].updated_at | dt }}</div>{% else %}<span class="muted-text">None in recent history</span>{% endif %}</td>
+        <td><div class="capability-row">
+          <span class="cap {{ 'yes' if item.module.capabilities.inspection else 'no' }}">inspect</span>
+          <span class="cap {{ 'yes' if item.module.capabilities.configuration else 'no' }}">configure</span>
+          <span class="cap {{ 'yes' if item.module.capabilities.preview_testing else 'no' }}">preview</span>
+          <span class="cap {{ 'yes' if item.module.capabilities.live_execution else 'no' }}">live</span>
+          <span class="cap {{ 'yes' if item.module.capabilities.reporting else 'no' }}">report</span>
+        </div></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if studio.capability_modules %}
+{# Deliberately a separate block below the Agent table, not another row in it.
+   These areas have no AgentIdentifier, no position in PIPELINE_ORDER, no Agent
+   control and no Campaign Contact job; showing them in the Agent table would
+   imply all four. Every link below goes to a page the owning area already owns
+   -- Studio adds no route of its own here and reads none of their data. #}
+<div class="table-wrap">
+  <div class="toolbar">
+    <strong class="small">{{ studio.capability_modules | length }} operator module{{ '' if studio.capability_modules | length == 1 else 's' }} (not pipeline Agents)</strong>
+    <span class="hint">Company-scoped Admin areas outside the Campaign Contact pipeline. No AgentIdentifier, no position in the Agent order, no Agent control.</span>
+  </div>
+  <table>
+    <thead><tr><th>Module</th><th>Scope</th><th>Execution</th><th>Surfaces</th></tr></thead>
+    <tbody>
+      {% for module in studio.capability_modules %}
+      <tr>
+        <td>
+          <a href="{{ module.entry_path }}"><strong>{{ module.display_name }}</strong></a>
+          <div class="small muted-text">{{ module.summary }}</div>
+        </td>
+        <td class="small">{{ module.scope }}</td>
+        <td class="small">{{ module.execution }}</td>
+        <td class="small">
+          {% for surface in module.surfaces %}
+          <div><a href="{{ surface.path }}">{{ surface.label }}</a> — {{ surface.description }}</div>
+          {% endfor %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% for module in studio.capability_modules %}
+<div class="card">
+  <div class="card-head"><h2>{{ module.display_name }} — what it is and is not</h2></div>
+  <div class="card-body small">
+    <p class="mt-0">{{ module.boundary }}</p>
+    <ul>
+      {% for distinction in module.distinctions %}
+      <li><strong>{{ distinction.name }}</strong> — {{ distinction.difference }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>
+{% endfor %}
+{% endif %}
+
+<div class="card">
+  <div class="card-head"><h2>Boundary</h2></div>
+  <div class="card-body small">
+    <p class="mt-0">Agent Studio adds inspection and Agent-specific modules. It does not create another execution-control service. Status changes remain on the existing Workbench routes and preserve stored configuration, including <code>{"live": true}</code>.</p>
+    <p>Suppression, evidence eligibility, Campaign execution, Campaign overrides, exact-draft approval and Sending availability remain separate authorities.</p>
+  </div>
+</div>
+{% endblock %}

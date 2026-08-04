@@ -433,8 +433,8 @@ class EmailCandidateAttemptView:
     verification_decision: str | None
     verification_result: dict[str, Any] | None
     refusal_reason: str | None
-    employee_count_class: str
-    employee_evidence_freshness: str
+    employee_count_class: str | None
+    employee_evidence_freshness: str | None
     force_refresh: bool
     refresh_scope: str | None
     verification_queued_at: datetime | None

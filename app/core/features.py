@@ -142,6 +142,20 @@ class FeatureFlags(BaseModel):
     company_research: bool = False
 
     insights_research: bool = False
+    # Company Intelligence (CI-001): versioned, evidence-linked classification of
+    # a Company from Research evidence that has already been committed. Off by
+    # default. While off, the Admin pages return 404, the producer refuses, the
+    # worker exits, and the backfill will not enqueue -- the area behaves exactly
+    # as if it did not exist.
+    #
+    # Turning it on lets a bounded producer read persisted dossiers and sourced
+    # facts and store structured classifications with their evidence, their
+    # uncertainty and their conflicts. It never browses, never rewrites a
+    # canonical Company field, never edits Research, never makes a Contact
+    # outreach-eligible, and cannot release a suppression or reach Sending. A
+    # model-produced classification is not verified; only an operator decision
+    # makes it operator-confirmed.
+    company_intelligence: bool = False
     # Phase 5 — Claude Bridge
     claude_mcp_bridge: bool = False
     # Phase 6 — Draft & Approval

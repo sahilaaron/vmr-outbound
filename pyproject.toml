@@ -31,6 +31,8 @@ dependencies = [
     "trafilatura>=1.8,<3.0",
     "tldextract>=5.0,<6.0",
     "PyYAML>=6.0,<7.0",
+    # Fernet envelope for Admin-managed verification-provider credentials.
+    "cryptography>=42.0,<47.0",
 ]
 
 [project.optional-dependencies]
@@ -69,6 +71,8 @@ select = ["E", "F", "I", "UP", "B", "W"]
 "app/web/routes.py" = ["B008"]
 # And on the customer-facing v2 page routes.
 "app/web/v2/routes.py" = ["B008"]
+# And on the Company Intelligence admin page routes (CI-001).
+"app/web/company_intelligence.py" = ["B008"]
 # The synthetic fixture literals (CSV text, sample rows) exceed the line limit
 # by nature; wrapping them would corrupt the fixture content.
 "app/services/devtools.py" = ["E501"]

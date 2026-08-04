@@ -101,10 +101,9 @@ _SPECS = (
         (AgentIdentifier.INSIGHTS,),
         AgentControlStatus.DISABLED,
         True,
-        # Skippable so a Contact with thin evidence can be moved past drafting
-        # by an operator instead of wedging the Campaign. Skipping it means no
-        # draft exists, which the Sending Agent must continue to treat as "do
-        # not send" rather than "send something generic".
+        # Skippable for explicit operator recovery. Thin prospect evidence may
+        # now produce the policy's earnest offering-led fallback; skipping still
+        # means no draft exists and Sending must treat that as "do not send".
         skippable=True,
         max_attempts=3,
         retry_base_seconds=60.0,

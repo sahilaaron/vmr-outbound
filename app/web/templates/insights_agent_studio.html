@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% from "_agent_macros.html" import control_badge, job_status_badge %}
+{% block content %}
+<div class="page-head">
+  <div class="crumbs"><a href="/admin">Admin</a><span>/</span><a href="/admin/agents/studio">Agent Studio</a><span>/</span>Insights</div>
+  <h1>Insights Agent Studio {{ control_badge(item.effective_control.status) }}</h1>
+  <div class="sub">Read-only claim, evidence, Research-lineage and structured Employee Size inspection.</div>
+</div>
+
+<div class="card"><div class="card-head"><h2>Capability boundary</h2></div><div class="card-body">
+  <p>{{ item.module.configuration_boundary }}</p><p class="muted-text">{{ item.module.preview_boundary }}</p>
+  <dl class="kv"><dt>Effective control</dt><dd>{{ item.effective_control.status.value }} via {{ item.effective_control.source | replace('_', ' ') }}</dd><dt>Authority</dt><dd>Research collects sources; Insights derives claims; Company Intelligence remains separate.</dd></dl>
+</div></div>
+
+<div class="card"><div class="card-head"><h2>Open an exact execution</h2></div><div class="card-body">
+  <form method="get" action="/admin/agents/studio/insights" class="inline-form"><select name="job" required><option value="">Choose an Insights job</option>{% for job in jobs %}<option value="{{ job.id }}" {{ 'selected' if report and report.job_id == job.id else '' }}>{{ job.created_at | dt }} · {{ job.status.value }} · {{ job.id }}</option>{% endfor %}</select><button class="btn small" type="submit">Open report</button></form>
+</div></div>
+
+{% if report %}
+<div class="notice {{ 'info' if report.report_state.value == 'complete' else 'warn' }}"><div><strong>Report {{ report.report_state.value }}</strong> — {{ report.report_reason }}</div></div>
+<div class="stat-grid">
+  <div class="stat accent"><div class="label">Job</div><div class="value small-value">{{ report.job_status }}</div></div>
+  <div class="stat"><div class="label">Attempts</div><div class="value">{{ report.attempts }}/{{ report.max_attempts }}</div></div>
+  <div class="stat"><div class="label">Claims produced</div><div class="value">{{ report.claims | length }}</div></div>
+  <div class="stat"><div class="label">Eligible claims</div><div class="value">{{ report.claims | selectattr('downstream_eligible') | list | length }}</div></div>
+</div>
+
+<div class="card"><div class="card-head"><h2>Execution and exact Research lineage</h2></div><div class="card-body"><dl class="kv">
+  <dt>Campaign / Campaign Contact</dt><dd>{{ report.campaign_name }} · {{ report.campaign_contact_id }}</dd>
+  <dt>Contact / Company</dt><dd>{{ report.contact_name }} · {{ report.company_name or 'Unavailable' }}</dd>
+  <dt>Customer/account</dt><dd>{{ report.customer_account or 'Unavailable in current persistence' }}</dd>
+  <dt>Insights job</dt><dd><a href="/workbench/jobs/{{ report.job_id }}">{{ report.job_id }}</a> · {{ report.job_status }} · attempts {{ report.attempts }}/{{ report.max_attempts }}</dd>
+  <dt>Timing</dt><dd>queued {{ report.queued_at | dt }} · started {{ report.started_at | dt }} · finished {{ report.finished_at | dt }} · next {{ report.next_run_at | dt }}</dd>
+  <dt>Lease</dt><dd>{{ report.lease_owner or 'none persisted' }}{% if report.lease_expires_at %} · expires {{ report.lease_expires_at | dt }}{% endif %}</dd>
+  <dt>Error</dt><dd>{{ report.error_type or 'None' }}{% if report.error_detail %}: {{ report.error_detail }}{% endif %}{% if report.retryable_error is not none %} · retryable={{ 'yes' if report.retryable_error else 'no' }}{% endif %}</dd>
+  <dt>Preceding Research job</dt><dd>{{ report.research_job_id or 'Unavailable' }}</dd>
+  <dt>Exact raw submission</dt><dd>{{ report.research_submission_id or 'Unavailable' }}</dd>
+  <dt>Exact dossier</dt><dd>{% if report.research_dossier_id %}{{ report.research_dossier_id }} · v{{ report.research_dossier_version }}{% else %}Unavailable{% endif %}</dd>
+  <dt>Admin API</dt><dd><a href="/api/admin/agent-studio/insights/jobs/{{ report.job_id }}/report">Exact job report JSON</a></dd>
+</dl></div></div>
+
+<div class="table-wrap"><div class="toolbar"><strong class="small">Claims produced by this execution</strong></div><table><thead><tr><th>Claim</th><th>Type / status</th><th>Confidence / freshness</th><th>Evidence</th><th>Downstream</th></tr></thead><tbody>
+{% for claim in report.claims %}<tr><td>{{ claim.claim }}<br><span class="muted-text">{{ claim.insight_id }}</span>{% if claim.employee_size %}<dl class="kv"><dt>Exact / approximate</dt><dd>{{ claim.employee_size.exact_count if claim.employee_size.exact_count is not none else (('approximately ' ~ claim.employee_size.approximate_count) if claim.employee_size.approximate_count is not none else 'not settled') }}</dd><dt>Bounds / band</dt><dd>{{ claim.employee_size.lower_bound or '—' }}–{{ claim.employee_size.upper_bound or '—' }} · {{ claim.employee_size.normalized_band }}</dd><dt>Source wording</dt><dd>{{ claim.employee_size.source_wording or 'Unavailable' }}</dd><dt>Observation / derivation</dt><dd>{{ claim.employee_size.observation_date or 'unavailable' }} · {{ claim.employee_size.derivation_version or 'unavailable' }}</dd><dt>Current / historical</dt><dd>{{ claim.employee_size.temporal_status }} · projection {{ 'current' if claim.current_derivation else 'historical' }}</dd><dt>Rationale</dt><dd>{{ claim.employee_size.rationale or 'Unavailable' }}</dd></dl>{% endif %}</td><td>{{ claim.claim_type }} / {{ claim.status }}{% if claim.conflict %}<br><strong>conflict represented</strong>{% endif %}</td><td>{{ ('%.2f' | format(claim.confidence)) if claim.confidence is not none else 'unavailable' }} / {{ claim.freshness }}</td><td>{% for evidence in claim.evidence %}<a href="{{ evidence.source_url }}" rel="noreferrer">{{ evidence.evidence_id }}</a> · {{ evidence.source_title or evidence.summary or 'evidence' }} · {{ 'valid' if evidence.valid else 'invalid' }}{% if not loop.last %}<br>{% endif %}{% else %}No linked evidence{% endfor %}</td><td>{{ 'eligible' if claim.downstream_eligible else 'ineligible' }}{% if claim.ineligible_reason %}<br><span class="muted-text">{{ claim.ineligible_reason }}</span>{% endif %}</td></tr>{% else %}<tr><td colspan="5">No historical output can be attributed to this exact job.</td></tr>{% endfor %}
+</tbody></table></div>
+
+{% if report.dropped_claims is not none %}<div class="notice warn"><div><strong>Bounded execution outcome: dropped proposals</strong><ul>{% for item in report.dropped_claims %}<li>{{ item }}</li>{% else %}<li>None recorded.</li>{% endfor %}</ul><p class="muted-text">This is the selected job's stored result, not a universal rejected-claim ledger.</p></div></div>{% endif %}
+{% if report.unavailable %}<div class="notice warn"><div><strong>Explicitly unavailable</strong><ul>{% for item in report.unavailable %}<li>{{ item }}</li>{% endfor %}</ul></div></div>{% endif %}
+
+<div class="table-wrap"><div class="toolbar"><strong class="small">Related Insights generations</strong><span class="muted-text">Retries increment attempts on one job; separate rows are reruns.</span></div><table><thead><tr><th>Job</th><th>Status</th><th>Attempts</th><th>Created</th></tr></thead><tbody>{% for item in report.related_generations %}<tr><td><a href="/admin/agents/studio/insights?job={{ item.job_id }}">{{ item.job_id }}</a>{% if item.selected %} · selected{% endif %}</td><td>{{ item.status }}</td><td>{{ item.attempts }}/{{ item.max_attempts }}</td><td>{{ item.created_at | dt }}</td></tr>{% endfor %}</tbody></table></div>
+<div class="table-wrap"><div class="toolbar"><strong class="small">Durable downstream references</strong></div><table><thead><tr><th>Type</th><th>Reference</th><th>Insight</th><th>Created</th></tr></thead><tbody>{% for item in report.downstream_references %}<tr><td>{{ item.reference_type }}</td><td>{{ item.reference_id }}</td><td>{{ item.insight_id }}</td><td>{{ item.created_at | dt }}</td></tr>{% else %}<tr><td colspan="4">No durable downstream reference is available.</td></tr>{% endfor %}</tbody></table></div>
+{% endif %}
+{% endblock %}

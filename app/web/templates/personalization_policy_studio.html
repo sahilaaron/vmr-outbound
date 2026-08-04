@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div class="crumbs"><a href="/admin">Admin</a><span>/</span><a href="/admin/agents/studio">Agent Studio</a><span>/</span>Personalization</div>
+  <h1>Personalization Policy Studio</h1>
+  <div class="sub">Define what good outreach means. Execution authority remains in Agent controls; saving here never changes <code>{"live": true}</code>.</div>
+</div>
+
+{% if active_policy %}<div class="notice ok"><div><strong>Active: v{{ active_policy.version_number }} — {{ active_policy.name }}</strong> · immutable policy {{ active_policy.id }}</div></div>{% else %}<div class="notice warn"><div><strong>No policy is active.</strong> Personalization execution will refuse until an immutable version is activated.</div></div>{% endif %}
+
+{% if preview %}
+<div class="card preview-result">
+  <div class="card-head"><h2>Side-effect-free preview</h2><span class="badge info">not saved</span></div>
+  <div class="card-body">
+    <dl class="kv"><dt>Policy</dt><dd>v{{ preview.policy_version_number }} · {{ preview.policy_version_id }}</dd><dt>Strategy</dt><dd>{{ preview.strategy_id }}</dd><dt>Fallback</dt><dd>Level {{ preview.decision.fallback_level }} · {{ preview.decision.fallback_identifier }}</dd><dt>Context used</dt><dd>{{ preview.decision.summary().context_used | join(', ') if preview.decision.used else 'None — offering-led fallback' }}</dd><dt>Producer</dt><dd>{{ preview.producer }}/{{ preview.producer_version }}</dd></dl>
+    <h3>{{ preview.subject }}</h3><pre class="email-preview">{{ preview.body }}</pre>
+    {% if preview.rationale %}<p class="small"><strong>Decision summary:</strong> {{ preview.rationale }}</p>{% endif %}
+    {% if preview.warnings %}<div class="notice warn"><div><strong>Material warnings</strong><ul>{% for warning in preview.warnings %}<li>{{ warning }}</li>{% endfor %}</ul></div></div>{% endif %}
+    <details><summary>Policy decision details</summary><pre class="json-report">{{ preview.decision.summary() | pretty_json }}</pre></details>
+    <p class="small muted-text">No Agent Job, pipeline event, DraftVersion, approval or send was created. Preview does not activate this version.</p>
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-head"><h2>Side-effect-free preview</h2><span class="hint">Uses persisted Contact, Company, Research, Insights, Campaign and Knowledge Base records without changing production state.</span></div>
+  <div class="card-body"><form method="post" action="/admin/agents/studio/personalization/preview" class="stack-form"><label for="preview-contact">Campaign Contact</label><select id="preview-contact" name="campaign_contact_id" required><option value="">Select…</option>{% for row in campaign_contacts %}<option value="{{ row.membership.id }}">{{ row.campaign.name }} · {{ row.contact.first_name or '' }} {{ row.contact.last_name or '' }} · {{ row.contact.company_name or 'Company unknown' }}</option>{% endfor %}</select><label for="preview-policy">Policy version</label><select id="preview-policy" name="policy_version_id" required>{% for version in versions %}<option value="{{ version.id }}" {{ 'selected' if active_policy and version.id == active_policy.id else '' }}>v{{ version.version_number }} — {{ version.name }}{{ ' (active)' if active_policy and version.id == active_policy.id else '' }}</option>{% endfor %}</select><button class="btn" type="submit" {{ 'disabled' if not versions else '' }}>Generate preview</button></form></div>
+</div>
+
+{% if selected_policy %}
+{% set config = selected_config %}
+<div class="card">
+  <div class="card-head"><h2>Version v{{ selected_policy.version_number }} — {{ selected_policy.name }}</h2><span class="hint">Created {{ selected_policy.created_at | dt }} by {{ selected_policy.created_by }}</span></div>
+  <div class="card-body"><dl class="kv"><dt>Schema</dt><dd>{{ selected_policy.schema_version }}</dd><dt>Based on</dt><dd>{{ selected_policy.based_on_version_id or 'first version' }}</dd><dt>Change note</dt><dd>{{ selected_policy.change_note or 'None recorded.' }}</dd><dt>Validation</dt><dd>{{ 'valid' if selected_policy.validation_summary.valid else 'invalid' }}</dd></dl>{% if not active_policy or selected_policy.id != active_policy.id %}<form method="post" action="/admin/agents/studio/personalization/policies/{{ selected_policy.id }}/activate" class="action-row"><input name="reason" type="text" maxlength="500" placeholder="Why activate or roll back"><button class="btn warn" type="submit">Activate this immutable version</button></form>{% endif %}</div>
+</div>
+
+<div class="card"><div class="card-head"><h2>Writing standards</h2></div><div class="card-body tight"><table><thead><tr><th>Stable id</th><th>Operator description</th><th>Versioned wording</th><th>Strength</th><th>State</th></tr></thead><tbody>{% for standard in config.standards %}<tr><td class="mono small">{{ standard.identifier }}</td><td>{{ standard.description }}</td><td>{{ standard.wording }}</td><td><span class="badge {{ 'err' if standard.strength.value == 'required' else 'info' }}">{{ standard.strength.value }}</span></td><td>{{ standard.state.value }}</td></tr>{% endfor %}</tbody></table></div></div>
+
+<div class="card">
+  <div class="card-head"><h2>Create a wording revision</h2><span class="hint">Preserves every control, scale, strategy, example and evidence threshold from the base.</span></div>
+  <div class="card-body">
+    <form method="post" action="/admin/agents/studio/personalization/policies" class="stack-form">
+      <input type="hidden" name="edit_mode" value="wording">
+      <input type="hidden" name="based_on_version_id" value="{{ selected_policy.id }}">
+      <label>Version name</label><input name="name" maxlength="160" required>
+      <label>Change note</label><textarea name="change_note" maxlength="2000" required></textarea>
+      {% for standard in config.standards %}
+      <fieldset><legend>{{ standard.identifier }}</legend>
+        <label>Operator description</label><textarea name="standard_{{ standard.identifier }}_description" maxlength="600" required>{{ standard.description }}</textarea>
+        <label>Policy wording</label><textarea name="standard_{{ standard.identifier }}_wording" maxlength="800" required>{{ standard.wording }}</textarea>
+      </fieldset>
+      {% endfor %}
+      <button class="btn" type="submit">Save inactive wording version</button>
+    </form>
+  </div>
+</div>
+
+<div class="card"><div class="card-head"><h2>Temperament</h2><span class="hint">0 = minimum / reserved; 4 = maximum / assertive</span></div><div class="card-body"><div class="temperament-grid">{% for name, value in temperament_values.items() %}<div><strong>{{ name | replace('_', ' ') | title }}</strong><div class="scale"><span style="width: {{ value * 25 }}%"></span></div><span class="small muted-text">{{ value }} / 4</span></div>{% endfor %}</div></div></div>
+
+<div class="card"><div class="card-head"><h2>Approved writing strategies</h2></div><div class="card-body tight"><table><thead><tr><th>Strategy</th><th>Eligibility and evidence</th><th>Opening / introduction / CTA</th><th>Fallback</th></tr></thead><tbody>{% for strategy in config.strategies %}<tr><td><strong>{{ strategy.name }}</strong><div class="small mono">{{ strategy.identifier }}</div><span class="badge {{ 'ok' if strategy.enabled else 'muted' }}">{{ 'enabled' if strategy.enabled else 'unavailable' }}</span></td><td>{{ strategy.eligible_when }}<div class="small muted-text">Requires: {{ strategy.evidence_required | join(', ') if strategy.evidence_required else 'no prospect evidence' }}</div></td><td class="small"><strong>Open:</strong> {{ strategy.opening_shape }}<br><strong>Introduce:</strong> {{ strategy.introduction_placement }}<br><strong>CTA:</strong> {{ strategy.cta_shape }}<br><strong>Never:</strong> {{ strategy.prohibited_behavior | join(', ') }}</td><td>{{ strategy.fallback_destination or 'terminal success' }}</td></tr>{% endfor %}</tbody></table></div></div>
+
+<div class="card"><div class="card-head"><h2>Fallback ladder</h2></div><div class="card-body"><ol>{% for level in config.fallback_ladder %}<li><strong>{{ level | replace('_', ' ') }}</strong>{% if loop.last %} — valid success; do not manufacture context.{% endif %}</li>{% endfor %}</ol></div></div>
+
+<div class="card"><div class="card-head"><h2>Examples and counterexamples</h2><span class="hint">Curated policy examples, not fine-tuning.</span></div><div class="card-body">{% if config.examples %}<ul>{% for example in config.examples %}<li><strong>{{ example.category.value | replace('_', ' ') }}:</strong> {{ example.content }}{% if example.note %}<div class="small muted-text">{{ example.note }}</div>{% endif %}</li>{% endfor %}</ul>{% else %}<div class="empty"><div class="empty-title">No examples in this version</div><p>Add bounded examples when creating the next immutable version.</p></div>{% endif %}</div></div>
+{% endif %}
+
+<div class="card">
+  <div class="card-head"><h2>Create the next immutable version</h2><span class="hint">Saving creates a draft version; it does not activate it. Core standards always remain enabled.</span></div>
+  <div class="card-body"><form method="post" action="/admin/agents/studio/personalization/policies" class="stack-form"><label>Base version</label><select name="based_on_version_id" required>{% for version in versions %}<option value="{{ version.id }}" {{ 'selected' if selected_policy and version.id == selected_policy.id else '' }}>v{{ version.version_number }} — {{ version.name }}</option>{% endfor %}</select><label>Name</label><input name="name" maxlength="160" required placeholder="What this version represents"><label>Change note</label><textarea name="change_note" maxlength="2000" required></textarea><fieldset><legend>Temperament values (0–4)</legend><div class="temperament-grid">{% for name, value in temperament_values.items() %}<label>{{ name | replace('_', ' ') | title }}<input type="range" name="temperament_{{ name }}" min="0" max="4" value="{{ value }}"></label>{% endfor %}</div></fieldset><fieldset><legend>Standard enforcement</legend>{% if selected_config %}{% for standard in selected_config.standards %}<div class="action-row"><code>{{ standard.identifier }}</code><select name="standard_{{ standard.identifier }}_strength"><option value="required" {{ 'selected' if standard.strength.value == 'required' else '' }}>required</option><option value="preferred" {{ 'selected' if standard.strength.value == 'preferred' else '' }}>preferred</option><option value="advisory" {{ 'selected' if standard.strength.value == 'advisory' else '' }}>advisory</option></select><label><input type="checkbox" name="standard_{{ standard.identifier }}_enabled" {{ 'checked' if standard.state.value == 'enabled' else '' }}> enabled</label></div>{% endfor %}{% endif %}</fieldset><fieldset><legend>Approved strategies</legend>{% if selected_config %}{% for strategy in selected_config.strategies %}<label><input type="checkbox" name="strategy_{{ strategy.identifier }}_enabled" {{ 'checked' if strategy.enabled else '' }}> {{ strategy.name }}</label>{% endfor %}{% endif %}</fieldset><label>Maximum evidence age (days)</label><input type="number" name="maximum_age_days" min="30" max="730" value="{{ selected_config.evidence.maximum_age_days if selected_config else 365 }}"><label>Examples — one per line as <code>category | text | optional note</code></label><textarea name="examples" rows="8" maxlength="52000">{% if selected_config %}{% for example in selected_config.examples %}{{ example.category.value }} | {{ example.content }}{% if example.note %} | {{ example.note }}{% endif %}{{ '\n' if not loop.last }}{% endfor %}{% endif %}</textarea><button class="btn" type="submit" {{ 'disabled' if not versions else '' }}>Save new draft version</button></form></div>
+</div>
+
+<div class="table-wrap"><div class="toolbar"><strong class="small">Immutable version history</strong></div><table><thead><tr><th>Version</th><th>Name</th><th>Based on</th><th>Created</th><th>State</th><th>Inspect</th></tr></thead><tbody>{% for version in versions %}<tr><td>v{{ version.version_number }}</td><td>{{ version.name }}</td><td>{{ version.based_on_version_id or '—' }}</td><td>{{ version.created_at | dt }} · {{ version.created_by }}</td><td>{% if active_policy and version.id == active_policy.id %}<span class="badge ok">active</span>{% else %}<span class="badge muted">inactive draft / prior</span>{% endif %}</td><td><a href="/admin/agents/studio/personalization?version={{ version.id }}">View</a>{% if version.based_on_version_id %} · <a href="/admin/agents/studio/personalization?version={{ version.id }}&compare={{ version.based_on_version_id }}">Compare</a>{% endif %}</td></tr>{% endfor %}</tbody></table></div>
+<div class="table-wrap"><div class="toolbar"><strong class="small">Append-only activation audit</strong></div><table><thead><tr><th>Activated</th><th>Policy</th><th>Previous</th><th>Actor</th><th>Reason</th></tr></thead><tbody>{% for activation in activation_history %}<tr><td>{{ activation.activated_at | dt }}</td><td>{{ activation.policy_version_id }}</td><td>{{ activation.previous_policy_version_id or 'first activation' }}</td><td>{{ activation.activated_by }}</td><td>{{ activation.reason or 'No reason recorded.' }}</td></tr>{% else %}<tr><td colspan="5" class="muted-text">No activation has been recorded.</td></tr>{% endfor %}</tbody></table></div>
+{% if comparison %}<div class="card"><div class="card-head"><h2>Version comparison</h2></div><div class="card-body"><pre class="json-report">{{ comparison | pretty_json }}</pre></div></div>{% endif %}
+{% endblock %}

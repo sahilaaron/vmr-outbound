@@ -5,7 +5,6 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from sqlalchemy import func, select
@@ -32,8 +31,13 @@ from app.services.audit import record_audit_event
 from app.services.companies import conflicts as company_conflicts
 from app.services.companies import dossiers
 from app.services.imports.normalization import is_valid_email, normalize_email
+from app.services.insights import employee_size
 from app.services.insights import evidence as insights_evidence
+from app.services.insights import lineage as insights_lineage
 from app.services.insights.evidence import InsightError
+from app.services.personalization import generation as personalization_generation
+from app.services.personalization import policy as personalization_policy
+from app.services.resolution import gates as resolution_gates
 from app.services.resolution import store as resolution_store
 from app.services.seller import context as seller_context
 from app.services.seller.context import SellerContext
@@ -43,6 +47,7 @@ from app.services.thinking.claude_cli import ClaudeCliThinker
 from app.services.thinking.contracts import Thinker, ThinkingError, ThinkingRequest
 from app.services.verification import service as verification_service
 from app.services.verification import status as verification_status
+from app.services.verification import waterfall as verification_waterfall
 from app.services.verification.decisions import (
     ADDRESS_VERDICTS,
     UNSETTLED_EVIDENCE,
@@ -53,6 +58,7 @@ from app.services.verification.decisions import (
 )
 from app.services.verification.policy import get_policy
 from app.services.verification.provider import VerificationProvider
+from app.services.verification.waterfall import WaterfallUnavailable
 
 
 class AgentExecutionError(Exception):
@@ -237,31 +243,50 @@ class CompanyAgentAdapter:
             else None
         )
         linked_by_agent = False
+        candidate_ids: list[str] = []
+        identity_match_key = "contact.company_id"
         if company is None:
             if not contact.company_domain:
                 raise AgentBlocked(
                     "company_domain_missing",
                     "Company resolution needs an observed or approved domain.",
+                    detail=self._blocked_detail(
+                        context,
+                        match_key="contact.company_domain",
+                        candidate_ids=(),
+                        reason="No observed or approved Contact company domain was available.",
+                    ),
                 )
+            identity_match_key = "company.domain"
             candidates = list(
                 context.session.scalars(
-                    select(Company).where(Company.domain == contact.company_domain)
+                    select(Company)
+                    .where(Company.domain == contact.company_domain)
+                    .order_by(Company.id.asc())
                 ).all()
             )
+            candidate_ids = [str(candidate.id) for candidate in candidates]
             if not candidates:
                 raise AgentBlocked(
                     "company_missing",
                     "No permanent Company matches the Contact's exact normalized domain.",
-                    detail={"domain": contact.company_domain},
+                    detail=self._blocked_detail(
+                        context,
+                        match_key=identity_match_key,
+                        candidate_ids=(),
+                        reason="No exact permanent Company domain matched.",
+                    ),
                 )
             if len(candidates) > 1:
                 raise AgentBlocked(
                     "company_ambiguous",
                     "Several permanent Companies share the Contact's domain.",
-                    detail={
-                        "domain": contact.company_domain,
-                        "candidate_ids": [str(candidate.id) for candidate in candidates],
-                    },
+                    detail=self._blocked_detail(
+                        context,
+                        match_key=identity_match_key,
+                        candidate_ids=tuple(candidate_ids),
+                        reason="Several permanent Companies shared the exact domain.",
+                    ),
                 )
             company = candidates[0]
             contact.company_id = company.id
@@ -276,9 +301,107 @@ class CompanyAgentAdapter:
                 reason="linked by exact unique normalized company domain",
                 context={"domain": contact.company_domain},
             )
+        else:
+            candidate_ids = [str(company.id)]
 
         conflicts = company_conflicts.for_company(context.session, company=company)
         resolution_state = resolution_store.company_state(context.session, company.id)
+        capture_decision = (
+            resolution_store.current_decision(context.session, context.job.capture_id)
+            if context.job.capture_id is not None
+            else None
+        )
+        aggregate_decisions = resolution_store.current_decisions_for_company(
+            context.session, company.id
+        )
+        aggregate_decision = aggregate_decisions[0] if aggregate_decisions else None
+        research_gate = resolution_gates.research_readiness(
+            context.session, company_id=company.id, domain=company.domain
+        )
+        later_gate = resolution_gates.authorize_company(
+            context.session,
+            company_id=company.id,
+            stage=resolution_gates.DownstreamStage.EMAIL_DISCOVERY,
+            campaign=context.campaign,
+        )
+        policy = {
+            "allow_provisional_domains": context.campaign.allow_provisional_domains,
+            "campaign_settings_version": context.campaign.settings_version,
+            "source": "execution_snapshot",
+        }
+        continuation_action = (
+            "block"
+            if not research_gate.ready
+            else "review_required"
+            if not later_gate.allowed
+            else "continue"
+        )
+        lineage = {
+            "schema_version": "company-agent-report/1",
+            "identity": {
+                "match_key": identity_match_key,
+                "match_value": (
+                    str(company.id)
+                    if identity_match_key == "contact.company_id"
+                    else contact.company_domain
+                ),
+                "candidate_company_ids": candidate_ids,
+                "selected_company_id": str(company.id),
+                "company_action": "reused",
+                "contact_link_action": "linked" if linked_by_agent else "already_linked",
+                "reason": (
+                    "Selected the one permanent Company with the exact normalized domain."
+                    if linked_by_agent
+                    else "Reused the Contact's existing permanent Company association."
+                ),
+                "evidence_references": [
+                    f"capture:{context.job.capture_id}"
+                    if context.job.capture_id is not None
+                    else "contact:permanent_record"
+                ],
+            },
+            "historical_company": {
+                "company_id": str(company.id),
+                "name": company.name,
+                "company_record_domain": company.domain,
+                "canonical_domain": (
+                    aggregate_decision.selected_domain
+                    if aggregate_decision is not None
+                    else company.domain
+                ),
+                "domain_resolution_state": (
+                    resolution_state.value if resolution_state is not None else None
+                ),
+            },
+            "capture_domain_resolution_id": (
+                str(capture_decision.id) if capture_decision is not None else None
+            ),
+            "company_aggregate_domain_resolution_id": (
+                str(aggregate_decision.id) if aggregate_decision is not None else None
+            ),
+            "domain_resolution_source": (
+                "company_aggregate_decision"
+                if aggregate_decision is not None
+                else "no_automatic_decision"
+            ),
+            "conflict_kinds": [conflict.kind.value for conflict in conflicts],
+            "campaign_policy": policy,
+            "continuation": {
+                "action": continuation_action,
+                "research_allowed": research_gate.ready,
+                "research_reason": research_gate.reason,
+                "later_stages_allowed": later_gate.allowed,
+                "later_stages_reason": later_gate.reason,
+            },
+        }
+        context.job.company_id = company.id
+        if not research_gate.ready:
+            raise AgentBlocked(
+                "company_domain_unresolved",
+                research_gate.reason,
+                detail=lineage,
+                preserve_outcome=True,
+            )
         context.session.flush()
         output = {
             "company_id": str(company.id),
@@ -289,12 +412,51 @@ class CompanyAgentAdapter:
             "research_state": company.research_state.value,
             "linked_by_agent": linked_by_agent,
             "conflict_kinds": [conflict.kind.value for conflict in conflicts],
+            **lineage,
         }
         return AgentExecutionResult(
             outcome_committed=True,
             result={"domain_outcome": "company_resolved", **output},
             output_reference=output,
         )
+
+    @staticmethod
+    def _blocked_detail(
+        context: AgentExecutionContext,
+        *,
+        match_key: str,
+        candidate_ids: tuple[str, ...],
+        reason: str,
+    ) -> dict[str, Any]:
+        return {
+            "schema_version": "company-agent-report/1",
+            "identity": {
+                "match_key": match_key,
+                "match_value": context.contact.company_domain,
+                "candidate_company_ids": list(candidate_ids),
+                "selected_company_id": None,
+                "company_action": "unresolved",
+                "contact_link_action": "unchanged",
+                "reason": reason,
+                "evidence_references": [
+                    f"capture:{context.job.capture_id}"
+                    if context.job.capture_id is not None
+                    else "contact:permanent_record"
+                ],
+            },
+            "campaign_policy": {
+                "allow_provisional_domains": context.campaign.allow_provisional_domains,
+                "campaign_settings_version": context.campaign.settings_version,
+                "source": "execution_snapshot",
+            },
+            "continuation": {
+                "action": "block",
+                "research_allowed": False,
+                "research_reason": reason,
+                "later_stages_allowed": False,
+                "later_stages_reason": reason,
+            },
+        }
 
 
 class EmailAgentAdapter:
@@ -477,9 +639,7 @@ class VerificationAgentAdapter:
         # default, which is the same builder every other verification caller
         # uses; a test supplying its own provider still has to get past the live
         # authority and simulated-provider gates below.
-        self._provider_factory = provider_factory or (
-            lambda settings: verification_service.get_provider(settings, live=True)
-        )
+        self._provider_factory = provider_factory
 
     def execute(self, context: AgentExecutionContext) -> AgentExecutionResult:
         session = context.session
@@ -589,28 +749,46 @@ class VerificationAgentAdapter:
                 rejected.reason,
                 detail=self._refusal_output(rejected, context=context),
             )
-        provider = self._provider_factory(settings)
-        if provider.simulated:
-            rejected = refusal(
-                "verification_credentials_missing",
-                "Live MillionVerifier credentials are not configured; simulator "
-                "output cannot complete the Verification Agent.",
-            )
-            raise AgentBlocked(
-                rejected.reason_code,
-                rejected.reason,
-                detail=self._refusal_output(rejected, context=context),
-            )
-
         context.job.email = email
         context.job.policy_version = policy.version
-        outcome = verification_service.verify_exact_address(
-            session,
-            context.job,
-            provider=provider,
-            settings=settings,
-            policy=policy,
-        )
+        waterfall_policy_version_id: str | None = None
+        providers_attempted: tuple[str, ...] = ()
+        if self._provider_factory is not None:
+            provider = self._provider_factory(settings)
+            if provider.simulated:
+                rejected = refusal(
+                    "verification_credentials_missing",
+                    "Live verification credentials are not configured; simulator "
+                    "output cannot complete the Verification Agent.",
+                )
+                raise AgentBlocked(
+                    rejected.reason_code,
+                    rejected.reason,
+                    detail=self._refusal_output(rejected, context=context),
+                )
+            outcome = verification_service.verify_exact_address(
+                session,
+                context.job,
+                provider=provider,
+                settings=settings,
+                policy=policy,
+            )
+            providers_attempted = (provider.name,)
+        else:
+            try:
+                traversal = verification_waterfall.verify(
+                    session, context.job, settings=settings, policy=policy
+                )
+            except WaterfallUnavailable as exc:
+                rejected = refusal("verification_credentials_missing", str(exc))
+                raise AgentBlocked(
+                    rejected.reason_code,
+                    rejected.reason,
+                    detail=self._refusal_output(rejected, context=context),
+                ) from None
+            outcome = traversal.outcome
+            waterfall_policy_version_id = traversal.policy_version_id
+            providers_attempted = traversal.providers_attempted
 
         decision = self._decide(session, context=context, outcome=outcome)
         context.job.outcome_status = decision.status.value
@@ -626,6 +804,8 @@ class VerificationAgentAdapter:
             "reused_evidence": outcome.reused,
             "provider_called": outcome.provider_called,
             "provider": outcome.provider_label,
+            "providers_attempted": list(providers_attempted),
+            "waterfall_policy_version_id": waterfall_policy_version_id,
             "policy_version": outcome.policy_version,
         }
 
@@ -764,26 +944,6 @@ def _text(value: Any, *, limit: int) -> str | None:
     return cleaned[:limit] if cleaned else None
 
 
-def _url(value: Any) -> str | None:
-    """Accept only an absolute http(s) URL — the insight store requires one."""
-
-    candidate = _text(value, limit=1024)
-    if candidate is None:
-        return None
-    lowered = candidate.lower()
-    if lowered.startswith("http://") or lowered.startswith("https://"):
-        return candidate
-    return None
-
-
-def _confidence(value: Any) -> float:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return 0.5
-    return min(1.0, max(0.0, number))
-
-
 def _seller_summary(seller: SellerContext) -> str:
     """Flatten trusted seller context into the prompt's first block."""
 
@@ -834,10 +994,10 @@ class InsightsAgentAdapter:
 
     Every claim is written through ``insights.create_insight``, which refuses a
     supported claim that has no traceable source. A claim the model offered
-    without a usable URL is therefore not stored as a weaker fact — it is
-    dropped and counted, and the gaps the model named are stored as explicit
-    unknowns. That asymmetry is the point: this stage may reduce what is
-    asserted, never expand it.
+    without a valid handle from this execution's committed Research catalog is
+    therefore not stored as a weaker fact — it is dropped and counted, and the
+    gaps the model named are stored as explicit unknowns. That asymmetry is the
+    point: this stage may reduce what is asserted, never expand it.
     """
 
     agent_id = AgentIdentifier.INSIGHTS
@@ -860,19 +1020,30 @@ class InsightsAgentAdapter:
                 "company_missing",
                 "Insights needs the permanent Company the Company Agent resolves.",
             )
-        current = dossiers.current_version(context.session, company_id=company.id)
-        if current is None:
+        lineage = insights_lineage.resolve(
+            context.session,
+            insights_job=context.job,
+            company_id=company.id,
+        )
+        if lineage is None:
             raise AgentBlocked(
-                "research_missing",
-                "Insights needs a current company dossier. Run the Research Agent first, "
-                "or skip Insights for this Contact.",
+                "research_lineage_unavailable",
+                "Insights needs the exact committed Research submission and dossier for this "
+                "execution. Current Company state is not a historical substitute.",
             )
 
         dossier = {
-            name: getattr(current, name)
+            name: getattr(lineage.dossier, name)
             for name in dossiers.SECTION_COLUMNS
-            if getattr(current, name) is not None
+            if getattr(lineage.dossier, name) is not None
         }
+        catalog = employee_size.research_evidence_catalog(
+            context.session,
+            research_job_id=lineage.research_job.id,
+            company_id=company.id,
+        )
+        prompt_catalog = employee_size.bounded_prompt_catalog(catalog)
+        evidence_by_handle = {item.handle: item for item in prompt_catalog}
         seller = seller_context.assemble(context.session, campaign_id=context.campaign.id)
 
         settings = get_settings()
@@ -882,6 +1053,7 @@ class InsightsAgentAdapter:
                 seller_summary=_seller_summary(seller),
                 company_name=company.name,
                 dossier=dossier,
+                evidence_catalog=[item.prompt_value() for item in prompt_catalog],
                 contact_title=contact.title,
             ),
             purpose="company_insights",
@@ -898,7 +1070,6 @@ class InsightsAgentAdapter:
 
         raw_claims = answer.payload.get("claims")
         raw_claims = raw_claims if isinstance(raw_claims, list) else []
-        retrieved_at = datetime.now(UTC)
         stored: list[dict[str, Any]] = []
         dropped: list[dict[str, Any]] = []
         max_claims = int(context.config.get("max_claims", 5))
@@ -908,14 +1079,52 @@ class InsightsAgentAdapter:
                 dropped.append({"index": index, "reason": "not_an_object"})
                 continue
             claim = _text(item.get("claim"), limit=2000)
-            source_url = _url(item.get("source_url"))
-            evidence_summary = _text(item.get("evidence_summary"), limit=2000)
             if claim is None:
                 dropped.append({"index": index, "reason": "empty_claim"})
                 continue
-            if source_url is None or evidence_summary is None:
-                # Unsourced is not stored as a lesser fact. It is not stored.
+            raw_handles = item.get("evidence_handles")
+            handle_values = raw_handles if isinstance(raw_handles, list) else []
+            try:
+                handles = (
+                    tuple(dict.fromkeys(uuid.UUID(value) for value in handle_values))
+                    if 0 < len(handle_values) <= 10
+                    else ()
+                )
+            except (TypeError, ValueError, AttributeError):
+                handles = ()
+            if not handles or any(handle not in evidence_by_handle for handle in handles):
                 dropped.append({"index": index, "reason": "unsourced", "claim": claim[:200]})
+                continue
+            evidence_inputs: list[insights_evidence.EvidenceInput] = []
+            invalid_evidence = False
+            for handle in handles:
+                source = evidence_by_handle[handle].evidence
+                if (
+                    source.retrieved_at is None
+                    or not source.evidence_summary
+                    or source.confidence is None
+                    or not source.extraction_method
+                ):
+                    invalid_evidence = True
+                    break
+                evidence_inputs.append(
+                    insights_evidence.EvidenceInput(
+                        source_url=source.source_url,
+                        source_title=source.source_title,
+                        published_at=source.published_at,
+                        retrieved_at=source.retrieved_at,
+                        excerpt=source.excerpt,
+                        evidence_summary=source.evidence_summary,
+                        confidence=source.confidence,
+                        extraction_method=source.extraction_method,
+                        freshness_at=source.freshness_at,
+                        source_record_type="insight_evidence",
+                        source_record_id=source.id,
+                        version=source.version,
+                    )
+                )
+            if invalid_evidence:
+                dropped.append({"index": index, "reason": "invalid_evidence"})
                 continue
             kind = (
                 InsightKind.INTERPRETATION
@@ -928,22 +1137,15 @@ class InsightsAgentAdapter:
                     claim=claim,
                     kind=kind,
                     state=InsightState.SUPPORTED,
-                    evidence=[
-                        insights_evidence.EvidenceInput(
-                            source_url=source_url,
-                            retrieved_at=retrieved_at,
-                            evidence_summary=evidence_summary,
-                            confidence=_confidence(item.get("confidence")),
-                            extraction_method=f"{answer.producer}/{answer.producer_version}",
-                            source_record_type="company_dossier_version",
-                            source_record_id=current.id,
-                        )
-                    ],
+                    evidence=evidence_inputs,
                     company_id=company.id,
                     # Stable per job and position, so a retried job re-uses the
                     # same records rather than duplicating them.
                     idempotency_key=f"insights-agent:{context.job.id}:{index}",
                     actor=context.worker_id,
+                    producer_job_id=context.job.id,
+                    dossier_version_id=lineage.dossier.id,
+                    derivation_version=f"{answer.producer}/{answer.producer_version}"[:64],
                 )
             except InsightError as exc:
                 dropped.append({"index": index, "reason": "rejected", "detail": str(exc)[:200]})
@@ -953,7 +1155,7 @@ class InsightsAgentAdapter:
                     "insight_id": str(insight.id),
                     "claim": claim,
                     "kind": kind.value,
-                    "source_url": source_url,
+                    "evidence_handles": [str(handle) for handle in handles],
                     "relevance": _text(item.get("relevance"), limit=600),
                 }
             )
@@ -978,29 +1180,57 @@ class InsightsAgentAdapter:
                     company_id=company.id,
                     idempotency_key=f"insights-agent:{context.job.id}:unknown:{index}",
                     actor=context.worker_id,
+                    producer_job_id=context.job.id,
+                    dossier_version_id=lineage.dossier.id,
+                    derivation_version=f"{answer.producer}/{answer.producer_version}"[:64],
                 )
             except InsightError:
                 # A gap that will not store is not worth failing the stage over.
                 continue
 
-        if not stored:
+        employee_insight = employee_size.derive_and_store(
+            context.session,
+            company_id=company.id,
+            insights_job=context.job,
+            dossier=lineage.dossier,
+            catalog=prompt_catalog,
+            model_output=answer.payload.get("employee_size"),
+            actor=context.worker_id,
+        )
+        employee_payload = employee_insight.structured_payload or {}
+        employee_eligible, employee_reason = employee_size.downstream_eligible(employee_insight)
+
+        if not stored and not employee_eligible:
             raise AgentBlocked(
                 "insufficient_evidence",
                 "No claim in the answer carried a usable source, so nothing was stored. "
                 "The Contact cannot be personalized from evidence that does not exist.",
-                detail={"dropped": dropped[:10], "unknowns_recorded": len(unknown_texts)},
+                detail={
+                    "dropped": dropped[:10],
+                    "unknowns_recorded": len(unknown_texts),
+                    "employee_size_insight_id": str(employee_insight.id),
+                    "employee_size_status": employee_payload.get("status"),
+                },
                 # The unknown records above are real writes worth keeping.
                 preserve_outcome=True,
             )
 
         output = {
             "company_id": str(company.id),
-            "dossier_version": current.version_number,
+            "research_job_id": str(lineage.research_job.id),
+            "submission_id": str(lineage.submission.id),
+            "dossier_version_id": str(lineage.dossier.id),
+            "dossier_version": lineage.dossier.version_number,
             "insights_stored": len(stored),
             "claims_dropped": len(dropped),
             "unknowns_recorded": len(unknown_texts),
             "insights": stored,
             "dropped": dropped[:10],
+            "employee_size_insight_id": str(employee_insight.id),
+            "employee_size_status": employee_payload.get("status"),
+            "employee_size_band": employee_payload.get("normalized_band"),
+            "employee_size_downstream_eligible": employee_eligible,
+            "employee_size_eligibility_reason": employee_reason,
             "producer": answer.producer,
         }
         return AgentExecutionResult(
@@ -1016,8 +1246,9 @@ class PersonalizationAgentAdapter:
     Three things this Agent deliberately does not do. It does not approve
     anything — a ``DraftVersion`` carries no authority and the separate
     ``DraftApproval`` remains a human act. It does not personalize from anything
-    except insights that already passed the eligibility gate, so an unsourced
-    sentence cannot reach an email through this path. And it re-checks the
+    except context selected by the deterministic policy gate. Weak evidence is
+    omitted and may lead to a valid offering-led draft, so an unsourced prospect
+    claim cannot reach an email through this path. And it re-checks the
     suppression ledger immediately before drafting, because an entry added while
     the job waited in the queue must still stop it: writing to someone is what
     suppression exists to prevent, and drafting is the first step of writing.
@@ -1034,99 +1265,30 @@ class PersonalizationAgentAdapter:
         _live_or_blocked(context, "Personalization")
         session = context.session
         contact = context.contact
-
-        suppression = evaluate_suppression(
-            session, email=contact.email, domain=contact.company_domain
-        )
-        if suppression.blocked:
+        policy = personalization_policy.active_policy(session)
+        if policy is None:
             raise AgentBlocked(
-                "suppression",
-                suppression.blocked_reason or "The suppression ledger blocks this Contact.",
+                "personalization_policy_missing",
+                "No Personalization policy version is active. Activate one in Admin Agent Studio.",
             )
-
-        company = session.get(Company, contact.company_id) if contact.company_id else None
-        if company is None:
-            raise AgentBlocked(
-                "company_missing",
-                "Drafting needs the permanent Company the Company Agent resolves.",
-            )
-
-        eligible = [
-            insight
-            for insight in insights_evidence.list_for_company(session, company_id=company.id)
-            if insights_evidence.is_personalization_eligible(session, insight=insight)
-        ]
-        eligible.extend(
-            insight
-            for insight in insights_evidence.list_for_contact(session, contact_id=contact.id)
-            if insights_evidence.is_personalization_eligible(session, insight=insight)
-        )
-        if not eligible:
-            raise AgentBlocked(
-                "no_eligible_evidence",
-                "No insight has passed the personalization eligibility gate for this Contact, "
-                "so there is nothing specific to write about.",
-            )
-
-        allowed_ids = {str(insight.id) for insight in eligible}
-        evidence_block = "\n".join(
-            f"[{insight.id}] ({insight.kind.value}) {insight.claim}" for insight in eligible
-        )
-        seller = seller_context.assemble(session, campaign_id=context.campaign.id)
-
         settings = get_settings()
         thinker = self._thinker_factory(settings)
-        request = ThinkingRequest(
-            prompt=prompts.personalization_prompt(
-                seller_summary=_seller_summary(seller),
-                restricted_claims=_restricted_claims_block(seller),
-                evidence_block=evidence_block,
-                first_name=contact.first_name,
-                title=contact.title,
-                company_name=company.name,
-                max_words=int(context.config.get("max_words", 150)),
-            ),
-            purpose="email_personalization",
-            timeout_seconds=float(context.config.get("timeout_seconds", 240.0)),
-            allowed_tools=(),
-        )
         try:
-            answer = thinker.think(request)
+            generated = personalization_generation.generate(
+                session,
+                membership=context.membership,
+                policy=policy,
+                thinker=thinker,
+                max_words=int(context.config.get("max_words", 150)),
+                timeout_seconds=float(context.config.get("timeout_seconds", 240.0)),
+                purpose="email_personalization",
+            )
         except ThinkingError as exc:
             raise _translate_thinking_error(exc) from exc
-
-        subject = _text(answer.payload.get("subject"), limit=300)
-        body = _text(answer.payload.get("body"), limit=20000)
-        rationale = _text(answer.payload.get("rationale"), limit=2000)
-        if subject is None or body is None:
-            # The prompt explicitly permits this as an answer, and it is a
-            # better one than a generic email would have been.
-            raise AgentBlocked(
-                "evidence_too_thin",
-                rationale
-                or "The evidence was too thin to write anything specific, so no draft was made.",
-            )
-
-        cited_raw = answer.payload.get("evidence_insight_ids")
-        cited = [
-            value
-            for value in (cited_raw if isinstance(cited_raw, list) else [])
-            if isinstance(value, str) and value in allowed_ids
-        ]
-        invented = [
-            value
-            for value in (cited_raw if isinstance(cited_raw, list) else [])
-            if isinstance(value, str) and value not in allowed_ids
-        ]
-        if invented:
-            # A citation to something that was never supplied means the draft is
-            # not traceable to its evidence, which is the one property that makes
-            # it reviewable at all.
-            raise AgentTerminalError(
-                "citation_not_supplied",
-                "The draft cited evidence that was never supplied to it.",
-                detail={"invented_ids": invented[:10]},
-            )
+        except personalization_generation.PreviewError as exc:
+            if exc.code == "citation_not_supplied":
+                raise AgentTerminalError(exc.code, str(exc)) from exc
+            raise AgentBlocked(exc.code, str(exc)) from exc
 
         next_number = (
             session.scalar(
@@ -1141,10 +1303,15 @@ class PersonalizationAgentAdapter:
             contact_id=contact.id,
             campaign_id=context.campaign.id,
             version_number=next_number,
-            subject=subject,
-            body=body,
-            rationale=rationale,
-            created_by=f"{answer.producer}/{answer.producer_version}",
+            subject=generated.subject,
+            body=generated.body,
+            rationale=generated.rationale,
+            personalization_policy_version_id=generated.policy_version_id,
+            personalization_strategy_id=generated.strategy_id,
+            personalization_decision=generated.decision.summary(),
+            producer=generated.producer,
+            producer_version=generated.producer_version,
+            created_by=f"{generated.producer}/{generated.producer_version}",
         )
         session.add(draft)
         session.flush()
@@ -1159,20 +1326,29 @@ class PersonalizationAgentAdapter:
             context={
                 "contact_id": str(contact.id),
                 "campaign_id": str(context.campaign.id),
-                "evidence_insight_ids": cited,
+                "evidence_insight_ids": list(generated.evidence_insight_ids),
+                "personalization_policy_version_id": str(generated.policy_version_id),
+                "personalization_policy_version_number": generated.policy_version_number,
+                "personalization_strategy_id": generated.strategy_id,
             },
         )
 
         output = {
             "draft_version_id": str(draft.id),
             "version_number": next_number,
-            "subject": subject,
-            "body": body,
-            "rationale": rationale,
-            "evidence_insight_ids": cited,
-            "evidence_supplied": len(eligible),
+            "subject": generated.subject,
+            "body": generated.body,
+            "rationale": generated.rationale,
+            "evidence_insight_ids": list(generated.evidence_insight_ids),
+            "evidence_supplied": len(generated.decision.used),
             "approved": False,
-            "producer": answer.producer,
+            "producer": generated.producer,
+            "producer_version": generated.producer_version,
+            "personalization_policy_version_id": str(generated.policy_version_id),
+            "personalization_policy_version_number": generated.policy_version_number,
+            "personalization_strategy_id": generated.strategy_id,
+            "personalization_decision": generated.decision.summary(),
+            "warnings": list(generated.warnings),
         }
         return AgentExecutionResult(
             outcome_committed=True,

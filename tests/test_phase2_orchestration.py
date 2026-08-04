@@ -8,17 +8,21 @@ import pytest
 from app.db.session import engine
 from app.models.campaign import Campaign
 from app.models.company import Company
+from app.models.company_domain_resolution import CompanyDomainResolution
 from app.models.contact import Contact
 from app.models.enums import (
     AgentControlStatus,
     AgentIdentifier,
     AgentJobStatus,
     CampaignStatus,
+    DomainResolutionKind,
+    DomainResolutionState,
     PipelineEventType,
     PipelineStageStatus,
     SuppressionReason,
     SuppressionType,
 )
+from app.models.linkedin_profile import LinkedInProfileSnapshot
 from app.models.pipeline import CampaignContactAgentState, PipelineEvent
 from app.models.verification_job import AgentJob
 from app.services import campaign_contacts, campaigns, pipeline
@@ -240,6 +244,12 @@ def test_real_identity_and_company_adapters_advance_durable_pipeline(
     assert company_result.public_status == "completed"
     assert company_result.agent_id is AgentIdentifier.COMPANY
     assert contact.company_id == company.id
+    assert company_job.company_id == company.id
+    assert company_job.result is not None
+    assert company_job.result["schema_version"] == "company-agent-report/1"
+    assert company_job.result["historical_company"]["company_id"] == str(company.id)
+    assert company_job.result["campaign_policy"]["allow_provisional_domains"] is False
+    assert company_job.result["continuation"]["research_allowed"] is True
     assert enrolled.membership.latest_completed_stage is AgentIdentifier.COMPANY
     assert enrolled.membership.pipeline_status.value == PipelineStageStatus.COMPLETED.value
     assert enrolled.membership.next_stage is None
@@ -256,6 +266,70 @@ def test_real_identity_and_company_adapters_advance_durable_pipeline(
         AgentIdentifier.COMPANY,
     }
     assert sum(event.event_type.value == "stage_completed" for event in snapshot.events) >= 3
+
+
+def test_unresolved_company_domain_blocks_before_research_handoff(db_session: Session) -> None:
+    campaign, company, contact = _records(db_session)
+    contact.company_id = company.id
+    capture = LinkedInProfileSnapshot(
+        client_capture_id=f"unresolved-{uuid.uuid4()}",
+        content_hash=uuid.uuid4().hex,
+        schema_version="test/1",
+        source="test",
+        extraction_status="complete",
+        payload={"current_employment_hint": {"company_name": company.name}},
+        profile_fields={"first_name": "Ada", "last_name": "Lovelace"},
+        matched_contact_id=contact.id,
+    )
+    db_session.add(capture)
+    db_session.flush()
+    decision = CompanyDomainResolution(
+        capture_id=capture.id,
+        resolved_company_id=company.id,
+        decision_number=1,
+        is_current=True,
+        state=DomainResolutionState.UNRESOLVED,
+        decision_kind=DomainResolutionKind.AUTOMATIC,
+        policy_version="company-domain-resolution/practical-v1",
+        candidates=[],
+        selected_domain=None,
+        reasons=["no_candidate_aligned_with_company_name"],
+        provider_call_made=False,
+    )
+    db_session.add(decision)
+    db_session.flush()
+    enrolled = campaign_contacts.enrol_contact(
+        db_session,
+        campaign_id=campaign.id,
+        contact_id=contact.id,
+        source_type="capture",
+        capture_id=capture.id,
+        enqueue=True,
+        desired_stage=AgentIdentifier.RESEARCH,
+    )
+
+    assert run_next(db_session, worker_id="cmp003-test").public_status == "completed"
+    blocked = run_next(db_session, worker_id="cmp003-test")
+    assert blocked.public_status == "paused"
+    assert blocked.agent_id is AgentIdentifier.COMPANY
+    assert blocked.job.error_class == "company_domain_unresolved"
+    assert blocked.job.error is not None
+    detail = blocked.job.error["detail"]
+    assert detail["historical_company"]["domain_resolution_state"] == "unresolved"
+    assert detail["continuation"]["action"] == "block"
+    assert detail["continuation"]["research_allowed"] is False
+    assert enrolled.membership.pipeline_status is PipelineStageStatus.BLOCKED
+    assert (
+        db_session.scalar(
+            select(func.count())
+            .select_from(AgentJob)
+            .where(
+                AgentJob.parent_job_id == blocked.job.id,
+                AgentJob.agent_id == AgentIdentifier.RESEARCH,
+            )
+        )
+        == 0
+    )
 
 
 def test_claim_running_and_domain_outcome_are_separate_durable_checkpoints(

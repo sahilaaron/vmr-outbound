@@ -48,18 +48,15 @@ from app.services.email.discovery_policy import (
     POLICY_VERSION,
     EmailDiscoveryPolicyDecision,
     EmailPolicyOutcome,
-    EmployeeCountClass,
     EmployeeCountEvidence,
-    EmployeeEvidenceFreshness,
-    classify_employee_count,
     evaluate,
     evaluate_existing_accepted_email_reuse,
-    evidence_freshness,
 )
 from app.services.imports.normalization import is_valid_email, normalize_domain, normalize_email
 from app.services.pipeline import append_event
 from app.services.resolution.gates import DownstreamStage, authorize_contact
 from app.services.suppressions import evaluate_suppression
+from app.services.verification import studio as verification_studio
 from app.services.verification.decisions import VerificationDecision
 from app.services.verification.policy import VerificationPolicy, get_policy
 from app.services.verification.provider import SIMULATOR_PROVIDER_LABEL
@@ -229,7 +226,9 @@ def enqueue_email_job(
         clean_refresh_scope = None
 
     suffix = f"refresh:{clean_refresh_scope}" if force_refresh else f"standard:{clean_scope}"
-    key = f"email:{contact_id}:{POLICY_VERSION}:{suffix}"
+    pattern_policy = verification_studio.active_pattern_policy(session)
+    pattern_token = str(pattern_policy.id) if pattern_policy else "legacy-default"
+    key = f"email:{contact_id}:{POLICY_VERSION}:patterns:{pattern_token}:{suffix}"
     return jobs.enqueue_job(
         session,
         agent_id=AgentIdentifier.EMAIL,
@@ -251,6 +250,12 @@ def enqueue_email_job(
             "refresh_scope": clean_refresh_scope,
             "policy_identifier": POLICY_IDENTIFIER,
             "policy_version": POLICY_VERSION,
+            "pattern_policy_version_id": (
+                str(pattern_policy.id) if pattern_policy is not None else None
+            ),
+            "pattern_policy_version_number": (
+                pattern_policy.version_number if pattern_policy is not None else None
+            ),
         },
         parent_job_id=parent_job_id,
         actor=actor,
@@ -291,6 +296,10 @@ def _ensure_verification_child(
         parent_job=parent_job,
         attempt=attempt,
         verification_policy=verification_policy,
+    )
+    waterfall_policy = verification_studio.active_waterfall(session)
+    input_reference["waterfall_policy_version_id"] = (
+        str(waterfall_policy.id) if waterfall_policy is not None else None
     )
     child, created = jobs.enqueue_job(
         session,
@@ -464,11 +473,20 @@ def _employee_evidence(session: Session, company: Company) -> EmployeeCountEvide
     )
 
 
-def _policy_json(decision: EmailDiscoveryPolicyDecision) -> dict[str, Any]:
+def _policy_json(
+    decision: EmailDiscoveryPolicyDecision,
+    *,
+    pattern_policy_version_id: uuid.UUID | None = None,
+    pattern_policy_version_number: int | None = None,
+) -> dict[str, Any]:
     evidence = decision.evidence
     return {
         "policy_identifier": POLICY_IDENTIFIER,
         "policy_version": POLICY_VERSION,
+        "pattern_policy_version_id": (
+            str(pattern_policy_version_id) if pattern_policy_version_id else None
+        ),
+        "pattern_policy_version_number": pattern_policy_version_number,
         "policy_outcome": decision.outcome.value,
         "normalization_version": decision.normalization_version,
         "employee_count_class": decision.employee_count_class.value,
@@ -496,6 +514,7 @@ def _policy_json(decision: EmailDiscoveryPolicyDecision) -> dict[str, Any]:
                 "format": candidate.format_id,
                 "local_part": candidate.local_part,
                 "email": candidate.email,
+                "source": candidate.source,
             }
             for index, candidate in enumerate(decision.candidates)
         ],
@@ -642,39 +661,6 @@ def _policy_block(
             decision.outcome.value,
         )
     return EmailExecutionOutcome.DOMAIN_INELIGIBLE, decision.outcome.value
-
-
-def _persisted_evidence_block(
-    *,
-    state: dict[str, Any],
-    current: EmployeeCountEvidence,
-    now: datetime,
-) -> tuple[EmailExecutionOutcome, str] | None:
-    """Refuse to mix a stored candidate plan with changed or stale evidence."""
-
-    stored = state.get("employee_evidence")
-    if not isinstance(stored, dict):
-        raise EmailAgentStateError("stored Email policy has no employee evidence object")
-    freshness = evidence_freshness(current, now=now)
-    classification = classify_employee_count(current.raw_value)
-    if freshness is not EmployeeEvidenceFreshness.FRESH:
-        classification = EmployeeCountClass.UNKNOWN
-    # Size becoming unknown or stale mid-execution no longer stops the run: the
-    # candidate order was already chosen and re-deriving it would only reshuffle
-    # three formats. What still stops it is the evidence being *different* from
-    # what the order was chosen against — that means the plan in flight was built
-    # on a fact that has since changed, and finishing it would silently attribute
-    # results to a classification nobody made.
-    if (
-        stored.get("id") != current.evidence_id
-        or state.get("employee_count_class") != classification.value
-    ):
-        return (
-            EmailExecutionOutcome.EMPLOYEE_COUNT_UNKNOWN,
-            "employee-count evidence changed after candidate policy selection; "
-            "an explicitly scoped Email refresh is required",
-        )
-    return None
 
 
 def _latest_exact_evidence(
@@ -994,6 +980,22 @@ def _accepted_write(
     attempt.verification_result = verification_outcome.reference or {}
     attempt.resolved_at = now
     session.flush()
+    if domain is not None:
+        verification_studio.learn_domain_format(
+            session,
+            domain=domain,
+            pattern_id=attempt.candidate_format,
+            evidence=evidence,
+            provenance={
+                "email_job_id": str(job.id),
+                "candidate_attempt_id": str(attempt.id),
+                "verification_job_id": (
+                    str(attempt.verification_job_id)
+                    if attempt.verification_job_id is not None
+                    else None
+                ),
+            },
+        )
     record_audit_event(
         session,
         actor="email-agent",
@@ -1287,14 +1289,35 @@ def execute_step(
                     reason=reuse_decision.reason,
                 )
 
+        raw_pattern_policy_id = (job.input_reference or {}).get("pattern_policy_version_id")
+        requested_pattern_policy_id = _uuid(raw_pattern_policy_id)
+        if raw_pattern_policy_id is not None and requested_pattern_policy_id is None:
+            raise EmailAgentStateError("queued Email pattern policy id is malformed")
+        try:
+            pattern_policy, pattern_plan, max_candidates = verification_studio.pattern_plan(
+                session,
+                canonical_domain,
+                policy_version_id=requested_pattern_policy_id,
+                use_active=False,
+            )
+        except verification_studio.StudioConfigurationError as exc:
+            raise EmailAgentStateError(str(exc)) from exc
         decision = evaluate(
             first_name=contact.first_name,
             last_name=contact.last_name,
             domain=company.domain,
             employee_evidence=employee_evidence,
             now=now,
+            ordered_patterns=pattern_plan,
+            max_candidates=max_candidates,
         )
-        state = _policy_json(decision)
+        state = _policy_json(
+            decision,
+            pattern_policy_version_id=pattern_policy.id if pattern_policy else None,
+            pattern_policy_version_number=(
+                pattern_policy.version_number if pattern_policy else None
+            ),
+        )
         state["force_refresh"] = force_refresh
         state["refresh_scope"] = refresh_scope
         state["prior_policy_outcomes"] = prior_policy_outcomes
@@ -1357,32 +1380,9 @@ def execute_step(
                 reason_code="canonical_domain_changed",
                 reason=str(state["reason"]),
             )
-        evidence_block = _persisted_evidence_block(
-            state=state,
-            current=_employee_evidence(session, company),
-            now=now,
-        )
-        if evidence_block is not None:
-            outcome, reason = evidence_block
-            state["blocked_outcome"] = outcome.value
-            state["reason"] = reason
-            result = _persist_result(
-                job,
-                state,
-                {"domain_outcome": outcome.value},
-            )
-            return EmailExecutionStep(
-                kind=EmailExecutionStepKind.BLOCKED,
-                outcome=outcome,
-                result=result,
-                output_reference={
-                    "company_id": str(company.id),
-                    "policy_identifier": POLICY_IDENTIFIER,
-                    "policy_version": POLICY_VERSION,
-                },
-                reason_code=outcome.value,
-                reason=reason,
-            )
+        # Employee-size evidence is legacy provenance only. A correction while
+        # Verification is in flight neither reorders candidates nor blocks the
+        # pinned Email policy execution.
         if not force_refresh:
             reusable = reusable_accepted_email(
                 session,

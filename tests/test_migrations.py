@@ -54,6 +54,8 @@ _DAT_017A_PARENT = _load_migration(
 #: The revision immediately below KB-001, for the same reason.
 _KB_001_PARENT = _load_migration("b8e5d34a91c7_kb_001_seller_knowledge_base.py").down_revision
 
+_INS_002_PARENT = "f2a91d7c4e60"
+
 
 @pytest.fixture()
 def temp_database_url() -> Iterator[str]:
@@ -99,6 +101,87 @@ def test_migration_upgrade_check_downgrade_reupgrade(temp_database_url: str) -> 
         assert result.returncode == 0, (
             f"alembic {' '.join(args)} failed:\n{result.stdout}\n{result.stderr}"
         )
+
+
+def test_agent_studio_migration_seeds_valid_immutable_history(
+    temp_database_url: str,
+) -> None:
+    result = _alembic(["upgrade", "head"], temp_database_url)
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    engine = create_engine(temp_database_url)
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT p.version_number, p.schema_version, p.configuration, a.activated_by "
+                    "FROM personalization_policy_versions p "
+                    "JOIN personalization_policy_activations a ON a.policy_version_id = p.id"
+                )
+            ).one()
+            assert row.version_number == 1
+            assert row.schema_version == "personalization-policy/v1"
+            assert len(row.configuration["standards"]) == 8
+            assert len(row.configuration["strategies"]) == 5
+            assert row.activated_by == "system:migration"
+
+        with pytest.raises(Exception, match="append-only"):
+            with engine.begin() as conn:
+                conn.execute(text("UPDATE personalization_policy_versions SET name = 'mutated'"))
+
+        result = _alembic(["downgrade", "d3b7e2f19c45"], temp_database_url)
+        assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+        result = _alembic(["upgrade", "head"], temp_database_url)
+        assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    finally:
+        engine.dispose()
+
+
+def test_ins_002_round_trip_preserves_historical_insights_without_fabricating_types(
+    temp_database_url: str,
+) -> None:
+    assert _alembic(["upgrade", _INS_002_PARENT], temp_database_url).returncode == 0
+    engine = create_engine(temp_database_url)
+    company_id = uuid.uuid4()
+    insight_id = uuid.uuid4()
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("INSERT INTO companies (id, name) VALUES (:id, 'Historical Co')"),
+                {"id": company_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO insights "
+                    "(id, subject, company_id, claim, kind, state, version) "
+                    "VALUES (:id, 'COMPANY', :company, 'Historical claim', "
+                    "'FACT', 'SUPPORTED', 1)"
+                ),
+                {"id": insight_id, "company": company_id},
+            )
+
+        assert _alembic(["upgrade", "head"], temp_database_url).returncode == 0
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT claim, insight_type, structured_payload, producer_job_id, "
+                    "dossier_version_id, derivation_version FROM insights WHERE id = :id"
+                ),
+                {"id": insight_id},
+            ).one()
+            assert row.claim == "Historical claim"
+            assert tuple(row[1:]) == (None, None, None, None, None)
+
+        assert _alembic(["downgrade", _INS_002_PARENT], temp_database_url).returncode == 0
+        with engine.connect() as conn:
+            assert (
+                conn.execute(
+                    text("SELECT claim FROM insights WHERE id = :id"), {"id": insight_id}
+                ).scalar_one()
+                == "Historical claim"
+            )
+        assert _alembic(["upgrade", "head"], temp_database_url).returncode == 0
+    finally:
+        engine.dispose()
 
 
 def _seed_company(conn: Connection, *, name: str, domain: str | None) -> uuid.UUID:

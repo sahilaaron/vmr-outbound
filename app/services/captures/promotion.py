@@ -41,9 +41,11 @@ verification, score, draft, or approval, and it never weakens a suppression.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from functools import wraps
+from typing import Any, ParamSpec, TypeVar
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -809,6 +811,35 @@ def _displayed_location(snapshot: LinkedInProfileSnapshot) -> str | None:
     return cleaned[:255] if cleaned else None
 
 
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def _record_execution(function: Callable[_P, _R]) -> Callable[_P, _R]:
+    """Record a material promotion outcome without changing promotion control flow."""
+
+    @wraps(function)
+    def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        result = function(*args, **kwargs)
+        session = args[0] if args else kwargs.get("session")
+        snapshot = kwargs.get("snapshot")
+        actor = kwargs.get("actor", PROMOTION_ACTOR)
+        if isinstance(session, Session) and isinstance(snapshot, LinkedInProfileSnapshot):
+            from app.services.captures.execution_lineage import record_snapshot_execution
+
+            record_snapshot_execution(
+                session,
+                snapshot=snapshot,
+                actor=str(actor),
+                execution_kind="capture_promotion",
+                material_outcome_generation=True,
+            )
+        return result
+
+    return wrapped
+
+
+@_record_execution
 def promote(
     session: Session,
     *,

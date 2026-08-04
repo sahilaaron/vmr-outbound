@@ -34,6 +34,7 @@ from app.services.agents.adapters import (
 from app.services.agents.controls import CAMPAIGN_EXECUTION_SOURCE, effective_control
 from app.services.agents.registry import get_agent_spec
 from app.services.campaign_contacts import refresh_eligibility
+from app.services.insights.lineage import pins_from_ancestor
 from app.services.pipeline import (
     agent_state,
     append_event,
@@ -435,6 +436,26 @@ def schedule_next(
 
     spec = get_agent_spec(agent_id)
     key = stage_job_key(membership.id, agent_id, generation=generation)
+    input_reference: dict[str, object] = {
+        "campaign_contact_id": str(membership.id),
+        "contact_id": str(membership.contact_id),
+        "campaign_id": str(membership.campaign_id),
+        "agent_id": agent_id.value,
+        "control_source": control.source,
+        "global_control_version": control.global_version,
+        "campaign_control_version": control.campaign_version,
+    }
+    if agent_id is AgentIdentifier.INSIGHTS:
+        contact = session.get(Contact, membership.contact_id)
+        if contact is not None and contact.company_id is not None:
+            input_reference.update(
+                pins_from_ancestor(
+                    session,
+                    parent_job=parent_job,
+                    company_id=contact.company_id,
+                )
+            )
+
     job, created = jobs.enqueue_job(
         session,
         agent_id=agent_id,
@@ -449,15 +470,7 @@ def schedule_next(
         capture_id=membership.source_capture_id,
         entity_type="campaign_contact",
         entity_id=membership.id,
-        input_reference={
-            "campaign_contact_id": str(membership.id),
-            "contact_id": str(membership.contact_id),
-            "campaign_id": str(membership.campaign_id),
-            "agent_id": agent_id.value,
-            "control_source": control.source,
-            "global_control_version": control.global_version,
-            "campaign_control_version": control.campaign_version,
-        },
+        input_reference=input_reference,
         parent_job_id=parent_job.id if parent_job else None,
         actor=actor,
     )

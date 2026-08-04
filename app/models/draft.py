@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
     DateTime,
@@ -17,11 +18,12 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    String,
     Text,
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -61,6 +63,17 @@ class DraftVersion(Base):
     subject: Mapped[str] = mapped_column(Text, nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The exact immutable policy and deterministic decision that produced this
+    # draft.  Nullable for historical rows created before Agent Studio.
+    personalization_policy_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("personalization_policy_versions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    personalization_strategy_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    personalization_decision: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    producer: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    producer_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_by: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

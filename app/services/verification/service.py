@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
 from app.models.contact import Contact
-from app.models.email_evidence import ExactEmailVerification
+from app.models.email_evidence import ExactEmailVerification, MailDomainObservation
 from app.models.enums import (
     EmailPreciseStatus,
     EmailVerificationResult,
@@ -56,7 +56,8 @@ from app.services.verification.provider import (
     redact_secret,
 )
 
-# Provider-neutral labels for the shared usage ledger.
+# Compatibility label used by the legacy single-provider console. New
+# provider-specific writes pass their real provider id into ``_ledger_for_job``.
 LEDGER_PROVIDER = "millionverifier"
 LEDGER_OPERATION = "verify_email"
 
@@ -65,7 +66,12 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-def _cost_per_credit(settings: Settings) -> Decimal:
+def _cost_per_credit(settings: Settings, provider_name: str) -> Decimal:
+    # Only MillionVerifier currently has an operator-configured local rate.
+    # DeBounce remains explicitly unestimated until a provider-specific rate is
+    # configured; borrowing another vendor's rate would fabricate cost.
+    if provider_name != "millionverifier":
+        return Decimal("0")
     return Decimal(str(settings.millionverifier_cost_per_credit))
 
 
@@ -196,7 +202,7 @@ def prepare_and_enqueue_contact(
         # with no charge so cache savings are measurable.
         usage_ledger.record_entry(
             session,
-            provider=LEDGER_PROVIDER,
+            provider=provider_name,
             operation=LEDGER_OPERATION,
             attempted_at=now,
             cache_status=UsageCacheStatus.HIT,
@@ -208,6 +214,7 @@ def prepare_and_enqueue_contact(
             contact_id=contact.id,
             request_ref=f"{policy.version}:{email}",
             reason="reused fresh cached evidence; no provider call made",
+            origin="customer_operation",
         )
         return EnqueueOutcome(email=email, reused_evidence=fresh)
 
@@ -219,6 +226,17 @@ def prepare_and_enqueue_contact(
         contact_id=contact.id,
         campaign_id=campaign_id,
     )
+    if created:
+        # Pin immutable provider order at enqueue when Studio policy is present.
+        # Imported lazily to keep the legacy verification service import graph
+        # independent from Agent Studio configuration.
+        from app.services.verification.studio import active_waterfall
+
+        waterfall = active_waterfall(session)
+        if waterfall is not None:
+            reference = dict(job.input_reference or {})
+            reference["waterfall_policy_version_id"] = str(waterfall.id)
+            job.input_reference = reference
     return EnqueueOutcome(email=email, job=job, created=created)
 
 
@@ -227,6 +245,7 @@ def _ledger_for_job(
     job: VerificationJob,
     settings: Settings,
     *,
+    provider_name: str = "millionverifier",
     cache_status: UsageCacheStatus,
     charge_status: UsageChargeStatus,
     now: datetime,
@@ -240,7 +259,7 @@ def _ledger_for_job(
 
     usage_ledger.record_entry(
         session,
-        provider=LEDGER_PROVIDER,
+        provider=provider_name,
         operation=LEDGER_OPERATION,
         attempted_at=now,
         cache_status=cache_status,
@@ -251,12 +270,14 @@ def _ledger_for_job(
         result=result,
         retry_number=job.attempts,
         campaign_id=job.campaign_id,
+        campaign_contact_id=job.campaign_contact_id,
         contact_id=job.contact_id,
         job_id=job.id,
         job_kind="verification_job",
         request_ref=job.idempotency_key,
         credits_remaining=credits_remaining,
         reason=reason,
+        origin="customer_operation",
     )
 
 
@@ -290,6 +311,26 @@ def _store_evidence(
     )
     session.add(row)
     session.flush()
+    domain = email.rsplit("@", 1)[-1] if "@" in email else None
+    if (
+        domain
+        and mapped.result is EmailVerificationResult.CATCH_ALL
+        and "simulator" not in provider_name
+    ):
+        session.add(
+            MailDomainObservation(
+                domain=domain,
+                is_catch_all=True,
+                accepts_all=True,
+                raw_observation={
+                    "provider": provider_name,
+                    "verification_id": str(row.id),
+                    "policy_version": policy.version,
+                },
+                observed_at=now,
+            )
+        )
+        session.flush()
     return row
 
 
@@ -337,6 +378,9 @@ def verify_exact_address(
     settings: Settings | None = None,
     policy: VerificationPolicy | None = None,
     reuse_fresh: bool = True,
+    record_attempt: bool = True,
+    record_retry_hint: bool = True,
+    allow_cross_provider_reuse: bool = False,
 ) -> VerificationOutcome:
     """Obtain one normalized verification outcome for one claimed job's address.
 
@@ -373,20 +417,24 @@ def verify_exact_address(
         evidence_provider: str | None = None,
     ) -> VerificationOutcome:
         effective_provider_label = evidence_provider or provider_label
-        record = job_attempts.record_attempt(
-            session,
-            job,
-            started_at=now,
-            finished_at=_now(),
-            provider=effective_provider_label,
-            provider_called=provider_called,
-            reused_evidence=reused,
-            failure_class=failure_class,
-            precise_status=precise.value,
-            verification_result=result,
-            error_summary=reason,
-            verification_id=evidence.id if evidence is not None else None,
-            settings=settings,
+        record = (
+            job_attempts.record_attempt(
+                session,
+                job,
+                started_at=now,
+                finished_at=_now(),
+                provider=effective_provider_label,
+                provider_called=provider_called,
+                reused_evidence=reused,
+                failure_class=failure_class,
+                precise_status=precise.value,
+                verification_result=result,
+                error_summary=reason,
+                verification_id=evidence.id if evidence is not None else None,
+                settings=settings,
+            )
+            if record_attempt
+            else None
         )
         return VerificationOutcome(
             email=email,
@@ -410,7 +458,7 @@ def verify_exact_address(
             reason="verification job has no exact email address",
         )
 
-    if jobs.lease_was_reclaimed(job):
+    if jobs.lease_was_reclaimed(job) and (record_attempt or reuse_fresh):
         usage.record_usage(
             session,
             event_type=VerificationUsageEventType.RECOVERED,
@@ -426,6 +474,7 @@ def verify_exact_address(
             session,
             job,
             settings,
+            provider_name=provider_name,
             cache_status=UsageCacheStatus.MISS,
             charge_status=UsageChargeStatus.UNCERTAIN,
             now=now,
@@ -441,7 +490,7 @@ def verify_exact_address(
             email,
             policy,
             now,
-            required_provider_label=provider_label,
+            required_provider_label=(None if allow_cross_provider_reuse else provider_label),
         )
         if may_reuse
         else None
@@ -461,6 +510,7 @@ def verify_exact_address(
             session,
             job,
             settings,
+            provider_name=provider_name,
             cache_status=UsageCacheStatus.HIT,
             charge_status=UsageChargeStatus.NONE,
             now=now,
@@ -495,11 +545,13 @@ def verify_exact_address(
             job_id=job.id,
             reason=f"transport failure: {detail}",
         )
-        _maybe_retry_usage(session, job, provider_name)
+        if record_retry_hint:
+            _maybe_retry_usage(session, job, provider_name)
         _ledger_for_job(
             session,
             job,
             settings,
+            provider_name=provider_name,
             cache_status=UsageCacheStatus.MISS,
             charge_status=UsageChargeStatus.NONE,
             now=now,
@@ -537,20 +589,27 @@ def verify_exact_address(
             contact_id=job.contact_id,
             job_id=job.id,
             result=mapped.result.value if mapped.result else None,
-            credited=mapped.credited,
+            credited=provider_name == "millionverifier" and mapped.credited,
             credits_remaining=response.credits,
             reason=mapped.reason,
         )
-        # Only ok/invalid/disposable are billed; catch-all/unknown are free.
-        units = 1 if mapped.credited else 0
-        cost = _cost_per_credit(settings) * units
+        # MillionVerifier confirms which outcomes consume a credit. DeBounce's
+        # single-validation response does not confirm the charge for this exact
+        # request, so it stays uncertain until usage/invoice reconciliation.
+        charge_confirmed = provider_name == "millionverifier" and mapped.credited
+        charge_uncertain = provider_name != "millionverifier"
+        units = 1 if charge_confirmed else 0
+        cost = _cost_per_credit(settings, provider_name) * units
         _ledger_for_job(
             session,
             job,
             settings,
+            provider_name=provider_name,
             cache_status=UsageCacheStatus.MISS,
             charge_status=(
-                UsageChargeStatus.CONFIRMED if mapped.credited else UsageChargeStatus.NONE
+                UsageChargeStatus.UNCERTAIN
+                if charge_uncertain
+                else (UsageChargeStatus.CONFIRMED if charge_confirmed else UsageChargeStatus.NONE)
             ),
             now=now,
             units=units,
@@ -582,6 +641,7 @@ def verify_exact_address(
             session,
             job,
             settings,
+            provider_name=provider_name,
             cache_status=UsageCacheStatus.MISS,
             charge_status=UsageChargeStatus.NONE,
             now=now,
@@ -606,11 +666,13 @@ def verify_exact_address(
             job_id=job.id,
             reason=mapped.reason,
         )
-        _maybe_retry_usage(session, job, provider_name)
+        if record_retry_hint:
+            _maybe_retry_usage(session, job, provider_name)
         _ledger_for_job(
             session,
             job,
             settings,
+            provider_name=provider_name,
             cache_status=UsageCacheStatus.MISS,
             charge_status=UsageChargeStatus.NONE,
             now=now,
@@ -638,6 +700,7 @@ def verify_exact_address(
         session,
         job,
         settings,
+        provider_name=provider_name,
         cache_status=UsageCacheStatus.MISS,
         charge_status=UsageChargeStatus.NONE,
         now=now,

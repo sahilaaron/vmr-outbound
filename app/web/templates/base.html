@@ -35,6 +35,10 @@
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M7 20h10"/><path d="M7 9l2.5 2.5L7 14"/><path d="M12.5 14h4"/></svg>
         Workbench
       </a>
+      <a href="/admin/agents/studio" class="{{ 'active' if active_nav == 'agent-studio' else '' }}">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="7" cy="7" r="3"/><circle cx="17" cy="7" r="3"/><path d="M4 20v-4a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v4"/><path d="M12 4v6"/></svg>
+        Agent Studio
+      </a>
       {% endif %}
       <a href="/campaigns" class="{{ 'active' if active_nav == 'campaigns' else '' }}">
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 11l18-7-7 18-2.5-7.5L3 11z"/></svg>
@@ -73,6 +77,17 @@
       <a href="/knowledge-base" class="{{ 'active' if active_nav == 'knowledge-base' else '' }}">
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H19v15H6.5A2.5 2.5 0 0 0 4 20.5V5.5z"/><path d="M4 20.5A2.5 2.5 0 0 1 6.5 18H19v3H6.5A2.5 2.5 0 0 1 4 20.5z"/><path d="M8.5 7.5h6"/><path d="M8.5 11h4"/></svg>
         Knowledge Base
+      </a>
+      {% endif %}
+
+      {# Company Intelligence sits with the prospect-knowledge areas rather than
+         with the pipeline: it describes what a company IS, and it cannot send,
+         schedule or make anybody eligible for anything. #}
+      {% if 'company_intelligence' in features_enabled %}
+      <div class="rail-section">Prospect knowledge</div>
+      <a href="/admin/company-intelligence" class="{{ 'active' if active_nav == 'company-intelligence' else '' }}">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M16.5 16.5L21 21"/><path d="M11 8v6"/><path d="M8 11h6"/></svg>
+        Company Intelligence
       </a>
       {% endif %}
 

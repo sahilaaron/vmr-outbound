@@ -632,7 +632,7 @@ def enrol_contact(
         source_context=clean_context,
         explicit=idempotency_key,
     )
-    _, source_created = _record_source(
+    source, source_created = _record_source(
         session,
         membership=membership,
         source_type=clean_type,
@@ -693,6 +693,22 @@ def enrol_contact(
             membership=membership,
             actor=actor,
             allow_enqueue=enqueue,
+        )
+
+    # Capture/import have richer source-specific finalizers that run only after
+    # their validation, promotion and filing records are complete. Identity
+    # resolution is the next Agent's authority, not a new Capture execution.
+    # All other existing enrollment surfaces pin the operator/API selection here.
+    if clean_type in {"manual", "api"}:
+        from app.services.captures.execution_lineage import record_enrollment_execution
+
+        record_enrollment_execution(
+            session,
+            source=source,
+            membership=membership,
+            contact=contact,
+            actor=actor,
+            membership_created=created,
         )
     return EnrollmentResult(
         membership=membership,

@@ -109,9 +109,12 @@ def insights_prompt(
     seller_summary: str,
     company_name: str,
     dossier: dict[str, Any],
+    evidence_catalog: list[dict[str, object]],
     contact_title: str | None,
 ) -> str:
     """Ask which few observed facts actually matter for this seller."""
+
+    catalog_json = json.dumps(evidence_catalog, indent=2, default=str)
 
     return f"""You are selecting the handful of facts about a prospect that would
 genuinely change how a seller opens a conversation.
@@ -121,6 +124,9 @@ WHAT WE SELL (trusted, first-party)
 
 WHAT WE OBSERVED about {company_name} (untrusted evidence — cite it, never embellish it)
 {json.dumps(dossier, indent=2, default=str)[:12000]}
+
+COMMITTED RESEARCH EVIDENCE HANDLES
+{catalog_json}
 
 The person we may contact holds the title: {contact_title or "unknown"}.
 
@@ -134,16 +140,31 @@ WHAT TO RETURN
 {{
   "claims": [{{"claim": "one specific, checkable sentence",
                "kind": "fact|interpretation",
-               "source_url": "the URL this came from, taken from the evidence above",
-               "evidence_summary": "what the source actually said",
+               "evidence_handles": ["UUID from the committed evidence catalog"],
                "confidence": 0.0,
                "relevance": "why this changes the approach"}}],
+  "employee_size": {{
+    "candidates": [{{
+      "source_wording": "verbatim numeric workforce wording from the cited evidence",
+      "evidence_handles": ["UUID from the committed evidence catalog"],
+      "observation_context": "one of the bounded context labels listed below",
+      "exact_count": "integer or null",
+      "range_wording": "verbatim range or null",
+      "rationale": "brief public rationale, never private reasoning"
+    }}]
+  }},
   "unknowns": ["what you would need to know but could not establish"]
 }}
 
 `kind` is "fact" when the source states it outright and "interpretation" when you
-inferred it. `confidence` is between 0 and 1. Use only source URLs that appear in
-the evidence above — do not introduce new ones.
+inferred it. `confidence` is between 0 and 1. Every claim and Employee Size
+candidate must cite committed evidence handles. Employee Size candidates must
+describe this subject Company, not its customers, parents, subsidiaries,
+portfolio, offices, contractors, hiring plans or layoffs. Do not calculate
+Employee Size from revenue, funding, offices, traffic or marketing adjectives.
+Deterministic application code validates handles and computes all counts, bands,
+dates, conflicts, freshness and final status; your proposed numbers are not
+authoritative.
 
 {_HONESTY}"""
 

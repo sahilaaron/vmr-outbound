@@ -230,7 +230,7 @@ def _create_membership(
     batch_id: uuid.UUID,
     state: ContactWorkflowState,
     actor: str,
-) -> CampaignContact:
+) -> tuple[CampaignContact, bool]:
     result = enrol_contact(
         session,
         campaign_id=campaign_id,
@@ -253,7 +253,7 @@ def _create_membership(
             actor=actor,
             reason="suppressed identity observed during import",
         )
-    return membership
+    return membership, result.created
 
 
 def _suppress_all_memberships(
@@ -263,7 +263,7 @@ def _suppress_all_memberships(
     current_campaign_id: uuid.UUID,
     batch_id: uuid.UUID,
     actor: str,
-) -> None:
+) -> tuple[CampaignContact | None, bool]:
     """Suppress a contact across every campaign it belongs to.
 
     Transitions each non-terminal membership for the contact to SUPPRESSED
@@ -277,10 +277,10 @@ def _suppress_all_memberships(
         select(CampaignContact).where(CampaignContact.contact_id == contact_id)
     ).all()
 
-    seen_current = False
+    current: CampaignContact | None = None
     for membership in memberships:
         if membership.campaign_id == current_campaign_id:
-            seen_current = True
+            current = membership
         if membership.state not in _TERMINAL_STATES:
             transition_contact_state(
                 session,
@@ -290,8 +290,8 @@ def _suppress_all_memberships(
                 reason="suppressed identity observed during import (all campaigns)",
             )
 
-    if not seen_current:
-        _create_membership(
+    if current is None:
+        return _create_membership(
             session,
             campaign_id=current_campaign_id,
             contact_id=contact_id,
@@ -299,6 +299,31 @@ def _suppress_all_memberships(
             state=ContactWorkflowState.SUPPRESSED,
             actor=actor,
         )
+    return current, False
+
+
+def _record_capture_execution(
+    session: Session,
+    *,
+    batch: ImportBatch,
+    import_row: ImportRow,
+    result: ImportRowValidation,
+    actor: str,
+    membership_created: bool | None,
+) -> None:
+    """Pin the row outcome after all authoritative import writes are staged."""
+
+    session.flush()
+    from app.services.captures.execution_lineage import record_import_row_execution
+
+    record_import_row_execution(
+        session,
+        batch=batch,
+        row=import_row,
+        validation=result,
+        actor=actor,
+        membership_created=membership_created,
+    )
 
 
 def _append_provenance(
@@ -392,6 +417,14 @@ def _process_row(
                 )
             )
         counts.rejected += 1
+        _record_capture_execution(
+            session,
+            batch=batch,
+            import_row=import_row,
+            result=result,
+            actor=actor,
+            membership_created=None,
+        )
         return
 
     normalized = validated.normalized
@@ -422,12 +455,13 @@ def _process_row(
             note=note,
         )
         session.add(result)
+        membership_created: bool | None = None
         if contact is not None:
             # A suppressed identity must not stay eligible in ANY campaign. Move
             # every non-terminal membership for this contact (across all
             # campaigns) to SUPPRESSED, and ensure the campaign being imported
             # also carries a suppressed membership. The ledger stays authoritative.
-            _suppress_all_memberships(
+            _, membership_created = _suppress_all_memberships(
                 session,
                 contact_id=contact.id,
                 current_campaign_id=campaign.id,
@@ -442,6 +476,14 @@ def _process_row(
                 resolved=resolved_provenance,
             )
         counts.suppressed += 1
+        _record_capture_execution(
+            session,
+            batch=batch,
+            import_row=import_row,
+            result=result,
+            actor=actor,
+            membership_created=membership_created,
+        )
         return
 
     # 3. Duplicate of an existing contact (not suppressed): link, do not re-create.
@@ -456,8 +498,10 @@ def _process_row(
             note=match.note,
         )
         session.add(result)
-        if _get_membership(session, campaign.id, contact.id) is None:
-            _create_membership(
+        membership = _get_membership(session, campaign.id, contact.id)
+        membership_created = False
+        if membership is None:
+            membership, membership_created = _create_membership(
                 session,
                 campaign_id=campaign.id,
                 contact_id=contact.id,
@@ -486,6 +530,14 @@ def _process_row(
             actor=actor,
         )
         counts.duplicate += 1
+        _record_capture_execution(
+            session,
+            batch=batch,
+            import_row=import_row,
+            result=result,
+            actor=actor,
+            membership_created=membership_created,
+        )
         return
 
     # 4. Ambiguous identity: several existing contacts share this row's natural
@@ -511,6 +563,14 @@ def _process_row(
             context={"batch_id": str(batch.id), "row_number": import_row.row_number},
         )
         counts.ambiguous += 1
+        _record_capture_execution(
+            session,
+            batch=batch,
+            import_row=import_row,
+            result=result,
+            actor=actor,
+            membership_created=None,
+        )
         return
 
     # 5. Accepted: a new contact.
@@ -522,7 +582,7 @@ def _process_row(
         normalized_data=dict(normalized),
     )
     session.add(result)
-    _create_membership(
+    _, membership_created = _create_membership(
         session,
         campaign_id=campaign.id,
         contact_id=contact.id,
@@ -560,6 +620,14 @@ def _process_row(
     )
     counts.accepted += 1
     counts.contacts_created += 1
+    _record_capture_execution(
+        session,
+        batch=batch,
+        import_row=import_row,
+        result=result,
+        actor=actor,
+        membership_created=membership_created,
+    )
 
 
 def run_import(

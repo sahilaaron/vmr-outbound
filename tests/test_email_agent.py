@@ -675,7 +675,7 @@ def test_stale_company_evidence_proceeds_and_records_the_staleness(
     ]
 
 
-def test_employee_evidence_change_during_verification_requires_scoped_refresh(
+def test_employee_evidence_change_during_verification_does_not_change_the_plan(
     db_session: Session,
 ) -> None:
     fixture = make_email_fixture(db_session, employee_count="51")
@@ -699,10 +699,9 @@ def test_employee_evidence_change_during_verification_requires_scoped_refresh(
         field_name="company_size",
         actor="operator",
     )
-    blocked = run_step(db_session, fixture, port)
+    waiting = run_step(db_session, fixture, port)
 
-    assert blocked.outcome is EmailExecutionOutcome.EMPLOYEE_COUNT_UNKNOWN
-    assert "explicitly scoped" in (blocked.reason or "")
+    assert waiting.outcome is EmailExecutionOutcome.WAITING_ON_VERIFICATION
     assert current_attempt(db_session, fixture.job).verification_job_id == child_id
     assert port.created_children(db_session, fixture.job) == 1
 

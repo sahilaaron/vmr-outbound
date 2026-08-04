@@ -30,6 +30,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    CheckConstraint,
     DateTime,
     Enum,
     ForeignKey,
@@ -56,6 +57,11 @@ class UsageLedgerEntry(Base):
         Index("ix_usage_ledger_entries_provider_attempted", "provider", "attempted_at"),
         Index("ix_usage_ledger_entries_campaign_id", "campaign_id"),
         Index("ix_usage_ledger_entries_job", "job_kind", "job_id"),
+        Index("ix_usage_ledger_entries_origin", "origin", "attempted_at"),
+        CheckConstraint(
+            "origin IN ('customer_operation', 'admin_operation', 'agent_studio')",
+            name="usage_origin_known",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -71,6 +77,15 @@ class UsageLedgerEntry(Base):
         ForeignKey("campaigns.id", ondelete="SET NULL"),
         nullable=True,
     )
+    campaign_contact_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "campaign_contacts.id",
+            name="fk_usage_ledger_campaign_contact",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+    )
     contact_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("contacts.id", ondelete="SET NULL"),
@@ -82,6 +97,10 @@ class UsageLedgerEntry(Base):
     job_kind: Mapped[str | None] = mapped_column(String(50), nullable=True)
     # An optional provider-side request identifier (idempotency key, request id).
     request_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Attribution is explicit. This product currently persists no tenant/account
+    # entity, so account_reference remains nullable rather than being fabricated.
+    origin: Mapped[str] = mapped_column(String(32), nullable=False, default="customer_operation")
+    account_reference: Mapped[str | None] = mapped_column(String(160), nullable=True)
 
     # --- Timing & outcome -----------------------------------------------------
     attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

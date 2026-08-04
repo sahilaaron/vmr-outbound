@@ -1,0 +1,84 @@
+{
+  "_note": [
+    "First-release controlled vocabularies for the Company Intelligence dimensions",
+    "that are genuinely enumerable. Industry and subindustry come from the operator-",
+    "supplied industry_categories.json and are NOT duplicated here.",
+    "",
+    "These lists are deliberately short. A long list that is still incomplete rejects",
+    "correct answers while looking authoritative; a short list plus a visible",
+    "'unmapped' outcome tells the truth about what it does not cover. Every value a",
+    "producer offers that is not here is stored verbatim and flagged for review, so",
+    "the gaps in these lists surface as work rather than as silence.",
+    "",
+    "Aliases are the extension point. Adding one is an operator decision with an",
+    "author and a timestamp; widening the canonical list is a new taxonomy edition."
+  ],
+  "business_model": {
+    "title": "Business model",
+    "terms": [
+      {"code": "b2b", "label": "B2B", "aliases": ["business to business", "b to b"]},
+      {"code": "b2c", "label": "B2C", "aliases": ["business to consumer", "b to c", "direct to consumer", "d2c"]},
+      {"code": "b2b2c", "label": "B2B2C", "aliases": ["business to business to consumer"]},
+      {"code": "b2g", "label": "B2G", "aliases": ["business to government", "public sector supplier"]},
+      {"code": "marketplace", "label": "Marketplace", "aliases": ["platform marketplace", "two sided marketplace"]},
+      {"code": "subscription", "label": "Subscription", "aliases": ["recurring revenue", "saas subscription"]},
+      {"code": "licensing", "label": "Licensing", "aliases": ["ip licensing", "technology licensing"]},
+      {"code": "project-based", "label": "Project-based", "aliases": ["engagement based", "epc", "turnkey projects"]},
+      {"code": "contract-manufacturing", "label": "Contract manufacturing", "aliases": ["cdmo", "cmo", "contract manufacturer", "toll manufacturing"]},
+      {"code": "distribution", "label": "Distribution", "aliases": ["wholesale", "channel distribution"]},
+      {"code": "franchise", "label": "Franchise", "aliases": ["franchising"]},
+      {"code": "non-profit", "label": "Non-profit", "aliases": ["not for profit", "ngo", "charity"]}
+    ]
+  },
+  "company_type": {
+    "title": "Company type",
+    "terms": [
+      {"code": "manufacturer", "label": "Manufacturer", "aliases": ["producer", "oem", "original equipment manufacturer"]},
+      {"code": "service-provider", "label": "Service provider", "aliases": ["services firm", "service company"]},
+      {"code": "software-vendor", "label": "Software vendor", "aliases": ["software company", "saas vendor", "software provider"]},
+      {"code": "distributor", "label": "Distributor", "aliases": ["wholesaler", "channel partner"]},
+      {"code": "reseller", "label": "Reseller", "aliases": ["var", "value added reseller", "dealer"]},
+      {"code": "retailer", "label": "Retailer", "aliases": ["retail chain", "store operator"]},
+      {"code": "consultancy", "label": "Consultancy", "aliases": ["consulting firm", "advisory firm"]},
+      {"code": "research-provider", "label": "Research provider", "aliases": ["market research firm", "research house", "cro", "contract research organization"]},
+      {"code": "systems-integrator", "label": "Systems integrator", "aliases": ["si", "integration partner"]},
+      {"code": "healthcare-provider", "label": "Healthcare provider", "aliases": ["hospital", "clinic", "health system"]},
+      {"code": "educational-institution", "label": "Educational institution", "aliases": ["university", "college", "school"]},
+      {"code": "government-body", "label": "Government or public body", "aliases": ["government agency", "public authority", "ministry"]},
+      {"code": "holding-group", "label": "Holding or group company", "aliases": ["holding company", "group company", "conglomerate"]},
+      {"code": "startup", "label": "Startup", "aliases": ["early stage company"]}
+    ]
+  },
+  "customer_segment": {
+    "title": "Customer segment",
+    "terms": [
+      {"code": "enterprise", "label": "Enterprise", "aliases": ["large enterprise", "fortune 500", "global 2000"]},
+      {"code": "mid-market", "label": "Mid-market", "aliases": ["mid sized companies", "midmarket"]},
+      {"code": "small-business", "label": "Small business", "aliases": ["smb", "sme", "small and medium enterprises"]},
+      {"code": "startups", "label": "Startups", "aliases": ["early stage companies"]},
+      {"code": "government-public-sector", "label": "Government and public sector", "aliases": ["public sector", "government agencies", "defence agencies"]},
+      {"code": "healthcare-providers", "label": "Healthcare providers", "aliases": ["hospitals", "clinics", "health systems"]},
+      {"code": "academic-research", "label": "Academic and research institutions", "aliases": ["universities", "research institutes", "laboratories"]},
+      {"code": "oems", "label": "OEMs", "aliases": ["original equipment manufacturers"]},
+      {"code": "channel-partners", "label": "Distributors and channel partners", "aliases": ["resellers", "channel", "distributors"]},
+      {"code": "consumers", "label": "Consumers", "aliases": ["general public", "individual consumers", "retail customers"]}
+    ]
+  },
+  "operating_market": {
+    "title": "Operating market",
+    "_note": "Coarse regions only. Specific countries and cities belong to the GEOGRAPHY dimension, which has no controlled vocabulary and stores the producer's own wording.",
+    "terms": [
+      {"code": "global", "label": "Global", "aliases": ["worldwide", "international"]},
+      {"code": "north-america", "label": "North America", "aliases": ["usa and canada", "us and canada", "namer"]},
+      {"code": "latin-america", "label": "Latin America", "aliases": ["latam", "south america", "central america"]},
+      {"code": "europe", "label": "Europe", "aliases": ["emea europe", "european union", "eu"]},
+      {"code": "middle-east", "label": "Middle East", "aliases": ["gcc", "gulf", "mena middle east"]},
+      {"code": "africa", "label": "Africa", "aliases": ["sub saharan africa", "north africa"]},
+      {"code": "asia-pacific", "label": "Asia-Pacific", "aliases": ["apac", "asia pacific"]},
+      {"code": "south-asia", "label": "South Asia", "aliases": ["indian subcontinent", "india and neighbours"]},
+      {"code": "east-asia", "label": "East Asia", "aliases": ["north east asia", "china japan korea"]},
+      {"code": "southeast-asia", "label": "Southeast Asia", "aliases": ["asean", "south east asia"]},
+      {"code": "oceania", "label": "Oceania", "aliases": ["australia and new zealand", "anz"]}
+    ]
+  }
+}

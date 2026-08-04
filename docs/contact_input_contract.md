@@ -107,6 +107,15 @@ not a spreadsheet row. It has its own versioned contract
 - Suppression stays authoritative, and no capture makes a contact
   outreach-eligible.
 
+CAP-002 adds no customer-facing editor and does not change those semantics. It
+records a bounded terminal Capture Agent Job for extension intake, import-row
+outcomes and explicit manual/API Campaign enrollment. The immutable snapshot or
+row remains the source of evidence; the job pins only typed source references,
+captured-field projection, exact duplicate/suppression/promotion/filing facts
+and the Identity handoff. Admin reporting never exposes arbitrary raw rows or
+extension payloads, and it labels later Contact, merge, label, membership and
+suppression values as current rather than captured truth.
+
 ## Explicitly out of scope for the contract
 
 - Automated enrichment from third-party sources at import time.

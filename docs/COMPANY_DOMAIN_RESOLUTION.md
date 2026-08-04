@@ -37,6 +37,12 @@ never uncertain, and DAT-017A does not retroactively cast doubt on them. Code
 reads this as `None` from `store.company_state`, and the gates treat it as
 unrestricted.
 
+`provider_only` is an operator-report label, not a fourth decision state. It
+means a capture-scoped `SalesNavCompanyEnrichment` retains provider or model
+candidates but no authoritative `CompanyDomainResolution` currently exists.
+The candidates are useful evidence and remain visibly unconfirmed; the label
+must never be passed through `store.company_state` or upgraded to `confirmed`.
+
 ## The policy, in order
 
 `app/services/resolution/policy.py`, version
@@ -202,6 +208,45 @@ The gate is enforced in the **service** that would otherwise act — today that 
 only in a route is one refactor away from not being enforced. Stages that do not
 exist yet are named in the enum so that when they are built they wire into this
 rule rather than each inventing its own reading of what provisional allows.
+
+The Company Agent now applies the existing Research-readiness gate before it
+can enqueue its Research child. A confirmed domain and a legacy no-decision
+domain continue. A provisional domain continues to Research with its provisional
+flag; the Campaign setting controls later domain-dependent stages. Unresolved
+or missing domains block at Company and retain the exact reason in the job.
+
+## CMP-003 execution lineage
+
+Company Agent Studio does not create another resolver or decision ledger. For
+new executions the existing `AgentJob.result` (or classified blocked error
+detail) carries a bounded snapshot linking the execution to:
+
+- the exact-match key and exact Company candidates actually considered;
+- the selected permanent Company and whether the Contact edge was reused or
+  linked (the current adapter does not create Companies);
+- the exact capture and strongest Company-aggregate decision ids;
+- the Company name/domain and resolution state seen by that execution;
+- the effective `allow_provisional_domains` setting and Campaign settings
+  version;
+- the Research gate and later-stage eligibility result and reason.
+
+The underlying decision row already preserves candidate order, rejected
+candidates, selected candidate, source/provider, rank, policy, reasons,
+warnings, observation scope, decision time and supersession. No migration or
+duplicate persistence was needed.
+
+The read model keeps four truths separate: the execution snapshot, the current
+capture decision, the current Contact/Company aggregate, and current Campaign
+policy. It never attaches today's Company domain to an older execution, rebuilds
+candidate order from current policy, or infers missing confidence/provider
+facts. Jobs predating CMP-003 therefore remain partial or unavailable when their
+result did not pin enough lineage. That is an observability limitation, not a
+request to run fuzzy retrospective matching or backfill guessed values.
+
+Identity still owns person-level identity. Company owns employer linking and
+domain authority. Research and Email only consume the resolved Company/domain.
+Company Intelligence remains a separate classification system; its industry,
+specialty, geography, queue and review concepts do not appear here.
 
 ## Feature switch
 

@@ -82,6 +82,7 @@ class PolicyCandidate:
     format_id: str
     local_part: str
     email: str
+    source: str = "configured"
 
 
 @dataclass(frozen=True)
@@ -231,11 +232,16 @@ def evidence_freshness(
 
 
 def _local_part(format_id: str, *, first: str, last: str, first_initial: str) -> str:
+    last_initial = last[:1]
     return {
         "firstname": first,
         "firstname.lastname": f"{first}.{last}",
         "finitiallastname": f"{first_initial}{last}",
         "lastnamefinitial": f"{last}{first_initial}",
+        "firstnameinitial.lastname": f"{first_initial}.{last}",
+        "firstnamelastname": f"{first}{last}",
+        "firstnamelastinitial": f"{first}{last_initial}",
+        "lastname.firstname": f"{last}.{first}",
     }[format_id]
 
 
@@ -246,6 +252,8 @@ def evaluate(
     domain: str | None,
     employee_evidence: EmployeeCountEvidence,
     now: datetime,
+    ordered_patterns: tuple[tuple[str, str], ...] | None = None,
+    max_candidates: int = 3,
 ) -> EmailDiscoveryPolicyDecision:
     """Return the exact candidate plan or one explicit policy refusal.
 
@@ -313,11 +321,11 @@ def evaluate(
     # The classification is still derived and still recorded on the attempt row,
     # because what was known about a company at the time of an attempt is worth
     # keeping. It simply does not steer anything.
-    formats = _ORDERED_FORMATS
+    pattern_sources = ordered_patterns or tuple((item, "configured") for item in _ORDERED_FORMATS)
     candidates: list[PolicyCandidate] = []
     seen: set[str] = set()
     produced_formats: list[str] = []
-    for format_id in formats:
+    for format_id, source in pattern_sources:
         local = _local_part(
             format_id,
             first=identity.first,
@@ -334,6 +342,7 @@ def evaluate(
                 format_id=format_id,
                 local_part=local,
                 email=email,
+                source=source,
             )
         )
 
@@ -360,7 +369,7 @@ def evaluate(
         evidence_freshness=freshness,
         normalized_domain=normalized_domain,
         ordered_formats=tuple(produced_formats),
-        candidates=tuple(candidates[:3]),
+        candidates=tuple(candidates[:max_candidates]),
         normalization_version=ENGINE_VERSION,
     )
 

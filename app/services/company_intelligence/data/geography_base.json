@@ -1,0 +1,2511 @@
+{
+  "edition": "2026.08",
+  "title": "VMR commercially relevant B2B geography base",
+  "source": "Hand-curated for this product. Country names and the ISO 3166-1 alpha-2 / alpha-3 code assignments are the published public standard identifiers; city names and their common alternate or former names are widely published general geographic knowledge. No third-party geographic database is vendored and no runtime geographic service is called.",
+  "license": "The ISO 3166-1 code assignments used here are short factual identifiers, not a copyrightable compilation, and only the ~50 entries this product needs are included. City entries are plain place names. Nothing in this file is copied from a licensed gazetteer, and no coordinates, population figures, administrative hierarchies or rankings are asserted.",
+  "criteria": "Countries were selected for commercial relevance to this product's B2B outbound work -- where the industries it researches concentrate buyers, suppliers, manufacturing and R&D -- with deliberate coverage across all nine regions below. This is NOT a claim that these are the world's fifty most important countries, and it is not a ranking. Cities are the principal commercial or industrial centres of each country, at least three per country and more where three would obviously misrepresent the country.",
+  "regions": [
+    "north_america",
+    "latin_america",
+    "europe",
+    "middle_east",
+    "africa",
+    "south_asia",
+    "east_asia",
+    "southeast_asia",
+    "oceania"
+  ],
+  "update_procedure": "Adding or correcting entries is a NEW edition: bump `edition`, add the entries, and let seed_vocabularies publish and activate it. Editions are never edited in place, so geographies classified under an older edition keep resolving. See docs/COMPANY_INTELLIGENCE_TAXONOMY.md.",
+  "countries": [
+    {
+      "name": "United States",
+      "alpha2": "US",
+      "alpha3": "USA",
+      "region": "north_america",
+      "aliases": [
+        "America",
+        "U.S.",
+        "U.S.A.",
+        "USA",
+        "United States of America",
+        "the US"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "New York",
+          "code": "us-new-york",
+          "aliases": [
+            "NYC",
+            "New York City",
+            "New York, NY"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "San Francisco",
+          "code": "us-san-francisco",
+          "aliases": [
+            "SF",
+            "San Francisco Bay Area"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Chicago",
+          "code": "us-chicago",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Boston",
+          "code": "us-boston",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Houston",
+          "code": "us-houston",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Seattle",
+          "code": "us-seattle",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Los Angeles",
+          "code": "us-los-angeles",
+          "aliases": [
+            "LA"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Atlanta",
+          "code": "us-atlanta",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Austin",
+          "code": "us-austin",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Mobile",
+          "code": "us-mobile",
+          "aliases": [],
+          "ambiguous_surfaces": [
+            "Mobile"
+          ]
+        },
+        {
+          "name": "Washington, D.C.",
+          "code": "us-washington-d-c",
+          "aliases": [
+            "District of Columbia",
+            "Washington",
+            "Washington DC"
+          ],
+          "ambiguous_surfaces": [
+            "Washington"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Canada",
+      "alpha2": "CA",
+      "alpha3": "CAN",
+      "region": "north_america",
+      "aliases": [],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Toronto",
+          "code": "ca-toronto",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Montreal",
+          "code": "ca-montreal",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Vancouver",
+          "code": "ca-vancouver",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Calgary",
+          "code": "ca-calgary",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Ottawa",
+          "code": "ca-ottawa",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Victoria",
+          "code": "ca-victoria",
+          "aliases": [],
+          "ambiguous_surfaces": [
+            "Victoria"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Mexico",
+      "alpha2": "MX",
+      "alpha3": "MEX",
+      "region": "north_america",
+      "aliases": [],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Mexico City",
+          "code": "mx-mexico-city",
+          "aliases": [
+            "CDMX",
+            "Ciudad de Mexico"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Monterrey",
+          "code": "mx-monterrey",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Guadalajara",
+          "code": "mx-guadalajara",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Querétaro",
+          "code": "mx-queretaro",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Brazil",
+      "alpha2": "BR",
+      "alpha3": "BRA",
+      "region": "latin_america",
+      "aliases": [
+        "Brasil"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "São Paulo",
+          "code": "br-sao-paulo",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Rio de Janeiro",
+          "code": "br-rio-de-janeiro",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Belo Horizonte",
+          "code": "br-belo-horizonte",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Curitiba",
+          "code": "br-curitiba",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Argentina",
+      "alpha2": "AR",
+      "alpha3": "ARG",
+      "region": "latin_america",
+      "aliases": [],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Buenos Aires",
+          "code": "ar-buenos-aires",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Córdoba",
+          "code": "ar-cordoba",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Rosario",
+          "code": "ar-rosario",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Chile",
+      "alpha2": "CL",
+      "alpha3": "CHL",
+      "region": "latin_america",
+      "aliases": [],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Santiago",
+          "code": "cl-santiago",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Valparaíso",
+          "code": "cl-valparaiso",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Concepción",
+          "code": "cl-concepcion",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Colombia",
+      "alpha2": "CO",
+      "alpha3": "COL",
+      "region": "latin_america",
+      "aliases": [],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Bogotá",
+          "code": "co-bogota",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Medellín",
+          "code": "co-medellin",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Cali",
+          "code": "co-cali",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Peru",
+      "alpha2": "PE",
+      "alpha3": "PER",
+      "region": "latin_america",
+      "aliases": [],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Lima",
+          "code": "pe-lima",
+          "aliases": [],
+          "ambiguous_surfaces": [
+            "Lima"
+          ]
+        },
+        {
+          "name": "Arequipa",
+          "code": "pe-arequipa",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Trujillo",
+          "code": "pe-trujillo",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Panama",
+      "alpha2": "PA",
+      "alpha3": "PAN",
+      "region": "latin_america",
+      "aliases": [
+        "Republic of Panama"
+      ],
+      "ambiguous_surfaces": [
+        "Panama"
+      ],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Panama City",
+          "code": "pa-panama-city",
+          "aliases": [
+            "Ciudad de Panamá"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Colón",
+          "code": "pa-colon",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "David",
+          "code": "pa-david",
+          "aliases": [],
+          "ambiguous_surfaces": [
+            "David"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "United Kingdom",
+      "alpha2": "GB",
+      "alpha3": "GBR",
+      "region": "europe",
+      "aliases": [
+        "Britain",
+        "England",
+        "Great Britain",
+        "U.K.",
+        "UK",
+        "United Kingdom of Great Britain and Northern Ireland"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "London",
+          "code": "gb-london",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Manchester",
+          "code": "gb-manchester",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Birmingham",
+          "code": "gb-birmingham",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Cambridge",
+          "code": "gb-cambridge",
+          "aliases": [],
+          "ambiguous_surfaces": [
+            "Cambridge"
+          ]
+        },
+        {
+          "name": "Edinburgh",
+          "code": "gb-edinburgh",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Leeds",
+          "code": "gb-leeds",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Bristol",
+          "code": "gb-bristol",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Reading",
+          "code": "gb-reading",
+          "aliases": [],
+          "ambiguous_surfaces": [
+            "Reading"
+          ]
+        },
+        {
+          "name": "Bath",
+          "code": "gb-bath",
+          "aliases": [],
+          "ambiguous_surfaces": [
+            "Bath"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Ireland",
+      "alpha2": "IE",
+      "alpha3": "IRL",
+      "region": "europe",
+      "aliases": [
+        "Eire",
+        "Republic of Ireland"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Dublin",
+          "code": "ie-dublin",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Cork",
+          "code": "ie-cork",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Galway",
+          "code": "ie-galway",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Limerick",
+          "code": "ie-limerick",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Germany",
+      "alpha2": "DE",
+      "alpha3": "DEU",
+      "region": "europe",
+      "aliases": [
+        "Deutschland"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Berlin",
+          "code": "de-berlin",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Munich",
+          "code": "de-munich",
+          "aliases": [
+            "Muenchen",
+            "München"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Frankfurt",
+          "code": "de-frankfurt",
+          "aliases": [
+            "Frankfurt am Main"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Hamburg",
+          "code": "de-hamburg",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Stuttgart",
+          "code": "de-stuttgart",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Düsseldorf",
+          "code": "de-dusseldorf",
+          "aliases": [
+            "Duesseldorf"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Cologne",
+          "code": "de-cologne",
+          "aliases": [
+            "Koeln",
+            "Köln"
+          ],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "France",
+      "alpha2": "FR",
+      "alpha3": "FRA",
+      "region": "europe",
+      "aliases": [],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Paris",
+          "code": "fr-paris",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Lyon",
+          "code": "fr-lyon",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Toulouse",
+          "code": "fr-toulouse",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Nice",
+          "code": "fr-nice",
+          "aliases": [],
+          "ambiguous_surfaces": [
+            "Nice"
+          ]
+        },
+        {
+          "name": "Marseille",
+          "code": "fr-marseille",
+          "aliases": [
+            "Marseilles"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Grenoble",
+          "code": "fr-grenoble",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Orange",
+          "code": "fr-orange",
+          "aliases": [],
+          "ambiguous_surfaces": [
+            "Orange"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Netherlands",
+      "alpha2": "NL",
+      "alpha3": "NLD",
+      "region": "europe",
+      "aliases": [
+        "Holland",
+        "The Netherlands"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Amsterdam",
+          "code": "nl-amsterdam",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Rotterdam",
+          "code": "nl-rotterdam",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Eindhoven",
+          "code": "nl-eindhoven",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Utrecht",
+          "code": "nl-utrecht",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "The Hague",
+          "code": "nl-the-hague",
+          "aliases": [
+            "Den Haag"
+          ],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Belgium",
+      "alpha2": "BE",
+      "alpha3": "BEL",
+      "region": "europe",
+      "aliases": [],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Brussels",
+          "code": "be-brussels",
+          "aliases": [
+            "Brussel",
+            "Bruxelles"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Antwerp",
+          "code": "be-antwerp",
+          "aliases": [
+            "Antwerpen"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Ghent",
+          "code": "be-ghent",
+          "aliases": [
+            "Gent"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Leuven",
+          "code": "be-leuven",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Switzerland",
+      "alpha2": "CH",
+      "alpha3": "CHE",
+      "region": "europe",
+      "aliases": [
+        "Schweiz",
+        "Suisse"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Zurich",
+          "code": "ch-zurich",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Geneva",
+          "code": "ch-geneva",
+          "aliases": [
+            "Genève"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Basel",
+          "code": "ch-basel",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Lausanne",
+          "code": "ch-lausanne",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Austria",
+      "alpha2": "AT",
+      "alpha3": "AUT",
+      "region": "europe",
+      "aliases": [
+        "Österreich"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Vienna",
+          "code": "at-vienna",
+          "aliases": [
+            "Wien"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Graz",
+          "code": "at-graz",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Linz",
+          "code": "at-linz",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Salzburg",
+          "code": "at-salzburg",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Italy",
+      "alpha2": "IT",
+      "alpha3": "ITA",
+      "region": "europe",
+      "aliases": [
+        "Italia"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Milan",
+          "code": "it-milan",
+          "aliases": [
+            "Milano"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Rome",
+          "code": "it-rome",
+          "aliases": [
+            "Roma"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Turin",
+          "code": "it-turin",
+          "aliases": [
+            "Torino"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Bologna",
+          "code": "it-bologna",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Naples",
+          "code": "it-naples",
+          "aliases": [
+            "Napoli"
+          ],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Spain",
+      "alpha2": "ES",
+      "alpha3": "ESP",
+      "region": "europe",
+      "aliases": [
+        "España"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Madrid",
+          "code": "es-madrid",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Barcelona",
+          "code": "es-barcelona",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Valencia",
+          "code": "es-valencia",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Bilbao",
+          "code": "es-bilbao",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Seville",
+          "code": "es-seville",
+          "aliases": [
+            "Sevilla"
+          ],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Portugal",
+      "alpha2": "PT",
+      "alpha3": "PRT",
+      "region": "europe",
+      "aliases": [],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Lisbon",
+          "code": "pt-lisbon",
+          "aliases": [
+            "Lisboa"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Porto",
+          "code": "pt-porto",
+          "aliases": [
+            "Oporto"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Braga",
+          "code": "pt-braga",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Sweden",
+      "alpha2": "SE",
+      "alpha3": "SWE",
+      "region": "europe",
+      "aliases": [
+        "Sverige"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Stockholm",
+          "code": "se-stockholm",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Gothenburg",
+          "code": "se-gothenburg",
+          "aliases": [
+            "Göteborg"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Malmö",
+          "code": "se-malmo",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Lund",
+          "code": "se-lund",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Norway",
+      "alpha2": "NO",
+      "alpha3": "NOR",
+      "region": "europe",
+      "aliases": [
+        "Norge"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Oslo",
+          "code": "no-oslo",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Bergen",
+          "code": "no-bergen",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Trondheim",
+          "code": "no-trondheim",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Stavanger",
+          "code": "no-stavanger",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Denmark",
+      "alpha2": "DK",
+      "alpha3": "DNK",
+      "region": "europe",
+      "aliases": [
+        "Danmark"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Copenhagen",
+          "code": "dk-copenhagen",
+          "aliases": [
+            "Kobenhavn",
+            "København"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Aarhus",
+          "code": "dk-aarhus",
+          "aliases": [
+            "Århus"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Odense",
+          "code": "dk-odense",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Finland",
+      "alpha2": "FI",
+      "alpha3": "FIN",
+      "region": "europe",
+      "aliases": [
+        "Suomi"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Helsinki",
+          "code": "fi-helsinki",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Espoo",
+          "code": "fi-espoo",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Tampere",
+          "code": "fi-tampere",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Oulu",
+          "code": "fi-oulu",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Poland",
+      "alpha2": "PL",
+      "alpha3": "POL",
+      "region": "europe",
+      "aliases": [
+        "Polska"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Warsaw",
+          "code": "pl-warsaw",
+          "aliases": [
+            "Warszawa"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Kraków",
+          "code": "pl-krakow",
+          "aliases": [
+            "Cracow"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Wrocław",
+          "code": "pl-wroc-aw",
+          "aliases": [
+            "Wroclaw"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Gdańsk",
+          "code": "pl-gdansk",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Poznań",
+          "code": "pl-poznan",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Czechia",
+      "alpha2": "CZ",
+      "alpha3": "CZE",
+      "region": "europe",
+      "aliases": [
+        "Czech Republic"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Prague",
+          "code": "cz-prague",
+          "aliases": [
+            "Praha"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Brno",
+          "code": "cz-brno",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Ostrava",
+          "code": "cz-ostrava",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Plzeň",
+          "code": "cz-plzen",
+          "aliases": [
+            "Pilsen"
+          ],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Hungary",
+      "alpha2": "HU",
+      "alpha3": "HUN",
+      "region": "europe",
+      "aliases": [
+        "Magyarország"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Budapest",
+          "code": "hu-budapest",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Debrecen",
+          "code": "hu-debrecen",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Szeged",
+          "code": "hu-szeged",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Romania",
+      "alpha2": "RO",
+      "alpha3": "ROU",
+      "region": "europe",
+      "aliases": [],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Bucharest",
+          "code": "ro-bucharest",
+          "aliases": [
+            "București"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Cluj-Napoca",
+          "code": "ro-cluj-napoca",
+          "aliases": [
+            "Cluj"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Timișoara",
+          "code": "ro-timisoara",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Iași",
+          "code": "ro-iasi",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Turkey",
+      "alpha2": "TR",
+      "alpha3": "TUR",
+      "region": "europe",
+      "aliases": [
+        "Türkiye"
+      ],
+      "ambiguous_surfaces": [
+        "Turkey"
+      ],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Istanbul",
+          "code": "tr-istanbul",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Ankara",
+          "code": "tr-ankara",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Izmir",
+          "code": "tr-izmir",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Bursa",
+          "code": "tr-bursa",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Greece",
+      "alpha2": "GR",
+      "alpha3": "GRC",
+      "region": "europe",
+      "aliases": [
+        "Hellas"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Athens",
+          "code": "gr-athens",
+          "aliases": [
+            "Athina"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Thessaloniki",
+          "code": "gr-thessaloniki",
+          "aliases": [
+            "Salonika"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Patras",
+          "code": "gr-patras",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Ukraine",
+      "alpha2": "UA",
+      "alpha3": "UKR",
+      "region": "europe",
+      "aliases": [],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Kyiv",
+          "code": "ua-kyiv",
+          "aliases": [
+            "Kiev"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Lviv",
+          "code": "ua-lviv",
+          "aliases": [
+            "Lvov"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Kharkiv",
+          "code": "ua-kharkiv",
+          "aliases": [
+            "Kharkov"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Odesa",
+          "code": "ua-odesa",
+          "aliases": [
+            "Odessa"
+          ],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "United Arab Emirates",
+      "alpha2": "AE",
+      "alpha3": "ARE",
+      "region": "middle_east",
+      "aliases": [
+        "U.A.E.",
+        "UAE",
+        "the Emirates"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Dubai",
+          "code": "ae-dubai",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Abu Dhabi",
+          "code": "ae-abu-dhabi",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Sharjah",
+          "code": "ae-sharjah",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Ras Al Khaimah",
+          "code": "ae-ras-al-khaimah",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Saudi Arabia",
+      "alpha2": "SA",
+      "alpha3": "SAU",
+      "region": "middle_east",
+      "aliases": [
+        "KSA",
+        "Kingdom of Saudi Arabia",
+        "Saudi"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Riyadh",
+          "code": "sa-riyadh",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Jeddah",
+          "code": "sa-jeddah",
+          "aliases": [
+            "Jedda"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Dammam",
+          "code": "sa-dammam",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Dhahran",
+          "code": "sa-dhahran",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Qatar",
+      "alpha2": "QA",
+      "alpha3": "QAT",
+      "region": "middle_east",
+      "aliases": [],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Doha",
+          "code": "qa-doha",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Al Rayyan",
+          "code": "qa-al-rayyan",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Lusail",
+          "code": "qa-lusail",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Kuwait",
+      "alpha2": "KW",
+      "alpha3": "KWT",
+      "region": "middle_east",
+      "aliases": [],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Kuwait City",
+          "code": "kw-kuwait-city",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Al Ahmadi",
+          "code": "kw-al-ahmadi",
+          "aliases": [
+            "Ahmadi"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Hawalli",
+          "code": "kw-hawalli",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Israel",
+      "alpha2": "IL",
+      "alpha3": "ISR",
+      "region": "middle_east",
+      "aliases": [],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Tel Aviv",
+          "code": "il-tel-aviv",
+          "aliases": [
+            "Tel Aviv-Yafo"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Jerusalem",
+          "code": "il-jerusalem",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Haifa",
+          "code": "il-haifa",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Herzliya",
+          "code": "il-herzliya",
+          "aliases": [
+            "Herzliyya"
+          ],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Oman",
+      "alpha2": "OM",
+      "alpha3": "OMN",
+      "region": "middle_east",
+      "aliases": [
+        "Sultanate of Oman"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Muscat",
+          "code": "om-muscat",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Salalah",
+          "code": "om-salalah",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Sohar",
+          "code": "om-sohar",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Jordan",
+      "alpha2": "JO",
+      "alpha3": "JOR",
+      "region": "middle_east",
+      "aliases": [
+        "Hashemite Kingdom of Jordan"
+      ],
+      "ambiguous_surfaces": [
+        "Jordan"
+      ],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Amman",
+          "code": "jo-amman",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Zarqa",
+          "code": "jo-zarqa",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Irbid",
+          "code": "jo-irbid",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Aqaba",
+          "code": "jo-aqaba",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Egypt",
+      "alpha2": "EG",
+      "alpha3": "EGY",
+      "region": "africa",
+      "aliases": [],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Cairo",
+          "code": "eg-cairo",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Alexandria",
+          "code": "eg-alexandria",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Giza",
+          "code": "eg-giza",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "South Africa",
+      "alpha2": "ZA",
+      "alpha3": "ZAF",
+      "region": "africa",
+      "aliases": [
+        "RSA"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Johannesburg",
+          "code": "za-johannesburg",
+          "aliases": [
+            "Joburg"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Cape Town",
+          "code": "za-cape-town",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Durban",
+          "code": "za-durban",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Pretoria",
+          "code": "za-pretoria",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Nigeria",
+      "alpha2": "NG",
+      "alpha3": "NGA",
+      "region": "africa",
+      "aliases": [],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Lagos",
+          "code": "ng-lagos",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Abuja",
+          "code": "ng-abuja",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Port Harcourt",
+          "code": "ng-port-harcourt",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Kano",
+          "code": "ng-kano",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Kenya",
+      "alpha2": "KE",
+      "alpha3": "KEN",
+      "region": "africa",
+      "aliases": [],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Nairobi",
+          "code": "ke-nairobi",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Mombasa",
+          "code": "ke-mombasa",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Kisumu",
+          "code": "ke-kisumu",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Morocco",
+      "alpha2": "MA",
+      "alpha3": "MAR",
+      "region": "africa",
+      "aliases": [
+        "Maroc"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Casablanca",
+          "code": "ma-casablanca",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Rabat",
+          "code": "ma-rabat",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Tangier",
+          "code": "ma-tangier",
+          "aliases": [
+            "Tanger"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Marrakesh",
+          "code": "ma-marrakesh",
+          "aliases": [
+            "Marrakech"
+          ],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "India",
+      "alpha2": "IN",
+      "alpha3": "IND",
+      "region": "south_asia",
+      "aliases": [
+        "Bharat"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Mumbai",
+          "code": "in-mumbai",
+          "aliases": [
+            "Bombay"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Bengaluru",
+          "code": "in-bengaluru",
+          "aliases": [
+            "Bangalore"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Delhi",
+          "code": "in-delhi",
+          "aliases": [
+            "NCR",
+            "New Delhi"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Hyderabad",
+          "code": "in-hyderabad",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Chennai",
+          "code": "in-chennai",
+          "aliases": [
+            "Madras"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Pune",
+          "code": "in-pune",
+          "aliases": [
+            "Poona"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Ahmedabad",
+          "code": "in-ahmedabad",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Kolkata",
+          "code": "in-kolkata",
+          "aliases": [
+            "Calcutta"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Gurugram",
+          "code": "in-gurugram",
+          "aliases": [
+            "Gurgaon"
+          ],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Pakistan",
+      "alpha2": "PK",
+      "alpha3": "PAK",
+      "region": "south_asia",
+      "aliases": [],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Karachi",
+          "code": "pk-karachi",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Lahore",
+          "code": "pk-lahore",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Islamabad",
+          "code": "pk-islamabad",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Faisalabad",
+          "code": "pk-faisalabad",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Bangladesh",
+      "alpha2": "BD",
+      "alpha3": "BGD",
+      "region": "south_asia",
+      "aliases": [],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Dhaka",
+          "code": "bd-dhaka",
+          "aliases": [
+            "Dacca"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Chattogram",
+          "code": "bd-chattogram",
+          "aliases": [
+            "Chittagong"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Khulna",
+          "code": "bd-khulna",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Sri Lanka",
+      "alpha2": "LK",
+      "alpha3": "LKA",
+      "region": "south_asia",
+      "aliases": [
+        "Ceylon"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Colombo",
+          "code": "lk-colombo",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Kandy",
+          "code": "lk-kandy",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Galle",
+          "code": "lk-galle",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "China",
+      "alpha2": "CN",
+      "alpha3": "CHN",
+      "region": "east_asia",
+      "aliases": [
+        "Mainland China",
+        "PRC",
+        "People's Republic of China"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Shanghai",
+          "code": "cn-shanghai",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Beijing",
+          "code": "cn-beijing",
+          "aliases": [
+            "Peking"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Shenzhen",
+          "code": "cn-shenzhen",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Guangzhou",
+          "code": "cn-guangzhou",
+          "aliases": [
+            "Canton"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Hangzhou",
+          "code": "cn-hangzhou",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Suzhou",
+          "code": "cn-suzhou",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Chengdu",
+          "code": "cn-chengdu",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Japan",
+      "alpha2": "JP",
+      "alpha3": "JPN",
+      "region": "east_asia",
+      "aliases": [
+        "Nippon"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Tokyo",
+          "code": "jp-tokyo",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Osaka",
+          "code": "jp-osaka",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Yokohama",
+          "code": "jp-yokohama",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Nagoya",
+          "code": "jp-nagoya",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Kyoto",
+          "code": "jp-kyoto",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Fukuoka",
+          "code": "jp-fukuoka",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "South Korea",
+      "alpha2": "KR",
+      "alpha3": "KOR",
+      "region": "east_asia",
+      "aliases": [
+        "Korea",
+        "ROK",
+        "Republic of Korea"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Seoul",
+          "code": "kr-seoul",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Busan",
+          "code": "kr-busan",
+          "aliases": [
+            "Pusan"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Incheon",
+          "code": "kr-incheon",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Daejeon",
+          "code": "kr-daejeon",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Taiwan",
+      "alpha2": "TW",
+      "alpha3": "TWN",
+      "region": "east_asia",
+      "aliases": [
+        "Chinese Taipei"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Taipei",
+          "code": "tw-taipei",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Hsinchu",
+          "code": "tw-hsinchu",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Kaohsiung",
+          "code": "tw-kaohsiung",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Taichung",
+          "code": "tw-taichung",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Hong Kong",
+      "alpha2": "HK",
+      "alpha3": "HKG",
+      "region": "east_asia",
+      "aliases": [
+        "HKSAR",
+        "Hong Kong SAR"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": true,
+      "cities": [
+        {
+          "name": "Kowloon",
+          "code": "hk-kowloon",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Sha Tin",
+          "code": "hk-sha-tin",
+          "aliases": [
+            "Shatin"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Tsim Sha Tsui",
+          "code": "hk-tsim-sha-tsui",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Kwun Tong",
+          "code": "hk-kwun-tong",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Singapore",
+      "alpha2": "SG",
+      "alpha3": "SGP",
+      "region": "southeast_asia",
+      "aliases": [],
+      "ambiguous_surfaces": [],
+      "city_state": true,
+      "cities": [
+        {
+          "name": "Jurong",
+          "code": "sg-jurong",
+          "aliases": [
+            "Jurong Island"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Tuas",
+          "code": "sg-tuas",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Changi",
+          "code": "sg-changi",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Woodlands",
+          "code": "sg-woodlands",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Malaysia",
+      "alpha2": "MY",
+      "alpha3": "MYS",
+      "region": "southeast_asia",
+      "aliases": [],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Kuala Lumpur",
+          "code": "my-kuala-lumpur",
+          "aliases": [
+            "KL"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Penang",
+          "code": "my-penang",
+          "aliases": [
+            "George Town, Penang"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Johor Bahru",
+          "code": "my-johor-bahru",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Cyberjaya",
+          "code": "my-cyberjaya",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Indonesia",
+      "alpha2": "ID",
+      "alpha3": "IDN",
+      "region": "southeast_asia",
+      "aliases": [],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Jakarta",
+          "code": "id-jakarta",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Surabaya",
+          "code": "id-surabaya",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Bandung",
+          "code": "id-bandung",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Medan",
+          "code": "id-medan",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Thailand",
+      "alpha2": "TH",
+      "alpha3": "THA",
+      "region": "southeast_asia",
+      "aliases": [
+        "Siam"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Bangkok",
+          "code": "th-bangkok",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Chiang Mai",
+          "code": "th-chiang-mai",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Rayong",
+          "code": "th-rayong",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Chonburi",
+          "code": "th-chonburi",
+          "aliases": [
+            "Chon Buri"
+          ],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Vietnam",
+      "alpha2": "VN",
+      "alpha3": "VNM",
+      "region": "southeast_asia",
+      "aliases": [
+        "Viet Nam"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Ho Chi Minh City",
+          "code": "vn-ho-chi-minh-city",
+          "aliases": [
+            "HCMC",
+            "Ho Chi Minh",
+            "Saigon"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Hanoi",
+          "code": "vn-hanoi",
+          "aliases": [
+            "Ha Noi"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Da Nang",
+          "code": "vn-da-nang",
+          "aliases": [
+            "Danang"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Hai Phong",
+          "code": "vn-hai-phong",
+          "aliases": [
+            "Haiphong"
+          ],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Philippines",
+      "alpha2": "PH",
+      "alpha3": "PHL",
+      "region": "southeast_asia",
+      "aliases": [
+        "the Philippines"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Manila",
+          "code": "ph-manila",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Cebu City",
+          "code": "ph-cebu-city",
+          "aliases": [
+            "Cebu"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Davao City",
+          "code": "ph-davao-city",
+          "aliases": [
+            "Davao"
+          ],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Quezon City",
+          "code": "ph-quezon-city",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "Australia",
+      "alpha2": "AU",
+      "alpha3": "AUS",
+      "region": "oceania",
+      "aliases": [],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Sydney",
+          "code": "au-sydney",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Melbourne",
+          "code": "au-melbourne",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Brisbane",
+          "code": "au-brisbane",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Perth",
+          "code": "au-perth",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Adelaide",
+          "code": "au-adelaide",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Canberra",
+          "code": "au-canberra",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    },
+    {
+      "name": "New Zealand",
+      "alpha2": "NZ",
+      "alpha3": "NZL",
+      "region": "oceania",
+      "aliases": [
+        "Aotearoa",
+        "NZ"
+      ],
+      "ambiguous_surfaces": [],
+      "city_state": false,
+      "cities": [
+        {
+          "name": "Auckland",
+          "code": "nz-auckland",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Wellington",
+          "code": "nz-wellington",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        },
+        {
+          "name": "Christchurch",
+          "code": "nz-christchurch",
+          "aliases": [],
+          "ambiguous_surfaces": []
+        }
+      ]
+    }
+  ]
+}

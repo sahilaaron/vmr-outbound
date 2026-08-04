@@ -10,6 +10,8 @@ from app.models.collection import CollectionMembership
 from app.models.company import Company
 from app.models.contact import Contact
 from app.models.enums import (
+    AgentIdentifier,
+    AgentJobStatus,
     CampaignContactEligibility,
     CampaignMembershipStatus,
     CampaignStatus,
@@ -240,7 +242,10 @@ def test_suppression_is_a_terminal_campaign_eligibility_block(
     assert result.membership.pipeline_status is PipelineStageStatus.BLOCKED
     assert any(reason["code"] == "suppression" for reason in result.membership.blocking_reasons)
     assert result.queued_job is None
-    assert db_session.scalar(select(func.count()).select_from(AgentJob)) == 0
+    jobs = db_session.scalars(select(AgentJob)).all()
+    assert len(jobs) == 1
+    assert jobs[0].agent_id is AgentIdentifier.CAPTURE
+    assert jobs[0].status is AgentJobStatus.SUCCEEDED
 
 
 def test_idempotent_reenrolment_rechecks_late_suppression(

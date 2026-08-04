@@ -44,6 +44,8 @@ MAX_LENGTHS = {
     "source_record_type": 100,
     "idempotency_key": 255,
     "actor": 255,
+    "insight_type": 64,
+    "derivation_version": 64,
 }
 
 #: Kept as a name because callers and tests refer to the URL limit directly.
@@ -158,6 +160,17 @@ def _validate_packet(items: tuple[EvidenceInput, ...]) -> tuple[tuple[str, int],
     return tuple(identities)
 
 
+def _validate_structured_payload(value: dict[str, object] | None) -> None:
+    if value is None:
+        return
+    try:
+        encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    except (TypeError, ValueError) as exc:
+        raise InsightError("structured_payload must contain JSON values") from exc
+    if len(encoded.encode("utf-8")) > 100_000:
+        raise InsightError("structured_payload is too large (max 100000 bytes)")
+
+
 def _content_hash(
     *,
     subject_id: uuid.UUID,
@@ -166,6 +179,11 @@ def _content_hash(
     state: InsightState,
     version: int,
     identities: tuple[tuple[str, int], ...],
+    insight_type: str | None = None,
+    structured_payload: dict[str, object] | None = None,
+    producer_job_id: uuid.UUID | None = None,
+    dossier_version_id: uuid.UUID | None = None,
+    derivation_version: str | None = None,
 ) -> str:
     """Stable digest of *claim identity*, used to tell a retry from a collision.
 
@@ -188,6 +206,11 @@ def _content_hash(
         "state": state.value,
         "version": version,
         "sources": sorted([url, str(evidence_version)] for url, evidence_version in identities),
+        "insight_type": insight_type,
+        "structured_payload": structured_payload,
+        "producer_job_id": str(producer_job_id) if producer_job_id else None,
+        "dossier_version_id": str(dossier_version_id) if dossier_version_id else None,
+        "derivation_version": derivation_version,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -232,6 +255,11 @@ def create_insight(
     version: int = 1,
     idempotency_key: str | None = None,
     actor: str = INSIGHT_ACTOR,
+    insight_type: str | None = None,
+    structured_payload: dict[str, object] | None = None,
+    producer_job_id: uuid.UUID | None = None,
+    dossier_version_id: uuid.UUID | None = None,
+    derivation_version: str | None = None,
 ) -> Insight:
     """Store one claim and its evidence as an append-only packet.
 
@@ -255,6 +283,21 @@ def create_insight(
     if state is not InsightState.UNKNOWN and not items:
         raise InsightError("supported and conflicting insights require evidence")
     identities = _validate_packet(items)
+    _validate_structured_payload(structured_payload)
+    if (insight_type is None) != (structured_payload is None):
+        raise InsightError("insight_type and structured_payload must be supplied together")
+    clean_type = _required_text(insight_type, field="insight_type") if insight_type else None
+    clean_derivation = (
+        _required_text(derivation_version, field="derivation_version")
+        if derivation_version
+        else None
+    )
+    if clean_type is not None and (
+        producer_job_id is None or dossier_version_id is None or clean_derivation is None
+    ):
+        raise InsightError(
+            "structured insights require producer_job_id, dossier_version_id and derivation_version"
+        )
 
     subject = InsightSubject.COMPANY if company_id is not None else InsightSubject.CONTACT
     subject_id = company_id if company_id is not None else contact_id
@@ -267,6 +310,11 @@ def create_insight(
         state=state,
         version=version,
         identities=identities,
+        insight_type=clean_type,
+        structured_payload=structured_payload,
+        producer_job_id=producer_job_id,
+        dossier_version_id=dossier_version_id,
+        derivation_version=clean_derivation,
     )
     cleaned_key = (
         _required_text(idempotency_key, field="idempotency_key")
@@ -292,6 +340,11 @@ def create_insight(
         created_by=actor,
         idempotency_key=cleaned_key,
         content_hash=digest,
+        insight_type=clean_type,
+        structured_payload=structured_payload,
+        producer_job_id=producer_job_id,
+        dossier_version_id=dossier_version_id,
+        derivation_version=clean_derivation,
     )
     try:
         # A SAVEPOINT, so losing the race below rolls back this INSERT alone and
@@ -368,6 +421,22 @@ def is_personalization_eligible(session: Session, *, insight: Insight) -> bool:
 
     if insight.state is not InsightState.SUPPORTED:
         return False
+    if insight.insight_type == "employee_size":
+        payload = insight.structured_payload or {}
+        if payload.get("status") != "supported" or payload.get("temporal_status") != "current":
+            return False
+        if insight.company_id is None:
+            return False
+        current = session.scalars(
+            select(Insight)
+            .where(
+                Insight.company_id == insight.company_id,
+                Insight.insight_type == "employee_size",
+            )
+            .order_by(Insight.created_at.desc(), Insight.id.desc())
+        ).first()
+        if current is None or current.id != insight.id:
+            return False
     evidence = list(
         session.scalars(select(InsightEvidence).where(InsightEvidence.insight_id == insight.id))
     )

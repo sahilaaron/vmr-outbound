@@ -134,6 +134,12 @@ reconciled, and an unknown stays an explicit unknown rather than an absent row.
 Note the open question below: `version` records *that* a claim was restated but
 does not yet link versions or mark one current.
 
+INS-002 answers that question narrowly for Employee Size only. Typed Employee
+Size rows carry their producing Insights job, exact dossier, derivation version
+and structured payload. The latest append-only typed derivation is the current
+projection; older typed rows remain historical. Ordinary INS-001 claims retain
+their previous semantics and are not retrospectively classified.
+
 ## Trust boundary
 
 Everything in `insight_evidence` is **untrusted external text**. Captured
@@ -181,6 +187,33 @@ store every source on `insight_evidence`.
 The migration refuses to proceed if an existing insight does not already point
 to exactly one owner consistent with its declared subject. It does not guess
 whether an ambiguous claim belongs to a Company or a Contact.
+
+## Structured Employee Size contract (INS-002)
+
+Employee Size uses the shared `Insight` / `InsightEvidence` packet. The typed
+payload records exact or approximate count, lower/upper bounds, normalized band,
+source wording, evidence handles, observation date, derivation time/version,
+confidence, temporal status, public rationale, observations and conflicts.
+Historical rows are never edited or deleted.
+
+Taxonomy: `1_10`, `11_50`, `51_100`, `101_250`, `251_500`, `501_1000`,
+`1001_5000`, `5001_10000`, `10001_plus`, `unknown`.
+
+Only committed Research evidence about the subject Company is eligible. A
+complete handle must resolve to the exact Research job and include an HTTP(S)
+source, retrieval time, evidence summary, confidence and extraction method.
+Invalid or foreign handles settle no value. Revenue, funding, offices, traffic,
+customers, locations, market share and vague scale wording are never proxies.
+Parent/group/portfolio/subsidiary/office/customer/partner/contractor counts,
+planned hiring and layoffs are withheld unless later policy can represent their
+context without assigning it to the subject Company.
+
+Statuses are `supported`, `unresolved`, `conflicted`, `stale`, and `unavailable`.
+Equal-current incompatible sources are kept as a conflict and expose no settled
+downstream value. A clearly newer current observation may supersede explicitly
+historical evidence while retaining both. Personalization eligibility requires
+a supported current value, a settled non-unknown band, valid evidence, and the
+latest typed derivation. Email and Verification do not consume Employee Size.
 
 ## Open policy questions
 

@@ -36,12 +36,15 @@ def record_entry(
     result: str | None = None,
     retry_number: int = 0,
     campaign_id: uuid.UUID | None = None,
+    campaign_contact_id: uuid.UUID | None = None,
     contact_id: uuid.UUID | None = None,
     job_id: uuid.UUID | None = None,
     job_kind: str | None = None,
     request_ref: str | None = None,
     credits_remaining: int | None = None,
     reason: str | None = None,
+    origin: str = "customer_operation",
+    account_reference: str | None = None,
 ) -> UsageLedgerEntry:
     """Append one provider-neutral usage ledger entry (caller owns the transaction)."""
 
@@ -58,12 +61,15 @@ def record_entry(
         result=result,
         retry_number=retry_number,
         campaign_id=campaign_id,
+        campaign_contact_id=campaign_contact_id,
         contact_id=contact_id,
         job_id=job_id,
         job_kind=job_kind,
         request_ref=request_ref,
         credits_remaining=credits_remaining,
         reason=reason,
+        origin=origin,
+        account_reference=account_reference,
     )
     session.add(entry)
     session.flush()

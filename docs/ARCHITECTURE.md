@@ -39,6 +39,27 @@ The product has two server-rendered presentation layers over the same services a
 
 The customer interface is not a Workbench reskin. The two surfaces share domain services, not presentation code.
 
+The Admin Workbench also contains Agent Studio at `/admin/agents/studio`. Its
+common shell is a projection of the authoritative Agent registry, controls and
+durable queue. Agent-specific modules own their own typed configuration and
+preview contracts; Personalization Policy is intentionally not a universal
+Agent schema. See [AGENT_STUDIO.md](AGENT_STUDIO.md).
+
+The Capture module is an exact-job, read-only projection over the existing
+extension snapshot, import validation, promotion, suppression, Campaign filing
+and Campaign Contact source records. Because those authoritative paths are
+synchronous, they record a terminal Capture Agent Job rather than introducing a
+second Capture worker or queue. Its bounded versioned result pins historical
+decision facts and references; immutable source tables retain source evidence.
+Current Contact, merge, label, membership and suppression state is projected in
+a separate labelled section and never repairs missing execution history.
+
+The Company module is an exact-job read model over the existing Company Agent,
+append-only domain-decision ledger, capture evidence, Campaign policy and child
+Research job. Historical execution truth is pinned in the job; current capture,
+Contact/Company aggregate and Campaign state are separate projections. Studio
+does not invoke resolution or edit canonical records.
+
 ## Core entities
 
 ### Contact
@@ -70,6 +91,8 @@ Reusable grouping of Contacts. The extension may display Collections as Labels.
 ### Agent Job
 
 One resumable unit of work with stable identity, lease, attempts, structured inputs/results/errors and audit history.
+Synchronous Capture paths use the same envelope as a terminal execution record;
+that reporting use does not change pipeline order or create a Capture worker.
 
 ### Company dossier and evidence
 
@@ -130,15 +153,29 @@ The model may not:
 
 ## Email and Verification policy
 
-The Email Agent tries no more than three candidate formats:
+The Email Agent uses the active immutable Email pattern policy. Its seeded
+generic order begins with:
 
 1. `firstname.lastname`
 2. `firstname`
 3. `finitiallastname`
 
+The policy bounds candidate count, stops after the first accepted exact address,
+and may put learned Company-domain formats first. Employee size does not select
+or sequence formats. A pattern observation ranks candidates; only exact-address
+Verification can accept one.
+
 It enqueues one child Verification Agent Job at a time and stops immediately after the first verified result.
 
 Verification is the authority for exact-address provider truth. Live completion requires the feature switch, provider credentials and effective `{"live": true}` Agent configuration. Simulated evidence cannot complete a live Campaign stage.
+
+Verification traverses the active immutable provider waterfall inside one
+existing Verification Agent attempt. Provider adapters normalize their own
+responses into the shared decision contract; provider result strings never
+drive pipeline state directly. Usage entries identify provider, operation,
+origin (`customer_operation`, `admin_operation`, or `agent_studio`), and the
+persisted Campaign/Contact context available for the call. Sending remains
+disabled and unchanged.
 
 ## Control and execution model
 
@@ -198,6 +235,39 @@ The customer Review surface:
 - Suppression, identity, verification and human approval are deterministic authority.
 - Missing evidence remains missing; unknown is not false and provisional is not confirmed.
 - Historical jobs, evidence and draft versions remain readable after retries or regeneration.
+
+### Durable Insights derivation boundary
+
+The Insights Agent consumes only the exact committed Research execution pinned
+to its job. Its one existing bounded model call receives the dossier plus a
+catalog of opaque Research evidence handles and has no tools. The model may
+propose claims and Employee Size candidates, but deterministic application code
+validates every handle and owns numeric parsing, subject relevance, taxonomy,
+freshness, duplicate/conflict decisions and persistence.
+
+Structured Employee Size extends the shared append-only `Insight` record with a
+typed JSON payload and exact producing-job/dossier lineage. No mutable
+`Company.employee_size`, second evidence system, new Agent identifier, queue or
+pipeline stage is introduced. The current typed projection is computed from
+append-only derivations; conflicts and historical observations remain readable.
+Company Intelligence remains a separate bounded system and Email/Verification
+policy remains independent.
+
+### Company identity and domain boundary
+
+Identity owns person matching and merge/create/assign decisions. Company owns
+the Contact-to-Company edge, employer identity choice, canonical domain and the
+existing confirmed/provisional/unresolved gate. Research and Email consume that
+choice; neither may become the authority that selects it.
+
+Company executions reuse the permanent `Company` model, exact-domain adapter,
+`SalesNavCompanyEnrichment` candidate store and append-only
+`CompanyDomainResolution` ledger. The job result pins the decision ids and
+effective Campaign policy needed to explain that execution later. A report may
+also label unconfirmed stored candidates `provider_only`, but that display term
+does not change the three-state authoritative domain contract. Company
+Intelligence is a separate classification bounded context and is not part of
+identity or domain resolution.
 
 ## Current MVP boundary
 

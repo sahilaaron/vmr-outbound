@@ -1,6 +1,6 @@
 # Current MVP
 
-**Status date:** 30 July 2026  
+**Status date:** 2 August 2026
 **Authoritative delivery:** PR #232 merged; PR #233 is the customer-interface merge gate.
 
 ## MVP outcome
@@ -20,6 +20,7 @@ SalesHandy/provider submission, delivery events, replies, bounces, opt-outs, seq
 | `/` and `/app` | Customer-facing application and daily operating surface |
 | `/app/review` | Exact-version draft review, approve/discard and evidence inspection |
 | `/admin` | Operator/admin Workbench for low-level controls, jobs, retries and authoritative write paths |
+| `/admin/agents/studio` | Global Agent inspection plus Agent-specific Admin modules; never exposed in `/app` |
 
 The customer interface and Workbench share the existing service and model layers. They use separate routers, templates and stylesheets.
 
@@ -43,14 +44,14 @@ Capture
 
 | Agent | Current implementation | Status |
 | --- | --- | --- |
-| Capture | Existing contact-first capture and promotion path | Operational |
+| Capture | Existing intake/promotion paths plus durable exact-execution reporting | Operational; live report acceptance pending |
 | Identity | Shared Agent adapter over authoritative identity services | Operational |
-| Company | Shared Agent adapter over permanent Company/domain services | Operational |
+| Company | Exact permanent-Company linking, canonical-domain gates and durable execution lineage | Operational; live acceptance pending |
 | Research | Registered deterministic research workers | Operational; live acceptance pending |
 | Email | Deterministic candidate policy | Operational |
 | Verification | Durable exact-address verification using the existing MillionVerifier boundary | Operational; live authority required |
-| Insights | Claude CLI through the bounded thinking seam, `allowed_tools=()` | Operational; live acceptance pending |
-| Personalization | Claude CLI through the bounded thinking seam, `allowed_tools=()` | Operational; live acceptance pending |
+| Insights | One bounded no-tools thinking call plus deterministic evidence validation and Employee Size normalization | Operational; live acceptance pending |
+| Personalization | Claude CLI through the bounded thinking seam, `allowed_tools=()` and immutable Personalization Policy versions | Operational; live acceptance pending |
 | Sending | Contract only | Disabled; post-MVP |
 
 ## Research authority
@@ -65,6 +66,34 @@ It writes:
 - an operator-facing outcome derived from what the workers actually found.
 
 Research does not use a language model and does not silently rewrite canonical Company fields. Claude first enters the pipeline at Insights, after evidence has been persisted.
+
+Capture reuses the existing immutable LinkedIn snapshots, staged import rows,
+promotion decisions, suppression ledger and Campaign filing services. Future
+extension, import and manual/API outcomes pin a bounded historical projection in
+one terminal Capture Agent Job; no second Capture queue or workflow was added.
+Admin Studio separates captured execution values and exact Contact/Campaign
+Contact lineage from today's Contact, merge survivor, labels, memberships and
+suppression state. Older telemetry that was never stored remains explicitly
+partial or unavailable. Capture hands permanent-person work to Identity and
+captured employer evidence to Company without absorbing either authority.
+
+The Company Agent reuses the existing permanent Company, capture candidate and
+append-only domain-decision systems. New jobs durably pin the historical
+Company/domain, exact decision ids, effective provisional-domain policy and
+Research handoff. Admin Studio shows that execution separately from current
+capture and Company aggregate state. `confirmed`, `provisional`, `unresolved`
+and report-only `provider_only` remain distinct; unresolved blocks Research,
+while provisional may start Research and reaches later stages only when the
+Campaign's existing setting permits it. Company Intelligence remains outside
+this pipeline slice.
+
+Insights pins the exact Research job, raw submission and dossier it consumed,
+stores attributable claims through the shared evidence model, and derives an
+append-only structured Employee Size fact. Supported Employee Size uses fixed
+v1 bands from `1_10` through `10001_plus`; exact counts remain absent when only
+a range or approximation is supported. Conflicted, stale, unresolved and
+unavailable values are visible but ineligible downstream. Email candidate order
+and Verification waterfall behavior do not use Employee Size.
 
 ## Email and verification policy
 

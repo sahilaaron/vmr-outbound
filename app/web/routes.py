@@ -13,21 +13,29 @@ from __future__ import annotations
 
 import json
 import uuid
+from copy import deepcopy
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.core.config import Settings, get_settings
+from app.models.campaign import Campaign, CampaignContact
 from app.models.contact import Contact
 from app.models.contact_capture import ContactCaptureNote, ContactCaptureSubmission
+from app.models.email_verification_studio import (
+    EmailPatternPolicyVersion,
+    ProviderTestRun,
+    VerificationWaterfallPolicyVersion,
+)
 from app.models.enums import (
     AgentControlStatus,
     AgentIdentifier,
@@ -46,7 +54,18 @@ from app.models.enums import (
 )
 from app.models.linkedin_company import LinkedInCompanySnapshot
 from app.models.linkedin_profile import LinkedInProfileSnapshot
+from app.models.personalization_policy import PersonalizationPolicyVersion
+from app.models.verification_job import AgentJob
+from app.services import agent_studio as agent_studio_service
 from app.services import campaign_contacts, devtools, identity, workbench, workbench_agents
+from app.services.agent_studio.capture_report import DurableCaptureReportReader
+from app.services.agent_studio.company_report import DurableCompanyReportReader
+from app.services.agent_studio.email_verification_report import EmailVerificationReportReader
+from app.services.agent_studio.insights_report import DurableInsightsReportReader
+from app.services.agent_studio.research_report import (
+    DurableResearchReportReader,
+    ResearchReportReader,
+)
 from app.services.agents.registry import AGENT_SPECS
 from app.services.campaign_contacts import CampaignContactError
 from app.services.campaigns import (
@@ -79,6 +98,8 @@ from app.services.imports.importer import (
     run_import,
 )
 from app.services.imports.preview import preview_import, preview_pending_batch
+from app.services.personalization import generation as personalization_generation
+from app.services.personalization import policy as personalization_policy
 from app.services.resolution import pending as resolution_pending
 from app.services.resolution import service as resolution_service
 from app.services.seller import campaign_offerings as seller_campaign_offerings
@@ -88,11 +109,14 @@ from app.services.seller import readiness as seller_readiness
 from app.services.seller import records as seller_records
 from app.services.seller.common import OPERATOR_ACTOR, SellerKnowledgeError, parse_lines
 from app.services.thinking.claude_cli import ClaudeCliThinker
+from app.services.thinking.contracts import ThinkingError
 from app.services.verification import console as verification_console
 from app.services.verification import queue as verification_queue
 from app.services.verification import service as verification_service
+from app.services.verification import studio as verification_studio
 from app.services.verification import usage as verification_usage
 from app.services.verification.provider import VerificationProvider
+from app.services.verification.provider_registry import PROVIDERS
 from app.services.workbench_agents import views as workbench_views
 
 router = APIRouter(include_in_schema=False)
@@ -3875,3 +3899,815 @@ def _make_unavailable_route(slug: str, title: str) -> None:
 
 for _slug, _title in _UNAVAILABLE_SECTIONS.items():
     _make_unavailable_route(_slug, _title)
+
+
+# --- Admin Agent Studio ------------------------------------------------------
+#
+# Agent Studio is mounted only inside this already local-only Admin router.  It
+# reuses the Phase 2 registry, control reader and job queue; no execution switch
+# or Campaign override is implemented here.
+
+
+def _studio_campaign_id(request: Request) -> uuid.UUID | None:
+    return _parse_uuid(request.query_params.get("campaign"))
+
+
+def _campaign_contact_options(db: Session) -> list[dict[str, Any]]:
+    rows = db.execute(
+        select(CampaignContact, Campaign, Contact)
+        .join(Campaign, Campaign.id == CampaignContact.campaign_id)
+        .join(Contact, Contact.id == CampaignContact.contact_id)
+        .order_by(Campaign.name, Contact.last_name, Contact.first_name)
+        .limit(250)
+    ).all()
+    return [
+        {"membership": membership, "campaign": campaign, "contact": contact}
+        for membership, campaign, contact in rows
+    ]
+
+
+@router.get("/admin/agents/studio", response_class=HTMLResponse)
+def agent_studio_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    if not _agent_workbench_available():
+        return _agent_workbench_unavailable(request, db)
+    return _render(
+        request,
+        db,
+        "agent_studio.html",
+        {
+            "studio": agent_studio_service.load_studio(
+                db, campaign_id=_studio_campaign_id(request)
+            ),
+            "active_nav": "agent-studio",
+            "page_title": "Agent Studio",
+        },
+    )
+
+
+def _temperament_values(
+    config: personalization_policy.PolicyConfig | None,
+) -> dict[str, int]:
+    if config is None:
+        return {}
+    fields = (
+        "company_context_usage",
+        "question_first_preference",
+        "commercial_directness",
+        "personalization_depth",
+        "evidence_confidence_tolerance",
+        "role_led_emphasis",
+        "seller_introduction_timing",
+        "assertive_tone",
+    )
+    return {field: int(getattr(config.temperament, field)) for field in fields}
+
+
+def _policy_comparison(
+    left: personalization_policy.PolicyConfig,
+    right: personalization_policy.PolicyConfig,
+) -> dict[str, Any]:
+    left_standards = {item.identifier: item for item in left.standards}
+    right_standards = {item.identifier: item for item in right.standards}
+    standard_changes = {
+        identifier: {
+            "from": {
+                "strength": right_standards[identifier].strength.value,
+                "state": right_standards[identifier].state.value,
+                "wording": right_standards[identifier].wording,
+            },
+            "to": {
+                "strength": left_standards[identifier].strength.value,
+                "state": left_standards[identifier].state.value,
+                "wording": left_standards[identifier].wording,
+            },
+        }
+        for identifier in left_standards.keys() & right_standards.keys()
+        if left_standards[identifier] != right_standards[identifier]
+    }
+    left_temperament = _temperament_values(left)
+    right_temperament = _temperament_values(right)
+    temperament_changes = {
+        key: {"from": right_temperament[key], "to": left_temperament[key]}
+        for key in left_temperament
+        if left_temperament[key] != right_temperament[key]
+    }
+    left_strategies = {item.identifier: item.enabled for item in left.strategies}
+    right_strategies = {item.identifier: item.enabled for item in right.strategies}
+    strategy_changes = {
+        key: {"from": right_strategies.get(key), "to": left_strategies.get(key)}
+        for key in left_strategies.keys() | right_strategies.keys()
+        if left_strategies.get(key) != right_strategies.get(key)
+    }
+    return {
+        "standards": standard_changes,
+        "temperament": temperament_changes,
+        "strategies": strategy_changes,
+        "examples": {"from": len(right.examples), "to": len(left.examples)},
+        "maximum_evidence_age_days": {
+            "from": right.evidence.maximum_age_days,
+            "to": left.evidence.maximum_age_days,
+        },
+    }
+
+
+def _personalization_context(
+    request: Request,
+    db: Session,
+    *,
+    preview: personalization_generation.GeneratedPersonalization | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    versions = personalization_policy.list_policy_versions(db)
+    active = personalization_policy.active_policy(db)
+    requested_id = _parse_uuid(request.query_params.get("version"))
+    selected = db.get(PersonalizationPolicyVersion, requested_id) if requested_id else active
+    if selected is None and versions:
+        selected = versions[0]
+    selected_config = (
+        personalization_policy.PolicyConfig.from_dict(dict(selected.configuration))
+        if selected
+        else None
+    )
+    comparison = None
+    compare_id = _parse_uuid(request.query_params.get("compare"))
+    compared = db.get(PersonalizationPolicyVersion, compare_id) if compare_id else None
+    if selected_config and compared:
+        comparison = _policy_comparison(
+            selected_config,
+            personalization_policy.PolicyConfig.from_dict(dict(compared.configuration)),
+        )
+    return {
+        "versions": versions,
+        "activation_history": personalization_policy.activation_history(db),
+        "active_policy": active,
+        "selected_policy": selected,
+        "selected_config": selected_config,
+        "temperament_values": _temperament_values(selected_config),
+        "campaign_contacts": _campaign_contact_options(db),
+        "preview": preview,
+        "comparison": comparison,
+        "flash_err": error or request.query_params.get("err"),
+        "active_nav": "agent-studio",
+        "page_title": "Personalization Policy Studio",
+    }
+
+
+@router.get("/admin/agents/studio/personalization", response_class=HTMLResponse)
+def personalization_policy_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    if not _agent_workbench_available():
+        return _agent_workbench_unavailable(request, db)
+    return _render(
+        request,
+        db,
+        "personalization_policy_studio.html",
+        _personalization_context(request, db),
+    )
+
+
+def _parse_examples(raw: str) -> list[dict[str, Any]]:
+    examples: list[dict[str, Any]] = []
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        parts = [part.strip() for part in line.split("|", 2)]
+        if len(parts) < 2:
+            raise personalization_policy.PolicyError(
+                "Every example line must use: category | text | optional note."
+            )
+        examples.append(
+            {
+                "category": parts[0],
+                "content": parts[1],
+                "note": parts[2] if len(parts) == 3 and parts[2] else None,
+            }
+        )
+    return examples
+
+
+@router.post("/admin/agents/studio/personalization/policies")
+async def personalization_policy_create(
+    request: Request, db: Session = Depends(get_db)
+) -> Response:
+    if not _agent_workbench_available():
+        return _redirect("/admin", err="Agent Studio is disabled.")
+    form = await request.form()
+    base_id = _parse_uuid(str(form.get("based_on_version_id", "")))
+    base = db.get(PersonalizationPolicyVersion, base_id) if base_id else None
+    if base is None:
+        return _redirect(
+            "/admin/agents/studio/personalization", err="Choose an existing base version."
+        )
+    raw = deepcopy(dict(base.configuration))
+    wording_revision = str(form.get("edit_mode", "")) == "wording"
+    for standard in raw.get("standards", []):
+        if not isinstance(standard, dict) or not isinstance(standard.get("id"), str):
+            continue
+        identifier = standard["id"]
+        if wording_revision:
+            standard["description"] = str(
+                form.get(f"standard_{identifier}_description", standard.get("description", ""))
+            )
+            standard["wording"] = str(
+                form.get(f"standard_{identifier}_wording", standard.get("wording", ""))
+            )
+            continue
+        standard["strength"] = str(
+            form.get(f"standard_{identifier}_strength", standard.get("strength", "required"))
+        )
+        standard["state"] = (
+            "enabled"
+            if identifier in personalization_policy.CORE_STANDARD_IDS
+            or f"standard_{identifier}_enabled" in form
+            else "unavailable"
+        )
+    if not wording_revision:
+        for strategy in raw.get("strategies", []):
+            if isinstance(strategy, dict) and isinstance(strategy.get("id"), str):
+                strategy["enabled"] = f"strategy_{strategy['id']}_enabled" in form
+        temperament = raw.get("temperament")
+        if isinstance(temperament, dict):
+            for field in tuple(temperament):
+                try:
+                    temperament[field] = int(
+                        str(form.get(f"temperament_{field}", temperament[field]))
+                    )
+                except ValueError:
+                    temperament[field] = -1
+        try:
+            age = int(str(form.get("maximum_age_days", "365")))
+        except ValueError:
+            age = -1
+        raw["evidence"] = {"maximum_age_days": age}
+    try:
+        if not wording_revision:
+            raw["examples"] = _parse_examples(str(form.get("examples", "")))
+        config = personalization_policy.PolicyConfig.from_dict(raw)
+        version = personalization_policy.create_policy_version(
+            db,
+            configuration=config,
+            name=str(form.get("name", "")),
+            actor=OPERATOR_ACTOR,
+            based_on_version_id=base.id,
+            change_note=str(form.get("change_note", "")),
+        )
+    except personalization_policy.PolicyError as exc:
+        db.rollback()
+        return _redirect("/admin/agents/studio/personalization", err=str(exc))
+    db.commit()
+    return _redirect(
+        f"/admin/agents/studio/personalization?version={version.id}",
+        ok=f"Policy v{version.version_number} saved as an inactive immutable version.",
+    )
+
+
+@router.post("/admin/agents/studio/personalization/policies/{policy_version_id}/activate")
+async def personalization_policy_activate(
+    request: Request, policy_version_id: str, db: Session = Depends(get_db)
+) -> Response:
+    if not _agent_workbench_available():
+        return _redirect("/admin", err="Agent Studio is disabled.")
+    parsed = _parse_uuid(policy_version_id)
+    if parsed is None:
+        return _redirect("/admin/agents/studio/personalization", err="Invalid policy version.")
+    form = await request.form()
+    try:
+        activation = personalization_policy.activate_policy(
+            db,
+            policy_version_id=parsed,
+            actor=OPERATOR_ACTOR,
+            reason=str(form.get("reason", "")) or None,
+        )
+    except personalization_policy.PolicyError as exc:
+        db.rollback()
+        return _redirect("/admin/agents/studio/personalization", err=str(exc))
+    db.commit()
+    version = db.get(PersonalizationPolicyVersion, activation.policy_version_id)
+    return _redirect(
+        f"/admin/agents/studio/personalization?version={parsed}",
+        ok=f"Policy v{version.version_number if version else '?'} is active.",
+    )
+
+
+def _personalization_thinker() -> ClaudeCliThinker:
+    return ClaudeCliThinker(settings=get_settings())
+
+
+@router.post("/admin/agents/studio/personalization/preview", response_class=HTMLResponse)
+async def personalization_preview(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    if not _agent_workbench_available():
+        return _agent_workbench_unavailable(request, db)
+    form = await request.form()
+    membership_id = _parse_uuid(str(form.get("campaign_contact_id", "")))
+    policy_id = _parse_uuid(str(form.get("policy_version_id", "")))
+    membership = db.get(CampaignContact, membership_id) if membership_id else None
+    policy = db.get(PersonalizationPolicyVersion, policy_id) if policy_id else None
+    generated = None
+    error = None
+    if membership is None or policy is None:
+        error = "Choose a persisted Campaign Contact and policy version."
+    else:
+        try:
+            generated = personalization_generation.generate(
+                db,
+                membership=membership,
+                policy=policy,
+                thinker=_personalization_thinker(),
+            )
+        except (personalization_generation.PreviewError, ThinkingError) as exc:
+            error = str(exc)
+    # Intentionally no commit. ``generate`` is read-only and no route action
+    # creates a job, pipeline event, DraftVersion, approval or send.
+    return _render(
+        request,
+        db,
+        "personalization_policy_studio.html",
+        _personalization_context(request, db, preview=generated, error=error),
+    )
+
+
+def _research_report_reader(db: Session) -> ResearchReportReader:
+    return DurableResearchReportReader(db)
+
+
+def _capture_report_reader(db: Session) -> DurableCaptureReportReader:
+    return DurableCaptureReportReader(db)
+
+
+def _company_report_reader(db: Session) -> DurableCompanyReportReader:
+    return DurableCompanyReportReader(db)
+
+
+def _insights_report_reader(db: Session) -> DurableInsightsReportReader:
+    return DurableInsightsReportReader(db)
+
+
+def _email_verification_context(
+    request: Request,
+    db: Session,
+    *,
+    agent_id: AgentIdentifier,
+    test_run: ProviderTestRun | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    jobs = list(
+        db.scalars(
+            select(AgentJob)
+            .where(AgentJob.agent_id == agent_id)
+            .order_by(AgentJob.created_at.desc())
+            .limit(100)
+        ).all()
+    )
+    selected_id = _parse_uuid(request.query_params.get("job"))
+    report = EmailVerificationReportReader(db).read(selected_id, agent_id) if selected_id else None
+    context: dict[str, Any] = {
+        "agent_id": agent_id,
+        "jobs": jobs,
+        "report": report,
+        "test_run": test_run,
+        "flash_err": error or request.query_params.get("err"),
+        "active_nav": "agent-studio",
+        "page_title": f"{agent_id.value.title()} Agent Studio",
+    }
+    if agent_id is AgentIdentifier.VERIFICATION:
+        context.update(
+            {
+                "provider_cards": verification_studio.provider_cards(db),
+                "provider_usage": verification_studio.provider_usage_summaries(db, get_settings()),
+                "waterfall": verification_studio.active_waterfall(db),
+                "waterfall_versions": list(
+                    db.scalars(
+                        select(VerificationWaterfallPolicyVersion).order_by(
+                            VerificationWaterfallPolicyVersion.version_number.desc()
+                        )
+                    ).all()
+                ),
+                "usage_origins": verification_studio.usage_by_origin(db),
+                "providers": PROVIDERS,
+            }
+        )
+    else:
+        context.update(
+            {
+                "pattern_policy": verification_studio.active_pattern_policy(db),
+                "pattern_versions": list(
+                    db.scalars(
+                        select(EmailPatternPolicyVersion).order_by(
+                            EmailPatternPolicyVersion.version_number.desc()
+                        )
+                    ).all()
+                ),
+                "allowed_patterns": verification_studio.ALLOWED_PATTERNS,
+            }
+        )
+    return context
+
+
+@router.get("/admin/agents/studio/email", response_class=HTMLResponse)
+def email_agent_studio_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    if not _agent_workbench_available():
+        return _agent_workbench_unavailable(request, db)
+    return _render(
+        request,
+        db,
+        "email_agent_studio.html",
+        _email_verification_context(request, db, agent_id=AgentIdentifier.EMAIL),
+    )
+
+
+@router.get("/admin/agents/studio/verification", response_class=HTMLResponse)
+def verification_agent_studio_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    if not _agent_workbench_available():
+        return _agent_workbench_unavailable(request, db)
+    return _render(
+        request,
+        db,
+        "verification_agent_studio.html",
+        _email_verification_context(request, db, agent_id=AgentIdentifier.VERIFICATION),
+    )
+
+
+@router.post("/admin/agents/studio/verification/credentials/{provider_id}")
+async def verification_credential_rotate(
+    request: Request, provider_id: str, db: Session = Depends(get_db)
+) -> Response:
+    if not _agent_workbench_available() or provider_id not in PROVIDERS:
+        return _redirect("/admin/agents/studio/verification", err="Provider unavailable.")
+    form = await request.form()
+    try:
+        verification_studio.rotate_credential(
+            db,
+            provider_id=provider_id,
+            secret=str(form.get("secret", "")),
+            label=str(form.get("label", "")),
+            actor=OPERATOR_ACTOR,
+            reason=str(form.get("reason", "")) or None,
+            settings=get_settings(),
+        )
+        db.commit()
+    except verification_studio.StudioConfigurationError as exc:
+        db.rollback()
+        return _redirect("/admin/agents/studio/verification", err=str(exc))
+    return _redirect(
+        "/admin/agents/studio/verification",
+        ok=(
+            f"{PROVIDERS[provider_id].display_name} credential rotated; "
+            "its value will not be shown."
+        ),
+    )
+
+
+@router.post("/admin/agents/studio/verification/test", response_class=HTMLResponse)
+async def verification_provider_test(
+    request: Request, db: Session = Depends(get_db)
+) -> HTMLResponse:
+    if not _agent_workbench_available():
+        return _agent_workbench_unavailable(request, db)
+    form = await request.form()
+    run = None
+    error = None
+    try:
+        run = verification_studio.provider_test(
+            db,
+            provider_id=str(form.get("provider_id", "")),
+            email=str(form.get("email", "")),
+            live=str(form.get("mode", "simulated")) == "live",
+            actor=OPERATOR_ACTOR,
+            settings=get_settings(),
+        )
+        db.commit()
+    except verification_studio.StudioConfigurationError as exc:
+        db.rollback()
+        error = str(exc)
+    return _render(
+        request,
+        db,
+        "verification_agent_studio.html",
+        _email_verification_context(
+            request, db, agent_id=AgentIdentifier.VERIFICATION, test_run=run, error=error
+        ),
+    )
+
+
+@router.post("/admin/agents/studio/verification/waterfalls")
+async def verification_waterfall_create(
+    request: Request, db: Session = Depends(get_db)
+) -> Response:
+    form = await request.form()
+    order = [
+        item.strip() for item in str(form.get("provider_order", "")).split(",") if item.strip()
+    ]
+    try:
+        row = verification_studio.create_waterfall_version(
+            db,
+            configuration={"providers": [{"id": item, "enabled": True} for item in order]},
+            name=str(form.get("name", "")),
+            actor=OPERATOR_ACTOR,
+            based_on_version_id=_parse_uuid(str(form.get("based_on_version_id", ""))),
+            change_note=str(form.get("change_note", "")) or None,
+        )
+        db.commit()
+    except verification_studio.StudioConfigurationError as exc:
+        db.rollback()
+        return _redirect("/admin/agents/studio/verification", err=str(exc))
+    return _redirect(
+        "/admin/agents/studio/verification", ok=f"Waterfall v{row.version_number} saved inactive."
+    )
+
+
+@router.post("/admin/agents/studio/verification/waterfalls/{policy_id}/activate")
+async def verification_waterfall_activate(
+    request: Request, policy_id: str, db: Session = Depends(get_db)
+) -> Response:
+    parsed = _parse_uuid(policy_id)
+    if parsed is None:
+        return _redirect("/admin/agents/studio/verification", err="Invalid policy version.")
+    form = await request.form()
+    try:
+        verification_studio.activate_waterfall(
+            db,
+            policy_version_id=parsed,
+            actor=OPERATOR_ACTOR,
+            reason=str(form.get("reason", "")) or None,
+        )
+        db.commit()
+    except verification_studio.StudioConfigurationError as exc:
+        db.rollback()
+        return _redirect("/admin/agents/studio/verification", err=str(exc))
+    return _redirect("/admin/agents/studio/verification", ok="Waterfall policy activated.")
+
+
+@router.post("/admin/agents/studio/email/pattern-policies")
+async def email_pattern_policy_create(request: Request, db: Session = Depends(get_db)) -> Response:
+    form = await request.form()
+    order = [item.strip() for item in str(form.get("pattern_order", "")).split(",") if item.strip()]
+    try:
+        maximum = int(str(form.get("max_candidates", "8")))
+    except ValueError:
+        maximum = -1
+    try:
+        row = verification_studio.create_pattern_version(
+            db,
+            configuration={
+                "patterns": [{"id": item, "enabled": True} for item in order],
+                "learned_formats_first": "learned_formats_first" in form,
+                "max_candidates": maximum,
+            },
+            name=str(form.get("name", "")),
+            actor=OPERATOR_ACTOR,
+            based_on_version_id=_parse_uuid(str(form.get("based_on_version_id", ""))),
+            change_note=str(form.get("change_note", "")) or None,
+        )
+        db.commit()
+    except verification_studio.StudioConfigurationError as exc:
+        db.rollback()
+        return _redirect("/admin/agents/studio/email", err=str(exc))
+    return _redirect(
+        "/admin/agents/studio/email",
+        ok=f"Email pattern policy v{row.version_number} saved inactive.",
+    )
+
+
+@router.post("/admin/agents/studio/email/pattern-policies/{policy_id}/activate")
+async def email_pattern_policy_activate(
+    request: Request, policy_id: str, db: Session = Depends(get_db)
+) -> Response:
+    parsed = _parse_uuid(policy_id)
+    if parsed is None:
+        return _redirect("/admin/agents/studio/email", err="Invalid policy version.")
+    form = await request.form()
+    try:
+        verification_studio.activate_pattern_policy(
+            db,
+            policy_version_id=parsed,
+            actor=OPERATOR_ACTOR,
+            reason=str(form.get("reason", "")) or None,
+        )
+        db.commit()
+    except verification_studio.StudioConfigurationError as exc:
+        db.rollback()
+        return _redirect("/admin/agents/studio/email", err=str(exc))
+    return _redirect("/admin/agents/studio/email", ok="Email pattern policy activated.")
+
+
+def _agent_execution_report_response(
+    job_id: str, expected: AgentIdentifier, db: Session
+) -> JSONResponse:
+    if not _agent_workbench_available():
+        return JSONResponse(status_code=404, content={"detail": "Not found."})
+    parsed = _parse_uuid(job_id)
+    report = EmailVerificationReportReader(db).read(parsed, expected) if parsed else None
+    if report is None:
+        return JSONResponse(status_code=404, content={"detail": "Not found."})
+    return JSONResponse(content=jsonable_encoder(report))
+
+
+@router.get("/api/admin/agent-studio/email/jobs/{job_id}/report")
+def email_agent_report_api(job_id: str, db: Session = Depends(get_db)) -> JSONResponse:
+    return _agent_execution_report_response(job_id, AgentIdentifier.EMAIL, db)
+
+
+@router.get("/api/admin/agent-studio/verification/jobs/{job_id}/report")
+def verification_agent_report_api(job_id: str, db: Session = Depends(get_db)) -> JSONResponse:
+    return _agent_execution_report_response(job_id, AgentIdentifier.VERIFICATION, db)
+
+
+@router.get("/admin/agents/studio/research", response_class=HTMLResponse)
+def research_agent_report_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    if not _agent_workbench_available():
+        return _agent_workbench_unavailable(request, db)
+    selected = _parse_uuid(request.query_params.get("campaign_contact"))
+    report = _research_report_reader(db).read(selected) if selected else None
+    if selected and report is None:
+        return _not_found(request, db, "That Campaign Contact does not exist.")
+    return _render(
+        request,
+        db,
+        "research_agent_report.html",
+        {
+            "report": report,
+            "campaign_contacts": _campaign_contact_options(db),
+            "active_nav": "agent-studio",
+            "page_title": "Company Research report",
+        },
+    )
+
+
+@router.get("/api/admin/agent-studio/research/jobs/{agent_job_id}/report")
+def research_agent_report_api(agent_job_id: str, db: Session = Depends(get_db)) -> JSONResponse:
+    """Return the exact typed report used by the Admin HTML surface.
+
+    This router is mounted only with the local-only operator Workbench.  A
+    missing, malformed, non-Research or cross-owner job receives the same
+    generic response so the endpoint never leaks another Agent's existence.
+    """
+
+    if not _agent_workbench_available():
+        return JSONResponse(status_code=404, content={"detail": "Not found."})
+    parsed = _parse_uuid(agent_job_id)
+    report = _research_report_reader(db).read_job(parsed) if parsed else None
+    if report is None:
+        return JSONResponse(status_code=404, content={"detail": "Not found."})
+    return JSONResponse(content=jsonable_encoder(report))
+
+
+@router.get("/admin/agents/studio/capture", response_class=HTMLResponse)
+def capture_agent_report_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    if not _agent_workbench_available():
+        return _agent_workbench_unavailable(request, db)
+    raw_selected = request.query_params.get("job")
+    selected = _parse_uuid(raw_selected)
+    if raw_selected and selected is None:
+        return _not_found(request, db, "That Capture report is unavailable.")
+    reader = _capture_report_reader(db)
+    report = reader.read_job(selected) if selected else None
+    if selected and report is None:
+        return _not_found(request, db, "That Capture report is unavailable.")
+    studio = agent_studio_service.load_studio(db, campaign_id=_studio_campaign_id(request))
+    item = next(entry for entry in studio.agents if entry.card.agent_id is AgentIdentifier.CAPTURE)
+    recent_jobs = db.scalars(
+        select(AgentJob)
+        .where(AgentJob.agent_id == AgentIdentifier.CAPTURE)
+        .order_by(AgentJob.created_at.desc(), AgentJob.id.desc())
+        .limit(100)
+    ).all()
+    reports = {job.id: reader.read_job(job.id) for job in recent_jobs[:25]}
+    return _render(
+        request,
+        db,
+        "capture_agent_studio.html",
+        {
+            "item": item,
+            "jobs": recent_jobs,
+            "reports": reports,
+            "report": report,
+            "active_nav": "agent-studio",
+            "page_title": "Capture Agent Studio",
+        },
+    )
+
+
+@router.get("/api/admin/agent-studio/capture/jobs/{agent_job_id}/report")
+def capture_agent_report_api(agent_job_id: str, db: Session = Depends(get_db)) -> JSONResponse:
+    """Return the shared exact-job Capture report, or one generic safe 404."""
+
+    if not _agent_workbench_available():
+        return JSONResponse(status_code=404, content={"detail": "Not found."})
+    parsed = _parse_uuid(agent_job_id)
+    report = _capture_report_reader(db).read_job(parsed) if parsed else None
+    if report is None:
+        return JSONResponse(status_code=404, content={"detail": "Not found."})
+    return JSONResponse(content=jsonable_encoder(report))
+
+
+@router.get("/admin/agents/studio/company", response_class=HTMLResponse)
+def company_agent_report_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    if not _agent_workbench_available():
+        return _agent_workbench_unavailable(request, db)
+    raw_selected = request.query_params.get("job")
+    selected = _parse_uuid(raw_selected)
+    if raw_selected and selected is None:
+        return _not_found(request, db, "That Company report is unavailable.")
+    report = _company_report_reader(db).read_job(selected) if selected else None
+    if selected and report is None:
+        return _not_found(request, db, "That Company report is unavailable.")
+    studio = agent_studio_service.load_studio(db, campaign_id=_studio_campaign_id(request))
+    item = next(entry for entry in studio.agents if entry.card.agent_id is AgentIdentifier.COMPANY)
+    recent_jobs = db.scalars(
+        select(AgentJob)
+        .where(AgentJob.agent_id == AgentIdentifier.COMPANY)
+        .order_by(AgentJob.created_at.desc(), AgentJob.id.desc())
+        .limit(100)
+    ).all()
+    reports = {job.id: _company_report_reader(db).read_job(job.id) for job in recent_jobs[:25]}
+    return _render(
+        request,
+        db,
+        "company_agent_studio.html",
+        {
+            "item": item,
+            "jobs": recent_jobs,
+            "reports": reports,
+            "report": report,
+            "active_nav": "agent-studio",
+            "page_title": "Company Agent Studio",
+        },
+    )
+
+
+@router.get("/api/admin/agent-studio/company/jobs/{agent_job_id}/report")
+def company_agent_report_api(agent_job_id: str, db: Session = Depends(get_db)) -> JSONResponse:
+    """Return the shared exact-job Company report, or one generic safe 404."""
+
+    if not _agent_workbench_available():
+        return JSONResponse(status_code=404, content={"detail": "Not found."})
+    parsed = _parse_uuid(agent_job_id)
+    report = _company_report_reader(db).read_job(parsed) if parsed else None
+    if report is None:
+        return JSONResponse(status_code=404, content={"detail": "Not found."})
+    return JSONResponse(content=jsonable_encoder(report))
+
+
+@router.get("/admin/agents/studio/insights", response_class=HTMLResponse)
+def insights_agent_report_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    if not _agent_workbench_available():
+        return _agent_workbench_unavailable(request, db)
+    selected = _parse_uuid(request.query_params.get("job"))
+    report = _insights_report_reader(db).read_job(selected) if selected else None
+    if selected and report is None:
+        return _not_found(request, db, "That Insights report is unavailable.")
+    studio = agent_studio_service.load_studio(db, campaign_id=_studio_campaign_id(request))
+    item = next(entry for entry in studio.agents if entry.card.agent_id is AgentIdentifier.INSIGHTS)
+    jobs = db.scalars(
+        select(AgentJob)
+        .where(AgentJob.agent_id == AgentIdentifier.INSIGHTS)
+        .order_by(AgentJob.created_at.desc(), AgentJob.id.desc())
+        .limit(100)
+    ).all()
+    return _render(
+        request,
+        db,
+        "insights_agent_studio.html",
+        {
+            "item": item,
+            "jobs": jobs,
+            "report": report,
+            "active_nav": "agent-studio",
+            "page_title": "Insights Agent Studio",
+        },
+    )
+
+
+@router.get("/api/admin/agent-studio/insights/jobs/{agent_job_id}/report")
+def insights_agent_report_api(agent_job_id: str, db: Session = Depends(get_db)) -> JSONResponse:
+    """Return the same exact-job read model as the operator HTML surface."""
+
+    if not _agent_workbench_available():
+        return JSONResponse(status_code=404, content={"detail": "Not found."})
+    parsed = _parse_uuid(agent_job_id)
+    report = _insights_report_reader(db).read_job(parsed) if parsed else None
+    if report is None:
+        return JSONResponse(status_code=404, content={"detail": "Not found."})
+    return JSONResponse(content=jsonable_encoder(report))
+
+
+@router.get("/admin/agents/studio/{agent_id}", response_class=HTMLResponse)
+def agent_studio_agent_page(
+    request: Request, agent_id: str, db: Session = Depends(get_db)
+) -> HTMLResponse:
+    if not _agent_workbench_available():
+        return _agent_workbench_unavailable(request, db)
+    parsed = _parse_agent_id(agent_id)
+    if parsed is None:
+        return _not_found(request, db, "That Agent is not registered.")
+    studio = agent_studio_service.load_studio(db, campaign_id=_studio_campaign_id(request))
+    item = next(entry for entry in studio.agents if entry.card.agent_id is parsed)
+    return _render(
+        request,
+        db,
+        "agent_studio_agent.html",
+        {
+            "item": item,
+            "active_nav": "agent-studio",
+            "page_title": item.card.display_name,
+        },
+    )
