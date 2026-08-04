@@ -57,6 +57,16 @@ CLAIMABLE_STATUSES: tuple[IntelligenceJobStatus, ...] = (
     IntelligenceJobStatus.RETRY_SCHEDULED,
 )
 
+#: Statuses a job can end in having produced no intelligence. These are finished
+#: and unclaimable, so a repeat request is a genuinely new intent rather than the
+#: duplicate press the idempotency key exists to absorb. ``SUCCEEDED`` is
+#: deliberately absent: that evidence has been answered and must not be re-paid
+#: for.
+TERMINAL_UNSUCCESSFUL_JOB_STATUSES: tuple[IntelligenceJobStatus, ...] = (
+    IntelligenceJobStatus.FAILED,
+    IntelligenceJobStatus.CANCELLED,
+)
+
 DEFAULT_MAX_ATTEMPTS = 3
 RETRY_BASE_SECONDS = 60.0
 RETRY_CAP_SECONDS = 900.0
@@ -116,6 +126,45 @@ def enqueue(
         select(CompanyIntelligenceJob).where(CompanyIntelligenceJob.idempotency_key == key)
     ).one_or_none()
     if existing is not None:
+        # A job that ended without producing anything is finished, not queued.
+        # Returning it unchanged made the one thing an operator can do about a
+        # failure -- press the button again -- permanently silent: the route
+        # reported "Already queued" about a row no worker would ever claim,
+        # because FAILED is not a claimable status. A non-retryable failure is
+        # ordinary (the CLI absent, or not yet authenticated), so this is the
+        # normal path after fixing the cause, not an edge case.
+        #
+        # Reviving in place keeps every guarantee that made this key
+        # unconditional: still one row per (company, input digest), so no
+        # duplicate row; still refused while a job is ACTIVE, so no concurrent
+        # duplicate spend; SUCCEEDED still short-circuits, so evidence already
+        # answered is never re-paid for. Only deliberate re-request revives
+        # dead work. The failure itself is not lost -- each attempt recorded an
+        # audit event when it happened.
+        if existing.status in TERMINAL_UNSUCCESSFUL_JOB_STATUSES:
+            existing.status = IntelligenceJobStatus.PENDING
+            existing.attempts = 0
+            existing.error = None
+            existing.error_class = None
+            existing.last_error = None
+            existing.lease_owner = None
+            existing.lease_expires_at = None
+            existing.finished_at = None
+            existing.next_run_at = available_at or _now()
+            if requested_by is not None:
+                existing.requested_by = requested_by
+            session.flush()
+            record_audit_event(
+                session,
+                actor=actor,
+                action="company_intelligence.job_requeued",
+                entity_type="company_intelligence_job",
+                entity_id=str(existing.id),
+                new_state=existing.status.value,
+                reason="a job that ended without producing intelligence was requeued",
+                context={"company_id": str(company.id), "requested_by": requested_by},
+            )
+            return existing, True
         return existing, False
 
     active = session.scalars(

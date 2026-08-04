@@ -49,6 +49,7 @@ from app.models.company_intelligence import (
 from app.models.enums import (
     IntelligenceDecisionAction,
     IntelligenceDimension,
+    IntelligenceJobStatus,
 )
 from app.services import identity
 from app.services.company_intelligence import backfill as ci_backfill
@@ -311,6 +312,12 @@ def company_intelligence_run(
     db.commit()
     if created:
         return _redirect(path, ok="Queued. A worker will classify this company.")
+    # "Already queued" was reported for every non-created outcome, including a
+    # job that had already finished. Say which of the two this is: an operator
+    # waiting for a queue that already emptied is the same wasted afternoon as
+    # one waiting for a queue that never moves.
+    if job.status is IntelligenceJobStatus.SUCCEEDED:
+        return _redirect(path, ok=f"Already classified under this exact evidence (job {job.id}).")
     return _redirect(path, ok=f"Already queued (job {job.id}).")
 
 

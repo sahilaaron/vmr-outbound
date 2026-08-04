@@ -271,6 +271,69 @@ def test_only_one_job_per_company_can_be_active(db_session: Session) -> None:
     assert second.id == first.id
 
 
+def test_a_failed_job_can_be_requeued_for_the_same_evidence(db_session: Session) -> None:
+    """A job that ended producing nothing is finished, not queued.
+
+    Regression for a UAT finding. The idempotency key matched regardless of
+    status, so after a non-retryable failure -- the CLI absent or not yet
+    authenticated, both ordinary -- pressing "Run classification" returned the
+    dead row and reported "Already queued". FAILED is not claimable, so no
+    worker would ever pick it up and the company was stuck permanently.
+    """
+
+    company = ready_company(db_session)
+    first, created = ci_jobs.enqueue(db_session, company=company, input_digest="abc")
+    assert created is True
+    ci_jobs.mark_failed(
+        db_session,
+        job=first,
+        code="thinking_unavailable",
+        message="The Claude CLI executable was not found on PATH.",
+        retryable=False,
+    )
+    assert first.status is IntelligenceJobStatus.FAILED
+    assert first.status not in ci_jobs.CLAIMABLE_STATUSES
+
+    revived, created_again = ci_jobs.enqueue(
+        db_session, company=company, input_digest="abc", requested_by="operator"
+    )
+    assert created_again is True, "a dead job must not absorb a fresh request"
+    assert revived.id == first.id, "reviving in place keeps one row per key"
+    assert revived.status is IntelligenceJobStatus.PENDING
+    assert revived.status in ci_jobs.CLAIMABLE_STATUSES
+    assert revived.attempts == 0
+    assert revived.error_class is None
+    assert revived.last_error is None
+    assert revived.finished_at is None
+
+    claimed = ci_jobs.claim_next(db_session, worker_id="worker-1", lease_seconds=60)
+    assert claimed is not None and claimed.id == first.id
+
+
+def test_a_succeeded_job_is_never_requeued_for_the_same_evidence(db_session: Session) -> None:
+    """Reviving dead work must not become re-paying for answered work."""
+
+    company = ready_company(db_session)
+    first, _ = ci_jobs.enqueue(db_session, company=company, input_digest="abc")
+    ci_jobs.mark_succeeded(db_session, job=first, result={"ok": True})
+
+    again, created = ci_jobs.enqueue(db_session, company=company, input_digest="abc")
+    assert created is False
+    assert again.id == first.id
+    assert again.status is IntelligenceJobStatus.SUCCEEDED
+
+
+def test_an_active_job_still_absorbs_a_duplicate_request(db_session: Session) -> None:
+    """The guarantee the idempotency key exists for is unchanged."""
+
+    company = ready_company(db_session)
+    first, _ = ci_jobs.enqueue(db_session, company=company, input_digest="abc")
+    again, created = ci_jobs.enqueue(db_session, company=company, input_digest="abc")
+    assert created is False
+    assert again.id == first.id
+    assert again.status is IntelligenceJobStatus.PENDING
+
+
 def test_a_finished_job_frees_the_company_for_new_work(db_session: Session) -> None:
     company = ready_company(db_session)
     first, _ = ci_jobs.enqueue(db_session, company=company, input_digest="abc")
