@@ -69,6 +69,10 @@ class SourcedFact:
     confidence: float
     excerpt: str | None = None
     published_at: datetime | None = None
+    #: The page or publication title, when the source states one. Optional
+    #: because a crawler frequently has only a URL, and an invented title would
+    #: be a fabricated piece of provenance on an otherwise honest record.
+    source_title: str | None = None
 
     def __post_init__(self) -> None:
         if not self.field.strip():
@@ -85,6 +89,8 @@ class SourcedFact:
             raise ValueError(f"fact value exceeds {MAX_VALUE_LENGTH} characters")
         if self.excerpt is not None and len(self.excerpt) > MAX_EXCERPT_LENGTH:
             raise ValueError(f"excerpt exceeds {MAX_EXCERPT_LENGTH} characters")
+        if self.source_title is not None and not self.source_title.strip():
+            raise ValueError("source_title must be omitted rather than blank")
 
 
 @dataclass(frozen=True)

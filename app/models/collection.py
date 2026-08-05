@@ -73,9 +73,15 @@ class CollectionMembership(Base):
     # synonym while new code uses ``collection_id``.
     __tablename__ = "contact_label_assignments"
     __table_args__ = (
+        # Bare name on purpose: the metadata naming convention prepends
+        # ``ck_<table>_``. Spelling the prefix here too produced
+        # ``ck_contact_label_assignments_ck_contact_label_assignments_anchor``,
+        # one character past PostgreSQL's 63-byte identifier limit, so the
+        # server stored a truncated, hash-suffixed name the metadata could
+        # never match. See migration ``b6d4e07a1f38``.
         CheckConstraint(
             "contact_id IS NOT NULL OR capture_id IS NOT NULL",
-            name="ck_contact_label_assignments_anchor",
+            name="anchor",
         ),
         Index(
             "uq_contact_label_assignments_contact",

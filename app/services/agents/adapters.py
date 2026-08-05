@@ -513,13 +513,14 @@ class ResearchAgentAdapter:
 
     Thin on purpose: the state machine in ``app.services.research.agent``
     owns the decision, and the worker registry owns which sources run. The
-    only logic here is the two framework-level gates -- the feature switch
+    only logic here is the framework-level gates -- the feature switches
     and the per-campaign ``live`` opt-in -- and translating the resulting
     step into the shared error vocabulary.
 
-    **This is the only Research implementation, and Research uses no language
-    model.** A second, model-based adapter used to live further down this file and
-    shadowed this one. Removing it is a decision, not a cleanup:
+    **This is the only Research implementation, and the deterministic worker is
+    always the first attempt.** A second, wholly model-based adapter used to live
+    further down this file and shadowed this one. Removing it was a decision, not
+    a cleanup, and the reasoning still holds:
 
     * Research's job is to *read pages and record what they said*, with a URL and a
       retrieval time on every fact. Every claim it stores has to be checkable
@@ -529,21 +530,39 @@ class ResearchAgentAdapter:
       chain exists to prevent.
     * The worker path writes all three artefacts the pipeline depends on: the raw
       worker payload verbatim, one versioned dossier interpreting it, and one
-      INS-001 insight per sourced fact. The model path wrote a submission and a
+      INS-001 insight per sourced fact. The old model path wrote a submission and a
       dossier but no insights, so the Insights Agent downstream had nothing sourced
       to gate on.
-    * The thinking seam is kept and still used where language understanding is the
-      actual work: Insights chooses among facts *already stored*, Personalization
-      writes copy from them. Both run with ``allowed_tools=()`` so neither can
-      reach outside and cite something this stage never gathered.
+
+    RES-002 adds a *fallback*, and the distinction from that removed adapter is
+    the whole design. It is a second attempt, never the first. It runs only after
+    the deterministic worker has already produced something unusable. It returns
+    the same ``SourcedFact`` values through the same validation, so a claim
+    without an openable source URL and the supporting text from that page is
+    discarded rather than stored. And it writes all three artefacts, under its own
+    worker name, so nothing downstream has to guess which source a fact came from.
+
+    The seam below is ``fallback_factory``, deliberately not ``thinker_factory``:
+    a thinker-shaped constructor here is what a *model-based Research
+    implementation* looks like, and ``tests/test_research_agent.py`` still asserts
+    against one. Insights and Personalization keep ``allowed_tools=()``; this
+    fallback is the one Research-side call that may reach the web, and it may
+    reach nothing else.
     """
 
     agent_id = AgentIdentifier.RESEARCH
 
-    def __init__(self, *, workers_factory: Callable[..., Any] | None = None) -> None:
-        # Injection seam for tests, mirroring VerificationAgentAdapter: the
-        # suite must be able to run the real worker loop with a fake source.
+    def __init__(
+        self,
+        *,
+        workers_factory: Callable[..., Any] | None = None,
+        fallback_factory: Callable[[Settings], Any] | None = None,
+    ) -> None:
+        # Injection seams for tests, mirroring VerificationAgentAdapter: the
+        # suite must be able to run the real loop with a fake source, and must
+        # never shell out to a real Claude CLI.
         self._workers_factory = workers_factory
+        self._fallback_factory = fallback_factory
 
     def execute(self, context: AgentExecutionContext) -> AgentExecutionResult:
         from app.services.research.agent import ResearchStepKind, execute_step
@@ -571,6 +590,7 @@ class ResearchAgentAdapter:
         except WorkerNotRegistered as exc:
             raise AgentTerminalError("worker_not_registered", str(exc)) from exc
 
+        fallback, fallback_unavailable_reason = self._fallback(settings, context)
         step = execute_step(
             context.session,
             job=context.job,
@@ -578,6 +598,8 @@ class ResearchAgentAdapter:
             workers=workers,
             options=context.config.get("worker_options") or {},
             actor=context.worker_id,
+            fallback=fallback,
+            fallback_unavailable_reason=fallback_unavailable_reason,
         )
 
         if step.kind is ResearchStepKind.COMPLETE:
@@ -605,6 +627,39 @@ class ResearchAgentAdapter:
             step.reason or "Company research produced no usable result.",
             detail=step.result,
             preserve_outcome=step.committed,
+        )
+
+    def _fallback(
+        self, settings: Settings, context: AgentExecutionContext
+    ) -> tuple[Any | None, str | None]:
+        """Build the Claude CLI fallback, or say plainly why there is none.
+
+        Two switches, and neither can be inverted by the other. The deployment
+        feature flag is authoritative: a Campaign cannot turn the fallback on
+        where the deployment has not enabled it. The Campaign's Agent config can
+        only turn it *off* — the same direction of travel every other control in
+        this file allows, because switching a capability off is always safe and
+        switching one on is a deployment decision.
+        """
+
+        if not settings.features.research_claude_fallback:
+            return None, (
+                "The Claude research fallback is switched off for this deployment "
+                "(FEATURES__RESEARCH_CLAUDE_FALLBACK)."
+            )
+        if context.config.get("claude_fallback") is False:
+            return None, "This Campaign's Research Agent config disabled the Claude fallback."
+
+        from app.services.research.fallback import ClaudeResearchFallback, FallbackLimits
+
+        if self._fallback_factory is not None:
+            return self._fallback_factory(settings), None
+        return (
+            ClaudeResearchFallback(
+                thinker=ClaudeCliThinker(settings=settings),
+                limits=FallbackLimits.from_settings(settings),
+            ),
+            None,
         )
 
 

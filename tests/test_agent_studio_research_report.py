@@ -544,3 +544,176 @@ def test_agent_studio_has_one_durable_research_report_service() -> None:
     assert "class DurableResearchReportReader" in source
     assert "class PersistedResearchReportReader" not in source
     assert not hasattr(research_report, "PersistedResearchReportReader")
+
+
+# --- RES-002 fallback lineage -------------------------------------------------
+
+
+def _lineage_job(db: Session) -> tuple[Company, AgentJob]:
+    campaign, company, contact, membership, capture = _subject(db)
+    job = _job(
+        campaign=campaign,
+        contact=contact,
+        membership=membership,
+        company=company,
+        capture=capture,
+        generation=1,
+        created_at=datetime.now(UTC),
+    )
+    db.add(job)
+    db.flush()
+    return company, job
+
+
+def test_the_report_shows_both_attempts_and_sanitizes_what_it_shows(
+    db_session: Session,
+) -> None:
+    """The operator must be able to read the whole execution truth off one page.
+
+    Which worker was tried, why its output was rejected, whether the Claude
+    fallback ran, what it produced, and which sources it cited. Every string
+    below arrives from a subprocess boundary and is treated accordingly: local
+    paths, credentials in URLs and query strings are removed on the way out,
+    while the shape of the failure survives so it stays diagnosable.
+    """
+
+    company, job = _lineage_job(db_session)
+    job.result = {
+        "domain": company.domain,
+        "company_id": str(company.id),
+        "domain_outcome": "researched the company through cited public web sources",
+        "dossier_basis": "claude_cli_fallback",
+        "deterministic": {
+            "workers": ["website"],
+            "usable": False,
+            "reason_code": "deterministic_worker_failed",
+            "reason": "the deterministic research worker(s) returned no result (site_unreachable)",
+            "failures": [
+                {
+                    "worker": "website",
+                    "reason_code": "site_unreachable",
+                    "retryable": False,
+                    "reason": "homepage unreachable, launched from /root/worker/run.py",
+                }
+            ],
+        },
+        "fallback": {
+            "attempted": True,
+            "status": "succeeded",
+            "trigger_reason_code": "deterministic_worker_failed",
+            "trigger_reason": "the deterministic research worker(s) returned no result",
+            "producer": "claude-cli",
+            "producer_version": "research-claude-fallback/1",
+            "evidence_accepted": 2,
+            "claims_rejected": 3,
+            "rejection_reasons": ["uncited", "missing_excerpt"],
+            "source_urls": [
+                "https://trade.example/kiln-systems?token=sk_live_abcdefgh",
+                "ask the sales team",
+            ],
+            "error": None,
+            "duration_seconds": 12.5,
+            "reused_committed_attempt": False,
+            "tools": ["WebSearch", "WebFetch"],
+        },
+    }
+    db_session.flush()
+
+    report = DurableResearchReportReader(db_session).read_job(job.id)
+    assert report is not None
+    assert report.dossier_basis == "claude_cli_fallback"
+
+    assert report.deterministic is not None
+    assert report.deterministic.workers == ("website",)
+    assert report.deterministic.usable is False
+    assert report.deterministic.reason_code == "deterministic_worker_failed"
+    failure = report.deterministic.failures[0]
+    assert failure.research_worker == "website"
+    assert failure.stage == "site_unreachable"
+    assert "/root/worker/run.py" not in failure.error
+    assert "[local path]" in failure.error
+    assert "homepage unreachable" in failure.error, "the failure must stay diagnosable"
+
+    assert report.fallback is not None
+    assert report.fallback.attempted is True
+    assert report.fallback.status == "succeeded"
+    assert report.fallback.producer_version == "research-claude-fallback/1"
+    assert report.fallback.evidence_accepted == 2
+    assert report.fallback.claims_rejected == 3
+    assert report.fallback.rejection_reasons == ("uncited", "missing_excerpt")
+    assert report.fallback.tools == ("WebSearch", "WebFetch")
+    # The credential-bearing query string is gone; the page it cites remains.
+    assert report.fallback.source_urls == ("https://trade.example/kiln-systems",)
+    assert "sk_live_abcdefgh" not in repr(report)
+
+
+def test_a_failed_execution_still_reports_its_fallback_error(db_session: Session) -> None:
+    """A run that produced nothing is where the lineage matters most.
+
+    Read from the stored error detail rather than the result, because a job that
+    ended terminally has no result — and "we tried the fallback and this is what
+    it said" is precisely the thing an operator opens this page for.
+    """
+
+    _company, job = _lineage_job(db_session)
+    job.status = AgentJobStatus.FAILED
+    job.error_class = "thinking_unavailable"
+    job.last_error = "The Claude CLI executable was not found on PATH."
+    job.error = {
+        "class": "thinking_unavailable",
+        "message": "The Claude CLI executable was not found on PATH.",
+        "retryable": False,
+        "detail": {
+            "reason_code": "all_workers_failed",
+            "dossier_basis": "no_sourced_evidence",
+            "deterministic": {
+                "workers": ["website"],
+                "usable": False,
+                "reason_code": "deterministic_worker_failed",
+                "reason": "the deterministic research worker(s) returned no result",
+                "failures": [],
+            },
+            "fallback": {
+                "attempted": True,
+                "status": "failed",
+                "producer_version": "research-claude-fallback/1",
+                "error": "The Claude CLI at C:\\Users\\op\\bin\\claude.exe could not be executed.",
+                "error_code": "thinking_unavailable",
+                "retryable": False,
+                "tools": ["WebSearch", "WebFetch"],
+            },
+        },
+    }
+    db_session.flush()
+
+    report = DurableResearchReportReader(db_session).read_job(job.id)
+    assert report is not None
+    assert report.dossier_basis == "no_sourced_evidence"
+    assert report.fallback is not None
+    assert report.fallback.status == "failed"
+    assert report.fallback.retryable is False
+    assert report.fallback.error is not None
+    assert "[local path]" in report.fallback.error
+    assert "C:\\Users\\op\\bin" not in report.fallback.error
+    assert report.deterministic is not None and report.deterministic.usable is False
+
+
+def test_an_execution_predating_the_fallback_says_so_rather_than_guessing(
+    db_session: Session,
+) -> None:
+    """An absent lineage is reported as absent, never defaulted into a claim."""
+
+    company, job = _lineage_job(db_session)
+    job.result = {
+        "domain": company.domain,
+        "company_id": str(company.id),
+        "domain_outcome": "researched the company website",
+    }
+    db_session.flush()
+
+    report = DurableResearchReportReader(db_session).read_job(job.id)
+    assert report is not None
+    assert report.deterministic is None
+    assert report.fallback is None
+    assert report.dossier_basis is None
+    assert any("predates the Research fallback" in item for item in report.unavailable)

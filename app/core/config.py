@@ -336,6 +336,48 @@ class Settings(BaseSettings):
         description="Maximum wall-clock seconds for one model company-domain lookup.",
     )
 
+    # --- Research Claude CLI web-research fallback (RES-002) -----------------
+    #
+    # These bound the one Claude CLI call the Research Agent may make after its
+    # deterministic website worker produced nothing usable. The capability itself
+    # is gated by ``FEATURES__RESEARCH_CLAUDE_FALLBACK``, which defaults off;
+    # these values only decide how far the call may go once it is allowed.
+    research_claude_fallback_timeout_seconds: float = Field(
+        default=240.0,
+        gt=0,
+        description="Maximum wall-clock seconds for one Research Claude CLI fallback call.",
+    )
+    # A ceiling on the *accepted* source URLs, stated to the model as its search
+    # and fetch budget and enforced deterministically on the way back in. The
+    # CLI's internal tool loop is not observable from this process, so this is
+    # the honest boundary: how much evidence may be persisted, not how many
+    # requests the CLI made.
+    research_claude_fallback_max_sources: int = Field(
+        default=8,
+        gt=0,
+        description="Maximum distinct source URLs accepted from one Research fallback call.",
+    )
+    research_claude_fallback_max_evidence_items: int = Field(
+        default=20,
+        gt=0,
+        description="Maximum sourced claims accepted from one Research fallback call.",
+    )
+    # Recorded verbatim on every fact, dossier and job result this fallback
+    # produces, so a stored claim can always answer "which producer wrote this,
+    # under which contract?" without inferring it from the text.
+    research_claude_fallback_producer_version: str = Field(
+        default="research-claude-fallback/1",
+        description="Producer version recorded on everything the Research fallback produces.",
+    )
+    # The narrowest permission set that still allows the two capabilities this
+    # fallback exists for: finding pages and reading them. Deliberately not the
+    # Insights/Personalization `allowed_tools=()`, and deliberately not wider —
+    # no shell, no file access, no editing.
+    research_claude_fallback_allowed_tools: tuple[str, ...] = Field(
+        default=("WebSearch", "WebFetch"),
+        description="Claude CLI tools the Research fallback may use. Web read-only.",
+    )
+
     features: FeatureFlags = Field(default_factory=FeatureFlags)
 
     @property

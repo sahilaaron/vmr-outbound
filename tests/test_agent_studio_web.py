@@ -16,7 +16,10 @@ from app.models.enums import AgentIdentifier
 from app.models.verification_job import AgentJob
 from app.services.agent_studio.extensions import AGENT_STUDIO_MODULES
 from app.services.agent_studio.research_report import (
+    ResearchCollectionFailure,
+    ResearchDeterministicView,
     ResearchFactView,
+    ResearchFallbackView,
     ResearchReport,
     ResearchReportState,
     ResearchRetryView,
@@ -321,6 +324,100 @@ def test_research_report_renders_complete_and_unavailable_stable_read_models(
         assert "Unavailable in current persistence" in response.text
         assert "Worker-level collection detail was not persisted" in response.text
         assert "console logs" in response.text
+
+
+def test_research_report_renders_both_attempts_when_the_fallback_ran(
+    studio_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """RES-002. One page has to answer "where did this dossier come from?".
+
+    The deterministic worker was tried and its output was rejected; the Claude
+    fallback ran, cited two pages and discarded three uncited claims. All of
+    that is execution truth an operator cannot recover from the stored rows, so
+    all of it is on the page.
+    """
+
+    report = replace(
+        _report(complete=True),
+        dossier_basis="claude_cli_fallback",
+        deterministic=ResearchDeterministicView(
+            workers=("website",),
+            usable=False,
+            reason_code="deterministic_worker_failed",
+            reason="the deterministic research worker(s) returned no result (site_unreachable)",
+            failures=(
+                ResearchCollectionFailure(
+                    error="homepage unreachable: connection refused",
+                    stage="site_unreachable",
+                    research_worker="website",
+                ),
+            ),
+        ),
+        fallback=ResearchFallbackView(
+            attempted=True,
+            status="succeeded",
+            trigger_reason_code="deterministic_worker_failed",
+            trigger_reason="the deterministic research worker(s) returned no result",
+            producer="claude-cli",
+            producer_version="research-claude-fallback/1",
+            evidence_accepted=4,
+            claims_rejected=3,
+            rejection_reasons=("uncited", "missing_excerpt"),
+            source_urls=("https://trade.example/kiln-systems",),
+            error=None,
+            duration_seconds=18.4,
+            tools=("WebSearch", "WebFetch"),
+        ),
+    )
+    from app.web import routes
+
+    monkeypatch.setattr(routes, "_research_report_reader", lambda _db: _Reader(report))
+    response = studio_client.get(
+        f"/admin/agents/studio/research?campaign_contact={report.campaign_contact_id}"
+    )
+
+    assert response.status_code == 200
+    assert "Research attempts and dossier basis" in response.text
+    assert "claude_cli_fallback" in response.text
+    assert "homepage unreachable: connection refused" in response.text
+    assert "site_unreachable" in response.text
+    assert "research-claude-fallback/1" in response.text
+    assert "WebSearch, WebFetch" in response.text
+    assert "https://trade.example/kiln-systems" in response.text
+    assert "3 discarded" in response.text
+    assert "uncited, missing_excerpt" in response.text
+
+
+def test_research_report_says_when_the_fallback_was_switched_off(
+    studio_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fallback that was not needed and one that was not available differ."""
+
+    report = replace(
+        _report(complete=True),
+        dossier_basis="deterministic_website",
+        fallback=ResearchFallbackView(
+            attempted=False,
+            status="not_attempted",
+            trigger_reason_code="fallback_unavailable",
+            trigger_reason=(
+                "The Claude research fallback is switched off for this deployment "
+                "(FEATURES__RESEARCH_CLAUDE_FALLBACK)."
+            ),
+        ),
+    )
+    from app.web import routes
+
+    monkeypatch.setattr(routes, "_research_report_reader", lambda _db: _Reader(report))
+    response = studio_client.get(
+        f"/admin/agents/studio/research?campaign_contact={report.campaign_contact_id}"
+    )
+
+    assert response.status_code == 200
+    assert "FEATURES__RESEARCH_CLAUDE_FALLBACK" in response.text
+    assert "attempted: no" in response.text
 
 
 def test_research_report_renders_an_explicit_partial_state(

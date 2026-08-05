@@ -266,6 +266,12 @@ class CompanyIntelligenceClassification(Base):
     """One classified value on one dimension of one intelligence version."""
 
     __tablename__ = "company_intelligence_classifications"
+    # Check-constraint names below are short because they have to be. The
+    # metadata convention prepends ``ck_<table>_``, and this table's name is 36
+    # characters, leaving 23 before PostgreSQL's 63-byte identifier limit
+    # truncates the name and appends a hash of the original — at which point the
+    # catalog holds a name the metadata can never produce again. See migration
+    # ``b6d4e07a1f38``.
     __table_args__ = (
         Index("ix_company_intelligence_classifications_version", "intelligence_version_id"),
         Index("ix_company_intelligence_classifications_company_dim", "company_id", "dimension"),
@@ -304,13 +310,13 @@ class CompanyIntelligenceClassification(Base):
         # being trustworthy.
         CheckConstraint(
             "(geo_relationship IS NULL AND presence_kind IS NULL) OR dimension = 'GEOGRAPHY'",
-            name="geo_fields_are_geography_only",
+            name="geo_fields_geography",
         ),
         # The two travel together: presence is derived from the relationship, so
         # one without the other is a half-written row.
         CheckConstraint(
             "(geo_relationship IS NULL) = (presence_kind IS NULL)",
-            name="geo_relationship_and_presence_paired",
+            name="geo_presence_paired",
         ),
         # Primary is a property of the industry dimension's top-ranked value.
         # Enforcing it here keeps "primary industry" a rank rather than a second

@@ -90,6 +90,107 @@ def _alembic(args: list[str], database_url: str) -> subprocess.CompletedProcess[
     )
 
 
+#: PostgreSQL truncates any identifier past this, so a longer name is not a
+#: style problem — it is a name the server will never store as written.
+_PG_IDENTIFIER_LIMIT = 63
+
+
+def _metadata_check_constraints() -> dict[str, set[str]]:
+    """Every named check constraint the models resolve to, keyed by table."""
+
+    from app.db.base import Base
+    from sqlalchemy import CheckConstraint
+
+    found: dict[str, set[str]] = {}
+    for table in Base.metadata.tables.values():
+        for constraint in table.constraints:
+            if isinstance(constraint, CheckConstraint) and constraint.name is not None:
+                found.setdefault(table.name, set()).add(str(constraint.name))
+    return found
+
+
+def test_every_check_constraint_name_fits_a_postgres_identifier() -> None:
+    """A name over 63 bytes is stored truncated, and then never matches again.
+
+    The failure this prevents is quiet in both directions. SQLAlchemy emits the
+    long name, PostgreSQL truncates it and appends a hash of the original, and
+    nothing complains — the constraint is created and enforces exactly what was
+    asked. What breaks is the *comparison*: the metadata keeps saying
+    ``ck_contact_label_assignments_ck_contact_label_assignments_anchor`` while
+    the catalog says ``..._ck_contact_label_assignmen_8b26``, and every
+    autogenerate run from then on proposes dropping and recreating a constraint
+    that is already correct.
+
+    Checked here rather than left to ``alembic check`` because it is a property
+    of the models alone: it needs no database, no migration and no particular
+    Alembic version, and Alembic did not compare check constraints by name at
+    all before 1.19.0. This drift outlived four releases of the tool that was
+    supposed to find it.
+
+    The convention prepends ``ck_<table>_``, so the budget for the name given in
+    the model is 63 minus that prefix. On a wide table that is genuinely tight —
+    ``company_intelligence_classifications`` leaves 23 characters — and the
+    answer is a shorter constraint name, not a longer identifier.
+    """
+
+    too_long = {
+        f"{table}.{name}": len(name)
+        for table, names in _metadata_check_constraints().items()
+        for name in names
+        if len(name) > _PG_IDENTIFIER_LIMIT
+    }
+    assert too_long == {}, (
+        "check constraint names PostgreSQL cannot store as written "
+        f"(limit {_PG_IDENTIFIER_LIMIT}): {too_long}. Shorten the `name=` given "
+        "in the model; do not spell the `ck_<table>_` prefix, the metadata "
+        "naming convention already adds it."
+    )
+
+
+def test_migrated_check_constraint_names_match_the_model_metadata(
+    temp_database_url: str,
+) -> None:
+    """What the migrations build and what the models describe must be one schema.
+
+    ``alembic check`` asserts this too, but only on a version that compares
+    check constraints by name — and only for as long as that stays true. This
+    asserts the invariant itself against a freshly migrated database, so the
+    guarantee does not depend on which Alembic the resolver picked today.
+    """
+
+    result = _alembic(["upgrade", "head"], temp_database_url)
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+
+    expected = _metadata_check_constraints()
+    engine = create_engine(temp_database_url)
+    try:
+        with engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT rel.relname, con.conname FROM pg_constraint con "
+                    "JOIN pg_class rel ON rel.oid = con.conrelid "
+                    "JOIN pg_namespace ns ON ns.oid = rel.relnamespace "
+                    "WHERE con.contype = 'c' AND ns.nspname = current_schema()"
+                )
+            ).all()
+    finally:
+        engine.dispose()
+
+    actual: dict[str, set[str]] = {}
+    for table, name in rows:
+        actual.setdefault(table, set()).add(name)
+
+    drift = {
+        table: {
+            "in the models only": sorted(names - actual.get(table, set())),
+            "in the database only": sorted(actual.get(table, set()) - names),
+        }
+        for table, names in expected.items()
+        if names != actual.get(table, set())
+    }
+    assert drift == {}, f"check constraint names differ between models and migrations: {drift}"
+
+
 def test_migration_upgrade_check_downgrade_reupgrade(temp_database_url: str) -> None:
     for args in (
         ["upgrade", "head"],

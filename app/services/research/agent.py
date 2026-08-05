@@ -11,13 +11,28 @@ is, and returns a step describing it. The adapter translates.
 Three outcomes are all legitimate:
 
 * ``COMPLETE`` -- facts were found and stored;
-* ``COMPLETE`` with warnings and ``sufficient=False`` -- the site was read
-  and says little. That is a fact about the company, not an error, so the
-  pipeline advances rather than stalling on a thin website;
+* ``COMPLETE`` with warnings and ``sufficient=False`` -- the sources were
+  read and say little. That is a fact about the company, not an error, so
+  the pipeline advances rather than stalling on a thin website;
 * ``BLOCKED`` / ``TERMINAL`` -- research could not honestly run at all.
 
-Nothing here writes a canonical Company field. Turning sourced facts into
-canonical values is a separate, reviewable decision.
+**Two attempts, one stage.** The deterministic website worker is always the
+first attempt, and when it produces something usable the run ends there. When
+it does not -- the site is unreachable, JavaScript-only, redirected off-host,
+unparseable, or simply says almost nothing -- the bounded Claude CLI fallback in
+``app.services.research.fallback`` runs as a second attempt within this same
+execution. It is not another Agent, another stage or another job: it is a second
+source, filed under its own worker name, subject to the same fact validation and
+the same evidence model.
+
+The trigger is deliberately coarse. This module never asks *why* the
+deterministic attempt was unusable before deciding whether to fall back; it asks
+only whether the result is usable. Classifying the failure first would mean every
+new way a website can defeat a crawler needs a code change before the fallback
+covers it, and the operator would carry the classification.
+
+Nothing here writes a canonical Company field -- from either source. Turning
+sourced facts into canonical values is a separate, reviewable decision.
 """
 
 from __future__ import annotations
@@ -27,14 +42,17 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.company import Company
+from app.models.company_dossier import CompanyDossierVersion, CompanyResearchSubmission
 from app.models.contact import Contact
 from app.models.enums import DossierSection, InsightKind, InsightState
 from app.models.verification_job import AgentJob
 from app.services.companies import dossiers
 from app.services.insights.evidence import EvidenceInput, InsightError, create_insight
+from app.services.research import fallback as research_fallback
 from app.services.research.contracts import (
     ResearchRequest,
     ResearchWorker,
@@ -42,11 +60,26 @@ from app.services.research.contracts import (
     SourcedFact,
     WorkerResult,
 )
+from app.services.research.fallback import (
+    FallbackRecord,
+    FallbackStatus,
+    FallbackSubject,
+    ResearchFallback,
+)
 from app.services.resolution import gates
 
 RESEARCH_ACTOR = "system:research-agent"
 INTERPRETER = "research-agent"
 INTERPRETER_VERSION = "1"
+
+#: What the committed dossier was actually built from. Written into the durable
+#: job result so the question "where did this company description come from?" is
+#: answered by a stored value rather than inferred from which rows happen to
+#: exist.
+BASIS_NONE = "no_sourced_evidence"
+BASIS_DETERMINISTIC = "deterministic_website"
+BASIS_FALLBACK = "claude_cli_fallback"
+BASIS_BOTH = "deterministic_website_and_claude_cli_fallback"
 
 #: How a vendored fact field maps onto the closed dossier section set.
 #: A field with no mapping is still stored as an insight; it just does not
@@ -133,9 +166,14 @@ def _claim_text(fact: SourcedFact) -> str:
 def _evidence(fact: SourcedFact) -> EvidenceInput:
     return EvidenceInput(
         source_url=fact.source_url,
+        source_title=fact.source_title,
         retrieved_at=fact.retrieved_at,
         evidence_summary=(fact.excerpt or fact.value)[:1000],
         confidence=fact.confidence,
+        # Carried through unchanged, and it is what keeps the two sources
+        # distinguishable at the level of one stored evidence row: a
+        # deterministic extraction and a Claude-assisted read never share a
+        # value here.
         extraction_method=fact.extraction_method,
         excerpt=fact.excerpt,
         published_at=fact.published_at,
@@ -235,6 +273,231 @@ def _store_facts(
     return stored, warnings
 
 
+def _assess(
+    results: list[WorkerResult], *, failures: list[dict[str, Any]]
+) -> tuple[bool, str | None, str | None]:
+    """Is what the deterministic attempt produced usable? If not, why not?
+
+    Three unusable shapes, and the fallback answers all of them identically.
+    The distinction below exists for the operator's report, not for the routing
+    decision — which is the point. A stage that had to recognise every way a
+    website can defeat a crawler before it was allowed to try something else
+    would be wrong about a new one every time.
+    """
+
+    if not results:
+        codes = ", ".join(sorted({str(item["reason_code"]) for item in failures}))
+        return (
+            False,
+            "deterministic_worker_failed",
+            "the deterministic research worker(s) returned no result"
+            + (f" ({codes})" if codes else ""),
+        )
+    if not any(result.facts for result in results):
+        return (
+            False,
+            "empty_extraction",
+            "the deterministic research worker(s) ran but extracted no fact at all",
+        )
+    if not any(result.sufficient for result in results):
+        return (
+            False,
+            "insufficient_evidence",
+            "the deterministic research worker(s) read the source, but it did not support "
+            "enough facts to describe this company",
+        )
+    return True, None, None
+
+
+def _committed_fallback_result(
+    session: Session, *, company: Company, job: AgentJob
+) -> WorkerResult | None:
+    """A fallback attempt this exact job already committed, rebuilt from storage.
+
+    Retry safety, and the reason the fallback's raw payload is written the way it
+    is. A re-driven job — a recovered lease, a re-run of the same job row —
+    must not spend a second Claude CLI call, must not write a second set of
+    evidence rows, and must not produce a dossier that disagrees with the one
+    already stored. Reusing the committed payload verbatim gives all three,
+    because identical facts produce identical idempotency keys and an identical
+    payload hashes to the submission that already exists.
+
+    Best effort by design, and layered rather than relied upon: the authoritative
+    guarantee against duplicate evidence remains the per-fact idempotency key in
+    :func:`_store_facts`. This only prevents the wasted call and the second
+    dossier version.
+    """
+
+    submissions = session.scalars(
+        select(CompanyResearchSubmission)
+        .where(
+            CompanyResearchSubmission.company_id == company.id,
+            CompanyResearchSubmission.request_context["agent_job_id"].as_string() == str(job.id),
+        )
+        .order_by(
+            CompanyResearchSubmission.submitted_at.desc(),
+            CompanyResearchSubmission.id.desc(),
+        )
+    ).all()
+    for submission in submissions:
+        payload = submission.payload if isinstance(submission.payload, dict) else {}
+        entries = payload.get("workers")
+        for entry in entries if isinstance(entries, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            rebuilt = research_fallback.result_from_raw(entry)
+            if rebuilt is not None:
+                return rebuilt
+    return None
+
+
+def _run_fallback(
+    session: Session,
+    *,
+    company: Company,
+    job: AgentJob,
+    fallback: ResearchFallback | None,
+    fallback_unavailable_reason: str | None,
+    usable: bool,
+    reason_code: str | None,
+    reason: str | None,
+) -> tuple[WorkerResult | None, FallbackRecord, bool]:
+    """Decide whether to fall back, do it, and describe what happened.
+
+    Returns ``(result, record, retryable)``. ``record`` is always produced, for
+    every path including the ones that never call anything: an operator reading
+    a Research report has to be able to tell "the fallback was not needed" from
+    "the fallback is switched off" from "the fallback ran and found nothing",
+    and an absent key says none of those.
+    """
+
+    if usable:
+        return (
+            None,
+            research_fallback.not_attempted(
+                "deterministic_result_usable",
+                "The deterministic website worker produced a usable result, "
+                "so no fallback was needed.",
+            ),
+            False,
+        )
+    if fallback is None:
+        return (
+            None,
+            research_fallback.not_attempted(
+                "fallback_unavailable",
+                fallback_unavailable_reason
+                or "The Claude research fallback is not enabled for this deployment.",
+            ),
+            False,
+        )
+
+    prior = _committed_fallback_result(session, company=company, job=job)
+    if prior is not None:
+        return prior, research_fallback.record_from_result(prior), False
+
+    subject = FallbackSubject(
+        company_name=company.name,
+        domain=company.domain,
+        country=company.country,
+        industry=company.industry,
+        linkedin_company_url=company.linkedin_company_url,
+    )
+    outcome = fallback.run(
+        subject,
+        reason_code=reason_code or "deterministic_result_unusable",
+        reason=reason or "the deterministic research attempt produced nothing usable",
+    )
+    record = research_fallback.record_for(outcome)
+    return (
+        outcome.result,
+        record,
+        outcome.status is FallbackStatus.FAILED and outcome.retryable,
+    )
+
+
+def _same_reading(
+    version: CompanyDossierVersion, *, sections: dict[str, Any], warnings: list[str]
+) -> bool:
+    """Would interpreting again produce exactly the version already stored?"""
+
+    if list(version.warnings or []) != warnings:
+        return False
+    return all(
+        getattr(version, name, None) == sections.get(name) for name in dossiers.SECTION_COLUMNS
+    )
+
+
+def _interpret_once(
+    session: Session,
+    *,
+    company: Company,
+    submission: CompanyResearchSubmission,
+    submission_created: bool,
+    sections: dict[str, Any],
+    warnings: list[str],
+    actor: str,
+) -> CompanyDossierVersion:
+    """Store one reading, or reuse the identical one this job already stored.
+
+    A dossier version is an immutable *reading* of one submission. Re-running the
+    identical reading of the identical submission produces the identical reading,
+    so a second row would record a retry rather than any new knowledge — and
+    would make the version number an execution counter instead of a history of
+    what was understood. The reuse is deliberately narrow: only when the
+    submission itself deduplicated, only for the same interpreter and version,
+    and only when every section and warning matches exactly.
+    """
+
+    if not submission_created:
+        existing = session.scalars(
+            select(CompanyDossierVersion)
+            .where(
+                CompanyDossierVersion.company_id == company.id,
+                CompanyDossierVersion.submission_id == submission.id,
+                CompanyDossierVersion.interpreter == INTERPRETER,
+                CompanyDossierVersion.interpreter_version == INTERPRETER_VERSION,
+            )
+            .order_by(CompanyDossierVersion.version_number.desc())
+        ).first()
+        if existing is not None and _same_reading(existing, sections=sections, warnings=warnings):
+            if not existing.is_current:
+                dossiers.select_current(session, company=company, version=existing, actor=actor)
+            return existing
+
+    return dossiers.interpret(
+        session,
+        company=company,
+        submission=submission,
+        interpreter=INTERPRETER,
+        interpreter_version=INTERPRETER_VERSION,
+        sections=sections,
+        warnings=list(warnings),
+        created_by=actor,
+        make_current=True,
+    )
+
+
+def _basis(results: list[WorkerResult]) -> str:
+    """Which sources the committed dossier actually rests on."""
+
+    deterministic = any(
+        result.facts and result.worker != research_fallback.FALLBACK_WORKER_NAME
+        for result in results
+    )
+    assisted = any(
+        result.facts and result.worker == research_fallback.FALLBACK_WORKER_NAME
+        for result in results
+    )
+    if deterministic and assisted:
+        return BASIS_BOTH
+    if assisted:
+        return BASIS_FALLBACK
+    if deterministic:
+        return BASIS_DETERMINISTIC
+    return BASIS_NONE
+
+
 def execute_step(
     session: Session,
     *,
@@ -244,8 +507,15 @@ def execute_step(
     options: dict[str, Any] | None = None,
     now: datetime | None = None,
     actor: str = RESEARCH_ACTOR,
+    fallback: ResearchFallback | None = None,
+    fallback_unavailable_reason: str | None = None,
 ) -> ResearchStep:
-    """Research one Contact's Company and persist what was found."""
+    """Research one Contact's Company and persist what was found.
+
+    ``fallback`` is the second attempt, and ``None`` means there is no second
+    attempt — the behaviour this module had before one existed. The adapter owns
+    that decision; this module only owns *when* a second attempt is warranted.
+    """
 
     if not workers:
         return _blocked(
@@ -291,29 +561,104 @@ def execute_step(
 
     results: list[WorkerResult] = []
     warnings: list[str] = []
+    attempted_workers: list[str] = []
+    worker_failures: list[dict[str, Any]] = []
+    retryable_failure: ResearchWorkerError | None = None
     for worker in workers:
+        attempted_workers.append(worker.name)
         try:
             results.append(worker.run(request))
         except ResearchWorkerError as exc:
-            if exc.retryable:
-                return ResearchStep(
-                    kind=ResearchStepKind.RETRY,
-                    outcome="research_retry",
-                    result={"reason_code": exc.code, "reason": str(exc)},
-                    reason_code=exc.code,
-                    reason=str(exc),
-                )
-            # A dead end for one worker is a warning while another may still
-            # succeed; it only ends the run if nothing else produced anything.
+            # Every deterministic failure is recorded and the loop continues,
+            # including a retryable one. This used to return RETRY immediately,
+            # which was correct while the website was the only source: there was
+            # nothing else to try, so trying again later was the whole answer.
+            # It is not the answer now. A read timeout is one of the most common
+            # ways a perfectly researchable company produces no dossier, and
+            # retrying it produces the same timeout. The retryable outcome is
+            # kept and returned below if — and only if — nothing usable is
+            # produced by anything else.
+            worker_failures.append(
+                {
+                    "worker": worker.name,
+                    "reason_code": exc.code,
+                    "retryable": exc.retryable,
+                    "reason": str(exc),
+                }
+            )
             warnings.append(f"{worker.name}: {exc}")
+            if exc.retryable and retryable_failure is None:
+                retryable_failure = exc
+
+    usable, unusable_code, unusable_reason = _assess(results, failures=worker_failures)
+    fallback_result, fallback_record, fallback_retryable = _run_fallback(
+        session,
+        company=company,
+        job=job,
+        fallback=fallback,
+        fallback_unavailable_reason=fallback_unavailable_reason,
+        usable=usable,
+        reason_code=unusable_code,
+        reason=unusable_reason,
+    )
+    if fallback_record.error:
+        warnings.append(
+            f"{research_fallback.FALLBACK_WORKER_NAME}: {fallback_record.error}",
+        )
+    if fallback_result is not None:
+        results.append(fallback_result)
+
+    deterministic_summary: dict[str, Any] = {
+        "workers": attempted_workers,
+        "usable": usable,
+        "reason_code": unusable_code,
+        "reason": unusable_reason,
+        "failures": worker_failures,
+    }
 
     if not results:
+        detail: dict[str, Any] = {
+            "warnings": warnings,
+            "deterministic": deterministic_summary,
+            "fallback": fallback_record.as_dict(),
+            "dossier_basis": BASIS_NONE,
+        }
+        # A transient fault anywhere in the chain means "ask again later" — but
+        # only here, where nothing at all was produced. If a worker returned a
+        # result and the *other* attempt then failed transiently, the result is
+        # committed above instead: it was genuinely gathered, and discarding it
+        # would make enabling the fallback worse than leaving it off, which is
+        # the one outcome a fallback must never produce. The report records that
+        # the second attempt was made and failed, so a re-run stays available.
+        #
+        # A *completed* fallback that found no citable evidence is not transient
+        # and must not retry forever — that is an honest answer about this
+        # company's public web presence, and it arrives as
+        # ``fallback_retryable=False``.
+        if retryable_failure is not None or fallback_retryable:
+            code = (
+                retryable_failure.code
+                if retryable_failure is not None
+                else fallback_record.error_code or "research_retry"
+            )
+            reason = (
+                str(retryable_failure)
+                if retryable_failure is not None
+                else fallback_record.error or "the research fallback hit a transient fault"
+            )
+            return ResearchStep(
+                kind=ResearchStepKind.RETRY,
+                outcome="research_retry",
+                result={"reason_code": code, "reason": reason, **detail},
+                reason_code=code,
+                reason=reason,
+            )
         return ResearchStep(
             kind=ResearchStepKind.TERMINAL,
             outcome="research_failed",
-            result={"reason_code": "all_workers_failed", "warnings": warnings},
+            result={"reason_code": "all_workers_failed", **detail},
             reason_code="all_workers_failed",
-            reason="; ".join(warnings) or "every research worker failed",
+            reason="; ".join(warnings) or "every research source failed",
         )
 
     for result in results:
@@ -355,16 +700,14 @@ def execute_step(
         )
 
     sections = _sections(results)
-    version = dossiers.interpret(
+    version = _interpret_once(
         session,
         company=company,
         submission=submission,
-        interpreter=INTERPRETER,
-        interpreter_version=INTERPRETER_VERSION,
+        submission_created=created,
         sections=sections,
         warnings=warnings,
-        created_by=actor,
-        make_current=True,
+        actor=actor,
     )
 
     addressed = sorted(sections)
@@ -373,6 +716,7 @@ def execute_step(
     )
     source_count = len(sections.get(DossierSection.SOURCES.value) or [])
     unknown_count = len(sections.get(DossierSection.UNKNOWNS.value) or [])
+    basis = _basis(results)
 
     output = {
         "domain": domain,
@@ -400,11 +744,30 @@ def execute_step(
         "source_count": source_count,
         "unknown_count": unknown_count,
         "producer": INTERPRETER,
+        # --- execution truth, for the Research report --------------------------
+        # What was attempted, what was considered unusable and why, whether the
+        # fallback ran, and what the committed dossier actually rests on. Stored
+        # here rather than derived later: only this frame knows the difference
+        # between "the fallback was not needed" and "the fallback found nothing",
+        # and both leave the same rows behind.
+        "deterministic": deterministic_summary,
+        "fallback": fallback_record.as_dict(),
+        "dossier_basis": basis,
     }
     return ResearchStep(
         kind=ResearchStepKind.COMPLETE,
         outcome="research_completed" if sufficient else "research_completed_with_warnings",
-        result={"domain_outcome": "researched the company website", **output},
+        result={"domain_outcome": _domain_outcome(basis), **output},
         output_reference=output,
         committed=True,
     )
+
+
+def _domain_outcome(basis: str) -> str:
+    """The one-line outcome, honest about which source answered."""
+
+    if basis == BASIS_FALLBACK:
+        return "researched the company through cited public web sources"
+    if basis == BASIS_BOTH:
+        return "researched the company website and cited public web sources"
+    return "researched the company website"

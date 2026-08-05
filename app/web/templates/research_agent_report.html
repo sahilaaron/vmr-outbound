@@ -63,6 +63,45 @@
 {% endif %}
 
 <div class="card">
+  <div class="card-head"><h2>Research attempts and dossier basis</h2></div>
+  <div class="card-body">
+    {% if report.deterministic or report.fallback %}
+    <dl class="kv">
+      <dt>Final dossier basis</dt><dd>{{ report.dossier_basis or 'Not persisted for this execution' }}</dd>
+      <dt>1. Deterministic website worker</dt>
+      <dd>{% if report.deterministic %}
+        attempted: {{ report.deterministic.workers | join(', ') if report.deterministic.workers else 'none' }}<br>
+        output usable: {{ 'yes' if report.deterministic.usable else ('no' if report.deterministic.usable is not none else 'not persisted') }}
+        {% if report.deterministic.reason %}<br><span class="muted-text">considered unusable because {{ report.deterministic.reason }}{% if report.deterministic.reason_code %} ({{ report.deterministic.reason_code }}){% endif %}</span>{% endif %}
+      {% else %}Not persisted for this execution.{% endif %}</dd>
+      <dt>2. Claude CLI research fallback</dt>
+      <dd>{% if report.fallback %}
+        attempted: {{ 'yes' if report.fallback.attempted else 'no' }} · status: {{ report.fallback.status }}
+        {% if report.fallback.trigger_reason %}<br><span class="muted-text">{{ report.fallback.trigger_reason }}</span>{% endif %}
+        {% if report.fallback.reused_committed_attempt %}<br><span class="muted-text">Reused this job's already-committed fallback attempt; no new model call was made.</span>{% endif %}
+      {% else %}Not persisted for this execution.{% endif %}</dd>
+      {% if report.fallback and report.fallback.attempted %}
+      <dt>Fallback producer</dt><dd>{{ report.fallback.producer or 'unavailable' }} / {{ report.fallback.producer_version or 'version unavailable' }}{% if report.fallback.tools %} · tools: {{ report.fallback.tools | join(', ') }}{% endif %}{% if report.fallback.duration_seconds is not none %} · {{ '%.1f s' | format(report.fallback.duration_seconds) }}{% endif %}</dd>
+      <dt>Fallback evidence</dt><dd>{{ report.fallback.evidence_accepted if report.fallback.evidence_accepted is not none else '—' }} cited claim(s) accepted · {{ report.fallback.claims_rejected if report.fallback.claims_rejected is not none else '—' }} discarded{% if report.fallback.rejection_reasons %}<br><span class="muted-text">discarded for: {{ report.fallback.rejection_reasons | join(', ') }}</span>{% endif %}</dd>
+      <dt>Fallback sources</dt><dd>{% if report.fallback.source_urls %}<ul>{% for url in report.fallback.source_urls %}<li><a href="{{ url }}" rel="noreferrer">{{ url }}</a></li>{% endfor %}</ul>{% else %}None recorded.{% endif %}</dd>
+      <dt>Fallback error</dt><dd>{% if report.fallback.error %}{{ report.fallback.error }}{% if report.fallback.error_code %} ({{ report.fallback.error_code }}){% endif %}{% if report.fallback.retryable is not none %} · retryable={{ 'yes' if report.fallback.retryable else 'no' }}{% endif %}{% else %}None recorded.{% endif %}</dd>
+      {% endif %}
+    </dl>
+    {% if report.deterministic and report.deterministic.failures %}
+    <h3>Deterministic worker failures</h3>
+    <table>
+      <thead><tr><th>Worker</th><th>Reason code</th><th>Reported failure</th></tr></thead>
+      <tbody>{% for item in report.deterministic.failures %}<tr><td>{{ item.research_worker or '—' }}</td><td>{{ item.stage or '—' }}</td><td>{{ item.error }}</td></tr>{% endfor %}</tbody>
+    </table>
+    {% endif %}
+    <p class="muted-text">Claude-assisted evidence is stored under the <code>claude_web</code> research worker and carries its own extraction method, so it stays distinguishable from deterministically read evidence in the tables below. Neither source writes a canonical Company field.</p>
+    {% else %}
+    <p class="muted-text">This execution recorded no attempt lineage. It predates the Research fallback.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
   <div class="card-head"><h2>Collection</h2></div>
   <div class="card-body">
     <h3>Recorded URL attempts</h3>
