@@ -434,11 +434,21 @@ def test_the_assembled_migration_chain_has_exactly_one_head() -> None:
     script = ScriptDirectory.from_config(Config(str(REPO_ROOT / "alembic.ini")))
     heads = script.get_heads()
     assert len(heads) == 1, f"expected one head, found {heads}"
-    assert heads[0] == "a8f3c92d4e17"
+
+    # Deliberately not pinned to a literal head revision. What this test defends
+    # is that the two assembled chains stayed linearised behind a single head —
+    # not that nothing has been written since the integration. Pinning the head
+    # asserted the second thing, so the first migration to land afterwards
+    # failed it while every guarantee it exists for still held. That is a false
+    # alarm about the invariant, which is worse than no alarm.
+    #
+    # The CI-002 revision still has to be on the chain; the ordering assertions
+    # below index into the walk and raise if any of these revisions went missing.
+    revisions = list(script.walk_revisions())
+    assert "a8f3c92d4e17" in {revision.revision for revision in revisions}
 
     # And it is genuinely linear: the two assembled chains are in one sequence,
     # not hidden behind a merge revision with two parents.
-    revisions = list(script.walk_revisions())
     assert all(len(revision._all_down_revisions) <= 1 for revision in revisions), (
         "a merge revision would make downgrade order ambiguous"
     )
