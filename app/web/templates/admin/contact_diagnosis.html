@@ -81,6 +81,7 @@
                     <span class="dim">({{ stage.latest_job.stored_status.value }}, attempt {{ stage.latest_job.attempt_count }}/{{ stage.latest_job.max_attempts }})</span></dd>
               {% endif %}
               {% if stage.workers %}<dt>Workers</dt><dd>{{ stage.workers | join(" · ") }}</dd>{% endif %}
+              {% if stage.latest_job and stage.latest_job.error_message %}<dt>Latest error (sanitized)</dt><dd class="wrap-anywhere">{{ stage.latest_job.error_message }}</dd>{% endif %}
               {% if stage.reason_code %}<dt>Reason code</dt><dd class="mono">{{ stage.reason_code }}</dd>{% endif %}
               {% if stage.reason_detail and stage.reason_detail != stage.explanation %}<dt>Detail</dt><dd>{{ stage.reason_detail }}</dd>{% endif %}
               <dt>Downstream</dt>

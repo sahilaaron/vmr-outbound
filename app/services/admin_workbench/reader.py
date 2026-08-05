@@ -1021,20 +1021,35 @@ class AdminWorkbenchReader:
                 )
             )
 
-        # 3. Failed jobs not tied to a Campaign Contact (company-scoped work).
-        orphan_statement = (
+        # 3. Failed Agent Jobs not already represented by a failed stage row.
+        #    (A stage row is the primary diagnosis surface; a failed job whose
+        #    stage never transitioned — or that has no Campaign Contact at all —
+        #    would otherwise be invisible.)
+        represented_jobs = {item.job_id for item in items if item.job_id is not None}
+        failed_jobs_statement = (
             select(AgentJob)
-            .where(
-                AgentJob.status == AgentJobStatus.FAILED,
-                AgentJob.campaign_contact_id.is_(None),
-            )
+            .where(AgentJob.status == AgentJobStatus.FAILED)
             .order_by(AgentJob.updated_at.desc())
             .limit(FAILURES_CAP)
         )
         if campaign_filter is not None:
-            orphan_statement = orphan_statement.where(AgentJob.campaign_id == campaign_filter)
-        for job in self._session.scalars(orphan_statement).all():
+            failed_jobs_statement = failed_jobs_statement.where(
+                AgentJob.campaign_id == campaign_filter
+            )
+        failed_jobs = [
+            job
+            for job in self._session.scalars(failed_jobs_statement).all()
+            if job.id not in represented_jobs
+        ]
+        job_contact_labels = self._contact_labels(
+            [job.contact_id for job in failed_jobs if job.contact_id is not None]
+        )
+        for job in failed_jobs:
             job_spec = AGENT_SPECS.get(job.agent_id)
+            if job.campaign_id is not None and job.campaign_contact_id is not None:
+                href = f"/admin/campaigns/{job.campaign_id}/contacts/{job.campaign_contact_id}"
+            else:
+                href = f"/admin/jobs/{job.id}"
             items.append(
                 FailureItem(
                     kind="job",
@@ -1049,8 +1064,10 @@ class AdminWorkbenchReader:
                     campaign_name=(
                         campaign_names.get(job.campaign_id) if job.campaign_id else None
                     ),
-                    campaign_contact_id=None,
-                    contact_label=None,
+                    campaign_contact_id=job.campaign_contact_id,
+                    contact_label=(
+                        job_contact_labels.get(job.contact_id) if job.contact_id else None
+                    ),
                     company_label=None,
                     agent_id=job.agent_id,
                     agent_name=job_spec.display_name if job_spec else job.agent_id.value,
@@ -1059,7 +1076,7 @@ class AdminWorkbenchReader:
                     max_attempts=job.max_attempts,
                     retryable=job.error_class not in ("terminal", "AgentTerminalError"),
                     latest_at=job.updated_at,
-                    diagnosis_href=f"/admin/jobs/{job.id}",
+                    diagnosis_href=href,
                     action=None,
                 )
             )
@@ -1945,11 +1962,13 @@ class AdminWorkbenchReader:
         alembic_version: str | None = None
         database_ok = True
         try:
-            alembic_version = self._session.execute(
-                text("SELECT version_num FROM alembic_version")
-            ).scalar()
+            # A savepoint, not a session rollback: this must never discard the
+            # caller's transaction just because the table is absent.
+            with self._session.begin_nested():
+                alembic_version = self._session.execute(
+                    text("SELECT version_num FROM alembic_version")
+                ).scalar()
         except Exception:  # noqa: BLE001 - table may not exist in a fresh DB
-            self._session.rollback()
             alembic_version = None
 
         audit_tail = tuple(

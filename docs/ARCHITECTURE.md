@@ -33,9 +33,18 @@ The product has two server-rendered presentation layers over the same services a
 
 ### Operator/admin Workbench
 
-- Route: `/admin` and existing implementation routes.
-- Exhaustive surface for job inspection, controls, retries and authoritative write paths.
-- Own templates and `app.css`.
+- Route: `/admin` and its areas (Overview, Campaigns, Contact diagnosis,
+  Contacts, Companies, Agent/Stages, Failures, Review, Providers & Usage,
+  Configuration, System, Advanced Diagnostics). See
+  [ADMIN_WORKBENCH.md](ADMIN_WORKBENCH.md).
+- Organised around the operator path Campaign -> Contacts -> Agent/Stage
+  progress -> worker -> Agent Job -> attempt -> evidence and corrective
+  action; read models in `app/services/admin_workbench`, templates in
+  `app/web/templates/admin/`, its own `admin.css`.
+- The retained legacy implementation routes (imports, identity review,
+  verification console, captures, knowledge base, local tools, the legacy
+  monitor and the original overview at `/admin/legacy/overview`) keep their
+  own templates and `app.css`, and are catalogued under `/admin/diagnostics`.
 
 The customer interface is not a Workbench reskin. The two surfaces share domain services, not presentation code.
 
