@@ -152,6 +152,50 @@ class ResearchDossierView:
 
 
 @dataclass(frozen=True)
+class ResearchFallbackView:
+    """What the Claude CLI research fallback did, or why it did not run.
+
+    Every field here is projected from the job's own durable result, never
+    reconstructed. The distinction the view exists to preserve is the one the
+    stored rows cannot express on their own: "the deterministic worker was fine,
+    so nothing else ran", "the fallback is switched off", "the fallback ran and
+    could cite nothing" and "the fallback could not run" leave behind either the
+    same rows or no rows at all, and an operator has to be able to tell them
+    apart without reading the code.
+    """
+
+    attempted: bool
+    status: str
+    #: Why the deterministic attempt was judged unusable, in its own words.
+    trigger_reason_code: str | None = None
+    trigger_reason: str | None = None
+    producer: str | None = None
+    producer_version: str | None = None
+    evidence_accepted: int | None = None
+    claims_rejected: int | None = None
+    rejection_reasons: tuple[str, ...] = ()
+    source_urls: tuple[str, ...] = ()
+    #: Already sanitized twice: at the seam that produced it, and again here.
+    error: str | None = None
+    error_code: str | None = None
+    retryable: bool | None = None
+    duration_seconds: float | None = None
+    reused_committed_attempt: bool = False
+    tools: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ResearchDeterministicView:
+    """The first attempt: which workers ran, and whether their output was usable."""
+
+    workers: tuple[str, ...]
+    usable: bool | None
+    reason_code: str | None = None
+    reason: str | None = None
+    failures: tuple[ResearchCollectionFailure, ...] = ()
+
+
+@dataclass(frozen=True)
 class ResearchDomainResolutionView:
     scope: str
     capture_id: uuid.UUID | None
@@ -214,6 +258,13 @@ class ResearchReport:
     warnings: tuple[str, ...] = ()
     job_events: tuple[ResearchJobEventView, ...] = ()
     selection_reason: str | None = None
+    # --- RES-002 execution lineage -------------------------------------------
+    # Which attempt produced the committed dossier. Absent on an execution that
+    # predates the fallback, which is why both are optional rather than defaulted
+    # to a value that would be a claim about a run that never made one.
+    deterministic: ResearchDeterministicView | None = None
+    fallback: ResearchFallbackView | None = None
+    dossier_basis: str | None = None
 
 
 @runtime_checkable
@@ -320,6 +371,98 @@ def _integer(value: object) -> int | None:
         except ValueError:
             return None
     return None
+
+
+def _bool(value: object) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _float(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _safe_strings(value: object, *, limit: int = 512, cap: int = 50) -> tuple[str, ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return ()
+    found = [_safe_string(item, limit=limit) for item in value]
+    return tuple(item for item in found if item)[:cap]
+
+
+def _safe_urls(value: object, *, cap: int = 50) -> tuple[str, ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return ()
+    found = [_safe_url(item) for item in value if isinstance(item, str)]
+    return tuple(dict.fromkeys(item for item in found if item))[:cap]
+
+
+def _execution_lineage(
+    job: AgentJob,
+) -> tuple[ResearchDeterministicView | None, ResearchFallbackView | None, str | None]:
+    """Read the RES-002 lineage the Research stage committed.
+
+    Looked for in the job result first and the stored error detail second,
+    because a Research execution that ends terminally or retryably still has an
+    execution truth worth reading — arguably more so. Both are the stage's own
+    bounded output; neither is raw provider text.
+    """
+
+    result = _mapping(job.result)
+    detail = _mapping(_mapping(job.error).get("detail"))
+    source = result if "fallback" in result or "deterministic" in result else detail
+
+    basis = _safe_string(source.get("dossier_basis"), limit=128)
+
+    deterministic_raw = _mapping(source.get("deterministic"))
+    deterministic = None
+    if deterministic_raw:
+        failures: list[ResearchCollectionFailure] = []
+        raw_failures = deterministic_raw.get("failures")
+        if isinstance(raw_failures, Sequence) and not isinstance(raw_failures, (str, bytes)):
+            for item in raw_failures:
+                entry = _mapping(item)
+                if not entry:
+                    continue
+                failures.append(
+                    ResearchCollectionFailure(
+                        error=_safe_string(entry.get("reason"), limit=1_000)
+                        or "A deterministic worker failure was persisted without a message.",
+                        stage=_safe_string(entry.get("reason_code"), limit=128),
+                        research_worker=_safe_string(entry.get("worker"), limit=256),
+                    )
+                )
+        deterministic = ResearchDeterministicView(
+            workers=_safe_strings(deterministic_raw.get("workers"), limit=256),
+            usable=_bool(deterministic_raw.get("usable")),
+            reason_code=_safe_string(deterministic_raw.get("reason_code"), limit=128),
+            reason=_safe_string(deterministic_raw.get("reason"), limit=1_000),
+            failures=tuple(failures),
+        )
+
+    fallback_raw = _mapping(source.get("fallback"))
+    fallback = None
+    if fallback_raw:
+        fallback = ResearchFallbackView(
+            attempted=bool(fallback_raw.get("attempted")),
+            status=_safe_string(fallback_raw.get("status"), limit=64) or "unavailable",
+            trigger_reason_code=_safe_string(fallback_raw.get("trigger_reason_code"), limit=128),
+            trigger_reason=_safe_string(fallback_raw.get("trigger_reason"), limit=1_000),
+            producer=_safe_string(fallback_raw.get("producer"), limit=128),
+            producer_version=_safe_string(fallback_raw.get("producer_version"), limit=128),
+            evidence_accepted=_integer(fallback_raw.get("evidence_accepted")),
+            claims_rejected=_integer(fallback_raw.get("claims_rejected")),
+            rejection_reasons=_safe_strings(fallback_raw.get("rejection_reasons"), limit=128),
+            source_urls=_safe_urls(fallback_raw.get("source_urls")),
+            error=_safe_string(fallback_raw.get("error"), limit=1_000),
+            error_code=_safe_string(fallback_raw.get("error_code"), limit=128),
+            retryable=_bool(fallback_raw.get("retryable")),
+            duration_seconds=_float(fallback_raw.get("duration_seconds")),
+            reused_committed_attempt=bool(fallback_raw.get("reused_committed_attempt")),
+            tools=_safe_strings(fallback_raw.get("tools"), limit=64),
+        )
+
+    return deterministic, fallback, basis
 
 
 def _retryable_error(job: AgentJob) -> bool | None:
@@ -822,6 +965,12 @@ class DurableResearchReportReader:
         result = _mapping(job.result)
         unavailable: list[str] = []
         warnings: list[str] = []
+        deterministic, fallback, dossier_basis = _execution_lineage(job)
+        if deterministic is None and fallback is None:
+            unavailable.append(
+                "This execution predates the Research fallback and recorded no "
+                "attempt lineage; which source produced its dossier is not persisted."
+            )
         submission, link_source = self._submission_for_job(job, result)
 
         result_company_id = _uuid(result.get("company_id"))
@@ -1047,4 +1196,7 @@ class DurableResearchReportReader:
             warnings=tuple(warnings),
             job_events=events,
             selection_reason=selection_reason,
+            deterministic=deterministic,
+            fallback=fallback,
+            dossier_basis=dossier_basis,
         )

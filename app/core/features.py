@@ -140,6 +140,20 @@ class FeatureFlags(BaseModel):
     # outreach-eligible, and does not by itself start a crawl: a campaign
     # must additionally set the Agent config {"live": true}.
     company_research: bool = False
+    # RES-002. The Claude CLI web-research fallback *inside* the Research Agent.
+    # Off by default, and while off the Research Agent behaves exactly as it did
+    # before it existed: the deterministic website worker is the only source, and
+    # an unusable result stays unusable.
+    #
+    # Turning it on lets one bounded Claude CLI call run — with web search and
+    # webpage reading, and nothing else — only after the deterministic worker has
+    # already failed or produced too little to describe the company. It requires
+    # ``company_research`` as well, because it is the second half of that stage
+    # rather than a route of its own. Every claim it produces must carry a source
+    # URL and supporting text or it is discarded; nothing it returns is written to
+    # a canonical Company field, and its evidence stays permanently labelled as
+    # Claude-assisted rather than deterministically read.
+    research_claude_fallback: bool = False
 
     insights_research: bool = False
     # Company Intelligence (CI-001): versioned, evidence-linked classification of

@@ -112,6 +112,85 @@ divergence before the next re-vendor; it is deliberate.
 `robots.py` also diverges deliberately: this copy is fail-closed, where
 the prototype allows a crawl when robots.txt cannot be read.
 
+## The Claude CLI fallback (RES-002)
+
+`app/services/research/fallback.py`. **Not a registered worker**, and it
+must never appear in `config["workers"]`. It is a *second attempt* inside
+the same Research Agent execution, reached only when the deterministic
+attempt produced nothing usable.
+
+The trigger is deliberately coarse. `app/services/research/agent.py`
+asks one question — is the deterministic result usable? — and never asks
+*why* it was not before deciding to fall back. Three unusable shapes are
+distinguished for the operator's report and for nothing else:
+
+| Reason code | What happened |
+| --- | --- |
+| `deterministic_worker_failed` | every worker raised, whatever the cause |
+| `empty_extraction` | a worker ran and extracted no fact at all |
+| `insufficient_evidence` | facts were extracted but not enough to describe the company |
+
+An unreachable site, an expired certificate, an off-host redirect, a
+parser failure, a JavaScript-only page and a four-word marketing site all
+land in one of those three without anyone classifying them first. An
+operator never has to.
+
+### What bounds it
+
+* `FEATURES__RESEARCH_CLAUDE_FALLBACK`, default off, on top of
+  `FEATURES__COMPANY_RESEARCH`. A Campaign may switch it *off* with the
+  Agent config `{"claude_fallback": false}`; a Campaign can never switch
+  it on.
+* `allowed_tools=("WebSearch", "WebFetch")` — the narrowest permission
+  set that still allows finding pages and reading them. Deliberately not
+  the `allowed_tools=()` Insights and Personalization run under, because
+  this call *is* the gathering; equally deliberately not wider. No shell,
+  no filesystem, no editing. It cannot reach this application at all.
+* One call, one timeout, a ceiling on accepted sources and on accepted
+  evidence items. The CLI's internal tool loop is not observable from
+  this process, so the source ceiling is stated to the model as its
+  budget and enforced on the way back in — on what may be *persisted*,
+  not on what was requested. That is the honest boundary.
+
+### What it may store
+
+The same `SourcedFact` values a deterministic worker returns, through the
+same validation. A claim is accepted only with an openable absolute
+`source_url` **and** the supporting text from that page; anything else is
+dropped and counted, never softened into a weaker fact. Field names come
+from a closed vocabulary (`fallback.RESEARCH_FIELDS`), a strict subset of
+the Agent's field-to-section map, so the model cannot invent a section.
+Model-supplied confidence is clamped, and `retrieved_at` is this
+process's wall clock rather than anything the answer claimed.
+
+Everything it stores stays labelled: worker name `claude_web`,
+`extraction_method` `claude_cli_web_fallback:model_cited`. Deterministic
+website evidence, Claude-assisted web evidence and later Insights
+interpretation remain three distinguishable things in the evidence
+tables, in the dossier sections and in the Research report. Neither
+research source writes a canonical Company field.
+
+### Retries
+
+Safe to retry, and idempotent for the same job. Evidence rows are keyed
+`research:{job_id}:{worker}:{index}`, so re-running writes the same rows.
+A job that already committed a fallback attempt rebuilds it from the
+stored raw payload rather than spending a second model call, which also
+makes the resubmitted payload hash to the submission that already exists;
+an identical reading of an identical submission then reuses the dossier
+version instead of writing a second one.
+
+A transient Claude CLI or web failure keeps the existing retryable
+semantics. A *completed* fallback that could cite nothing does not: that
+is a truthful finding about the company's public web presence, it is
+committed with warnings, and it does not retry forever.
+
+Web pages and search results reaching this seam are untrusted evidence.
+The JSON shape is enforced by `fallback.py`, not negotiated with the
+answer: an unexpected key is ignored and an unknown field name is
+rejected, so nothing a page asserts can widen what is stored or what this
+stage may do.
+
 ## Planned: script workers (v2, not built)
 
 Sahil's `find_domain.py` and `company_intel.py` already produce exactly
@@ -136,9 +215,14 @@ technical conveniences:
 
 1. **Both scripts shell out to the Claude CLI.** That is an LLM
    invocation inside a stage whose entire contract is "deterministic,
-   sourced facts, no inference". Model output must be treated as an
-   untrusted, non-deterministic *interpretation*, not as a fact — which
-   makes it MVP-02 work sitting behind #181, not a research worker.
+   sourced facts, no inference". RES-002 settled the narrow version of
+   this question — see the fallback section above — and the answer was
+   *not* "a model may be a research worker". It was: a model may run as a
+   bounded second attempt, after the deterministic one has already
+   failed, storing only claims that carry an openable source and the
+   supporting text from it. A registered `ScriptWorker` running arbitrary
+   model-backed scripts as a first-class source is a different and much
+   wider question, and it is still open.
 2. **`docs/GOAL.md` lists paid LLM API integration as out of scope.**
    Whether a CLI on Sahil's subscription counts is a scope decision, not
    an implementation detail.
