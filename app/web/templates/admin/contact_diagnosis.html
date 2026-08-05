@@ -1,0 +1,267 @@
+{% extends "admin/base.html" %}
+{% import "admin/_wb.html" as wb %}
+{% block content %}
+
+{{ wb.crumbs([("Campaigns", "/admin/campaigns"), (execution.campaign_name, "/admin/campaigns/" ~ execution.campaign_id), (execution.contact_label, None)]) }}
+
+<div class="page-head">
+  <div>
+    <h1>{{ execution.contact_label }}
+      {{ wb.membership_badge(execution.membership_status) }}
+      {{ wb.eligibility_badge(execution.eligibility) }}
+      {% if execution.suppressed %}<span class="badge err">suppressed</span>{% endif %}
+    </h1>
+    <div class="sub">
+      {{ execution.company_label or "Company not captured" }}
+      {% if execution.contact_email %} · {{ execution.contact_email }}{% endif %}
+      · enrolled {{ execution.enrolled_at | dt }}
+      · <a href="/admin/contacts/{{ execution.contact_id }}">permanent Contact record</a>
+    </div>
+    <div class="sub">Next action: {{ execution.next_action }}</div>
+  </div>
+  <div class="page-actions">
+    {% if actions_available %}
+      {% if execution.membership_status.value == "active" %}
+      <form class="inline" method="post" action="/admin/campaigns/{{ execution.campaign_id }}/contacts/{{ execution.campaign_contact_id }}/actions/pause">
+        <button class="btn" type="submit">Pause Contact</button>
+      </form>
+      {% elif execution.membership_status.value == "paused" %}
+      <form class="inline" method="post" action="/admin/campaigns/{{ execution.campaign_id }}/contacts/{{ execution.campaign_contact_id }}/actions/resume">
+        <button class="btn primary" type="submit">Resume Contact</button>
+      </form>
+      {% endif %}
+    {% else %}
+      <span class="muted-note">Corrective actions require the agent_workbench feature switch.</span>
+    {% endif %}
+  </div>
+</div>
+
+{% if execution.blocking_reasons %}
+<div class="notice warn">
+  <div>
+    <strong>Blocking reasons (authoritative — cannot be released from this page):</strong>
+    <ul style="margin: 6px 0 0; padding-left: 18px;">
+      {% for reason in execution.blocking_reasons %}
+      <li>{{ reason.get("detail") or reason.get("code") }}{% if reason.get("terminal") %} <span class="badge err plain">terminal</span>{% endif %}</li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-head">
+    <h2>Agent/Stage timeline</h2>
+    <span class="hint">stage state · worker · Agent Job · attempts · evidence — in the actual pipeline order</span>
+  </div>
+  <div class="card-body">
+    <ol class="timeline">
+      {% for stage in view.stages %}
+      {% set svalue = stage.status.value if stage.status else none %}
+      <li>
+        <span class="t-marker {{ wb.tone_for_stage(svalue) if svalue else 'muted' }}">
+          {%- if svalue == 'completed' -%}✓{%- elif svalue == 'failed' -%}✕{%- elif svalue == 'skipped' -%}»{%- else -%}{{ stage.position + 1 }}{%- endif -%}
+        </span>
+        <div class="stage-card {{ 'attention' if stage.needs_attention else '' }}">
+          <div class="stage-head">
+            <span class="name">{{ stage.display_name }}</span>
+            {% if stage.implemented %}{{ wb.stage_badge(stage.status) }}{% else %}<span class="badge muted plain">unavailable</span>{% endif %}
+            {% if not stage.control.accepting_work and stage.implemented %}{{ wb.control_badge(stage.control) }}{% endif %}
+            <span class="exp">{{ stage.explanation }}</span>
+            {% if stage.updated_at %}<span class="muted-note nowrap">{{ stage.updated_at | ago }}</span>{% endif %}
+          </div>
+
+          {% if stage.implemented and (stage.jobs or stage.needs_attention or stage.status and svalue not in (none,)) %}
+          <div class="stage-body">
+            <div class="kv">
+              {% if stage.attempt_count %}<dt>Attempts</dt><dd>{{ stage.attempt_count }}</dd>{% endif %}
+              {% if stage.latest_job %}
+                <dt>Latest Agent Job</dt>
+                <dd>{{ wb.job_row_link(stage.latest_job) }} {{ wb.job_badge(stage.latest_job.public_status) }}
+                    <span class="dim">({{ stage.latest_job.stored_status.value }}, attempt {{ stage.latest_job.attempt_count }}/{{ stage.latest_job.max_attempts }})</span></dd>
+              {% endif %}
+              {% if stage.workers %}<dt>Workers</dt><dd>{{ stage.workers | join(" · ") }}</dd>{% endif %}
+              {% if stage.reason_code %}<dt>Reason code</dt><dd class="mono">{{ stage.reason_code }}</dd>{% endif %}
+              {% if stage.reason_detail and stage.reason_detail != stage.explanation %}<dt>Detail</dt><dd>{{ stage.reason_detail }}</dd>{% endif %}
+              <dt>Downstream</dt>
+              <dd>{% if stage.downstream_eligible %}<span class="badge ok plain">next stage may proceed</span>{% else %}<span class="badge muted plain">not yet eligible</span>{% endif %}</dd>
+            </div>
+
+            {# --- Research lineage: deterministic vs Claude fallback ---------- #}
+            {% if stage.agent_id.value == "research" and research_report %}
+              {% if research_report.deterministic or research_report.fallback or research_report.dossier_basis %}
+              <hr class="soft">
+              <div class="kv">
+                {% if research_report.deterministic %}
+                  <dt>Deterministic worker</dt>
+                  <dd>
+                    {{ research_report.deterministic.workers | join(", ") or "—" }} ·
+                    {% if research_report.deterministic.usable is true %}<span class="badge ok plain">result usable</span>
+                    {% elif research_report.deterministic.usable is false %}<span class="badge warn plain">{{ research_report.deterministic.reason or research_report.deterministic.reason_code or "not usable" }}</span>
+                    {% else %}<span class="badge muted plain">usability not recorded</span>{% endif %}
+                  </dd>
+                {% endif %}
+                {% if research_report.fallback %}
+                  <dt>Claude web fallback</dt>
+                  <dd>
+                    {% if research_report.fallback.attempted %}
+                      <span class="badge {{ 'ok' if research_report.fallback.status == 'succeeded' else ('warn' if research_report.fallback.status == 'insufficient' else 'err') }} plain">{{ research_report.fallback.status }}</span>
+                      {% if research_report.fallback.producer %}<span class="dim">· {{ research_report.fallback.producer }} {{ research_report.fallback.producer_version or "" }}</span>{% endif %}
+                      {% if research_report.fallback.tools %}<span class="dim">· tools: {{ research_report.fallback.tools | join(", ") }}</span>{% endif %}
+                      {% if research_report.fallback.evidence_accepted is not none %}<span class="dim">· {{ research_report.fallback.evidence_accepted }} claims accepted, {{ research_report.fallback.claims_rejected or 0 }} discarded</span>{% endif %}
+                      {% if research_report.fallback.source_urls %}<span class="dim">· {{ research_report.fallback.source_urls | length }} sources</span>{% endif %}
+                      {% if research_report.fallback.reused_committed_attempt %}<span class="badge info plain">reused committed attempt</span>{% endif %}
+                    {% else %}
+                      <span class="badge muted plain">not attempted</span>
+                      {% if research_report.fallback.trigger_reason %}<span class="dim">— {{ research_report.fallback.trigger_reason }}</span>{% endif %}
+                    {% endif %}
+                    {% if research_report.fallback.error %}<div class="dim">Error{% if research_report.fallback.error_code %} ({{ research_report.fallback.error_code }}){% endif %}: {{ research_report.fallback.error }}</div>{% endif %}
+                  </dd>
+                {% endif %}
+                {% if research_report.dossier_basis %}
+                  <dt>Final dossier basis</dt><dd class="mono">{{ research_report.dossier_basis }}</dd>
+                {% endif %}
+              </div>
+              {% if research_report.fallback and research_report.fallback.rejection_reasons %}
+              <details class="tech"><summary>Discard reasons ({{ research_report.fallback.rejection_reasons | length }})</summary>
+                <div class="tech-body"><ul>{% for reason in research_report.fallback.rejection_reasons %}<li class="muted-note">{{ reason }}</li>{% endfor %}</ul></div>
+              </details>
+              {% endif %}
+              {% if research_report.fallback and research_report.fallback.source_urls %}
+              <details class="tech"><summary>Fallback sources ({{ research_report.fallback.source_urls | length }})</summary>
+                <div class="tech-body"><ul>{% for url in research_report.fallback.source_urls %}<li class="mono wrap-anywhere">{{ url }}</li>{% endfor %}</ul></div>
+              </details>
+              {% endif %}
+              {% else %}
+              <hr class="soft">
+              <div class="muted-note">Execution lineage is unavailable for this run — it predates lineage recording, and nothing is inferred for it.</div>
+              {% endif %}
+              <div class="muted-note" style="margin-top: 8px;"><a href="/admin/agents/studio/research?campaign_contact={{ execution.campaign_contact_id }}">Full technical Research report →</a></div>
+            {% endif %}
+
+            {# --- stage-specific committed outcomes --------------------------- #}
+            {% if stage.agent_id.value == "research" and execution.research %}
+              <hr class="soft">
+              <div class="kv">
+                <dt>Dossier</dt>
+                <dd>{% if execution.research.dossier_version %}v{{ execution.research.dossier_version }} · {{ execution.research.source_count }} sources · sections: {{ execution.research.sections_present | join(", ") or "none" }}{% else %}No dossier version committed.{% endif %}</dd>
+                {% if execution.research.summary %}<dt>Summary</dt><dd>{{ execution.research.summary }}</dd>{% endif %}
+              </div>
+            {% elif stage.agent_id.value == "email" and execution.email %}
+              <hr class="soft">
+              <div class="kv">
+                <dt>Outcome</dt>
+                <dd>{% if execution.email.accepted %}<span class="badge ok">accepted</span> {{ execution.email.accepted_email }}{% elif execution.email.terminal_outcome %}<span class="badge warn plain">{{ execution.email.terminal_outcome | replace("_", " ") }}</span>{% else %}<span class="badge muted plain">no committed outcome</span>{% endif %}</dd>
+                {% if execution.email.candidate_count %}<dt>Candidates</dt><dd>{{ execution.email.attempted_count }} attempted of {{ execution.email.candidate_count }}{% if execution.email.current_position %} (at position {{ execution.email.current_position }}){% endif %}</dd>{% endif %}
+                {% if execution.email.reason %}<dt>Reason</dt><dd>{{ execution.email.reason }}</dd>{% endif %}
+              </div>
+            {% elif stage.agent_id.value == "verification" and execution.verification %}
+              <hr class="soft">
+              <div class="kv">
+                <dt>Decision</dt>
+                <dd>{% if execution.verification.decision %}<span class="badge {{ 'ok' if execution.verification.accepted else 'warn' }} plain">{{ execution.verification.decision | replace("_", " ") }}</span>{% if execution.verification.simulated %} <span class="badge info plain">simulated</span>{% endif %}{% else %}<span class="badge muted plain">no committed decision</span>{% endif %}</dd>
+                {% if execution.verification.provider %}<dt>Provider</dt><dd>{{ execution.verification.provider }}{% if execution.verification.reused_evidence %} <span class="dim">(reused evidence)</span>{% endif %}</dd>{% endif %}
+                {% if execution.verification.reason %}<dt>Reason</dt><dd>{{ execution.verification.reason }}</dd>{% endif %}
+                {% if execution.verification.attempts %}<dt>Attempts</dt><dd>{{ execution.verification.attempts | length }} ({{ execution.verification.paid_calls }} provider calls)</dd>{% endif %}
+              </div>
+            {% elif stage.agent_id.value == "insights" and execution.insights %}
+              <hr class="soft">
+              <div class="kv">
+                <dt>Claims</dt><dd>{{ execution.insights.claims | length }} kept · {{ execution.insights.claims_dropped }} dropped for want of a source · {{ execution.insights.unknowns_recorded }} unknowns recorded</dd>
+              </div>
+            {% elif stage.agent_id.value == "personalization" and execution.draft %}
+              <hr class="soft">
+              <div class="kv">
+                <dt>Draft</dt><dd>v{{ execution.draft.version_number }} · “{{ execution.draft.subject }}” · evidence: {{ execution.draft.evidence_supplied }} insight(s)</dd>
+                <dt>Approval</dt><dd><span class="badge muted plain">not approved</span> <span class="dim">decisions happen in the Customer review queue</span></dd>
+              </div>
+            {% elif stage.agent_id.value == "sending" %}
+              <hr class="soft">
+              <div class="muted-note">Unavailable — Sending Agent not implemented in this release.</div>
+            {% endif %}
+
+            {# --- corrective actions ------------------------------------------ #}
+            {% if actions_available and stage.available_action %}
+            <hr class="soft">
+            <div>
+              {% if stage.action_note %}<div class="muted-note" style="margin-bottom: 6px;">{{ stage.action_note }}</div>{% endif %}
+              {% if stage.available_action == "retry_contact" %}
+              <form class="inline" method="post" action="/admin/campaigns/{{ execution.campaign_id }}/contacts/{{ execution.campaign_contact_id }}/actions/retry">
+                <input type="text" name="reason" placeholder="Reason (recorded in the audit trail)" size="34">
+                <button class="btn primary" type="submit">Retry failed stage</button>
+              </form>
+              {% elif stage.available_action == "skip_stage" %}
+              <form class="inline" method="post" action="/admin/campaigns/{{ execution.campaign_id }}/contacts/{{ execution.campaign_contact_id }}/actions/skip-stage">
+                <input type="text" name="reason" placeholder="Reason (required)" size="34" required>
+                <button class="btn danger" type="submit">Skip this stage</button>
+              </form>
+              {% endif %}
+            </div>
+            {% elif stage.action_note %}
+            <hr class="soft">
+            <div class="muted-note">{{ stage.action_note }}</div>
+            {% endif %}
+
+            {# --- technical details -------------------------------------------- #}
+            {% if stage.jobs %}
+            <details class="tech">
+              <summary>Technical details — {{ stage.jobs | length }} Agent Job{{ "s" if stage.jobs | length != 1 else "" }}</summary>
+              <div class="tech-body">
+                <div class="table-wrap">
+                <table class="data">
+                  <thead><tr><th>Job</th><th>Status</th><th>Kind</th><th class="num">Attempts</th><th>Created</th><th>Finished</th><th>Error class</th></tr></thead>
+                  <tbody>
+                    {% for job in stage.jobs %}
+                    <tr>
+                      <td>{{ wb.job_row_link(job) }}</td>
+                      <td>{{ wb.job_badge(job.public_status) }} <span class="dim">{{ job.stored_status.value }}</span></td>
+                      <td class="dim">{{ job.task_kind }}</td>
+                      <td class="num">{{ job.attempt_count }}/{{ job.max_attempts }}</td>
+                      <td class="dim nowrap">{{ job.created_at | dt }}</td>
+                      <td class="dim nowrap">{{ job.finished_at | dt }}</td>
+                      <td class="dim">{{ job.error_class or "—" }}</td>
+                    </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+                </div>
+              </div>
+            </details>
+            {% endif %}
+          </div>
+          {% endif %}
+        </div>
+      </li>
+      {% endfor %}
+    </ol>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Pipeline event history</h2><span class="hint">every committed transition, in order</span></div>
+  <div class="card-body tight">
+    {% if execution.events %}
+    <div class="table-wrap">
+    <table class="data">
+      <thead><tr><th>When</th><th>Event</th><th>Stage</th><th>Transition</th><th>Reason</th><th>Actor</th></tr></thead>
+      <tbody>
+        {% for event in execution.events %}
+        <tr>
+          <td class="dim nowrap">{{ event.occurred_at | dt }}</td>
+          <td>{{ event.event_type.value | replace("_", " ") }}</td>
+          <td class="dim">{{ event.agent_id.value if event.agent_id else "—" }}</td>
+          <td class="dim">{% if event.from_status or event.to_status %}{{ event.from_status.value if event.from_status else "·" }} → {{ event.to_status.value if event.to_status else "·" }}{% else %}—{% endif %}</td>
+          <td class="dim wrap-anywhere">{{ event.reason_detail or event.reason_code or "—" }}</td>
+          <td class="dim">{{ event.actor }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% else %}
+    {{ wb.empty("No pipeline events recorded") }}
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}

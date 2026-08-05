@@ -1,0 +1,76 @@
+{% extends "admin/base.html" %}
+{% import "admin/_wb.html" as wb %}
+{% block content %}
+
+<div class="page-head">
+  <div>
+    <h1>Contacts</h1>
+    <div class="sub">Permanent Contact records with their Campaign memberships. A Contact never requires a Campaign, and acquiring one never makes it outreach-eligible.</div>
+  </div>
+</div>
+
+<div class="filters">
+  <form class="inline" method="get" action="/admin/contacts">
+    <input type="search" name="q" placeholder="Search name, email, company, domain" size="34" value="{{ view.query or '' }}">
+    <select name="campaign">
+      <option value="">Any Campaign</option>
+      {% for campaign_id, name in view.campaign_options %}
+      <option value="{{ campaign_id }}" {{ 'selected' if view.campaign_filter == campaign_id else '' }}>{{ name }}</option>
+      {% endfor %}
+    </select>
+    <button class="btn" type="submit">Search</button>
+    {% if view.query or view.campaign_filter %}<a class="muted-note" href="/admin/contacts">clear</a>{% endif %}
+  </form>
+  <div class="spacer"></div>
+  <span class="muted-note">{{ view.total }} Contact{{ "s" if view.total != 1 else "" }}</span>
+</div>
+
+<div class="card">
+  <div class="card-body tight">
+    {% if view.rows %}
+    <div class="table-wrap">
+    <table class="data">
+      <thead><tr>
+        <th>Contact</th><th>Title</th><th>Company</th><th>Email</th>
+        <th>Campaign memberships</th><th>Updated</th>
+      </tr></thead>
+      <tbody>
+        {% for row in view.rows %}
+        <tr>
+          <td class="primary">
+            <a href="/admin/contacts/{{ row.contact_id }}">{{ row.name }}</a>
+            {% if row.suppressed %}<span class="badge err plain">suppressed</span>{% endif %}
+          </td>
+          <td class="dim">{{ row.title or "—" }}</td>
+          <td>{% if row.company_id %}<a href="/admin/companies/{{ row.company_id }}">{{ row.company_label }}</a>{% else %}{{ row.company_label or "—" }}{% endif %}</td>
+          <td class="dim">{{ row.email or "—" }}</td>
+          <td>
+            {% if row.memberships %}
+              {% for membership in row.memberships[:3] %}
+              <div>
+                <a href="/admin/campaigns/{{ membership.campaign_id }}/contacts/{{ membership.campaign_contact_id }}">{{ membership.campaign_name }}</a>
+                <span class="dim">· {{ membership.current_stage_name or "not started" }}</span>
+                {{ wb.stage_badge(membership.pipeline_status) }}
+              </div>
+              {% endfor %}
+              {% if row.memberships | length > 3 %}<span class="muted-note">+{{ row.memberships | length - 3 }} more</span>{% endif %}
+            {% else %}
+              <span class="dim">none</span>
+            {% endif %}
+          </td>
+          <td class="dim nowrap">{{ row.updated_at | ago }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% set extra = ("&q=" ~ (view.query | urlencode) if view.query else "") ~ ("&campaign=" ~ view.campaign_filter if view.campaign_filter else "") %}
+    {{ wb.pager(view.page, view.pages, "/admin/contacts", extra) }}
+    {% else %}
+    {{ wb.empty("No Contacts match", "Adjust the search, or acquire Contacts through Imports and captures.") }}
+    {% endif %}
+  </div>
+  <div class="card-foot">CRM detail (labels, notes, capture evidence, field provenance) stays on the <a href="/contacts">legacy Contacts workspace</a>; this view is the execution-centred lookup.</div>
+</div>
+
+{% endblock %}

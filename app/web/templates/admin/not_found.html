@@ -1,0 +1,10 @@
+{% extends "admin/base.html" %}
+{% import "admin/_wb.html" as wb %}
+{% block title %}Not found{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Not found</h1></div></div>
+<div class="card"><div class="card-body">
+  <p>{{ message }}</p>
+  <p><a class="btn" href="/admin">Back to the Overview</a></p>
+</div></div>
+{% endblock %}

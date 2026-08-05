@@ -1,0 +1,146 @@
+{% extends "admin/base.html" %}
+{% import "admin/_wb.html" as wb %}
+{% block content %}
+
+{{ wb.crumbs([("Campaigns", "/admin/campaigns"), (view.name, None)]) }}
+
+<div class="page-head">
+  <div>
+    <h1>{{ view.name }}
+      <span class="badge {{ 'ok' if view.status == 'active' else 'muted' }} plain">{{ view.status }}</span>
+      {% if not view.execution_enabled %}<span class="badge warn">execution paused</span>{% endif %}
+    </h1>
+    {% if view.description %}<div class="sub">{{ view.description }}</div>{% endif %}
+    <div class="sub">Created {{ view.created_at | dt }} · settings v{{ view.settings_version }}{% if view.allow_provisional_domains %} · provisional domains allowed for Research{% endif %}</div>
+  </div>
+  <div class="page-actions">
+    <a class="btn" href="/campaigns/{{ view.campaign_id }}">Campaign settings (legacy)</a>
+    {% if 'agent_workbench' in features_enabled %}
+    <a class="btn" href="/workbench/campaigns/{{ view.campaign_id }}">Legacy monitor</a>
+    {% endif %}
+  </div>
+</div>
+
+{% for warning in view.warnings %}
+<div class="notice warn"><div>{{ warning }}</div></div>
+{% endfor %}
+
+<div class="stats">
+  <div class="stat"><div class="n">{{ view.enrolled }}</div><div class="l">Contacts enrolled</div></div>
+  <div class="stat ok"><div class="n">{{ view.completed }}</div><div class="l">Complete</div><div class="d">{{ view.progress_percent }}%</div></div>
+  <div class="stat"><div class="n">{{ view.in_progress }}</div><div class="l">In progress</div></div>
+  <div class="stat {{ 'warn' if view.blocked else '' }}"><div class="n">{{ view.blocked }}</div><div class="l">Blocked</div></div>
+  <div class="stat {{ 'err' if view.failed else '' }}"><div class="n">{{ view.failed }}</div><div class="l">Failed</div></div>
+  <div class="stat"><div class="n">{{ view.awaiting_review }}</div><div class="l">Awaiting review</div></div>
+  <div class="stat"><div class="n">{{ view.queue.open_work }}</div><div class="l">Open Jobs</div><div class="d">{{ view.queue.failed }} failed</div></div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Agent/Stage funnel</h2><span class="hint">contacts currently at each stage · committed failures per stage</span></div>
+  <div class="card-body">
+    <div class="funnel">
+      {% for step in view.funnel %}
+      <a class="funnel-step {{ 'off' if not step.control.accepting_work or not step.implemented else '' }} {{ 'bad' if step.failed_here or step.blocked_here else '' }}"
+         href="/admin/campaigns/{{ view.campaign_id }}?stage={{ step.agent_id.value }}" title="{{ step.display_name }}">
+        <div class="fs-name">{{ step.display_name | replace(" Agent", "") }}</div>
+        <div class="fs-n">{{ step.at_stage }}</div>
+        <div class="fs-d">{{ step.completed_through }} passed</div>
+        <div class="fs-flags">
+          {% if not step.implemented %}<span class="badge muted plain">unbuilt</span>
+          {% elif not step.control.accepting_work %}<span class="badge warn plain">{{ step.control.status.value }}</span>{% endif %}
+          {% if step.failed_here %}<span class="badge err plain">{{ step.failed_here }} failed</span>{% endif %}
+          {% if step.blocked_here %}<span class="badge warn plain">{{ step.blocked_here }} blocked</span>{% endif %}
+        </div>
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Contacts</h2>
+    <span class="hint">{{ view.contact_total }} match · click a row for the full Agent/Stage diagnosis</span>
+  </div>
+  <div class="card-body">
+    <div class="filters">
+      <div class="chiprow">
+        <a class="chip {{ 'on' if not view.stage_filter and not view.status_filter and not view.attention_filter else '' }}" href="/admin/campaigns/{{ view.campaign_id }}">All</a>
+        <a class="chip {{ 'on' if view.attention_filter else '' }}" href="/admin/campaigns/{{ view.campaign_id }}?attention=1">Needs attention</a>
+        {% for status in ("waiting", "running", "retrying", "failed", "blocked", "completed") %}
+        <a class="chip {{ 'on' if view.status_filter == status else '' }}" href="/admin/campaigns/{{ view.campaign_id }}?status={{ status }}">{{ status }}</a>
+        {% endfor %}
+      </div>
+      {% if view.stage_filter %}
+      <span class="badge accent plain">stage: {{ view.stage_filter.value }}</span>
+      <a class="muted-note" href="/admin/campaigns/{{ view.campaign_id }}">clear</a>
+      {% endif %}
+    </div>
+    {% if view.contacts %}
+    <div class="table-wrap">
+    <table class="data">
+      <thead><tr>
+        <th>Contact</th><th>Company</th><th>Stage</th><th>Pipeline</th><th>Eligibility</th>
+        <th>Reason</th><th>Review</th><th>Updated</th><th></th>
+      </tr></thead>
+      <tbody>
+        {% for row in view.contacts %}
+        <tr class="{{ 'attention' if row.needs_attention else '' }}">
+          <td class="primary">
+            <a href="/admin/campaigns/{{ view.campaign_id }}/contacts/{{ row.campaign_contact_id }}">{{ row.contact_label }}</a>
+            {% if row.suppressed %}<span class="badge err plain">suppressed</span>{% endif %}
+          </td>
+          <td>{{ row.company_label or "—" }}</td>
+          <td>{{ row.current_stage_name or "—" }}</td>
+          <td>{{ wb.stage_badge(row.pipeline_status) }}</td>
+          <td>{{ wb.eligibility_badge(row.eligibility) }}</td>
+          <td class="dim wrap-anywhere">{{ row.blocking_detail or "—" }}</td>
+          <td class="dim">{{ row.review_state or "—" }}</td>
+          <td class="dim nowrap">{{ row.updated_at | ago }}</td>
+          <td><a class="btn small" href="/admin/campaigns/{{ view.campaign_id }}/contacts/{{ row.campaign_contact_id }}">Diagnose</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% set extra = ("&stage=" ~ view.stage_filter.value if view.stage_filter else "") ~ ("&status=" ~ view.status_filter if view.status_filter else "") ~ ("&attention=1" if view.attention_filter else "") %}
+    {{ wb.pager(page, pages, "/admin/campaigns/" ~ view.campaign_id, extra) }}
+    {% else %}
+    {{ wb.empty("No Contacts match this filter", "Clear the filters, or enrol Contacts through Imports or captures.") }}
+    {% endif %}
+  </div>
+</div>
+
+<div class="grid cols-2">
+  <div class="card">
+    <div class="card-head"><h2>Recent failures</h2><a class="hint" href="/admin/failures?campaign={{ view.campaign_id }}">full inbox →</a></div>
+    <div class="card-body tight">
+      {% if view.recent_failures %}
+      <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>What</th><th>Where</th><th>Reason</th><th>When</th></tr></thead>
+        <tbody>
+          {% for item in view.recent_failures %}
+          <tr>
+            <td><span class="badge {{ 'err' if item.severity == 'critical' else 'warn' }}">{{ item.category_label }}</span></td>
+            <td class="primary"><a href="{{ item.diagnosis_href }}">{{ item.contact_label or item.agent_name or "Job" }}</a>{% if item.agent_name and item.contact_label %} <span class="dim">· {{ item.agent_name }}</span>{% endif %}</td>
+            <td class="dim wrap-anywhere">{{ item.reason | truncate(90) }}</td>
+            <td class="dim nowrap">{{ item.latest_at | ago }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {% else %}
+      {{ wb.empty("No recent failures in this Campaign") }}
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Recent activity</h2></div>
+    <div class="card-body">{{ wb.activity_list(view.recent_activity) }}</div>
+  </div>
+</div>
+
+{% endblock %}

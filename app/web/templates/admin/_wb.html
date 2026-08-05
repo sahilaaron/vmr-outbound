@@ -1,0 +1,131 @@
+{# Admin Workbench component macros.
+
+   Rule (inherited from the legacy macro set): a macro renders a state the
+   backend committed; it never derives one. Anything the product cannot
+   measure renders an explicit unavailable state, never a fabricated value. #}
+
+{# --- status tones ---------------------------------------------------------- #}
+
+{% macro tone_for_stage(status) -%}
+  {%- if status in ("completed",) -%}ok
+  {%- elif status in ("failed",) -%}err
+  {%- elif status in ("blocked", "retrying", "paused") -%}warn
+  {%- elif status in ("running", "waiting") -%}info
+  {%- else -%}muted{%- endif -%}
+{%- endmacro %}
+
+{% macro stage_badge(status) -%}
+  {%- if status is none -%}
+    <span class="badge muted plain">not started</span>
+  {%- else -%}
+    {%- set value = status.value if status.value is defined else status -%}
+    <span class="badge {{ tone_for_stage(value) }}">{{ value }}</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro job_badge(public_status) -%}
+  {%- set tones = {"completed": "ok", "failed": "err", "running": "info", "leased": "info",
+                   "queued": "muted", "retrying": "warn", "paused": "warn", "cancelled": "muted"} -%}
+  <span class="badge {{ tones.get(public_status, 'muted') }}">{{ public_status }}</span>
+{%- endmacro %}
+
+{% macro eligibility_badge(value) -%}
+  {%- set v = value.value if value.value is defined else value -%}
+  {%- set tones = {"eligible": "ok", "blocked": "err", "review_required": "warn", "unknown": "muted"} -%}
+  <span class="badge {{ tones.get(v, 'muted') }}">{{ v | replace("_", " ") }}</span>
+{%- endmacro %}
+
+{% macro membership_badge(value) -%}
+  {%- set v = value.value if value.value is defined else value -%}
+  {%- set tones = {"active": "ok", "paused": "warn", "archived": "muted"} -%}
+  <span class="badge {{ tones.get(v, 'muted') }} plain">{{ v }}</span>
+{%- endmacro %}
+
+{% macro control_badge(control) -%}
+  {%- set v = control.status.value -%}
+  {%- set tones = {"enabled": "ok", "paused": "warn", "disabled": "muted"} -%}
+  <span class="badge {{ tones.get(v, 'muted') }}">{{ v }}</span>
+  {%- if control.source == "campaign_override" %} <span class="badge outline plain">campaign override</span>
+  {%- elif control.source == "campaign_execution" %} <span class="badge outline plain">campaign paused</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro health_badge(health) -%}
+  {%- set tones = {"failing": "err", "blocked": "warn", "paused": "warn",
+                   "working": "info", "complete": "ok", "idle": "muted"} -%}
+  <span class="badge {{ tones.get(health, 'muted') }}">{{ health }}</span>
+{%- endmacro %}
+
+{% macro verification_badge(result) -%}
+  {%- if result is none -%}
+    <span class="badge muted plain">unverified</span>
+  {%- else -%}
+    {%- set tones = {"valid": "ok", "invalid": "err", "catch_all": "warn",
+                     "unknown": "muted", "disposable": "err"} -%}
+    <span class="badge {{ tones.get(result, 'muted') }}">{{ result | replace("_", " ") }}</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro bool_badge(value, yes="yes", no="no") -%}
+  {%- if value -%}<span class="badge ok plain">{{ yes }}</span>
+  {%- else -%}<span class="badge muted plain">{{ no }}</span>{%- endif -%}
+{%- endmacro %}
+
+{# --- structural helpers ---------------------------------------------------- #}
+
+{% macro crumbs(items) -%}
+  <div class="crumbs">
+    {%- for label, href in items -%}
+      {%- if href %}<a href="{{ href }}">{{ label }}</a>{% else %}<span>{{ label }}</span>{% endif -%}
+      {%- if not loop.last %}<span class="sep">/</span>{% endif -%}
+    {%- endfor -%}
+  </div>
+{%- endmacro %}
+
+{% macro empty(title, detail=None) -%}
+  <div class="empty">
+    <strong>{{ title }}</strong>
+    {% if detail %}{{ detail }}{% endif %}
+  </div>
+{%- endmacro %}
+
+{% macro unavailable(title, detail) -%}
+  <div class="unavailable"><strong>{{ title }}</strong> — {{ detail }}</div>
+{%- endmacro %}
+
+{% macro progress(percent) -%}
+  <div class="bar" role="img" aria-label="{{ percent }}% complete"><span style="width: {{ percent }}%"></span></div>
+{%- endmacro %}
+
+{% macro pager(page, pages, base_url, extra_query="") -%}
+  {% if pages > 1 %}
+  <div class="pager">
+    <span>Page {{ page }} of {{ pages }}</span>
+    {% if page > 1 %}<a href="{{ base_url }}?page={{ page - 1 }}{{ extra_query }}">← Previous</a>{% endif %}
+    {% if page < pages %}<a href="{{ base_url }}?page={{ page + 1 }}{{ extra_query }}">Next →</a>{% endif %}
+  </div>
+  {% endif %}
+{%- endmacro %}
+
+{% macro activity_list(events) -%}
+  {% if events %}
+  <ul class="activity">
+    {% for event in events %}
+    <li>
+      <span class="when" title="{{ event.occurred_at | dt }}">{{ event.occurred_at | ago }}</span>
+      <span>
+        {{ event.summary if event.summary is defined and event.summary else event.event_type.value | replace("_", " ") }}
+        {% if event.contact_label %}<span class="dim">· {{ event.contact_label }}</span>{% endif %}
+        {% if event.campaign_name %}<span class="dim">· {{ event.campaign_name }}</span>{% endif %}
+      </span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  {{ empty("No recent activity", "Nothing has been committed yet.") }}
+  {% endif %}
+{%- endmacro %}
+
+{% macro job_row_link(job) -%}
+  <a class="mono" href="/admin/jobs/{{ job.job_id }}">{{ job.job_id | string | truncate(8, True, "") }}…</a>
+{%- endmacro %}

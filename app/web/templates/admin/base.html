@@ -1,0 +1,121 @@
+{# Admin Workbench shell: persistent rail navigation + main work surface.
+   Eleven conceptual areas, always listed. An area whose feature is off still
+   renders — as truthful read-only visibility or an explicit unavailable state,
+   never as a simulated screen. #}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ page_title | default("Admin Workbench") }}{% endblock %} — VMR Outbound</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='admin.css') }}">
+</head>
+{# live_seconds is set only by the monitoring pages (Overview, Failures). Every
+   other page renders with no script tag at all. #}
+<body{% if live_seconds %} data-live="{{ live_seconds }}"{% endif %}>
+<div class="shell">
+  <nav class="rail" aria-label="Primary">
+    <div class="rail-brand">
+      VMR Outbound
+      <small>Admin Workbench</small>
+    </div>
+    <div class="rail-nav">
+      <a href="/admin" class="{{ 'active' if active_nav == 'overview' else '' }}">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+        Overview
+      </a>
+
+      <div class="rail-section">Operate</div>
+      <a href="/admin/campaigns" class="{{ 'active' if active_nav == 'campaigns' else '' }}">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 11l18-7-7 18-2.5-7.5L3 11z"/></svg>
+        Campaigns
+      </a>
+      <a href="/admin/contacts" class="{{ 'active' if active_nav == 'contacts' else '' }}">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.5 3.4-5.5 6.5-5.5s5.7 2 6.5 5.5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8"/><path d="M17.5 14.7c2.2.7 3.6 2.5 4 5.3"/></svg>
+        Contacts
+      </a>
+      <a href="/admin/companies" class="{{ 'active' if active_nav == 'companies' else '' }}">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 21h18"/><path d="M5 21V6a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v15"/><path d="M13 21V10a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v11"/><path d="M8 9h2"/><path d="M8 13h2"/><path d="M8 17h2"/></svg>
+        Companies
+      </a>
+      <a href="/admin/stages" class="{{ 'active' if active_nav == 'stages' else '' }}">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16"/><path d="M4 12h10"/><path d="M4 18h6"/><circle cx="19" cy="12" r="2"/><circle cx="14" cy="18" r="2"/></svg>
+        Agent/Stages
+      </a>
+
+      <div class="rail-section">Diagnose</div>
+      <a href="/admin/failures" class="{{ 'active' if active_nav == 'failures' else '' }}">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3l9 16H3L12 3z"/><path d="M12 10v4"/><path d="M12 17.5v.5"/></svg>
+        Failures
+        {% if nav_badges and nav_badges.failures %}<span class="nav-count">{{ nav_badges.failures }}</span>{% endif %}
+      </a>
+      <a href="/admin/review" class="{{ 'active' if active_nav == 'review' else '' }}">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 5a2 2 0 0 1 2-2h9l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5z"/><path d="M14 3v6h6"/><path d="M9 14l2 2 4-4"/></svg>
+        Review
+      </a>
+
+      <div class="rail-section">Govern</div>
+      <a href="/admin/providers" class="{{ 'active' if active_nav == 'providers' else '' }}">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v3"/><path d="M12 18v3"/><path d="M3 12h3"/><path d="M18 12h3"/><circle cx="12" cy="12" r="5"/></svg>
+        Providers &amp; Usage
+      </a>
+      <a href="/admin/configuration" class="{{ 'active' if active_nav == 'configuration' else '' }}">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1.2l2-1.6-2-3.4-2.4 1a7 7 0 0 0-2-1.2L14 3h-4l-.4 2.6a7 7 0 0 0-2 1.2l-2.5-1-2 3.4 2 1.6a7 7 0 0 0 0 2.4l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 2 1.2L10 21h4l.4-2.6a7 7 0 0 0 2-1.2l2.5 1 2-3.4-2-1.6c.1-.4.1-.8.1-1.2z"/></svg>
+        Configuration
+      </a>
+      <a href="/admin/system" class="{{ 'active' if active_nav == 'system' else '' }}">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8"/><path d="M12 16v4"/></svg>
+        System
+      </a>
+      <a href="/admin/diagnostics" class="{{ 'active' if active_nav == 'diagnostics' else '' }}">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6L14 13l-3-3 3.7-3.7z"/></svg>
+        Advanced Diagnostics
+      </a>
+
+      <div class="rail-section">Workflows</div>
+      <a href="/imports">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+        Imports
+      </a>
+      <a href="/review">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="10" cy="8" r="3"/><path d="M4 20c.7-3 2.8-4.8 6-4.8s5.3 1.8 6 4.8"/><path d="M17 8h5"/><path d="M19.5 5.5v5"/></svg>
+        Identity Review
+      </a>
+      <a href="/verification">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M22 6l-10 7L2 6"/><rect x="2" y="5" width="20" height="14" rx="2"/></svg>
+        Verification Console
+      </a>
+      {% if 'seller_knowledge_base' in features_enabled %}
+      <a href="/knowledge-base">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H19v15H6.5A2.5 2.5 0 0 0 4 20.5V5.5z"/><path d="M4 20.5A2.5 2.5 0 0 1 6.5 18H19v3H6.5A2.5 2.5 0 0 1 4 20.5z"/></svg>
+        Knowledge Base
+      </a>
+      {% endif %}
+      {% if 'company_intelligence' in features_enabled %}
+      <a href="/admin/company-intelligence">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M16.5 16.5L21 21"/><path d="M11 8v6"/><path d="M8 11h6"/></svg>
+        Company Intelligence
+      </a>
+      {% endif %}
+    </div>
+    <div class="rail-foot">
+      <a href="/app">← Customer interface</a>
+      <span class="env-chip">
+        <span class="db-dot {{ 'db-ok' if database_ok else 'db-bad' }}" aria-hidden="true"></span>
+        {{ app_env | upper }} · {{ "DB connected" if database_ok else "DB unavailable" }}
+      </span>
+      {% if dry_run %}Dry-run is on; no live sending.{% else %}Dry-run is OFF.{% endif %}
+    </div>
+  </nav>
+
+  <main class="main">
+    <div class="main-inner">
+      {% if flash_ok %}<div class="notice ok" role="status"><div>{{ flash_ok }}</div></div>{% endif %}
+      {% if flash_err %}<div class="notice err" role="alert"><div>{{ flash_err }}</div></div>{% endif %}
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+</div>
+{% if live_seconds %}<script src="{{ url_for('static', path='live.js') }}" defer></script>{% endif %}
+</body>
+</html>

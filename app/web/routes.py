@@ -300,10 +300,11 @@ def _parse_uuid(value: str | None) -> uuid.UUID | None:
 # --- Overview ----------------------------------------------------------------
 
 
-# The admin Workbench root is `/admin`. `/` now belongs to the customer-facing
-# interface, which is the default application experience; this page, its template
-# and its context are otherwise unchanged.
-@router.get("/admin", response_class=HTMLResponse)
+# The redesigned Admin Workbench now owns `/admin` (see
+# `app.web.admin_workbench`, mounted before this router). The original
+# import-centric overview stays reachable at an explicit legacy address, linked
+# from Advanced Diagnostics, so nothing an operator bookmarked disappears.
+@router.get("/admin/legacy/overview", response_class=HTMLResponse)
 def overview_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     stats = workbench.load_overview(db)
     return _render(

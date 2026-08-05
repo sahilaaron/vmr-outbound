@@ -114,9 +114,14 @@ def test_while_the_feature_is_off_commands_refuse(
 
 
 def test_the_navigation_offers_the_workbench_when_it_is_on(client: TestClient) -> None:
-    response = client.get("/admin")
+    # The Admin Workbench shell reaches the legacy monitor through Advanced
+    # Diagnostics; the legacy shell keeps its direct rail entry.
+    response = client.get("/admin/diagnostics")
     assert response.status_code == 200
     assert 'href="/workbench"' in response.text
+    legacy = client.get("/admin/legacy/overview")
+    assert legacy.status_code == 200
+    assert 'href="/workbench"' in legacy.text
 
 
 # --- Agent overview ----------------------------------------------------------

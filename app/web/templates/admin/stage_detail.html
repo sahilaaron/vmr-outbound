@@ -1,0 +1,142 @@
+{% extends "admin/base.html" %}
+{% import "admin/_wb.html" as wb %}
+{% block content %}
+
+{{ wb.crumbs([("Agent/Stages", "/admin/stages"), (view.row.display_name, None)]) }}
+
+<div class="page-head">
+  <div>
+    <h1>{{ view.row.display_name }}
+      {{ wb.control_badge(view.effective_global) }}
+      {% if not view.row.implemented %}<span class="badge muted plain">not implemented</span>{% endif %}
+    </h1>
+    <div class="sub">
+      Pipeline position {{ view.row.card.position }}
+      {% if view.row.dependencies %} · depends on {{ view.row.dependencies | map(attribute="value") | join(", ") }}{% endif %}
+      {% if view.row.skippable %} · skippable{% endif %}
+    </div>
+  </div>
+  <div class="page-actions">
+    {% if view.studio_href and 'agent_workbench' in features_enabled %}
+    <a class="btn" href="{{ view.studio_href }}">Open in Agent Studio</a>
+    {% endif %}
+    {% if 'agent_workbench' in features_enabled %}
+    <a class="btn" href="/workbench/agents/{{ view.row.agent_id.value }}">Legacy agent monitor</a>
+    {% endif %}
+  </div>
+</div>
+
+{% if not view.row.implemented %}
+{{ wb.unavailable("Not implemented in this release", "This Agent/Stage is registered for pipeline compatibility. It cannot be enabled, and no work is simulated for it.") }}
+{% endif %}
+
+<div class="stats">
+  <div class="stat"><div class="n">{{ view.row.card.queue.queued }}</div><div class="l">Queued</div></div>
+  <div class="stat"><div class="n">{{ view.row.card.queue.running }}</div><div class="l">Running</div></div>
+  <div class="stat"><div class="n">{{ view.row.card.queue.retrying }}</div><div class="l">Retrying</div></div>
+  <div class="stat {{ 'err' if view.row.card.queue.failed else '' }}"><div class="n">{{ view.row.card.queue.failed }}</div><div class="l">Failed Jobs</div></div>
+  <div class="stat"><div class="n">{{ view.row.stage_status_counts.get("completed", 0) }}</div><div class="l">Stages completed</div></div>
+  <div class="stat"><div class="n">{% if view.row.avg_duration_seconds is not none %}{{ view.row.avg_duration_seconds | duration }}{% else %}—{% endif %}</div><div class="l">Avg duration</div><div class="d">{{ view.row.duration_sample }} runs in 30 days</div></div>
+</div>
+
+<div class="grid cols-2">
+  <div class="card">
+    <div class="card-head"><h2>Execution mechanics</h2></div>
+    <div class="card-body">
+      <div class="kv">
+        <dt>Workers</dt><dd>{{ view.row.workers | join(" · ") if view.row.workers else "None — nothing executes this stage yet." }}</dd>
+        <dt>Effective control</dt><dd>{{ wb.control_badge(view.effective_global) }} <span class="dim">source: {{ view.effective_global.source }}</span></dd>
+        {% if view.effective_global.reason %}<dt>Control reason</dt><dd>{{ view.effective_global.reason }}</dd>{% endif %}
+        <dt>Stored configuration</dt>
+        <dd>{% if view.config_summary %}<code>{{ view.config_summary | pretty_json }}</code>{% else %}<span class="dim">none (registry defaults)</span>{% endif %}</dd>
+      </div>
+      <div class="muted-note" style="margin-top: 10px;">Control changes go through the authoritative command surface on the legacy monitor and Studio pages; this view never writes.</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Campaign overrides</h2><span class="hint">{{ view.overrides | length }}</span></div>
+    <div class="card-body tight">
+      {% if view.overrides %}
+      <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>Campaign</th><th>Status</th><th>Reason</th><th>Updated</th></tr></thead>
+        <tbody>
+          {% for override in view.overrides %}
+          <tr>
+            <td class="primary"><a href="/admin/campaigns/{{ override.campaign_id }}">{{ override.campaign_name }}</a></td>
+            <td><span class="badge {{ 'ok' if override.status.value == 'enabled' else 'warn' }} plain">{{ override.status.value }}</span></td>
+            <td class="dim">{{ override.reason or "—" }}</td>
+            <td class="dim">{{ override.updated_at | ago }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {% else %}
+      {{ wb.empty("No Campaign overrides", "Every Campaign follows the global control for this stage.") }}
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Open Agent Jobs</h2><span class="hint">{{ view.open_jobs | length }}</span></div>
+  <div class="card-body tight">
+    {% if view.open_jobs %}
+    <div class="table-wrap">
+    <table class="data">
+      <thead><tr><th>Job</th><th>Status</th><th>Campaign</th><th>Contact</th><th class="num">Attempts</th><th>Next run</th><th>Created</th></tr></thead>
+      <tbody>
+        {% for job in view.open_jobs %}
+        <tr>
+          <td>{{ wb.job_row_link(job) }}</td>
+          <td>{{ wb.job_badge(job.public_status) }}</td>
+          <td class="dim">{{ job.campaign_name or "—" }}</td>
+          <td class="dim">{{ job.contact_label or "—" }}</td>
+          <td class="num">{{ job.attempt_count }}/{{ job.max_attempts }}</td>
+          <td class="dim nowrap">{{ job.next_run_at | dt }}</td>
+          <td class="dim nowrap">{{ job.created_at | ago }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% else %}
+    {{ wb.empty("No open Jobs for this stage") }}
+    {% endif %}
+  </div>
+</div>
+
+<div class="grid cols-2">
+  <div class="card">
+    <div class="card-head"><h2>Recent failures</h2><a class="hint" href="/admin/failures?agent={{ view.row.agent_id.value }}">full inbox →</a></div>
+    <div class="card-body tight">
+      {% if view.recent_failures %}
+      <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>Where</th><th>Reason</th><th>When</th></tr></thead>
+        <tbody>
+          {% for item in view.recent_failures %}
+          <tr>
+            <td class="primary"><a href="{{ item.diagnosis_href }}">{{ item.contact_label or item.campaign_name or "Job" }}</a></td>
+            <td class="dim wrap-anywhere">{{ item.reason | truncate(90) }}</td>
+            <td class="dim nowrap">{{ item.latest_at | ago }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {% else %}
+      {{ wb.empty("No recent failures for this stage") }}
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Recent activity</h2></div>
+    <div class="card-body">{{ wb.activity_list(view.recent_activity) }}</div>
+  </div>
+</div>
+
+{% endblock %}
