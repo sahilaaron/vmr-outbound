@@ -81,9 +81,11 @@ class SalesNavCompanyEnrichment(Base):
         ),
         # Exactly one owner. A record with neither owner would be unreachable
         # evidence; one with both would let a confirmation leak across paths.
+        # Bare name: the convention prepends ``ck_<table>_``. See the note in
+        # ``app/models/collection.py`` and migration ``b6d4e07a1f38``.
         CheckConstraint(
             "(batch_id IS NULL) <> (capture_id IS NULL)",
-            name="ck_salesnav_company_enrichments_single_owner",
+            name="single_owner",
         ),
     )
 
