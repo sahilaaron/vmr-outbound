@@ -39,6 +39,7 @@ from app.core.config import Settings, get_settings
 from app.models.campaign import CampaignContact
 from app.models.company import Company
 from app.models.contact import Contact
+from app.models.email_sequence import SEQUENCE_LENGTH
 from app.models.enums import (
     AgentControlStatus,
     AgentIdentifier,
@@ -66,6 +67,8 @@ from app.services.seller import campaign_offerings as seller_campaign_offerings
 from app.services.seller import profile as seller_profile
 from app.services.seller import readiness as seller_readiness
 from app.services.seller import records as seller_records
+from app.services.sequences import read as sequence_read
+from app.services.sequences import review as sequence_review
 from app.services.verification import console as verification_console
 from app.services.workbench_agents import views as agent_views
 from app.web.v2 import context as shell
@@ -391,6 +394,35 @@ def _reader(db: Session) -> workbench_agents.PhaseTwoWorkbenchReader:
 
 def _agent_workbench_on(settings: Settings) -> bool:
     return "agent_workbench" in settings.features.enabled()
+
+
+def _sequences_on(settings: Settings) -> bool:
+    """Whether the seven-message sequence feature exists in this deployment.
+
+    Deliberately only the deployment half. Whether a *particular* Campaign
+    produces sequences is that Campaign's opt-in, and the pages must be able to
+    render "this Campaign is not enabled" rather than pretend the feature is
+    absent.
+    """
+
+    return "email_sequences" in settings.features.enabled()
+
+
+def _step_position(step: str | None) -> int:
+    """Turn a ``?step=`` parameter into a position, defaulting to the initial.
+
+    Out-of-range and unparseable values fall back to position 1 rather than
+    404ing. A mistyped step is a navigation slip, not a missing resource, and
+    the initial message is always the right thing to show instead.
+    """
+
+    if not step:
+        return 1
+    try:
+        value = int(step)
+    except ValueError:
+        return 1
+    return value if 1 <= value <= SEQUENCE_LENGTH else 1
 
 
 def _kb_on(settings: Settings) -> bool:
@@ -1250,6 +1282,8 @@ def review_page(
     campaign: str | None = None,
     view: str = draft_service.VIEW_AWAITING,
     draft: str | None = None,
+    sequence: str | None = None,
+    step: str | None = None,
 ) -> HTMLResponse:
     """Read a draft, and decide.
 
@@ -1275,6 +1309,35 @@ def review_page(
         )
 
     settings = get_settings()
+    # Sequences and legacy single drafts coexist in this queue on purpose. A
+    # Campaign that opted in has sequences; one that did not still has drafts;
+    # and a contact whose sequence predates the feature still has the draft it
+    # was given. Showing one list with two honest card shapes is truer than
+    # hiding either.
+    sequence_queue = None
+    sequence_card = None
+    sequence_detail = None
+    sequence_rows: tuple[sequence_read.MessageRow, ...] = ()
+    if _sequences_on(settings):
+        sequence_queue = sequence_read.list_queue(
+            db,
+            campaign_id=campaign_id,
+            view=(view if view in {key for key, _label in sequence_read.VIEWS} else "awaiting"),
+            limit=50,
+        )
+        chosen_sequence = _uuid(sequence) if sequence else None
+        sequence_card = next(
+            (row for row in sequence_queue.rows if row.sequence_id == chosen_sequence), None
+        )
+        if sequence_card is not None:
+            record = sequence_read.get_sequence(db, sequence_card.sequence_id)
+            if record is not None:
+                sequence_rows = sequence_read.message_rows(db, sequence=record)
+                # One body, on request. Expanding a card must not become a
+                # reason to load seven of them.
+                sequence_detail = sequence_read.message_detail(
+                    db, sequence=record, position=_step_position(step)
+                )
     execution = None
     if (
         selected is not None
@@ -1301,6 +1364,12 @@ def review_page(
             "campaigns": campaign_service.list_campaigns(db),
             "campaign_id": campaign_id,
             "agent_workbench_on": _agent_workbench_on(settings),
+            "sequences_on": _sequences_on(settings),
+            "sequence_queue": sequence_queue,
+            "sequence_card": sequence_card,
+            "sequence_rows": sequence_rows,
+            "sequence_detail": sequence_detail,
+            "sequence_step": _step_position(step),
         },
     )
 
@@ -1494,6 +1563,177 @@ def review_discard(
 # ---------------------------------------------------------------------------
 
 
+#: Where a sequence action returns when the submitted target is not usable.
+SEQUENCE_FALLBACK = "/app/review"
+
+
+def _sequence_back(target: str) -> str:
+    """Constrain a submitted redirect target to this application.
+
+    The ``back`` field is operator-supplied and is echoed into a ``Location``
+    header, so it must not be able to point off-site. A value that is not a
+    plain in-app path is replaced outright rather than repaired: a half-fixed
+    redirect target is harder to reason about than a discarded one.
+
+    ``//host`` is rejected explicitly. It starts with a slash and looks local,
+    but a browser reads it as a protocol-relative absolute URL and leaves the
+    site.
+    """
+
+    candidate = (target or "").strip()
+    if not candidate.startswith("/app") or candidate.startswith("//"):
+        return SEQUENCE_FALLBACK
+    return candidate
+
+
+@router.post("/review/sequence/messages/{version_id}/approve")
+def sequence_message_approve(
+    version_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    reason: str = Form(""),
+    back: str = Form("/app/review"),
+) -> RedirectResponse:
+    """Approve one message. The other six are untouched."""
+
+    target = _sequence_back(back)
+    identifier = _uuid(version_id)
+    if identifier is None:
+        return _redirect(target, err="That is not a sequence message version id.")
+    try:
+        sequence_review.approve_message(
+            db,
+            message_version_id=identifier,
+            actor=sequence_review.OPERATOR_ACTOR,
+            reason=reason or None,
+        )
+    except sequence_review.SequenceReviewError as exc:
+        return _redirect(target, err=str(exc))
+    db.commit()
+    return _redirect(
+        target,
+        ok=(
+            "Approved, and recorded against this exact message version. Nothing was sent "
+            "and no Gmail draft was created: there is no sending path in this build."
+        ),
+    )
+
+
+@router.post("/review/sequence/messages/{version_id}/discard")
+def sequence_message_discard(
+    version_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    reason: str = Form(""),
+    back: str = Form("/app/review"),
+) -> RedirectResponse:
+    """Discard one message without pretending the sequence is ready."""
+
+    target = _sequence_back(back)
+    identifier = _uuid(version_id)
+    if identifier is None:
+        return _redirect(target, err="That is not a sequence message version id.")
+    try:
+        sequence_review.discard_message(
+            db,
+            message_version_id=identifier,
+            actor=sequence_review.OPERATOR_ACTOR,
+            reason=reason or None,
+        )
+    except sequence_review.SequenceReviewError as exc:
+        return _redirect(target, err=str(exc))
+    db.commit()
+    return _redirect(
+        target,
+        ok="Discarded. The sequence is not ready while one of its messages is discarded.",
+    )
+
+
+@router.post("/review/sequence/messages/{version_id}/edit")
+def sequence_message_edit(
+    version_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    subject: str = Form(""),
+    body: str = Form(""),
+    reason: str = Form(""),
+    back: str = Form("/app/review"),
+) -> RedirectResponse:
+    """Write a new version of one message, keeping the text it replaced."""
+
+    target = _sequence_back(back)
+    identifier = _uuid(version_id)
+    if identifier is None:
+        return _redirect(target, err="That is not a sequence message version id.")
+    try:
+        sequence_review.edit_message(
+            db,
+            message_version_id=identifier,
+            subject=subject,
+            body=body,
+            actor=sequence_review.OPERATOR_ACTOR,
+            reason=reason or None,
+        )
+    except sequence_review.SequenceReviewError as exc:
+        return _redirect(target, err=str(exc))
+    db.commit()
+    return _redirect(
+        target,
+        ok=(
+            "Saved as a new version. The previous version is kept, any approval against it "
+            "is marked invalidated, and the other six messages are unchanged."
+        ),
+    )
+
+
+@router.post("/review/sequence/{sequence_id}/approve")
+def sequence_approve(
+    sequence_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    version_ids: str = Form(""),
+    reason: str = Form(""),
+    back: str = Form("/app/review"),
+) -> RedirectResponse:
+    """Approve every message in one operation, naming every exact version.
+
+    ``version_ids`` is what the page was showing. If it no longer matches what
+    is stored, nothing is approved -- a bulk approval that quietly covered a
+    version the operator never read would be exactly the ambiguity the sequence
+    review model exists to prevent.
+    """
+
+    target = _sequence_back(back)
+    identifier = _uuid(sequence_id)
+    if identifier is None:
+        return _redirect(target, err="That is not a sequence id.")
+    parsed = tuple(
+        value
+        for value in (_uuid(item) for item in version_ids.split(",") if item.strip())
+        if value is not None
+    )
+    if not parsed:
+        return _redirect(target, err="No message versions were named, so nothing was approved.")
+    try:
+        sequence_review.approve_sequence(
+            db,
+            sequence_id=identifier,
+            expected_version_ids=parsed,
+            actor=sequence_review.OPERATOR_ACTOR,
+            reason=reason or None,
+        )
+    except sequence_review.SequenceReviewError as exc:
+        return _redirect(target, err=str(exc))
+    db.commit()
+    return _redirect(
+        target,
+        ok=(
+            "Approved all seven messages, each recorded against its exact version. Nothing "
+            "was sent and no Gmail draft was created."
+        ),
+    )
+
+
 @router.get("/contacts")
 def contacts_page(
     request: Request,
@@ -1589,6 +1829,7 @@ def contact_page(
     request: Request,
     db: Session = Depends(get_db),
     campaign: str | None = None,
+    step: str | None = None,
 ) -> HTMLResponse:
     """One person, and every Agent that touched them.
 
@@ -1628,6 +1869,23 @@ def contact_page(
             (row for row in page.rows if row.contact_id == identifier and row.is_current), None
         )
 
+    sequence_summary = None
+    sequence_rows: tuple[sequence_read.MessageRow, ...] = ()
+    sequence_detail = None
+    sequence_record = None
+    if membership is not None and _sequences_on(settings):
+        sequence_record = sequence_read.sequence_for_membership(
+            db, campaign_contact_id=membership.id
+        )
+        if sequence_record is not None:
+            sequence_summary = sequence_read.summary(db, sequence=sequence_record)
+            # Seven rows without bodies; one body only when a row is expanded.
+            sequence_rows = sequence_read.message_rows(db, sequence=sequence_record)
+            if step is not None:
+                sequence_detail = sequence_read.message_detail(
+                    db, sequence=sequence_record, position=_step_position(step)
+                )
+
     return _render(
         request,
         db,
@@ -1642,6 +1900,12 @@ def contact_page(
             "membership": membership,
             "latest_draft": latest_draft,
             "agent_workbench_on": _agent_workbench_on(settings),
+            "sequences_on": _sequences_on(settings),
+            "sequence": sequence_record,
+            "sequence_summary": sequence_summary,
+            "sequence_rows": sequence_rows,
+            "sequence_detail": sequence_detail,
+            "sequence_step": _step_position(step) if step is not None else None,
         },
     )
 

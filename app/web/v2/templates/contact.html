@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_ui.html" import tag, dot, unbuilt, empty, email_state, research_state %}
+{% import "_sequence.html" as seq %}
 {% block content %}
 <div class="v2-page detail">
 
@@ -116,6 +117,111 @@
           </span>
           {% if latest_draft %}<a href="/app/review?draft={{ latest_draft.draft_version_id }}">Decide on it →</a>{% endif %}
         </div>
+      </div>
+      {% endif %}
+
+      {% if sequences_on and membership %}
+      <div class="v2-card" id="sequence">
+        <div class="v2-card-head">
+          <h2>The seven-message sequence</h2>
+          <span class="v2-note">Written as one unit. Reviewed one message at a time.</span>
+        </div>
+
+        {% if not sequence_summary %}
+        <div class="v2-card-body">{{ seq.unavailable('pending') }}</div>
+        {% else %}
+        {# The summary above the table, so the shape of the sequence is legible
+           before any row is opened. #}
+        <div class="v2-card-body">
+          <div class="v2-chipline">
+            {{ tag(seq.state_label(sequence_summary.review_state.value), seq.state_tone(sequence_summary.review_state.value), small=true) }}
+            <span class="v2-fact">sequence v{{ sequence_summary.sequence_version }}</span>
+            <span class="v2-fact">{{ sequence_summary.message_count }} of 7 written</span>
+            <span class="v2-fact ok">{{ sequence_summary.approved }} approved</span>
+            <span class="v2-fact">{{ sequence_summary.awaiting }} waiting</span>
+            {% if sequence_summary.edited %}<span class="v2-fact warn">{{ sequence_summary.edited }} edited</span>{% endif %}
+            {% if sequence_summary.discarded %}<span class="v2-fact err">{{ sequence_summary.discarded }} discarded</span>{% endif %}
+            {% if sequence_summary.warning_count %}<span class="v2-fact warn">{{ sequence_summary.warning_count }} warning(s)</span>{% endif %}
+          </div>
+          <dl class="v2-dl v2-mt-sm">
+            <dt>Generated</dt><dd>{{ sequence_summary.created_at | dt }}</dd>
+            <dt>Generation</dt><dd>{{ sequence_summary.generation_status }}</dd>
+            <dt>Validation</dt><dd>{{ sequence_summary.validation_status.value | replace('_', ' ') }}</dd>
+            <dt>Planned span</dt>
+            <dd>
+              {% if sequence_summary.planned_span_days is not none %}
+                {{ sequence_summary.planned_span_days }} days ({{ sequence_summary.cadence_source }} cadence)
+                <span class="v2-muted">— planned timing, not a schedule. Nothing here sends anything.</span>
+              {% else %}not recorded{% endif %}
+            </dd>
+            <dt>Next actionable</dt>
+            <dd>
+              {% if sequence_summary.current_actionable_position %}
+                message {{ sequence_summary.current_actionable_position }}
+                <span class="v2-muted">— for a future delivery workflow that does not exist yet</span>
+              {% else %}nothing is actionable: no message is approved{% endif %}
+            </dd>
+            <dt>Mode</dt><dd>seven-message sequence, enabled for this campaign</dd>
+          </dl>
+        </div>
+
+        <div class="v2-table-wrap v2-seq-table">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Step</th>
+              <th scope="col">Type</th>
+              <th scope="col">Purpose</th>
+              <th scope="col">Planned timing</th>
+              <th scope="col">Subject</th>
+              <th scope="col">Review</th>
+              <th scope="col">Edit state</th>
+              <th scope="col">Version</th>
+              <th scope="col">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in sequence_rows %}
+            <tr class="{{ 'on' if sequence_step == row.position }}">
+              <th scope="row">{{ row.step_label }}</th>
+              <td>{{ 'initial' if row.position == 1 else 'follow-up' }}</td>
+              <td>{{ row.purpose_label }}</td>
+              <td>{{ row.timing_label }}</td>
+              <td class="v2-seq-cell-subject">{{ row.subject }}</td>
+              <td>{{ row.review_label }}</td>
+              <td>{{ row.edit_label }}</td>
+              <td class="m">v{{ row.message_version }}</td>
+              <td>
+                <a class="v2-btn sm" href="/app/contacts/{{ detail.contact.id }}?campaign={{ membership.campaign_id }}&step={{ row.position }}#sequence">
+                  {{ 'Hide' if sequence_step == row.position else 'Open' }}
+                </a>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        </div>
+
+        {% if sequence_detail %}
+        <div class="v2-card-body v2-seq-rowdetail">
+          {{ seq.message(sequence_detail, "/app/contacts/" ~ detail.contact.id ~ "?campaign=" ~ membership.campaign_id ~ "&step=" ~ sequence_step) }}
+          {#
+            Exact identifiers live here, in secondary diagnostic detail, rather
+            than as labels on the table. An operator needs them when something is
+            wrong; a reader deciding on copy does not.
+          #}
+          <details class="v2-seq-ids">
+            <summary>Exact identifiers</summary>
+            <dl class="v2-dl">
+              <dt>Sequence</dt><dd class="m">{{ sequence_summary.sequence_id }} · key {{ sequence_summary.sequence_key }}</dd>
+              <dt>Message</dt><dd class="m">{{ sequence_detail.row.message_id }}</dd>
+              <dt>This version</dt><dd class="m">{{ sequence_detail.row.version_id }}</dd>
+              <dt>Predecessor</dt><dd class="m">{{ sequence_detail.row.predecessor_message_id or 'none — this is the initial message' }}</dd>
+            </dl>
+          </details>
+        </div>
+        {% endif %}
+        {% endif %}
       </div>
       {% endif %}
 

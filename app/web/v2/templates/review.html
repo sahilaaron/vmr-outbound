@@ -1,6 +1,61 @@
 {% extends "base.html" %}
 {% from "_ui.html" import tag, unbuilt, dot, empty, stage_status %}
+{% import "_sequence.html" as seq %}
 {% block content %}
+
+{% if sequences_on %}
+{#
+  Sequences and legacy single drafts share this page deliberately. A campaign
+  that opted in has sequences; one that did not still has drafts; and a contact
+  drafted before the feature existed still has the draft it was given. Two
+  honest sections beat one section that quietly reinterprets old records.
+#}
+<div class="v2-page">
+  <div class="v2-seq-head">
+    <h1 class="v2-h1">Sequences</h1>
+    <p class="v2-lede">
+      Each card is one contact's seven-message sequence, written as one unit. Open a card to
+      read the messages one at a time and decide on each. Nothing is sent by approving:
+      there is no sending path and no mailbox connected to this build.
+    </p>
+  </div>
+
+  {% if sequence_queue and sequence_queue.rows %}
+  <div class="v2-seq-list">
+    {% for row in sequence_queue.rows %}
+    {% set is_open = sequence_card and row.sequence_id == sequence_card.sequence_id %}
+    {% set scope = "&view=" ~ queue.view ~ ("&campaign=" ~ campaign_id if campaign_id else "") %}
+    {{ seq.card(row, "/app/review?" ~ ("" if is_open else "sequence=" ~ row.sequence_id ~ "&step=1") ~ scope, open=is_open) }}
+    {% if is_open %}
+    <div class="v2-seq-open">
+      {% set base = "/app/review?sequence=" ~ sequence_card.sequence_id ~ scope %}
+      {{ seq.selector(sequence_rows, sequence_step, base) }}
+      {% if sequence_detail %}
+        {{ seq.message(sequence_detail, base ~ "&step=" ~ sequence_step) }}
+      {% else %}
+        {{ empty("That message is not available", "The sequence does not currently hold a message at this position.") }}
+      {% endif %}
+      <form method="post" action="/app/review/sequence/{{ sequence_card.sequence_id }}/approve" class="v2-seq-bulk">
+        <input type="hidden" name="back" value="{{ base }}&step={{ sequence_step }}">
+        <input type="hidden" name="version_ids" value="{{ sequence_rows | map(attribute='version_id') | join(',') }}">
+        <label class="v2-sr" for="seq-bulk-note">Note</label>
+        <input class="v2-sr" id="seq-bulk-note" name="reason" value="">
+        <button class="v2-btn primary" type="submit">Approve all seven messages</button>
+        <span class="why">
+          One operation, recording your approval against each of the seven exact message
+          versions listed above. If any of them changed while you were reading, nothing is
+          approved and you are asked to reload.
+        </span>
+      </form>
+    </div>
+    {% endif %}
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="v2-card v2-mt">{{ seq.unavailable("pending") }}</div>
+  {% endif %}
+</div>
+{% endif %}
 
 {% if not queue.rows and not selected %}
 <div class="v2-page narrow">
