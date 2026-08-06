@@ -71,6 +71,11 @@ class EmailExecutionOutcome(enum.StrEnum):
 
     EXISTING_EMAIL_REUSED = "existing_accepted_email_reused"
     VERIFIED_EMAIL_ACCEPTED = "verified_email_accepted"
+    #: The Campaign was given this address in a contact file (IMP-001). No
+    #: candidate was generated, no pattern was applied, and no provider was
+    #: called — so this asserts only that an operator-supplied address was taken
+    #: as the Campaign's address, never that the mailbox exists.
+    IMPORTED_EMAIL_ACCEPTED = "imported_email_accepted"
     NO_VERIFIED_ADDRESS = "no_verified_address"
     EMPLOYEE_COUNT_UNKNOWN = "employee_count_unknown"
     EMPLOYEE_COUNT_STALE = "employee_count_stale"
@@ -839,6 +844,7 @@ def _terminal_replay_step(
     if outcome in {
         EmailExecutionOutcome.EXISTING_EMAIL_REUSED,
         EmailExecutionOutcome.VERIFIED_EMAIL_ACCEPTED,
+        EmailExecutionOutcome.IMPORTED_EMAIL_ACCEPTED,
     }:
         kind = EmailExecutionStepKind.COMPLETE
     elif outcome in {
@@ -1029,6 +1035,151 @@ def _accepted_write(
     return EmailExecutionOutcome.VERIFIED_EMAIL_ACCEPTED, evidence
 
 
+def imported_campaign_email(
+    session: Session,
+    *,
+    membership: CampaignContact | None,
+    contact: Contact,
+) -> Any | None:
+    """The address a contact file gave this Campaign for this person, if any.
+
+    Returns the :class:`~app.models.imported_email.ImportedContactEmail` record
+    only when it still describes the address the permanent Contact carries. If
+    something else has since established a different address for the person, this
+    returns ``None`` and the ordinary discovery path runs — an import is one
+    observation, and it does not get to override a later, better-sourced fact
+    simply by having happened first.
+
+    Campaign-scoped, which is what keeps every other acquisition path untouched:
+    a Contact enrolled from Sales Navigator has no record here and behaves
+    exactly as it did before this path existed.
+    """
+
+    if membership is None:
+        return None
+    # Imported locally so the Email domain does not take a module-level
+    # dependency on the import subsystem, matching how the adapters keep the
+    # Agent boundary one-directional.
+    from app.services.imports.campaign_import import accepted_primary_email
+
+    record = accepted_primary_email(
+        session,
+        campaign_id=membership.campaign_id,
+        contact_id=contact.id,
+    )
+    if record is None or record.normalized_email is None:
+        return None
+    if normalize_email(contact.email) != record.normalized_email:
+        return None
+    return record
+
+
+def _imported_step(
+    session: Session,
+    *,
+    job: AgentJob,
+    contact: Contact,
+    record: Any,
+    actor: str,
+) -> EmailExecutionStep:
+    """Complete the Email stage from the imported address, spending nothing.
+
+    Deliberately reached before the company-domain gates below. Those gates exist
+    to stop this system *generating and verifying* addresses at a domain nobody
+    confirmed — the step that spends money and touches a mail server on the
+    strength of the domain being right. This path does neither: the address was
+    supplied, nothing is derived from the domain, and no provider is contacted.
+    Suppression is a different matter and is re-checked here, because suppression
+    is about whether this person may be contacted at all.
+    """
+
+    suppression = evaluate_suppression(
+        session,
+        email=record.normalized_email,
+        domain=contact.company_domain,
+    )
+    if suppression.blocked:
+        return EmailExecutionStep(
+            kind=EmailExecutionStepKind.BLOCKED,
+            outcome=EmailExecutionOutcome.SUPPRESSED,
+            result={
+                "domain_outcome": EmailExecutionOutcome.SUPPRESSED.value,
+                "reason": suppression.blocked_reason,
+            },
+            output_reference={"contact_id": str(contact.id)},
+            reason_code=EmailExecutionOutcome.SUPPRESSED.value,
+            reason=suppression.blocked_reason or "The suppression ledger blocks this Contact.",
+        )
+
+    state: dict[str, Any] = {
+        "policy_identifier": "imported_address",
+        "policy_version": record.source_schema,
+        "terminal_outcome": EmailExecutionOutcome.IMPORTED_EMAIL_ACCEPTED.value,
+        "accepted_email": record.normalized_email,
+        "imported_email_id": str(record.id),
+        "candidates": [],
+        "current_candidate_index": 0,
+        "accepted_candidate_index": None,
+    }
+    result = {
+        "domain_outcome": EmailExecutionOutcome.IMPORTED_EMAIL_ACCEPTED.value,
+        "email": record.normalized_email,
+        "imported_email_id": str(record.id),
+        "import_batch_id": str(record.import_batch_id),
+        "source_schema": record.source_schema,
+        "source_row_number": record.source_row_number,
+        "source_file_checksum": record.source_file_checksum,
+        # The vendor's claims, named as the vendor's. There is deliberately no
+        # key here that reads as a VMR verification result.
+        "provider_claimed_status": record.provider_status_normalized,
+        "provider_claimed_source": record.provider_source,
+        "provider_claimed_verification_source": record.provider_verification_source,
+        "provider_claimed_catch_all": record.provider_catch_all_normalized,
+        "provider_claimed_last_verified_at": (
+            record.provider_last_verified_at.isoformat()
+            if record.provider_last_verified_at
+            else None
+        ),
+        # The three facts that make this outcome truthful.
+        "address_derivation": "operator_supplied_import_no_discovery",
+        "candidates_generated": 0,
+        "provider_call_created": False,
+        "verification_id": None,
+    }
+    persisted = _persist_result(job, state, result)
+    record_audit_event(
+        session,
+        actor=actor,
+        action="contact.imported_email_accepted",
+        entity_type="contact",
+        entity_id=str(contact.id),
+        new_state=record.normalized_email,
+        reason=(
+            "operator-supplied imported address accepted as the Campaign address; "
+            "no candidate was generated and no verification provider was called"
+        ),
+        context={
+            "email_job_id": str(job.id),
+            "imported_email_id": str(record.id),
+            "import_batch_id": str(record.import_batch_id),
+            "source_schema": record.source_schema,
+            "provider_claimed_status": record.provider_status_normalized,
+        },
+    )
+    return EmailExecutionStep(
+        kind=EmailExecutionStepKind.COMPLETE,
+        outcome=EmailExecutionOutcome.IMPORTED_EMAIL_ACCEPTED,
+        result=persisted,
+        output_reference={
+            "email": record.normalized_email,
+            "imported_email_id": str(record.id),
+            "verification_id": None,
+            "reused": False,
+            "address_derivation": "operator_supplied_import_no_discovery",
+        },
+    )
+
+
 def _waiting_step(
     *,
     job: AgentJob,
@@ -1131,6 +1282,27 @@ def execute_step(
             reason_code=EmailExecutionOutcome.CAMPAIGN_CONTACT_INELIGIBLE.value,
             reason="The Campaign Contact is not currently eligible for Email discovery.",
         )
+
+    # --- The imported-address path (IMP-001) ---------------------------------
+    #
+    # Checked before candidate policy, because there is nothing to decide: this
+    # Campaign was handed the address in a file. Reaching the generator at all
+    # would mean building guesses for an address we already have, and the first
+    # of those guesses would be sent to a paid verification provider.
+    #
+    # Nothing below is weakened for anyone else. A Contact with no imported
+    # record for THIS Campaign — every Sales Navigator, extension and manual
+    # acquisition — falls straight through to the unchanged discovery path.
+    if not force_refresh:
+        imported = imported_campaign_email(session, membership=membership, contact=contact)
+        if imported is not None:
+            return _imported_step(
+                session,
+                job=job,
+                contact=contact,
+                record=imported,
+                actor=actor,
+            )
 
     if contact.company_id is None:
         return EmailExecutionStep(
