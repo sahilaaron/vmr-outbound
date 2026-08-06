@@ -20,6 +20,21 @@
     </p>
   </div>
 
+  {% if sequence_section_visible %}
+  <div class="v2-chips v2-mt-sm">
+    {% for key, label in sequence_views %}
+    <a class="v2-chip sm {{ 'on' if sequence_view == key }}"
+       href="/app/review?sview={{ key }}{% if campaign_id %}&campaign={{ campaign_id }}{% endif %}">{{ label }}</a>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if sequence_queue_notice %}
+  <div class="v2-notice warn v2-seq-readonly" role="status">
+    <b>Read-only</b> — {{ sequence_queue_notice }}
+  </div>
+  {% endif %}
+
   {{ seq.read_only_notice(sequence_availability) }}
 
   {% if sequence_and_draft_both_present %}
@@ -38,7 +53,7 @@
   <div class="v2-seq-list">
     {% for row in sequence_queue.rows %}
     {% set is_open = sequence_card and row.sequence_id == sequence_card.sequence_id %}
-    {% set scope = "&view=" ~ queue.view ~ ("&campaign=" ~ campaign_id if campaign_id else "") %}
+    {% set scope = "&sview=" ~ sequence_view ~ ("&campaign=" ~ campaign_id if campaign_id else "") %}
     {{ seq.card(row, "/app/review?" ~ ("" if is_open else "sequence=" ~ row.sequence_id ~ "&step=1") ~ scope, open=is_open) }}
     {% if is_open %}
     <div class="v2-seq-open">

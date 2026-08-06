@@ -194,6 +194,15 @@ class EmailSequence(Base):
     cadence_source: Mapped[str] = mapped_column(String(32), nullable=False, default="default")
     planned_span_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    #: How many messages this generation *wrote*, recorded at persist time.
+    #:
+    #: A historical fact about the generation, deliberately not a live count.
+    #: Every reader that needs "how many messages does this sequence have now"
+    #: aggregates the current versions instead, because an operator discarding
+    #: or editing does not change what was generated. The two are equal for
+    #: every sequence this build can produce; they are kept apart so that a
+    #: future partial-write bug shows up as a disagreement rather than being
+    #: absorbed into one number that is quietly wrong.
     message_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     generation_status: Mapped[SequenceGenerationStatus] = mapped_column(
         Enum(SequenceGenerationStatus, name="sequence_generation_status"),

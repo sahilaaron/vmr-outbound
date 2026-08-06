@@ -76,6 +76,11 @@ _AWAITING_STATES = (
     SequenceReviewState.CONTAINS_DISCARDED,
 )
 
+#: Every state a live, non-failed sequence can hold. Used as the SQL pre-filter
+#: for both the Awaiting and Approved views so that a drifted cache can only
+#: cost a row's worth of work, never hide it from the right view.
+_ACTIVE_STATES = (*_AWAITING_STATES, SequenceReviewState.APPROVED)
+
 #: Customer-facing wording for each purpose. The enum value is a stable
 #: identifier; this is what a person reads.
 PURPOSE_LABELS: dict[SequenceMessagePurpose, str] = {
@@ -409,10 +414,15 @@ def _queue_statement(*, campaign_id: uuid.UUID | None, view: str) -> Select[Any]
     )
     if campaign_id is not None:
         statement = statement.where(EmailSequence.campaign_id == campaign_id)
-    if view == VIEW_AWAITING:
-        statement = statement.where(EmailSequence.review_state.in_(_AWAITING_STATES))
-    elif view == VIEW_APPROVED:
-        statement = statement.where(EmailSequence.review_state == SequenceReviewState.APPROVED)
+    if view in {VIEW_AWAITING, VIEW_APPROVED}:
+        # A *superset*, deliberately. The stored column is a cache, and a cache
+        # that has drifted must not be able to hide a sequence from the view it
+        # actually belongs in -- filtering narrowly here would let a stale
+        # "approved" keep a half-approved sequence out of Awaiting entirely,
+        # where no Python reconciliation could put it back. Both views therefore
+        # select every non-terminal state and the caller narrows on the derived
+        # truth.
+        statement = statement.where(EmailSequence.review_state.in_(_ACTIVE_STATES))
     return statement
 
 
@@ -429,7 +439,6 @@ def list_queue(
     if view not in {key for key, _label in VIEWS}:
         view = VIEW_AWAITING
     statement = _queue_statement(campaign_id=campaign_id, view=view)
-    total = int(session.scalar(select(func.count()).select_from(statement.subquery())) or 0)
     records = session.execute(
         statement.order_by(EmailSequence.created_at.desc()).limit(limit).offset(offset)
     ).all()
@@ -502,7 +511,12 @@ def list_queue(
                 created_at=sequence.created_at,
             )
         )
-    return SequenceQueue(rows=tuple(rows), total=total, view=view, campaign_id=campaign_id)
+    # ``total`` counts what this window actually holds after narrowing, not a
+    # global total. The distinction matters because the SQL pre-filter is a
+    # superset: a global count taken from it would over-report. Nothing renders
+    # this figure today, and the honest window count is the one a caller can act
+    # on without being misled.
+    return SequenceQueue(rows=tuple(rows), total=len(rows), view=view, campaign_id=campaign_id)
 
 
 def _contact_name(contact: Contact) -> str:
@@ -512,8 +526,29 @@ def _contact_name(contact: Contact) -> str:
 
 
 def awaiting_count(session: Session, *, campaign_id: uuid.UUID | None = None) -> int:
-    statement = _queue_statement(campaign_id=campaign_id, view=VIEW_AWAITING)
-    return int(session.scalar(select(func.count()).select_from(statement.subquery())) or 0)
+    """How many sequences are waiting for a decision, by derived truth.
+
+    Goes through ``list_queue`` rather than counting the cached column, for the
+    same reason the queue narrows in Python: a count taken from a cache that has
+    drifted is a number nobody can act on.
+    """
+
+    return len(list_queue(session, campaign_id=campaign_id, view=VIEW_AWAITING, limit=500).rows)
+
+
+def any_sequence_exists(session: Session, *, campaign_id: uuid.UUID | None = None) -> bool:
+    """Whether any live sequence exists at all, for section visibility.
+
+    One bounded existence query. It is what lets the Review page keep showing
+    the sequence section -- and its filters -- after the deployment switch is
+    turned off, instead of hiding recorded work behind a view that happens to be
+    empty.
+    """
+
+    statement = select(EmailSequence.id).where(EmailSequence.superseded_at.is_(None)).limit(1)
+    if campaign_id is not None:
+        statement = statement.where(EmailSequence.campaign_id == campaign_id)
+    return session.scalar(statement) is not None
 
 
 def get_sequence(session: Session, sequence_id: uuid.UUID) -> EmailSequence | None:

@@ -262,11 +262,21 @@ def persist_sequence(
 
 
 def _now(session: Session) -> Any:
-    """Database ``now()``, so ordering agrees with the server's clock."""
+    """The database's wall clock, so supersession order is recoverable.
+
+    ``clock_timestamp()`` rather than ``now()``. ``now()`` is transaction-start
+    time in PostgreSQL and is constant for the whole transaction, so two
+    supersessions in one transaction — regenerating a sequence supersedes its
+    predecessor and then every one of its message versions — would receive
+    identical timestamps and could not be ordered afterwards.
+
+    This matches ``personalization_policy_activations``, which uses
+    ``clock_timestamp()`` for the same reason and documents it.
+    """
 
     from sqlalchemy import func
 
-    return session.scalar(select(func.now()))
+    return session.scalar(select(func.clock_timestamp()))
 
 
 def _ensure_logical_messages(

@@ -1381,6 +1381,7 @@ def review_page(
     draft: str | None = None,
     sequence: str | None = None,
     step: str | None = None,
+    sview: str | None = None,
 ) -> HTMLResponse:
     """Read a draft, and decide.
 
@@ -1420,13 +1421,26 @@ def review_page(
     # deployment switch is on. Turning generation off stops new sequences; it
     # does not make recorded human decisions disappear from the page that
     # recorded them.
+    # The sequence section carries its own view parameter. It used to inherit the
+    # single-draft queue's, which has a "Discarded" filter the sequence queue does
+    # not -- so choosing Discarded silently showed sequences that were *awaiting*
+    # review. A filter that shows something other than what it says is worse than
+    # one that is missing.
+    _sequence_view_keys = {key for key, _label in sequence_read.VIEWS}
+    sequence_view = sview if sview in _sequence_view_keys else sequence_read.VIEW_AWAITING
     sequence_queue = sequence_read.list_queue(
         db,
         campaign_id=campaign_id,
-        view=(view if view in {key for key, _label in sequence_read.VIEWS} else "awaiting"),
+        view=sequence_view,
         limit=50,
     )
-    if not _sequences_on(settings) and not sequence_queue.rows:
+    # Visibility is decided by whether any sequence exists, not by whether the
+    # *current filter* happens to match one. Deciding it on the filter would hide
+    # the filter chips too, leaving an operator with an approved sequence and no
+    # way to navigate to it once the switch was off.
+    if not _sequences_on(settings) and not sequence_read.any_sequence_exists(
+        db, campaign_id=campaign_id
+    ):
         sequence_queue = None
     chosen_sequence = _uuid(sequence) if sequence else None
     if sequence_queue is not None:
@@ -1453,6 +1467,19 @@ def review_page(
             campaign=db.get(Campaign, campaign_id) if campaign_id else None,
             sequence=None,
         )
+    # The queue itself carries the notice when the switch is off, because the
+    # per-card availability only resolves once a card is expanded and an
+    # operator needs to know why the list is read-only before opening anything.
+    sequence_queue_notice = (
+        (
+            "Seven-message sequences are switched off in this environment. Everything below "
+            "is kept and readable in full, including every decision already recorded, but no "
+            "new sequence will be written and no review action can be recorded while the "
+            "switch is off."
+        )
+        if not _sequences_on(settings) and sequence_queue is not None
+        else None
+    )
     execution = None
     if (
         selected is not None
@@ -1487,7 +1514,11 @@ def review_page(
             # on a page about single drafts. It reappears the moment either the
             # feature is on or a sequence exists to disclose.
             "sequence_section_visible": _sequences_on(settings) or sequence_queue is not None,
+            "sequence_view_has_rows": bool(sequence_queue and sequence_queue.rows),
+            "sequence_queue_notice": sequence_queue_notice,
             "sequence_queue": sequence_queue,
+            "sequence_views": sequence_read.VIEWS,
+            "sequence_view": sequence_view,
             "sequence_card": sequence_card,
             "sequence_rows": sequence_rows,
             "sequence_detail": sequence_detail,
@@ -1714,6 +1745,79 @@ def _sequence_back(target: str) -> str:
     return candidate
 
 
+#: The largest form body a sequence write route will accept, in bytes. A message
+#: body is truncated to 20 000 characters and a subject to 300, so anything past
+#: this is not a message -- and by the time truncation runs, the whole request
+#: has already been buffered in memory.
+MAX_SEQUENCE_FORM_BYTES = 256 * 1024
+
+OVERSIZED_REFUSAL = (
+    "That submission was too large to be a sequence message, so nothing was changed. "
+    "A message body is limited to 20,000 characters."
+)
+
+
+def _oversized(request: Request) -> bool:
+    """Whether the declared body is too large to be a sequence edit.
+
+    Checked from ``Content-Length`` before the form is read, which is the only
+    point where refusing costs nothing. This does not close the hole completely
+    -- a chunked request declares no length, and Starlette buffers as it parses
+    -- so it is a bound on the ordinary case rather than a guarantee. The
+    complete fix is a body-size limit at the server or proxy layer, which is a
+    deployment concern rather than a route one; see docs/EMAIL_SEQUENCE.md.
+    """
+
+    declared = request.headers.get("content-length")
+    if declared is None:
+        return False
+    try:
+        return int(declared) > MAX_SEQUENCE_FORM_BYTES
+    except ValueError:
+        return False
+
+
+def _same_origin(request: Request) -> bool:
+    """Whether this write plausibly came from this application's own pages.
+
+    The workbench has no sessions, no cookies and no sign-in, so a cross-site
+    POST carries no ambient authority and cannot authenticate as anybody. What it
+    *can* do, while an operator has the local server running, is drive the
+    sequence write routes blind from a page in another tab. Approving or
+    discarding was already reachable that way; the edit route widened it to
+    "write arbitrary text into a message body", and that widening is worth
+    closing on its own terms.
+
+    Two headers, in order of reliability. ``Sec-Fetch-Site`` is set by the
+    browser and cannot be forged by page script; ``same-origin`` and ``none``
+    (a typed URL or a bookmark) are accepted, anything else is refused. Failing
+    that, ``Origin`` is compared against the request's own host.
+
+    A request carrying neither header is allowed. That is deliberate, not an
+    oversight: ``curl``, the test client and any scripted local tool send
+    neither, and this check is a cross-site guard rather than an authentication
+    mechanism. Treating "no headers" as hostile would break every non-browser
+    caller while stopping no browser attack, because browsers always send them.
+    """
+
+    site = request.headers.get("sec-fetch-site")
+    if site is not None:
+        return site in {"same-origin", "none"}
+    origin = request.headers.get("origin")
+    if origin is None:
+        return True
+    host = request.headers.get("host")
+    if host is None:  # pragma: no cover - Host is mandatory in HTTP/1.1
+        return False
+    return origin.rstrip("/").endswith(f"//{host}")
+
+
+CROSS_SITE_REFUSAL = (
+    "That request did not come from this application, so nothing was changed. "
+    "Sequence review actions can only be taken from the review pages themselves."
+)
+
+
 def _sequence_write_refusal(
     db: Session, settings: Settings, *, sequence_id: uuid.UUID | None
 ) -> str | None:
@@ -1772,6 +1876,10 @@ def sequence_message_approve(
     identifier = _uuid(version_id)
     if identifier is None:
         return _redirect(target, err="That is not a sequence message version id.")
+    if not _same_origin(request):
+        return _redirect(target, err=CROSS_SITE_REFUSAL)
+    if _oversized(request):
+        return _redirect(target, err=OVERSIZED_REFUSAL)
     refusal = _sequence_write_refusal(
         db, get_settings(), sequence_id=_sequence_id_for_version(db, identifier)
     )
@@ -1810,6 +1918,10 @@ def sequence_message_discard(
     identifier = _uuid(version_id)
     if identifier is None:
         return _redirect(target, err="That is not a sequence message version id.")
+    if not _same_origin(request):
+        return _redirect(target, err=CROSS_SITE_REFUSAL)
+    if _oversized(request):
+        return _redirect(target, err=OVERSIZED_REFUSAL)
     refusal = _sequence_write_refusal(
         db, get_settings(), sequence_id=_sequence_id_for_version(db, identifier)
     )
@@ -1847,6 +1959,10 @@ def sequence_message_edit(
     identifier = _uuid(version_id)
     if identifier is None:
         return _redirect(target, err="That is not a sequence message version id.")
+    if not _same_origin(request):
+        return _redirect(target, err=CROSS_SITE_REFUSAL)
+    if _oversized(request):
+        return _redirect(target, err=OVERSIZED_REFUSAL)
     refusal = _sequence_write_refusal(
         db, get_settings(), sequence_id=_sequence_id_for_version(db, identifier)
     )
@@ -1894,6 +2010,10 @@ def sequence_approve(
     identifier = _uuid(sequence_id)
     if identifier is None:
         return _redirect(target, err="That is not a sequence id.")
+    if not _same_origin(request):
+        return _redirect(target, err=CROSS_SITE_REFUSAL)
+    if _oversized(request):
+        return _redirect(target, err=OVERSIZED_REFUSAL)
     refusal = _sequence_write_refusal(db, get_settings(), sequence_id=identifier)
     if refusal is not None:
         return _redirect(target, err=refusal)
