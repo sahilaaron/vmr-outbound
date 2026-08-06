@@ -1406,34 +1406,65 @@ def batch_rows(
             .offset(offset)
         ).all()
     )
-    views: list[BatchRowView] = []
-    for row in rows:
-        validation = session.scalars(
-            select(ImportRowValidation).where(ImportRowValidation.import_row_id == row.id)
-        ).first()
-        imported_email = session.scalars(
+    # Four statements for the whole page rather than four per row. The page size
+    # is the operator's choice, so a per-row lookup here would make a large batch
+    # arbitrarily expensive on a screen whose only job is to be readable.
+    row_ids = [row.id for row in rows]
+    if not row_ids:
+        return [], int(total)
+
+    validations = {
+        record.import_row_id: record
+        for record in session.scalars(
+            select(ImportRowValidation).where(ImportRowValidation.import_row_id.in_(row_ids))
+        ).all()
+    }
+    emails = {
+        record.import_row_id: record
+        for record in session.scalars(
             select(ImportedContactEmail).where(
-                ImportedContactEmail.import_row_id == row.id,
+                ImportedContactEmail.import_row_id.in_(row_ids),
                 ImportedContactEmail.slot == ImportedEmailSlot.PRIMARY,
             )
-        ).first()
-        contact = (
-            session.get(Contact, validation.contact_id)
-            if validation is not None and validation.contact_id
-            else None
-        )
-        company = (
-            session.get(Company, validation.company_id)
-            if validation is not None and validation.company_id
-            else None
-        )
+        ).all()
+    }
+    contact_ids = {v.contact_id for v in validations.values() if v.contact_id}
+    company_ids = {v.company_id for v in validations.values() if v.company_id}
+    contacts = (
+        {
+            record.id: record
+            for record in session.scalars(select(Contact).where(Contact.id.in_(contact_ids))).all()
+        }
+        if contact_ids
+        else {}
+    )
+    companies = (
+        {
+            record.id: record
+            for record in session.scalars(select(Company).where(Company.id.in_(company_ids))).all()
+        }
+        if company_ids
+        else {}
+    )
+
+    views: list[BatchRowView] = []
+    for row in rows:
+        validation = validations.get(row.id)
         views.append(
             BatchRowView(
                 row=row,
                 validation=validation,
-                imported_email=imported_email,
-                contact=contact,
-                company=company,
+                imported_email=emails.get(row.id),
+                contact=(
+                    contacts.get(validation.contact_id)
+                    if validation is not None and validation.contact_id
+                    else None
+                ),
+                company=(
+                    companies.get(validation.company_id)
+                    if validation is not None and validation.company_id
+                    else None
+                ),
             )
         )
     return views, int(total)
