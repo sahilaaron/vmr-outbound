@@ -174,6 +174,23 @@ class FeatureFlags(BaseModel):
     claude_mcp_bridge: bool = False
     # Phase 6 — Draft & Approval
     drafting: bool = False
+    # SEQ-001 — seven-message Personalization sequences.
+    #
+    # Off by default, and off means genuinely unchanged: the Personalization
+    # Agent writes exactly the single DraftVersion it has always written, the
+    # Review queue shows exactly the draft cards it has always shown, and no
+    # sequence row is created on any code path.
+    #
+    # Turning it on is necessary but not sufficient. A Campaign must also opt in
+    # through ``cadence_config["sequence"]["enabled"]``, so switching the
+    # deployment flag does not silently change what every existing Campaign
+    # produces. Both must be true before one Campaign Contact gets a sequence.
+    #
+    # What "on" adds is one generation unit producing seven immutable messages
+    # for human review, and nothing else. It creates no Gmail draft, contacts no
+    # Google API, schedules nothing and sends nothing — approval remains a
+    # statement about text, not authority to deliver it.
+    email_sequences: bool = False
     # Phase 7 — Saleshandy
     saleshandy: bool = False
 
