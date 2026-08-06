@@ -131,12 +131,12 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "(email_stage_outcome IS DISTINCT FROM 'IMPORTED_EMAIL_ACCEPTED')"
             " OR (verification_stage_outcome = 'VERIFICATION_BYPASSED_IMPORTED_EMAIL')",
-            name="ck_imported_contact_emails_accepted_primary_records_bypass",
+            name="accepted_primary_records_bypass",
         ),
         sa.CheckConstraint(
             "(email_stage_outcome IS DISTINCT FROM 'IMPORTED_EMAIL_ACCEPTED')"
             " OR (normalized_email IS NOT NULL)",
-            name="ck_imported_contact_emails_accepted_primary_normalized",
+            name="accepted_primary_normalized",
         ),
     )
     op.create_index(
@@ -219,7 +219,7 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "(contact_id IS NOT NULL) <> (company_id IS NOT NULL)",
-            name="ck_import_source_identifiers_exactly_one_subject",
+            name="exactly_one_subject",
         ),
     )
     op.create_index(
