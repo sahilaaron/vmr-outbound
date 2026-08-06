@@ -1,0 +1,156 @@
+{#
+  Upload a contact file into one campaign.
+
+  The campaign is fixed before anything is chosen and is named at the top of the
+  page, because "which campaign did those 400 people go into" is the one question
+  this screen must never leave ambiguous.
+
+  Every claim about what will happen is a claim this code actually implements.
+  In particular the page says plainly that the supplied address is taken as
+  given and is NOT verified — an operator who believes an import verified their
+  addresses would draw exactly the wrong conclusion from a green count.
+#}
+{% extends "base.html" %}
+{% block content %}
+<div class="v2-page">
+
+  <nav class="v2-crumbs" aria-label="Breadcrumb">
+    <a href="/app/campaigns">Campaigns</a>
+    <span aria-hidden="true">/</span>
+    <a href="/app/campaigns/{{ campaign.id }}">{{ campaign.name }}</a>
+    <span aria-hidden="true">/</span>
+    <span>Import contacts</span>
+  </nav>
+
+  <h1 class="v2-h1">Import contacts</h1>
+  <p class="v2-lede">
+    Add people to <b>{{ campaign.name }}</b> from an Apollo contact export. Contacts and
+    companies stay permanent records of their own — this adds them to this campaign, it does
+    not make this campaign own them.
+  </p>
+
+  {% if not import_on %}
+  <div class="v2-note v2-note-warn" role="alert">
+    Contact file import is switched off in this environment. Set
+    <code>FEATURES__CSV_IMPORT=true</code> and restart the application to enable it. Nothing on
+    this page can import while it is off.
+  </div>
+  {% elif archived %}
+  <div class="v2-note v2-note-warn" role="alert">
+    This campaign is archived and cannot receive contacts.
+  </div>
+  {% endif %}
+
+  <div class="v2-split">
+    <div class="v2-card">
+      <div class="v2-card-head"><h2 class="v2-h2">Upload a file</h2></div>
+      <div class="v2-card-body roomy">
+        <form class="v2-form-stack" method="post" enctype="multipart/form-data"
+              action="/app/campaigns/{{ campaign.id }}/imports">
+          <div class="v2-field">
+            <label for="import-file">Contact export</label>
+            <div class="v2-hint">
+              <code>.csv</code> or <code>.xlsx</code>, up to {{ max_upload_mb }} MB and
+              {{ "{:,}".format(max_rows) }} rows.
+            </div>
+            <input class="v2-input" type="file" id="import-file" name="file"
+                   accept=".csv,.xlsx" required
+                   {{ "disabled" if not import_on or archived }}>
+          </div>
+          <button class="v2-btn primary" type="submit"
+                  {{ "disabled" if not import_on or archived }}>
+            Upload and preview
+          </button>
+          <p class="v2-hint">
+            Uploading imports nothing. You will see exactly what would happen — every row, every
+            match and every conflict — and nothing is written until you confirm.
+          </p>
+        </form>
+      </div>
+    </div>
+
+    <div class="v2-card">
+      <div class="v2-card-head"><h2 class="v2-h2">What this expects, and what it does</h2></div>
+      <div class="v2-card-body roomy">
+        <h3 class="v2-h3">The file</h3>
+        <p class="v2-note">
+          An <b>Apollo contact export</b>. Columns are recognised by their header names, in any
+          order, and extra columns are fine — nothing has to be mapped by hand. The header row
+          must name <code>First Name</code>, <code>Last Name</code>, <code>Company Name</code>
+          and <code>Email</code>.
+        </p>
+
+        <h3 class="v2-h3">The address</h3>
+        <p class="v2-note">
+          The <code>Email</code> column is used as supplied. No candidate addresses are
+          generated and <b>no verification provider is called</b> — not MillionVerifier, not any
+          other. Whatever the export says about an address (its status, its verification source,
+          its last-verified date) is kept and shown as <b>the vendor's claim</b>. It is not a
+          VMR verification and does not mean the mailbox exists.
+        </p>
+
+        <h3 class="v2-h3">The company</h3>
+        <p class="v2-note">
+          <code>Company Name</code> is not trusted on its own — Apollo exports routinely carry a
+          name that disagrees with the website, the email domain and the LinkedIn page. When
+          those agree, that is the company; when they disagree, the row is held for you rather
+          than filed under a guess.
+        </p>
+
+        <h3 class="v2-h3">Who can see this</h3>
+        <p class="v2-note">
+          This application is single-operator today: there are no user accounts, so an import is
+          scoped to a campaign and not to a person. An upload can only be confirmed into the
+          campaign it was uploaded for, and one campaign's import cannot be opened from another.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="v2-card v2-mt">
+    <div class="v2-card-head"><h2 class="v2-h2">Previous imports</h2></div>
+    <div class="v2-card-body">
+      {% if not batches %}
+      <p class="v2-empty">No file has been imported into this campaign yet.</p>
+      {% else %}
+      <table class="v2-table">
+        <thead>
+          <tr>
+            <th scope="col">File</th>
+            <th scope="col">When</th>
+            <th scope="col">Rows</th>
+            <th scope="col">Imported</th>
+            <th scope="col">Matched / already here</th>
+            <th scope="col">Review</th>
+            <th scope="col">Failed</th>
+            <th scope="col">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for batch in batches %}
+          <tr>
+            <td>
+              <a href="/app/campaigns/{{ campaign.id }}/imports/{{ batch.id }}">
+                {{ batch.sanitized_filename or batch.filename or "upload" }}
+              </a>
+              {% if batch.selected_sheet_name %}
+              <div class="v2-sub">sheet “{{ batch.selected_sheet_name }}”</div>
+              {% endif %}
+            </td>
+            <td>{{ batch.created_at | dt }}</td>
+            <td>{{ batch.total_rows | thousands }}</td>
+            <td>{{ batch.accepted_rows | thousands }}</td>
+            <td>{{ batch.duplicate_rows | thousands }}</td>
+            <td>{{ batch.ambiguous_rows | thousands }}</td>
+            <td>{{ batch.rejected_rows | thousands }}</td>
+            <td><span class="v2-chip">{{ batch.status.value }}</span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+    </div>
+  </div>
+
+</div>
+{% endblock %}

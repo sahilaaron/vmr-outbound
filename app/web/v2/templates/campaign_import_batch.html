@@ -1,0 +1,165 @@
+{#
+  The result of one confirmed import.
+
+  The counts are read from the batch row, not recomputed for display, so the page
+  cannot disagree with what was actually written. The address column names the
+  vendor's claim and VMR's own two outcomes side by side and never merges them —
+  a reader has to be able to tell "Apollo said valid" from "we checked", because
+  only one of those happened.
+#}
+{% extends "base.html" %}
+{% block content %}
+<div class="v2-page">
+
+  <nav class="v2-crumbs" aria-label="Breadcrumb">
+    <a href="/app/campaigns">Campaigns</a>
+    <span aria-hidden="true">/</span>
+    <a href="/app/campaigns/{{ campaign.id }}">{{ campaign.name }}</a>
+    <span aria-hidden="true">/</span>
+    <a href="/app/campaigns/{{ campaign.id }}/imports">Import contacts</a>
+    <span aria-hidden="true">/</span>
+    <span>{{ batch.sanitized_filename or batch.filename or "upload" }}</span>
+  </nav>
+
+  <h1 class="v2-h1">{{ batch.sanitized_filename or batch.filename or "Import" }}</h1>
+  <p class="v2-lede">
+    Imported into <b>{{ campaign.name }}</b> on {{ batch.confirmed_at | dt }}.
+    {% if batch.selected_sheet_name %}Worksheet “{{ batch.selected_sheet_name }}”.{% endif %}
+    Source schema <code>{{ batch.source_schema }}</code>.
+  </p>
+
+  <div class="v2-card">
+    <div class="v2-card-head"><h2 class="v2-h2">Result</h2></div>
+    <div class="v2-card-body">
+      <div class="v2-stats">
+        <div class="v2-stat"><b>{{ batch.total_rows | thousands }}</b><span>rows in file</span></div>
+        <div class="v2-stat"><b>{{ batch.accepted_rows | thousands }}</b><span>imported</span></div>
+        <div class="v2-stat"><b>{{ batch.contacts_created | thousands }}</b><span>new contacts</span></div>
+        <div class="v2-stat"><b>{{ batch.already_in_campaign_rows | thousands }}</b><span>already in this campaign</span></div>
+        <div class="v2-stat"><b>{{ batch.duplicate_rows | thousands }}</b><span>matched or duplicate</span></div>
+        <div class="v2-stat warn"><b>{{ batch.ambiguous_rows | thousands }}</b><span>review required</span></div>
+        <div class="v2-stat warn"><b>{{ batch.suppressed_rows | thousands }}</b><span>suppressed</span></div>
+        <div class="v2-stat err"><b>{{ batch.rejected_rows | thousands }}</b><span>failed</span></div>
+      </div>
+      {% if batch.error_detail %}
+      <div class="v2-note v2-note-err v2-mt" role="alert">{{ batch.error_detail }}</div>
+      {% endif %}
+      <p class="v2-mt">
+        <a class="v2-btn primary" href="/app/campaigns/{{ campaign.id }}">
+          Open this campaign's contacts
+        </a>
+        <a class="v2-btn" href="/app/campaigns/{{ campaign.id }}/imports">Import another file</a>
+      </p>
+      <p class="v2-note">
+        Every imported address is the one supplied in the file. The Email stage completed as
+        <code>imported_email_accepted</code> and Verification as
+        <code>verification_bypassed_imported_email</code>: no candidate address was generated
+        and no verification provider was called. Nothing here means a mailbox was confirmed to
+        exist. Sending remains unavailable.
+      </p>
+    </div>
+  </div>
+
+  <div class="v2-card v2-mt">
+    <div class="v2-card-head">
+      <h2 class="v2-h2">Rows</h2>
+      <span class="v2-sub">{{ total_rows | thousands }} total</span>
+    </div>
+    <div class="v2-card-body">
+      <table class="v2-table">
+        <thead>
+          <tr>
+            <th scope="col">#</th>
+            <th scope="col">Outcome</th>
+            <th scope="col">Contact</th>
+            <th scope="col">Company</th>
+            <th scope="col">Address</th>
+            <th scope="col">Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for view in rows %}
+          <tr>
+            <td>{{ view.row.row_number }}</td>
+            <td>
+              {% if view.validation %}
+              <span class="v2-chip {{ 'err' if view.validation.outcome.value == 'rejected'
+                                      else 'warn' if view.validation.outcome.value in ('ambiguous', 'suppressed')
+                                      else 'on' }}">
+                {{ view.validation.outcome.value }}
+              </span>
+              {% if view.validation.membership_action %}
+              <div class="v2-sub">membership {{ view.validation.membership_action }}</div>
+              {% endif %}
+              {% else %}<span class="v2-chip">no outcome</span>{% endif %}
+            </td>
+            <td>
+              {% if view.contact %}
+              <a href="/app/contacts/{{ view.contact.id }}">
+                {{ view.contact.first_name }} {{ view.contact.last_name }}
+              </a>
+              {% else %}—{% endif %}
+              {% if view.validation and view.validation.contact_match_basis %}
+              <div class="v2-sub">by {{ view.validation.contact_match_basis }}</div>
+              {% endif %}
+            </td>
+            <td>
+              {% if view.company %}
+              <a href="/app/companies/{{ view.company.id }}">{{ view.company.name }}</a>
+              {% if view.company.domain %}<div class="v2-sub">{{ view.company.domain }}</div>{% endif %}
+              {% else %}—{% endif %}
+              {% if view.validation and view.validation.company_match_basis %}
+              <div class="v2-sub">by {{ view.validation.company_match_basis }}</div>
+              {% endif %}
+            </td>
+            <td>
+              {% if view.imported_email %}
+              <span class="v2-mono">
+                {{ view.imported_email.normalized_email or (view.imported_email.raw_email | neutralize) }}
+              </span>
+              {% if view.imported_email.provider_status_normalized %}
+              <div class="v2-sub">
+                {{ view.imported_email.provider_source or "the export" }} claims:
+                {{ view.imported_email.provider_status_normalized }}
+                {%- if view.imported_email.provider_catch_all_normalized %},
+                catch-all {{ view.imported_email.provider_catch_all_normalized }}{% endif %}
+                {%- if view.imported_email.provider_last_verified_at %},
+                last checked {{ view.imported_email.provider_last_verified_at | day }}{% endif %}
+              </div>
+              {% endif %}
+              {% if view.imported_email.email_stage_outcome %}
+              <div class="v2-sub">VMR: {{ view.imported_email.email_stage_outcome.value }}</div>
+              {% endif %}
+              {% if view.imported_email.verification_stage_outcome %}
+              <div class="v2-sub">VMR: {{ view.imported_email.verification_stage_outcome.value }}</div>
+              {% endif %}
+              {% else %}—{% endif %}
+            </td>
+            <td>
+              {% if view.validation and view.validation.error_code %}
+              <div><b>{{ view.validation.error_code }}</b></div>
+              {% endif %}
+              {% if view.validation and view.validation.note %}
+              <div class="v2-sub">{{ view.validation.note }}</div>
+              {% endif %}
+              {% for warning in (view.validation.warnings if view.validation else []) %}
+              <div class="v2-sub warn">⚠ {{ warning.message }}</div>
+              {% endfor %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      {% if pages > 1 %}
+      <nav class="v2-pager" aria-label="Pagination">
+        {% if page > 1 %}<a href="{{ base_url }}?page={{ page - 1 }}">Previous</a>{% endif %}
+        <span>Page {{ page }} of {{ pages }}</span>
+        {% if page < pages %}<a href="{{ base_url }}?page={{ page + 1 }}">Next</a>{% endif %}
+      </nav>
+      {% endif %}
+    </div>
+  </div>
+
+</div>
+{% endblock %}

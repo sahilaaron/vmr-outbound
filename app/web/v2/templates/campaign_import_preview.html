@@ -1,0 +1,245 @@
+{#
+  The preview. Nothing on this page has been written to the database.
+
+  Two things it must do and one it must not. It must show the operator what
+  confirmation will do to every row — the person, the company, the address, and
+  the conflicts — and it must be honest that the address is taken on the vendor's
+  word. It must NOT imply that anything has already happened.
+
+  All values here come from the operator's own file. Jinja autoescaping handles
+  HTML and script; a cell that begins with a formula character is displayed
+  through `neutralize` so it can never be copied out of this page into a
+  spreadsheet as an expression.
+#}
+{% extends "base.html" %}
+{% block content %}
+<div class="v2-page">
+
+  <nav class="v2-crumbs" aria-label="Breadcrumb">
+    <a href="/app/campaigns">Campaigns</a>
+    <span aria-hidden="true">/</span>
+    <a href="/app/campaigns/{{ campaign.id }}">{{ campaign.name }}</a>
+    <span aria-hidden="true">/</span>
+    <a href="/app/campaigns/{{ campaign.id }}/imports">Import contacts</a>
+    <span aria-hidden="true">/</span>
+    <span>Preview</span>
+  </nav>
+
+  <h1 class="v2-h1">Preview — {{ staged.filename }}</h1>
+
+  {% if fatal_error %}
+  <div class="v2-note v2-note-err" role="alert">{{ fatal_error }}</div>
+  <form method="post" action="/app/campaigns/{{ campaign.id }}/imports/staged/{{ staged.id }}/discard">
+    <button class="v2-btn" type="submit">Discard this upload</button>
+  </form>
+  {% elif preview.structure_error %}
+  <div class="v2-note v2-note-err" role="alert">{{ preview.structure_error }}</div>
+  <form method="post" action="/app/campaigns/{{ campaign.id }}/imports/staged/{{ staged.id }}/discard">
+    <button class="v2-btn" type="submit">Discard this upload</button>
+  </form>
+  {% else %}
+
+  <p class="v2-lede">
+    Into <b>{{ campaign.name }}</b>. Nothing below has happened yet — no contact, company,
+    campaign membership, address record or agent job has been created, and no provider has been
+    called. Confirming is the first thing that writes.
+  </p>
+
+  {% if preview.duplicate_file %}
+  <div class="v2-note {{ 'v2-note-warn' if preview.duplicate_file.code == 'already_imported' else '' }}"
+       role="status">
+    {{ preview.duplicate_file.message }}
+  </div>
+  {% endif %}
+
+  {# --- What was detected --- #}
+  <div class="v2-card v2-mt">
+    <div class="v2-card-head"><h2 class="v2-h2">Detected</h2></div>
+    <div class="v2-card-body">
+      <dl class="v2-kv">
+        <dt>Source schema</dt>
+        <dd>
+          {% if preview.is_apollo_export %}
+          Apollo contact export (schema v1)
+          {% else %}
+          Apollo-compatible contact file (schema v1)
+          <span class="v2-sub">— it satisfies the same contract but carries few
+            Apollo-specific columns.</span>
+          {% endif %}
+        </dd>
+        <dt>Worksheet</dt>
+        <dd>{{ preview.sheet_name or "the file (CSV has one sheet)" }}</dd>
+        <dt>Columns recognised</dt>
+        <dd>{{ preview.recognized_columns | length }} of {{ preview.headers | length }}</dd>
+        <dt>Total rows</dt>
+        <dd>{{ preview.total_rows | thousands }}</dd>
+      </dl>
+
+      {% if inspection and inspection.needs_sheet_choice %}
+      <div class="v2-field v2-mt">
+        <label>Worksheet</label>
+        <div class="v2-hint">This workbook has more than one usable sheet. Choose which to import.</div>
+        <ul class="v2-list">
+          {% for option in inspection.sheets %}
+          {% if option.importable %}
+          <li>
+            <a href="/app/campaigns/{{ campaign.id }}/imports/staged/{{ staged.id }}?sheet={{ option.index }}"
+               class="{{ 'active' if option.index == preview.sheet_index }}">
+              {{ option.name or "Sheet 1" }} — {{ option.data_row_count | thousands }} rows
+            </a>
+            {% if option.index == preview.sheet_index %}<span class="v2-chip on">selected</span>{% endif %}
+          </li>
+          {% endif %}
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+
+      {% if preview.unmapped_columns %}
+      <details class="v2-mt">
+        <summary>{{ preview.unmapped_columns | length }} column(s) not recognised</summary>
+        <p class="v2-hint">
+          Kept verbatim with each row as source evidence. They are never guessed into a
+          recognised field.
+        </p>
+        <p class="v2-mono">{{ preview.unmapped_columns | join(", ") }}</p>
+      </details>
+      {% endif %}
+      {% if preview.duplicate_columns %}
+      <div class="v2-note v2-note-warn v2-mt">
+        More than one column claims the same field
+        ({% for column, target in preview.duplicate_columns %}“{{ column }}” → {{ target }}{% if not loop.last %}, {% endif %}{% endfor %}).
+        The first was used; the rest are kept as unrecognised columns.
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# --- Counts --- #}
+  <div class="v2-card v2-mt">
+    <div class="v2-card-head"><h2 class="v2-h2">What confirming would do</h2></div>
+    <div class="v2-card-body">
+      <div class="v2-stats">
+        <div class="v2-stat"><b>{{ preview.counts["imported"] | thousands }}</b><span>new contacts</span></div>
+        <div class="v2-stat"><b>{{ preview.counts["matched_existing"] | thousands }}</b><span>existing contacts enrolled</span></div>
+        <div class="v2-stat"><b>{{ preview.counts["already_in_campaign"] | thousands }}</b><span>already in this campaign</span></div>
+        <div class="v2-stat"><b>{{ preview.counts["skipped_duplicate"] | thousands }}</b><span>duplicate rows</span></div>
+        <div class="v2-stat warn"><b>{{ preview.counts["review_required"] | thousands }}</b><span>need review</span></div>
+        <div class="v2-stat warn"><b>{{ preview.counts["suppressed"] | thousands }}</b><span>suppressed</span></div>
+        <div class="v2-stat err"><b>{{ preview.counts["failed"] | thousands }}</b><span>invalid</span></div>
+        <div class="v2-stat"><b>{{ preview.warning_rows | thousands }}</b><span>rows with warnings</span></div>
+      </div>
+      <p class="v2-note v2-mt">
+        Each imported person's supplied address becomes this campaign's address for them. The
+        Email stage completes as <code>imported_email_accepted</code> without generating a
+        candidate, and Verification completes as
+        <code>verification_bypassed_imported_email</code> without calling a provider. Neither is
+        a deliverability claim. Sending remains unavailable.
+      </p>
+    </div>
+  </div>
+
+  {# --- Row by row --- #}
+  <div class="v2-card v2-mt">
+    <div class="v2-card-head">
+      <h2 class="v2-h2">Rows</h2>
+      <span class="v2-sub">showing {{ shown_rows | length }} of {{ preview.total_rows | thousands }}</span>
+    </div>
+    <div class="v2-card-body">
+      <table class="v2-table">
+        <thead>
+          <tr>
+            <th scope="col">#</th>
+            <th scope="col">Person</th>
+            <th scope="col">Company supplied</th>
+            <th scope="col">Address</th>
+            <th scope="col">Resolves to</th>
+            <th scope="col">Outcome</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in shown_rows %}
+          <tr>
+            <td>{{ row.row_number }}</td>
+            <td>
+              {{ row.apollo_row.first_name | default("", true) }}
+              {{ row.apollo_row.last_name | default("", true) }}
+              {% if row.apollo_row.title %}<div class="v2-sub">{{ row.apollo_row.title }}</div>{% endif %}
+            </td>
+            <td>
+              {{ row.apollo_row.company_name | neutralize | default("—", true) }}
+              {% if row.apollo_row.website_domain %}
+              <div class="v2-sub">{{ row.apollo_row.website_domain }}</div>
+              {% endif %}
+            </td>
+            <td>
+              {% if row.apollo_row.primary %}
+              <span class="v2-mono">{{ row.apollo_row.primary.normalized
+                    or (row.apollo_row.primary.raw | neutralize) }}</span>
+              {% if row.apollo_row.primary.provider_status_normalized %}
+              <div class="v2-sub">
+                vendor claims: {{ row.apollo_row.primary.provider_status_normalized }}
+                {%- if row.apollo_row.primary.provider_catch_all_normalized %},
+                catch-all {{ row.apollo_row.primary.provider_catch_all_normalized }}{% endif %}
+              </div>
+              {% endif %}
+              {% else %}—{% endif %}
+            </td>
+            <td>
+              {% if row.contact %}
+              <div>Contact: {{ row.contact.action.value | replace("_", " ") }}
+                {%- if row.contact.basis %} <span class="v2-sub">by {{ row.contact.basis.value }}</span>{% endif %}
+              </div>
+              {% endif %}
+              {% if row.company %}
+              <div>Company: {{ row.company.action.value | replace("_", " ") }}
+                {%- if row.company.domain %} <span class="v2-mono">{{ row.company.domain }}</span>{% endif %}
+                {%- if row.company.basis %} <span class="v2-sub">by {{ row.company.basis.value }}</span>{% endif %}
+              </div>
+              {% endif %}
+            </td>
+            <td>
+              <span class="v2-chip {{ 'err' if row.disposition.value == 'failed'
+                                      else 'warn' if row.disposition.value in ('review_required', 'suppressed')
+                                      else 'on' }}">
+                {{ row.disposition.value | replace("_", " ") }}
+              </span>
+              {% if row.error_detail %}<div class="v2-sub">{{ row.error_detail }}</div>{% endif %}
+              {% for code, message in row.warnings %}
+              <div class="v2-sub warn">⚠ {{ message }}</div>
+              {% endfor %}
+              <div class="v2-sub">{{ row.expected_pipeline }}</div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  {# --- Confirm --- #}
+  <div class="v2-card v2-mt">
+    <div class="v2-card-body roomy">
+      {% if not import_on %}
+      <div class="v2-note v2-note-warn" role="alert">
+        Contact file import is switched off. Set <code>FEATURES__CSV_IMPORT=true</code> and
+        restart to confirm.
+      </div>
+      {% endif %}
+      <form method="post" class="v2-inline-form"
+            action="/app/campaigns/{{ campaign.id }}/imports/staged/{{ staged.id }}/confirm">
+        <input type="hidden" name="sheet" value="{{ preview.sheet_index }}">
+        <button class="v2-btn primary" type="submit" {{ "disabled" if not import_on }}>
+          Import into {{ campaign.name }}
+        </button>
+      </form>
+      <form method="post" class="v2-inline-form"
+            action="/app/campaigns/{{ campaign.id }}/imports/staged/{{ staged.id }}/discard">
+        <button class="v2-btn" type="submit">Discard</button>
+      </form>
+    </div>
+  </div>
+
+  {% endif %}
+</div>
+{% endblock %}
