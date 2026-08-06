@@ -40,7 +40,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.core.config import get_settings
-from app.models.campaign import CampaignContact
+from app.models.campaign import Campaign, CampaignContact
 from app.models.enums import (
     AgentIdentifier,
     AgentJobStatus,
@@ -48,6 +48,7 @@ from app.models.enums import (
 )
 from app.models.verification_job import AgentJob
 from app.services import workbench_agents
+from app.services.admin_workbench import import_lineage
 from app.services.admin_workbench.reader import PAGE_SIZE, AdminWorkbenchReader
 from app.services.admin_workbench.views import (
     FAILURE_CATEGORIES,
@@ -299,6 +300,8 @@ def admin_campaign_detail_page(
             "pages": pages,
             "pipeline_order": PIPELINE_ORDER,
             "agent_specs": AGENT_SPECS,
+            # Empty for a Campaign nobody imported into — which is most of them.
+            "import_batches": _reader(db).imports.campaign_batches(parsed),
         },
     )
 
@@ -327,6 +330,11 @@ def admin_contact_diagnosis_page(
     research_report = (
         reader.research_lineage(membership_uuid) if view.research_lineage_available else None
     )
+    # None for every Contact acquired any other way, which is the ordinary case.
+    # The template must read that as "not imported", never as "lineage missing".
+    import_origin = reader.imports.contact_origin(
+        campaign_id=campaign_uuid, campaign_contact_id=membership_uuid
+    )
     return _render(
         request,
         db,
@@ -335,6 +343,9 @@ def admin_contact_diagnosis_page(
             "view": view,
             "execution": view.execution,
             "research_report": research_report,
+            "import_origin": import_origin,
+            "import_bypass_statement": import_lineage.BYPASS_STATEMENT,
+            "import_no_discovery_statement": import_lineage.NO_DISCOVERY_STATEMENT,
             "active_nav": "campaigns",
             "page_title": view.execution.contact_label,
         },
@@ -441,6 +452,7 @@ def admin_failures_page(request: Request, db: Session = Depends(get_db)) -> HTML
         campaign_id=_parse_uuid(request.query_params.get("campaign")),
         agent=_agent_from(request.query_params.get("agent")),
     )
+    campaign_filter = _parse_uuid(request.query_params.get("campaign"))
     return _render(
         request,
         db,
@@ -448,9 +460,55 @@ def admin_failures_page(request: Request, db: Session = Depends(get_db)) -> HTML
         {
             "view": view,
             "categories": FAILURE_CATEGORIES,
+            # Rows a file import refused or held. They carry no stage, no Agent
+            # Job and no Campaign Contact, so the Phase 2 inbox above cannot see
+            # them at all — and an operator with a half-imported file is
+            # precisely the person opening this page.
+            "import_rows": _reader(db).imports.unresolved_rows(campaign_id=campaign_filter),
             "active_nav": "failures",
             "page_title": "Failures",
             "live_seconds": 5,
+        },
+    )
+
+
+# --- Campaign file imports ---------------------------------------------------
+
+
+@router.get("/admin/imports/{batch_id}", response_class=HTMLResponse)
+def admin_import_batch_page(
+    request: Request, batch_id: str, db: Session = Depends(get_db)
+) -> HTMLResponse:
+    """One campaign-bound file import: the batch and every row it produced.
+
+    Read-only. Re-running, correcting or discarding an import happens on the
+    customer import screens, which own that workflow; duplicating it here would
+    create a second importer with its own idea of what a row did.
+    """
+
+    parsed = _parse_uuid(batch_id)
+    if parsed is None:
+        return _not_found(request, db, "That import does not exist.")
+    reader = _reader(db)
+    batch = reader.imports.batch(parsed)
+    if batch is None:
+        return _not_found(request, db, "That import does not exist.")
+    page = _page_number(request)
+    rows, total = reader.imports.batch_rows(parsed, limit=PAGE_SIZE, offset=(page - 1) * PAGE_SIZE)
+    campaign_name = db.scalar(select(Campaign.name).where(Campaign.id == batch.campaign_id))
+    return _render(
+        request,
+        db,
+        "admin/import_batch.html",
+        {
+            "batch": batch,
+            "rows": rows,
+            "total": total,
+            "campaign_name": campaign_name,
+            "page": page,
+            "pages": max(1, -(-total // PAGE_SIZE)),
+            "active_nav": "campaigns",
+            "page_title": batch.display_name,
         },
     )
 
@@ -512,14 +570,20 @@ def admin_contact_page(
     parsed = _parse_uuid(contact_id)
     if parsed is None:
         return _not_found(request, db, "That Contact does not exist.")
-    view = _reader(db).contact(parsed)
+    reader = _reader(db)
+    view = reader.contact(parsed)
     if view is None:
         return _not_found(request, db, "That Contact does not exist.")
     return _render(
         request,
         db,
         "admin/contact_detail.html",
-        {"view": view, "active_nav": "contacts", "page_title": view.name},
+        {
+            "view": view,
+            "source_identifiers": reader.imports.contact_identifiers(parsed),
+            "active_nav": "contacts",
+            "page_title": view.name,
+        },
     )
 
 
@@ -546,14 +610,20 @@ def admin_company_page(
     parsed = _parse_uuid(company_id)
     if parsed is None:
         return _not_found(request, db, "That Company does not exist.")
-    view = _reader(db).company(parsed)
+    reader = _reader(db)
+    view = reader.company(parsed)
     if view is None:
         return _not_found(request, db, "That Company does not exist.")
     return _render(
         request,
         db,
         "admin/company_detail.html",
-        {"view": view, "active_nav": "companies", "page_title": view.name},
+        {
+            "view": view,
+            "source_identifiers": reader.imports.company_identifiers(parsed),
+            "active_nav": "companies",
+            "page_title": view.name,
+        },
     )
 
 

@@ -111,6 +111,43 @@
   </div>
 </div>
 
+{# Absent for a Campaign nobody imported a file into, which is most of them. #}
+{% if import_batches %}
+<div class="card">
+  <div class="card-head">
+    <h2>File imports</h2>
+    <span class="hint">contacts added to this Campaign from an uploaded contact export</span>
+  </div>
+  <div class="card-body tight">
+    <div class="table-wrap">
+    <table class="data">
+      <thead><tr>
+        <th>File</th><th>Schema</th><th class="num">Rows</th><th class="num">Imported</th>
+        <th class="num">Already here</th><th class="num">Held</th><th class="num">Refused</th><th>Confirmed</th>
+      </tr></thead>
+      <tbody>
+        {% for item in import_batches %}
+        <tr class="{{ 'attention' if item.needs_attention else '' }}">
+          <td class="primary"><a href="{{ item.href }}">{{ item.display_name }}</a></td>
+          <td class="dim">{{ item.schema_label }}</td>
+          <td class="num">{{ item.total_rows }}</td>
+          <td class="num">{{ item.accepted_rows }}</td>
+          <td class="num">{{ item.already_in_campaign_rows }}</td>
+          <td class="num">{{ item.ambiguous_rows }}</td>
+          <td class="num">{{ item.rejected_rows }}</td>
+          <td class="dim nowrap">{{ item.confirmed_at | dt }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    <div class="card-foot">
+      Imported addresses are used as supplied. No candidate address is generated for them and no verification provider is called.
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <div class="grid cols-2">
   <div class="card">
     <div class="card-head"><h2>Recent failures</h2><a class="hint" href="/admin/failures?campaign={{ view.campaign_id }}">full inbox →</a></div>

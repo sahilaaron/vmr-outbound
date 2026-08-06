@@ -73,6 +73,7 @@ from app.services.workbench_agents.views import (
     QueueCounts,
 )
 
+from .import_lineage import ImportLineageReader
 from .views import (
     AdminCompanyView,
     AdminContactView,
@@ -285,6 +286,10 @@ class AdminWorkbenchReader:
         self._session = session
         self._settings = settings
         self._phase2 = PhaseTwoWorkbenchReader(session)
+        #: Campaign-bound file-import lineage (IMP-001). A separate reader over
+        #: the import services' own public helpers, so the Workbench explains an
+        #: import without reimplementing one.
+        self.imports = ImportLineageReader(session)
 
     # -- shared helpers ------------------------------------------------------
 

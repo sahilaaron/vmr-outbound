@@ -221,13 +221,51 @@ enforced — cross-Campaign staged confirmation and cross-Campaign batch reads a
 both refused. The future ownership limitation is stated on the page rather than
 implied by an absent login form.
 
-## 12. Admin Workbench compatibility
+## 12. Admin Workbench integration
 
-Everything the later Admin Workbench needs is durable, not presentation-only:
-the batch (schema, sheet, checksum, headers, counts, confirmation time), the
-immutable raw row, the per-row outcome with its Contact/Company/membership/
-imported-email references and match bases, the warnings, the error code, the
-imported address with its provider claims, and both VMR stage outcomes.
+Everything the Admin Workbench needs was already durable rather than
+presentation-only: the batch (schema, sheet, checksum, headers, counts,
+confirmation time), the immutable raw row, the per-row outcome with its
+Contact/Company/membership/imported-email references and match bases, the
+warnings, the error code, the imported address with its provider claims, and
+both VMR stage outcomes. The Workbench reads that state; it stores nothing of
+its own and re-implements no part of the importer.
+
+`app/services/admin_workbench/import_lineage.py` is the read model. It calls the
+same public helpers the customer screens call (`campaign_import.get_batch`,
+`batch_rows`, `campaign_batches`, `retained_alternates`,
+`imported_email_summary`), so the two surfaces cannot disagree about what a row
+did. It never writes.
+
+| Surface | What it adds |
+|---|---|
+| Campaign detail | A **File imports** panel: every batch, its schema, and its imported / already-here / held / refused counts. |
+| Contact diagnosis | An **Origin — campaign-bound file import** card: batch, row, fingerprint, whether the Contact and the membership were created or reused, which signal matched, the resolved Company and its basis, the supplied Company name beside it, source identifiers, and any row warnings. |
+| Contact diagnosis → Email | Address origin, the accepted imported address, and *candidate generation: bypassed*, with the vendor's claims behind a disclosure that labels them as the vendor's. |
+| Contact diagnosis → Verification | *Bypassed — imported address*, provider called **no**, evidence **none**. |
+| `/admin/imports/{batch_id}` | The batch and every row it produced, with per-row Contact, Company, supplied name, imported address and bypass state. Read-only. |
+| Failures | A **File-import rows needing attention** table for refused and held rows. They have no Campaign Contact, no stage and no Agent Job, so the Phase 2 inbox cannot see them at all. |
+| Contact / Company detail | A **Source identifiers** table, labelled as another system's keys rather than as identity. |
+
+### Why the Verification stage needed anything at all
+
+The Workbench's Verification projection validates its decision against
+`VerificationDecision` and reports anything outside that vocabulary as
+*undecided* rather than guessing. The import path commits `bypassed`, which is
+deliberately **not** a verification decision — that vocabulary governs real
+verification, where `accept` means a mailbox answered, and admitting `bypassed`
+into it would let an import satisfy checks that exist to mean "a provider said
+so". So the projection stays as it is and the lineage supplies the missing half.
+Without it the page said "no committed decision" about a stage that had
+committed one: safe, but silent.
+
+For the same reason the Email and Verification stages no longer print the
+registry's worker list for an imported Contact. That list is what *can* run a
+stage, not what did; naming MillionVerifier and DeBounce beside an address no
+provider ever saw is precisely the misreading this path exists to prevent. Both
+stages say **none ran** instead, with the reason.
+
+Tests: `tests/test_campaign_import_admin_workbench.py`.
 
 ## 13. Migration
 

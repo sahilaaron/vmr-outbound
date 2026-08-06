@@ -52,7 +52,8 @@ with a visible reason.
 | Contacts | `/admin/contacts`, `/admin/contacts/{id}` | Cross-Campaign lookup for the permanent Contact: memberships, suppressions, email addresses and verification state, promotion-linked capture history, recent Personalization output. |
 | Companies | `/admin/companies`, `/admin/companies/{id}` | Canonical identity and domain state, linked Contacts, Campaign participation, dossier versions, Research executions with fallback lineage, unresolved conflicts, Company Intelligence links. |
 | Agent/Stages | `/admin/stages`, `/admin/stages/{agent}` | Operator layer over the Agent registry: control state and provenance, queue and stage counts, workers, Campaign overrides, recent completions/failures, average duration where reliably measurable. |
-| Failures | `/admin/failures` | The exceptions inbox: committed stage failures, blocked Contacts, failed Jobs not represented by a stage row, and stale leases — normalized, categorised from committed fields only, each row leading to its diagnosis. |
+| File imports | `/admin/imports/{batch_id}` | One campaign-bound contact file import (IMP-001): the batch and every row it produced — Contact and Company resolution with the evidence that decided each, the supplied Company name beside the resolved one, the imported address, and the Email/Verification bypasses. Read-only; importing and re-importing stay on the campaign import screens. Linked from the Campaign detail **File imports** panel. |
+| Failures | `/admin/failures` | The exceptions inbox: committed stage failures, blocked Contacts, failed Jobs not represented by a stage row, and stale leases — normalized, categorised from committed fields only, each row leading to its diagnosis. Plus file-import rows that were refused or held: those never became a Campaign Contact, so they carry no stage and no Job and appear nowhere else. |
 | Review | `/admin/review` | Read-only visibility into Personalization output and decisions. Approve/discard stays in the Customer queue at `/app/review`; the Workbench never decides. |
 | Providers & Usage | `/admin/providers` | Claude CLI, MillionVerifier, Logo.dev, DeBounce: configured or not, feature switches, ledger-recorded usage windows, last use and last failure. Secrets never render. |
 | Configuration | `/admin/configuration` | Read-only home for the effective configuration: dry-run, feature switches, global Agent controls with provenance, Campaign overrides, active immutable policy versions, Research fallback bounds. Each row links to its authoritative write surface. |
@@ -101,6 +102,23 @@ counts with discard reasons, source URLs, and the final dossier basis.
 Executions that predate lineage recording say `lineage unavailable` — nothing
 is inferred for them.
 
+## Imported Contacts (IMP-001)
+
+A Contact that arrived through a campaign-bound file import carries an **Origin**
+card on its diagnosis page, and its Email and Verification stages explain what
+they did *instead* of discovery and verification: candidate generation bypassed,
+no provider called, no evidence written. The vendor's own claims about the
+address are shown behind a disclosure that labels them as the vendor's — there is
+no field anywhere on these surfaces called "verified".
+
+The Verification projection is unchanged and still refuses to read `bypassed` as
+a verification decision, because that vocabulary means "a provider answered".
+The bypass is stated from the import records instead. Full rationale and the
+surface-by-surface map: `docs/CAMPAIGN_FILE_IMPORT.md` §12.
+
+A Contact acquired any other way has no import lineage, and that absence is
+treated as a fact — "not imported" — never as missing data.
+
 ## Advanced Diagnostics and the legacy surface
 
 Nothing an operator bookmarked disappears. The redesign moved exactly one
@@ -116,6 +134,9 @@ Workbench rail ("Workflows") and catalogued under `/admin/diagnostics`.
 
 * `app/services/admin_workbench/views.py` — frozen presentation DTOs. No view
   derives a state the services did not commit; uncertainty stays explicit.
+* `app/services/admin_workbench/import_lineage.py` — the campaign file-import
+  read model, built on the import services' own public helpers so the Admin and
+  customer surfaces cannot disagree about what a row did. Read-only.
 * `app/services/admin_workbench/reader.py` — one read-only reader assembling
   every page, reusing `PhaseTwoWorkbenchReader`, the drafts queue, the policy
   services and `DurableResearchReportReader`, plus grouped aggregation queries
