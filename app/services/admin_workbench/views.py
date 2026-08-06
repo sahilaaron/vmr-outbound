@@ -318,12 +318,92 @@ class StageDiagnosisView:
 
 
 @dataclass(frozen=True)
+class SequenceMessageDiagnosisRow:
+    """One sequence message, as an operator diagnosing a generation sees it."""
+
+    position: int
+    message_id: uuid.UUID
+    version_id: uuid.UUID
+    message_version: int
+    purpose: str
+    message_type: str
+    origin: str
+    generation_status: str
+    validation_status: str
+    review_state: str
+    predecessor_message_id: uuid.UUID | None
+    planned_day: int
+    planned_delay_days: int
+    delivery_state: str
+    warnings: tuple[str, ...]
+    cited_evidence_ids: tuple[str, ...]
+    intelligence_accepted: int
+    intelligence_excluded: int
+    decided_by: str | None
+    decided_at: datetime | None
+
+
+@dataclass(frozen=True)
+class SequenceDiagnosisView:
+    """One sequence version, with everything needed to explain what it did.
+
+    Assembled from committed rows only. Nothing here is recomputed from the
+    model's raw output, and the model's raw output is not carried at all --
+    unbounded producer text is exactly what an operator diagnosis must not
+    become a channel for.
+    """
+
+    sequence_id: uuid.UUID
+    sequence_key: uuid.UUID
+    sequence_version: int
+    agent_job_id: uuid.UUID | None
+    input_digest: str
+    producer: str | None
+    producer_version: str | None
+    sequence_producer_version: str
+    validation_policy_version: str
+    policy_version_number: int | None
+    strategy_id: str | None
+    generation_status: str
+    validation_status: str
+    review_state: str
+    cadence_source: str
+    planned_span_days: int | None
+    current_actionable_position: int | None
+    stop_state: str
+    stop_reason: str | None
+    created_at: datetime
+    created_by: str | None
+    superseded_at: datetime | None
+    messages: tuple[SequenceMessageDiagnosisRow, ...]
+    validation_findings: tuple[dict[str, Any], ...]
+    research_lineage: dict[str, Any]
+    insights_lineage: dict[str, Any]
+    intelligence_lineage: dict[str, Any]
+    context_decision: dict[str, Any]
+
+    @property
+    def complete(self) -> bool:
+        return len(self.messages) == 7
+
+    @property
+    def is_current(self) -> bool:
+        return self.superseded_at is None
+
+
+@dataclass(frozen=True)
 class ContactDiagnosisView:
     """The Campaign -> Contact -> Agent/Stage -> Job -> attempt path, assembled."""
 
     execution: ContactExecutionView
     stages: tuple[StageDiagnosisView, ...]
     research_lineage_available: bool
+    #: Newest first, bounded. Empty for a contact that never had a sequence --
+    #: which is most of them, and must not be presented as a failure.
+    sequences: tuple[SequenceDiagnosisView, ...] = ()
+    #: Whether sequence generation is available in this deployment at all, so
+    #: the page can tell "switched off" apart from "nothing generated".
+    sequences_enabled: bool = False
 
     @property
     def campaign_contact_id(self) -> uuid.UUID:

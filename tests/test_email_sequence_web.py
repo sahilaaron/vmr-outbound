@@ -487,3 +487,105 @@ def test_reading_any_sequence_page_writes_nothing(
     client.get(f"/app/contacts/{contact.id}?campaign={membership.campaign_id}&step=6")
 
     assert db_session.scalar(select(func.count(AuditEvent.id))) == before
+
+
+# ---------------------------------------------------------------------------
+# Admin Workbench diagnosis
+# ---------------------------------------------------------------------------
+
+
+def test_admin_diagnosis_shows_the_sequence_and_all_seven_positions(
+    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
+) -> None:
+    """Tests 100-106: version, positions, validation, policy, strategy, lineage."""
+
+    _campaign, _company, _contact, membership, _policy, _evidence = scenario
+    sequence = build(db_session, scenario)
+    response = client.get(f"/admin/campaigns/{membership.campaign_id}/contacts/{membership.id}")
+    assert response.status_code == 200
+    body = response.text
+
+    assert f"Sequence v{sequence.sequence_version}" in body
+    assert "of 7 messages" in body
+    for purpose in (
+        "initial_outreach",
+        "concise_reminder",
+        "new_angle",
+        "role_relevance",
+        "proof_or_outcome",
+        "low_friction_resource",
+        "close_the_loop",
+    ):
+        assert purpose in body
+    assert "Input digest" in body and sequence.input_digest in body
+    assert "Research lineage" in body
+    assert "Insights lineage" in body
+    assert "Company Intelligence lineage" in body
+    assert "Policy and strategy" in body
+    assert "planned timing, never a schedule" in body
+
+
+def test_admin_diagnosis_shows_edit_and_review_history(
+    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
+) -> None:
+    """Test 108."""
+
+    _campaign, _company, _contact, membership, _policy, _evidence = scenario
+    sequence = build(db_session, scenario)
+    rows = sequence_read.message_rows(db_session, sequence=sequence)
+    sequence_review.approve_message(db_session, message_version_id=rows[0].version_id)
+    sequence_review.edit_message(
+        db_session,
+        message_version_id=rows[2].version_id,
+        subject="Operator wording",
+        body="A tighter version of the new-angle message, written by the operator.",
+    )
+    body = client.get(f"/admin/campaigns/{membership.campaign_id}/contacts/{membership.id}").text
+
+    assert "human_edited" in body
+    assert "approved" in body
+    assert "by operator" in body
+
+
+def test_admin_diagnosis_shows_rerun_history_as_separate_sequence_versions(
+    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
+) -> None:
+    """Test 107: an explicit regeneration is auditable as its own version."""
+
+    campaign, _company, _contact, membership, _policy, _evidence = scenario
+    build(db_session, scenario)
+    campaign.primary_cta = "Ask for the preview"
+    db_session.flush()
+    build(db_session, scenario)
+
+    body = client.get(f"/admin/campaigns/{membership.campaign_id}/contacts/{membership.id}").text
+    assert "Sequence v2" in body
+    assert "Sequence v1" in body
+    assert "superseded" in body
+
+
+def test_admin_diagnosis_is_truthful_for_a_contact_that_never_had_a_sequence(
+    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
+) -> None:
+    """Test 109: legacy memberships stay truthful rather than looking broken."""
+
+    _campaign, _company, _contact, membership, _policy, _evidence = scenario
+    body = client.get(f"/admin/campaigns/{membership.campaign_id}/contacts/{membership.id}").text
+    assert "No sequence has been generated for this membership" in body
+    assert "Sequence v1" not in body
+
+
+def test_admin_diagnosis_exposes_no_raw_producer_output_or_local_paths(
+    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
+) -> None:
+    """Test 111 and section 20: bounded diagnostics, sanitised."""
+
+    _campaign, _company, _contact, membership, _policy, _evidence = scenario
+    build(db_session, scenario)
+    body = client.get(f"/admin/campaigns/{membership.campaign_id}/contacts/{membership.id}").text
+
+    # No message body reaches the diagnosis page: it diagnoses the generation,
+    # not the copy, and the copy is read in the Customer review queue.
+    assert not any(text in body for text in BODIES)
+    for marker in ("/home/", "/mnt/user-data", "postgresql://", "api_key", "Traceback"):
+        assert marker not in body
