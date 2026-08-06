@@ -90,6 +90,33 @@ The *generic* domain vocabulary it depends on — `SequenceDeliveryState` and
 because that is what stops "approved" quietly coming to mean "ready to send"
 once a delivery workflow arrives.
 
+### 8. Corrections after adversarial review
+
+An independent hostile review of the first implementation reproduced ten
+defects. Three were blockers and are recorded here because each changed a rule,
+not just a line:
+
+- **The UI gate did not match the generation gate.** Display checked only the
+  deployment flag while generation checked that flag *and* the Campaign opt-in.
+  Both are now resolved by one `SequenceAvailability`, and an existing sequence
+  is shown read-only rather than either hidden or left looking current. Off
+  stops generation; it does not stop disclosure.
+- **`current_actionable_position` skipped discarded messages.** Discarding the
+  initial message promoted follow-up 1, so the future Gmail adapter would have
+  opened a conversation with a message whose copy referred to one never sent. It
+  now walks the predecessor chain and stops at any gap. The rule the adapter
+  inherits: no follow-up is actionable unless its predecessor chain is approved
+  and confirmed delivered.
+- **The downgrade destroyed human approval decisions with no guard**, against a
+  convention eight migrations in this repository already follow. It now refuses
+  while data exists and reverses cleanly on an empty schema.
+
+The review also found that three of the four declared UI empty states were
+unreachable dead code, and that one test asserted the absence of a string no
+route could produce — passing trivially and proving nothing. Both are fixed, and
+the lesson is recorded here rather than only in a commit: **a test that asserts
+an absence must first prove the presence is reachable.**
+
 ## Consequences
 
 - Historical drafts, approvals and lineage are bit-for-bit unaffected.

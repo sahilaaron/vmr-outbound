@@ -36,10 +36,19 @@ no historical row is read or rewritten by any code path in this feature.
 
 | Table | Holds | Immutable? |
 |---|---|---|
-| `email_sequences` | one row per **generation**: digest, producer, policy, strategy, context decision, lineage, aggregate status | yes; regeneration supersedes |
+| `email_sequences` | one row per **generation**: digest, producer, policy, strategy, context decision, lineage, aggregate status | content yes; four lifecycle fields mutate — see below |
 | `email_sequence_messages` | one row per **logical message** (7): position, type, purpose, predecessor, delivery state. **No text.** | identity is permanent |
 | `email_sequence_message_versions` | one row per **immutable content version** of one message | yes; an edit supersedes |
 | `email_sequence_message_reviews` | one **decision per exact message version** | one row per version |
+
+**"Immutable" is precise about content, not about every column.** Four fields on
+`email_sequences` are written after the row is created: `superseded_at`,
+`superseded_by_id`, `review_state` and `current_actionable_position`. Message
+versions carry `superseded_at`, and a review row's `decision` is set to
+`invalidated` by an edit. None of them is content — they are lifecycle and cache.
+Nothing that was generated, decided or cited is ever rewritten in place.
+
+`review_state` in particular is a **cache**, not the authority. See §9.
 
 The split between the second and third table is the load-bearing idea. Text
 belongs to a version; identity belongs to the message. A later delivery adapter
@@ -231,6 +240,15 @@ recorded against "the sequence".
   message version it covered, sharing a `bulk_operation_id`. If the stored
   versions no longer match what the page was showing, nothing is approved.
 - A superseded version cannot be approved.
+- Every reader derives the state from `review.derive_state`, which takes only
+  counts. The card chip and the counts beside it therefore cannot disagree —
+  they used to, because the chip read the cached column while the counts
+  aggregated live. `email_sequences.review_state` is a **filter and sort key**;
+  the SQL pre-filter on it is a deliberate superset and the derived state
+  narrows the result, so a drifted cache costs a row's worth of work and can
+  never hide a sequence from the view it belongs in or place one in a view it
+  does not. `SequenceCardRow.cache_is_stale` exposes any disagreement rather
+  than silently repairing it.
 - The sequence aggregate is **derived** from the seven exact message states:
   `generated`, `needs_review`, `partially_reviewed`, `partially_approved`,
   `approved`, `contains_edits`, `contains_discarded`, `blocked`, `failed`,
@@ -268,6 +286,23 @@ With either off, the Personalization Agent writes exactly the single
 `DraftVersion` it has always written, with the same audit action and the same
 output keys, and no sequence row is created on any path.
 
+**Off stops generation, not disclosure.** An existing sequence stays fully
+visible on both the Review queue and the Contact page when the deployment switch
+is turned off or the Campaign opts out — with its messages, its lineage, its
+edits and every recorded decision. Hiding seven approved messages and seven
+human decisions is not the same as disabling a feature.
+
+It is shown **read-only**: no new approval, discard or edit can be recorded, and
+the refusal is enforced in the POST routes as well as in the template, because a
+page left open across a configuration change will still post. The chosen
+behaviour is deliberate rather than incidental — recording a fresh decision
+against a configuration that no longer produces sequences would contradict the
+notice the operator was just shown.
+
+With the switch off and **no** sequence anywhere, the section is omitted
+entirely rather than rendered as a permanent "switched off" banner on a page
+about single drafts.
+
 Requiring both is what stops enabling the feature from silently changing what
 every existing Campaign produces.
 
@@ -280,15 +315,25 @@ indefinitely; there is no step at which it is removed.
 
 ## 12. Historical compatibility
 
-The application distinguishes, and the UI renders separately:
+`SequenceAvailability` (in `app/web/v2/routes.py`) resolves exactly one state
+per page, and each is rendered with its own wording by
+`_sequence.html::unavailable`:
 
-- **legacy single draft** — a `DraftVersion` with no sequence. Readable and
-  decidable exactly as before.
-- **seven-message sequence** — a live `EmailSequence`.
-- **sequence unavailable** — the deployment flag is off.
-- **campaign not enabled** — the flag is on, this Campaign has not opted in.
-- **sequence pending** — enabled, nothing generated yet.
-- **sequence failed** — a generation was refused; nothing partial was kept.
+| State | When | What the page says |
+|---|---|---|
+| `feature_off` | deployment flag off, nothing generated | the Agent is writing single drafts; nothing is missing |
+| `campaign_off` | flag on, this Campaign has not opted in | this Campaign is not set up to generate sequences, and will not until somebody opts it in |
+| `pending` | opted in, nothing generated yet | this Campaign is opted in; the whole sequence appears at once when it finishes |
+| `failed` | a generation was refused | nothing partial was kept, and nothing further appears on its own |
+| `available` | a live sequence exists | the sequence |
+| `available` + `read_only` | a sequence exists but a switch is now off | the sequence, plus a notice naming which switch and confirming decisions are unchanged |
+
+Legacy single drafts are unaffected and render exactly as before, alongside.
+
+Each of these is asserted by an HTTP test in
+`tests/test_email_sequence_defects.py`. Three of them were unreachable dead code
+in the first implementation, and a test asserted the *absence* of a string no
+route could produce — it passed trivially and proved nothing.
 
 Historical records fabricate nothing: no follow-ups, no sequence versions, no
 Company Intelligence lineage, no delivery state, no review decision that never
@@ -306,10 +351,26 @@ One additive, reversible revision: `0926b59b7912`, on top of `b6d4e07a1f38`.
 Single Alembic head. Four `CREATE TABLE`s and ten new enum types; nothing
 existing is altered, dropped or backfilled.
 
-`downgrade` drops the four tables **and** the enum types they created —
+`downgrade` **refuses outright while any of the four tables holds a row.** Two
+of them carry records that exist nowhere else and cannot be re-derived: the
+generated message versions are the only copy of the copy, since regenerating
+produces different text, and the review rows are the only record of what a human
+decided. This follows the convention APP-003 (`c48b1f70a3d2`) established and
+KB-001, CI-001 and DAT-017A also follow; the first implementation of this
+migration omitted it.
+
+The refusal is conditional, so an empty schema still reverses without ceremony —
+which is what keeps the round-trip test meaningful. The error names how much
+would be lost and of what kind, and deliberately no more: an operator needs the
+scale of what they are about to destroy, not a sample of the content through an
+error string.
+
+On an empty schema it drops the four tables **and** the enum types they created —
 dropping a table leaves its types behind, and without the explicit `DROP TYPE`
 a downgrade followed by a re-upgrade would fail on "type already exists".
-Proven by `alembic downgrade -1 && alembic upgrade head && alembic check`.
+Proven by `alembic downgrade -1 && alembic upgrade head && alembic check`, and by
+`tests/test_migrations.py`, which asserts both the refusal and the release path
+after the data is deleted deliberately.
 
 ## 14. Read models and performance
 
@@ -321,6 +382,20 @@ structural rather than a convention a later change could drop.
 
 One body is loaded exactly when one message is expanded. The Contact-page table
 renders seven rows with subjects and no bodies; a row expansion fetches one.
+
+**Admin diagnosis** issues a constant four statements regardless of how many
+times a contact has been regenerated, by batching across the bounded history set
+and grouping in Python. It previously issued three queries *per sequence
+version* inside a loop, so six regenerations cost nineteen queries and every
+further one added three. The ten-version history cap is unchanged.
+
+**Lineage rendering is bounded** by `sequences/lineage.py`: depth, key count,
+list length, individual string length and total size, with an explicit
+`[truncated: …]` marker wherever something was removed. Stored lineage is
+written by trusted code and is small in practice, but nothing enforced that, so
+the page size was previously decided by whatever happened to be in the column.
+Bounding does not sanitise — escaping is the template's job, Jinja already does
+it, and a second implementation here would be a weaker one.
 
 ## 15. Future delivery model — designed for, not implemented
 
@@ -381,6 +456,32 @@ is confirmed sent, its delay has elapsed, its exact version is still approved,
 the sequence is not stopped, the contact is not suppressed, the Campaign is not
 paused or archived, the mailbox is connected and no reply or operator hold
 exists — is expressible in this model without changing the review model later.
+
+### The actionable-position rule, stated exactly
+
+`current_actionable_position` is computed by walking the **predecessor chain**,
+never by counting positions. The rule:
+
+- a stopped sequence has no actionable message;
+- the walk starts at the message with no predecessor;
+- a message is *cleared* only when it is approved **and** its delivery state says
+  it actually went out;
+- the first message that is approved but not yet cleared is the actionable one;
+- awaiting, discarded, or an unapproved gap ends the walk and yields `None`.
+
+**A discarded message is never stepped over.** Discarding the initial message
+leaves the whole sequence with no actionable position until that message is
+edited or regenerated and approved again. An earlier implementation skipped past
+discarded messages in numeric order, so discarding the initial message promoted
+follow-up 1 — which would have opened the conversation while its own copy said
+"following up on my earlier note", referring to a message nobody ever sent.
+
+Because no message in this build ever leaves `not_ready`, the only position this
+can currently return is the head of the chain. That is the truthful answer:
+nothing has been sent, so nothing after the first message can be next.
+
+**The rule the future Gmail adapter inherits:** no follow-up is actionable
+unless its required predecessor chain is approved *and* confirmed delivered.
 
 ### Stop conditions
 
@@ -447,9 +548,26 @@ Campaign level (which mailbox this Campaign sends from), is inherited by the
 sequence, and is recorded per message on the external reference at the moment a
 draft is created. No sender identity is hardcoded into sequence persistence.
 
-## 16. Explicit non-goals
+## 16. Known bounds carried deliberately
 
-Not built, and not partially built:
+- **Form size** is checked from `Content-Length` before the body is read, which
+  bounds the ordinary case. A chunked request declares no length, and Starlette
+  buffers as it parses, so this is a bound rather than a guarantee; a complete
+  fix is a body-size limit at the server or proxy layer, which is a deployment
+  concern rather than a route one.
+- **Same-origin** is checked from `Sec-Fetch-Site`, falling back to `Origin`. A
+  request carrying neither is allowed, so scripted local tools keep working.
+  This is a cross-site guard, not authentication — the workbench still has none,
+  by design, and refuses to boot outside `APP_ENV=local`.
+- **No performance index** was added for the Review queue. At pilot scale the
+  filter and sort are a sub-2 ms sequential scan; adding a migration for it now
+  would collide with the Campaign Import reconciliation for no present benefit.
+  Revisit once superseded-row volume is real.
+
+## 17. Explicit non-goals
+
+Nothing in the fixes above added any of these. Not built, and not partially
+built:
 
 Google OAuth · Gmail API calls · Google Sheets API calls · mailbox polling ·
 Gmail push notifications or Pub/Sub · reply detection · scheduling · automatic
