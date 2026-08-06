@@ -207,6 +207,12 @@ The normal path requires no operator step and no dedicated process:
    call.
 4. The produced version is company-scoped and serves every Contact linked to
    the Company; nothing is duplicated per Campaign Contact.
+5. Personalization reads the current version as bounded, provenance-preserving
+   structured context (docs/decisions/0006): resolved, supported,
+   evidence-backed, unconflicted values only; everything else is recorded as
+   excluded with its reason; labels never become citable claims; Research
+   evidence stays authoritative; the weak-evidence fallback and the Policy
+   Studio remain untouched. Each draft records the exact version id it read.
 
 `run_company_intelligence_worker.py` remains as an optional bounded
 recovery/debug tool. Backfill remains for historical Companies, recovery,

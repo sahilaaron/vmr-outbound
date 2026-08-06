@@ -690,6 +690,54 @@ class DraftOutcomeView:
     evidence_supplied: int
     approved: bool
     producer: str | None
+    #: Company Intelligence lineage, read from the committed generation record.
+    #: ``intelligence_status`` is None for outputs written before the
+    #: integration — reported as *lineage unavailable*, never fabricated.
+    intelligence_status: str | None = None
+    intelligence_used: bool = False
+    intelligence_version_number: int | None = None
+    intelligence_version_id: str | None = None
+    intelligence_accepted: int = 0
+    intelligence_excluded: int = 0
+    intelligence_exclusion_reasons: tuple[str, ...] = ()
+    policy_version_number: int | None = None
+
+    @property
+    def insights_used(self) -> bool:
+        return bool(self.evidence_insight_ids)
+
+    @property
+    def input_basis(self) -> str:
+        """A truthful one-line answer to "what did this output draw on?"."""
+
+        parts = ["Research"]
+        if self.insights_used:
+            parts.append("Insights")
+        if self.intelligence_used:
+            parts.append("Company Intelligence")
+        if len(parts) == 1 and not self.insights_used:
+            return "Offering-led fallback (no prospect context cleared policy)"
+        return " + ".join(parts)
+
+    @property
+    def intelligence_label(self) -> str:
+        """The Company Intelligence availability/usage state, in words."""
+
+        labels = {
+            None: "lineage unavailable (generated before the integration)",
+            "used": "used",
+            "feature_disabled": "unavailable (feature off)",
+            "no_current_version": "unavailable (no current version)",
+            "no_eligible_classifications": "present but no eligible classifications",
+            "withheld_weak_evidence_fallback": (
+                "present but withheld (weak-evidence fallback active)"
+            ),
+            "withheld_company_context_minimum": (
+                "present but withheld (company-context usage set to minimum)"
+            ),
+            "eligible_but_not_used": "present but not used",
+        }
+        return labels.get(self.intelligence_status, self.intelligence_status or "unknown")
 
 
 @dataclass(frozen=True)

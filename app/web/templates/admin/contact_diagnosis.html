@@ -189,7 +189,18 @@
             {% elif stage.agent_id.value == "personalization" and execution.draft %}
               <hr class="soft">
               <div class="kv">
-                <dt>Draft</dt><dd>v{{ execution.draft.version_number }} · “{{ execution.draft.subject }}” · evidence: {{ execution.draft.evidence_supplied }} insight(s)</dd>
+                <dt>Draft</dt><dd>v{{ execution.draft.version_number }} · “{{ execution.draft.subject }}” · {{ execution.draft.evidence_insight_ids | length }} of {{ execution.draft.evidence_supplied }} supplied insight(s) cited</dd>
+                <dt>Inputs</dt><dd>{{ execution.draft.input_basis }}{% if execution.draft.policy_version_number %} <span class="dim">· policy v{{ execution.draft.policy_version_number }}</span>{% endif %}{% if execution.draft.producer %} <span class="dim">· {{ execution.draft.producer }}</span>{% endif %}</dd>
+                <dt>Company Intelligence</dt>
+                <dd>
+                  {% if execution.draft.intelligence_used %}<span class="badge ok plain">used</span>{% elif execution.draft.intelligence_status %}<span class="badge muted plain">not used</span>{% else %}<span class="badge muted plain">lineage unavailable</span>{% endif %}
+                  <span class="dim">{{ execution.draft.intelligence_label }}</span>
+                  {% if execution.draft.intelligence_version_number %}<span class="dim">· version v{{ execution.draft.intelligence_version_number }}</span>{% endif %}
+                  {% if execution.draft.intelligence_status %}<span class="dim">· {{ execution.draft.intelligence_accepted }} accepted, {{ execution.draft.intelligence_excluded }} excluded</span>{% endif %}
+                  {% if execution.draft.intelligence_exclusion_reasons %}
+                  <div class="muted-note">Excluded because: {{ execution.draft.intelligence_exclusion_reasons | join("; ") }}</div>
+                  {% endif %}
+                </dd>
                 <dt>Approval</dt><dd><span class="badge muted plain">not approved</span> <span class="dim">decisions happen in the Customer review queue</span></dd>
               </div>
             {% elif stage.agent_id.value == "sending" %}

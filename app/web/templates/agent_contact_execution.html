@@ -384,6 +384,17 @@
     </dl>
     <pre class="draft-body wrap">{{ execution.draft.body }}</pre>
     <dl class="kv">
+      <dt>Inputs</dt>
+      <dd class="small">{{ execution.draft.input_basis }}</dd>
+      <dt>Company Intelligence</dt>
+      <dd class="small">
+        {{ execution.draft.intelligence_label }}
+        {%- if execution.draft.intelligence_version_number %} · version v{{ execution.draft.intelligence_version_number }}{% endif %}
+        {%- if execution.draft.intelligence_status %} · {{ execution.draft.intelligence_accepted }} accepted, {{ execution.draft.intelligence_excluded }} excluded{% endif %}
+        {% if execution.draft.intelligence_exclusion_reasons %}
+        <div class="small muted-text">Excluded because: {{ execution.draft.intelligence_exclusion_reasons | join("; ") }}</div>
+        {% endif %}
+      </dd>
       <dt>Evidence used</dt>
       <dd class="small">
         {{ execution.draft.evidence_insight_ids | length }} of
