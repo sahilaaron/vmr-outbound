@@ -465,7 +465,7 @@ def _sequence_availability(
     # with no campaign in hand the honest answer is silence about it rather than
     # a claim that some campaign has not opted in.
     campaign_known = campaign is not None
-    opted_in = campaign_known and campaign_opted_in(campaign)
+    opted_in = campaign is not None and campaign_opted_in(campaign)
 
     if sequence is not None:
         if not generation_on:

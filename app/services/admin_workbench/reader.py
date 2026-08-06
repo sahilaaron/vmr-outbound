@@ -38,7 +38,11 @@ from app.models.contact import Contact
 from app.models.draft import DraftApproval, DraftVersion
 from app.models.email_candidate import EmailCandidate
 from app.models.email_evidence import ExactEmailVerification
-from app.models.email_sequence import EmailSequenceMessage, EmailSequenceMessageVersion
+from app.models.email_sequence import (
+    EmailSequenceMessage,
+    EmailSequenceMessageReview,
+    EmailSequenceMessageVersion,
+)
 from app.models.email_verification_studio import (
     EmailPatternPolicyVersion,
     VerificationWaterfallPolicyVersion,
@@ -64,6 +68,7 @@ from app.services.personalization import policy as personalization_policy
 from app.services.research.fallback import FALLBACK_WORKER_NAME
 from app.services.research.workers.website import WORKER_NAME as WEBSITE_WORKER_NAME
 from app.services.sequences import read as sequence_read
+from app.services.sequences.lineage import bounded_lineage
 from app.services.verification import studio as verification_studio
 from app.services.verification.provider_registry import PROVIDERS
 from app.services.workbench_agents.reader import PhaseTwoWorkbenchReader
@@ -816,35 +821,99 @@ class AdminWorkbenchReader:
     ) -> tuple[SequenceDiagnosisView, ...]:
         """Every recent sequence version for this membership, newest first.
 
-        Bounded twice over: the history query caps how many versions are read,
-        and each version's validation findings are capped where they were
-        stored. An operator diagnosing a refusal needs the reasons, not an
-        unbounded transcript.
+        Four statements in total, regardless of how many times an operator has
+        regenerated. It used to be three *per version* inside a loop, so a
+        contact regenerated ten times cost thirty queries and every further
+        regeneration added three more. The fix is the pattern this codebase
+        already uses in ``sequences.read._tallies``: fetch everything for the
+        bounded history set with one ``IN`` each, then group in Python.
+
+        Bounded twice over: ``history`` caps how many versions are read, and each
+        version's validation findings and lineage are capped where they are
+        rendered.
         """
 
         history = sequence_read.history(self._session, campaign_contact_id=campaign_contact_id)
         if not history:
             return ()
-        out: list[SequenceDiagnosisView] = []
-        for sequence in history:
-            rows = sequence_read.message_rows(self._session, sequence=sequence)
-            messages = self._session.scalars(
-                select(EmailSequenceMessage)
-                .where(EmailSequenceMessage.sequence_key == sequence.sequence_key)
-                .order_by(EmailSequenceMessage.position)
-            ).all()
-            delivery = {message.position: message.delivery_state.value for message in messages}
-            versions = {
-                version.position: version
-                for version in self._session.scalars(
-                    select(EmailSequenceMessageVersion).where(
-                        EmailSequenceMessageVersion.sequence_id == sequence.id,
-                        EmailSequenceMessageVersion.superseded_at.is_(None),
+
+        sequence_ids = [sequence.id for sequence in history]
+        sequence_keys = list({sequence.sequence_key for sequence in history})
+
+        # 1 — the logical messages for every sequence key on the page.
+        messages_by_key: dict[uuid.UUID, list[EmailSequenceMessage]] = {}
+        for message in self._session.scalars(
+            select(EmailSequenceMessage)
+            .where(EmailSequenceMessage.sequence_key.in_(sequence_keys))
+            .order_by(EmailSequenceMessage.position)
+        ).all():
+            messages_by_key.setdefault(message.sequence_key, []).append(message)
+
+        # 2 — every version belonging to any sequence on the page, superseded
+        # ones included: a superseded sequence version's own messages are
+        # superseded too, and the diagnosis is about what each version held.
+        versions_by_sequence: dict[uuid.UUID, dict[int, EmailSequenceMessageVersion]] = {}
+        version_ids: list[uuid.UUID] = []
+        for version in self._session.scalars(
+            select(EmailSequenceMessageVersion)
+            .where(EmailSequenceMessageVersion.sequence_id.in_(sequence_ids))
+            .order_by(EmailSequenceMessageVersion.message_version)
+        ).all():
+            versions_by_sequence.setdefault(version.sequence_id, {})[version.position] = version
+            version_ids.append(version.id)
+
+        # 3 — the decisions recorded against those exact versions.
+        reviews_by_version: dict[uuid.UUID, EmailSequenceMessageReview] = {}
+        if version_ids:
+            reviews_by_version = {
+                review.message_version_id: review
+                for review in self._session.scalars(
+                    select(EmailSequenceMessageReview).where(
+                        EmailSequenceMessageReview.message_version_id.in_(version_ids)
                     )
                 ).all()
             }
+
+        out: list[SequenceDiagnosisView] = []
+        for sequence in history:
+            messages = messages_by_key.get(sequence.sequence_key, [])
+            versions = versions_by_sequence.get(sequence.id, {})
             findings_raw = sequence.validation_findings or {}
             findings = findings_raw.get("findings") if isinstance(findings_raw, dict) else None
+            rows: list[SequenceMessageDiagnosisRow] = []
+            for message in messages:
+                held = versions.get(message.position)
+                if held is None:
+                    # This sequence version wrote nothing at this position. Said
+                    # plainly rather than filled in from a neighbouring version.
+                    continue
+                review = reviews_by_version.get(held.id)
+                rows.append(
+                    SequenceMessageDiagnosisRow(
+                        position=message.position,
+                        message_id=message.id,
+                        version_id=held.id,
+                        message_version=held.message_version,
+                        purpose=message.purpose.value,
+                        message_type=message.message_type.value,
+                        origin=held.origin.value,
+                        generation_status=held.generation_status.value,
+                        validation_status=held.validation_status.value,
+                        review_state=(
+                            review.decision.value if review is not None else "waiting for you"
+                        ),
+                        predecessor_message_id=message.predecessor_message_id,
+                        planned_day=held.recommended_elapsed_day,
+                        planned_delay_days=held.recommended_delay_days,
+                        delivery_state=message.delivery_state.value,
+                        warnings=tuple(held.warnings or []),
+                        cited_evidence_ids=tuple(held.evidence_insight_ids or []),
+                        intelligence_accepted=held.intelligence_accepted_count,
+                        intelligence_excluded=held.intelligence_excluded_count,
+                        decided_by=review.decided_by if review is not None else None,
+                        decided_at=review.decided_at if review is not None else None,
+                    )
+                )
             out.append(
                 SequenceDiagnosisView(
                     sequence_id=sequence.id,
@@ -869,58 +938,14 @@ class AdminWorkbenchReader:
                     created_at=sequence.created_at,
                     created_by=sequence.created_by,
                     superseded_at=sequence.superseded_at,
-                    messages=tuple(
-                        SequenceMessageDiagnosisRow(
-                            position=row.position,
-                            message_id=row.message_id,
-                            version_id=row.version_id,
-                            message_version=row.message_version,
-                            purpose=row.purpose.value,
-                            message_type=row.message_type.value,
-                            origin=row.origin.value,
-                            generation_status=(
-                                versions[row.position].generation_status.value
-                                if row.position in versions
-                                else "unknown"
-                            ),
-                            validation_status=row.validation_status.value,
-                            review_state=row.review_label,
-                            predecessor_message_id=row.predecessor_message_id,
-                            planned_day=row.recommended_elapsed_day,
-                            planned_delay_days=row.recommended_delay_days,
-                            delivery_state=delivery.get(row.position, "not_ready"),
-                            warnings=tuple(
-                                (versions[row.position].warnings or [])
-                                if row.position in versions
-                                else []
-                            ),
-                            cited_evidence_ids=tuple(
-                                (versions[row.position].evidence_insight_ids or [])
-                                if row.position in versions
-                                else []
-                            ),
-                            intelligence_accepted=(
-                                versions[row.position].intelligence_accepted_count
-                                if row.position in versions
-                                else 0
-                            ),
-                            intelligence_excluded=(
-                                versions[row.position].intelligence_excluded_count
-                                if row.position in versions
-                                else 0
-                            ),
-                            decided_by=row.decided_by,
-                            decided_at=row.decided_at,
-                        )
-                        for row in rows
-                    ),
+                    messages=tuple(rows),
                     validation_findings=tuple(
                         item for item in (findings or []) if isinstance(item, dict)
                     ),
-                    research_lineage=sequence.research_lineage or {},
-                    insights_lineage=sequence.insights_lineage or {},
-                    intelligence_lineage=sequence.intelligence_lineage or {},
-                    context_decision=sequence.personalization_decision or {},
+                    research_lineage=bounded_lineage(sequence.research_lineage),
+                    insights_lineage=bounded_lineage(sequence.insights_lineage),
+                    intelligence_lineage=bounded_lineage(sequence.intelligence_lineage),
+                    context_decision=bounded_lineage(sequence.personalization_decision),
                 )
             )
         return tuple(out)
