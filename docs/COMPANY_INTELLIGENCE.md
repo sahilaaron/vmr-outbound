@@ -179,6 +179,14 @@ would let the model name a location deterministic extraction never found.
    place was found in is stored as a disagreement; a candidate the model ignored
    is stored `unclear` rather than lost. A settled city then infers its country —
    never the reverse.
+10. **Geography vocabulary drift.** A place the vendored extraction base knows
+    but the *active* vocabulary edition does not (an older published edition, or
+    a base updated without re-seeding) is stored `unresolved` with reason
+    `unmapped_value` — the same rule every other normalizing dimension follows —
+    with its CI-002 relationship and presence intact, and a version warning
+    naming the place and the remedy (re-seed the vocabulary). It is never stored
+    `resolved` with no term behind it; the schema's `resolved_has_value`
+    contract forbids that shape.
 
 **Idempotency.** `input_digest` is SHA-256 over the dossier version, the exact
 sourced facts (id + content hash), the taxonomy editions, and the producer and
@@ -186,6 +194,15 @@ policy versions. `UNIQUE (company_id, input_digest)` means the same question
 cannot produce a second version even under a race between two workers. The runner
 checks for an existing version **before** calling the model, so a repeat run
 costs nothing.
+
+**Persistence failures.** The worker executes production under a savepoint: if a
+produced row violates a database contract (`IntegrityError` at flush), only the
+produced rows roll back — the claim survives, the job fails durably with code
+`persistence_integrity_error` (constraint named, statement and parameters never
+recorded), and the continuous worker moves on to the next job. The failure is
+not retryable: nothing was persisted, so a later re-enqueue after the defect is
+fixed costs exactly one new model call. Operational errors (a lost connection)
+still propagate — a durable outcome cannot be recorded on a broken connection.
 
 **Versioning.** Any change to the dossier, the facts, the vocabulary, the
 producer version or the policy version changes the digest and therefore produces
