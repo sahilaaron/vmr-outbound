@@ -1,0 +1,50 @@
+{% extends "admin/base.html" %}
+{% import "admin/_wb.html" as wb %}
+{% block content %}
+
+<div class="page-head">
+  <div>
+    <h1>Companies</h1>
+    <div class="sub">Canonical Company records: domain state, Research state, linked Contacts and dossier history.</div>
+  </div>
+</div>
+
+<div class="filters">
+  <form class="inline" method="get" action="/admin/companies">
+    <input type="search" name="q" placeholder="Search name or domain" size="30" value="{{ view.query or '' }}">
+    <button class="btn" type="submit">Search</button>
+    {% if view.query %}<a class="muted-note" href="/admin/companies">clear</a>{% endif %}
+  </form>
+  <div class="spacer"></div>
+  <span class="muted-note">{{ view.total }} Compan{{ "ies" if view.total != 1 else "y" }}</span>
+</div>
+
+<div class="card">
+  <div class="card-body tight">
+    {% if view.rows %}
+    <div class="table-wrap">
+    <table class="data">
+      <thead><tr><th>Company</th><th>Domain</th><th>Research</th><th class="num">Contacts</th><th class="num">Dossiers</th><th>Updated</th></tr></thead>
+      <tbody>
+        {% for row in view.rows %}
+        <tr>
+          <td class="primary"><a href="/admin/companies/{{ row.company_id }}">{{ row.name }}</a></td>
+          <td class="mono">{{ row.domain or "—" }}</td>
+          <td><span class="badge {{ 'ok' if row.research_state in ('completed', 'completed_with_warnings') else ('err' if row.research_state == 'failed' else 'muted') }} plain">{{ row.research_state | replace("_", " ") }}</span></td>
+          <td class="num">{{ row.contact_count }}</td>
+          <td class="num">{{ row.dossier_count }}</td>
+          <td class="dim nowrap">{{ row.updated_at | ago }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% set extra = ("&q=" ~ (view.query | urlencode)) if view.query else "" %}
+    {{ wb.pager(view.page, view.pages, "/admin/companies", extra) }}
+    {% else %}
+    {{ wb.empty("No Companies match", "Companies are created by capture promotion, imports and domain resolution.") }}
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}

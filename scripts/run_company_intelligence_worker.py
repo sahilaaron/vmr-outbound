@@ -1,9 +1,14 @@
-"""Run the Company Intelligence worker (CI-001).
+"""Run the standalone Company Intelligence worker (optional).
 
-A separate process from ``run_agent_worker.py``, and separate on purpose: this
-one drains a company-scoped queue that has nothing to do with Campaign Contacts,
-no stage projection to advance, and no Campaign master switch to respect. Sharing
-the Agent worker would have meant teaching it a second execution model.
+**Not required for normal operation.** The Research Agent enqueues Company
+Intelligence automatically when it commits a usable dossier, and the shared
+Agent worker (``run_agent_worker.py``) drains that queue whenever the Agent
+queue is idle. This script remains as a bounded recovery and debug tool: drain
+a backfill deliberately, watch one job with ``--once``, or work the queue while
+the shared worker is scoped to specific Agents.
+
+It stays a separate entry point on purpose: it drains a company-scoped queue
+with no stage projection to advance and no Campaign master switch to respect.
 
     python scripts/run_company_intelligence_worker.py --once
     python scripts/run_company_intelligence_worker.py --max-jobs 25

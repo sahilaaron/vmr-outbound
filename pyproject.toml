@@ -69,6 +69,8 @@ select = ["E", "F", "I", "UP", "B", "W"]
 "app/api/routes.py" = ["B008"]
 # Same FastAPI Depends(...) idiom on the workbench page routes.
 "app/web/routes.py" = ["B008"]
+# And on the redesigned Admin Workbench page routes.
+"app/web/admin_workbench.py" = ["B008"]
 # And on the customer-facing v2 page routes.
 "app/web/v2/routes.py" = ["B008"]
 # And on the Company Intelligence admin page routes (CI-001).

@@ -1385,6 +1385,17 @@ class PersonalizationAgentAdapter:
                 "personalization_policy_version_id": str(generated.policy_version_id),
                 "personalization_policy_version_number": generated.policy_version_number,
                 "personalization_strategy_id": generated.strategy_id,
+                "company_intelligence_version_id": (
+                    str(generated.decision.intelligence.version_id)
+                    if generated.decision.intelligence is not None
+                    and generated.decision.intelligence.version_id is not None
+                    else None
+                ),
+                "company_intelligence_used": (
+                    generated.decision.intelligence.used
+                    if generated.decision.intelligence is not None
+                    else None
+                ),
             },
         )
 

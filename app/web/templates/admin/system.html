@@ -1,0 +1,128 @@
+{% extends "admin/base.html" %}
+{% import "admin/_wb.html" as wb %}
+{% block content %}
+
+<div class="page-head">
+  <div>
+    <h1>System</h1>
+    <div class="sub">Queue and worker state, schema readiness, audit history and raw Agent Job search.</div>
+  </div>
+</div>
+
+{% for warning in view.warnings %}
+<div class="notice warn"><div>{{ warning }}</div></div>
+{% endfor %}
+
+<div class="stats">
+  <div class="stat"><div class="n">{{ view.queue.open_work }}</div><div class="l">Open Jobs</div></div>
+  <div class="stat"><div class="n">{{ view.queue.running }}</div><div class="l">Running</div></div>
+  <div class="stat {{ 'err' if view.queue.failed else '' }}"><div class="n">{{ view.queue.failed }}</div><div class="l">Failed</div></div>
+  <div class="stat {{ 'warn' if view.stale_leases else '' }}"><div class="n">{{ view.stale_leases | length }}</div><div class="l">Stale leases</div></div>
+  <div class="stat"><div class="n">{{ view.oldest_open_job_at | ago if view.oldest_open_job_at else "—" }}</div><div class="l">Oldest open Job</div></div>
+</div>
+
+<div class="grid cols-2">
+  <div class="card">
+    <div class="card-head"><h2>Runtime</h2></div>
+    <div class="card-body">
+      <div class="kv">
+        <dt>Application version</dt><dd class="mono">{{ view.app_version }}</dd>
+        <dt>APP_ENV</dt><dd class="mono">{{ view.app_env }}</dd>
+        <dt>Database</dt><dd>{{ wb.bool_badge(view.database_ok, yes="connected", no="unavailable") }}</dd>
+        <dt>Alembic revision</dt><dd class="mono">{{ view.alembic_version or "not stamped" }}</dd>
+        <dt>Features enabled</dt><dd>{% if view.features_enabled %}{{ view.features_enabled | join(", ") }}{% else %}<span class="dim">none</span>{% endif %}</dd>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Job counts by state</h2></div>
+    <div class="card-body tight">
+      <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>Public state</th><th class="num">Jobs</th></tr></thead>
+        <tbody>
+          {% for status, count in view.job_counts.items() | sort %}
+          <tr><td>{{ wb.job_badge(status) }}</td><td class="num">{{ count }}</td></tr>
+          {% else %}
+          <tr><td colspan="2">{{ wb.empty("No Agent Jobs recorded") }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Raw Agent Job search</h2></div>
+  <div class="card-body">
+    <form class="inline" method="get" action="/admin/system">
+      <input type="search" name="job" placeholder="Full Agent Job UUID" size="42" value="{{ view.job_search_query or '' }}" class="mono">
+      <button class="btn" type="submit">Look up</button>
+    </form>
+    {% if view.job_search_error %}<div class="notice warn" style="margin-top: 10px;"><div>{{ view.job_search_error }}</div></div>{% endif %}
+    {% if view.job_search_result %}
+    <div style="margin-top: 10px;">
+      Found: {{ wb.job_row_link(view.job_search_result) }} — {{ view.job_search_result.agent_name }} {{ wb.job_badge(view.job_search_result.public_status) }}
+      <a class="btn small" href="/admin/jobs/{{ view.job_search_result.job_id }}">Open Job detail</a>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Stale leases</h2><span class="hint">claimed by a worker whose lease expired; the orchestrator recovers them on its next claim cycle</span></div>
+  <div class="card-body tight">
+    {% if view.stale_leases %}
+    <div class="table-wrap">
+    <table class="data">
+      <thead><tr><th>Job</th><th>Agent/Stage</th><th>Lease owner</th><th>Lease expired</th><th class="num">Attempts</th></tr></thead>
+      <tbody>
+        {% for job in view.stale_leases %}
+        <tr>
+          <td>{{ wb.job_row_link(job) }}</td>
+          <td>{{ job.agent_name }}</td>
+          <td class="mono">{{ job.lease_owner or "—" }}</td>
+          <td class="dim">{{ job.lease_expires_at | ago }}</td>
+          <td class="num">{{ job.attempt_count }}/{{ job.max_attempts }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% else %}
+    {{ wb.empty("No stale leases", "Every claimed Job holds a live lease.") }}
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Audit history</h2><span class="hint">the newest 50 committed audit events</span></div>
+  <div class="card-body tight">
+    {% if view.audit_tail %}
+    <div class="table-wrap">
+    <table class="data">
+      <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Entity</th><th>Transition</th><th>Reason</th><th>Dry-run</th></tr></thead>
+      <tbody>
+        {% for event in view.audit_tail %}
+        <tr>
+          <td class="dim nowrap">{{ event.created_at | dt }}</td>
+          <td>{{ event.actor }}</td>
+          <td class="mono">{{ event.action }}</td>
+          <td class="dim wrap-anywhere">{{ event.entity_type or "" }}{% if event.entity_id %} · {{ event.entity_id | truncate(12, True) }}{% endif %}</td>
+          <td class="dim">{% if event.previous_state or event.new_state %}{{ event.previous_state or "·" }} → {{ event.new_state or "·" }}{% else %}—{% endif %}</td>
+          <td class="dim wrap-anywhere">{{ event.reason | truncate(60) if event.reason else "—" }}</td>
+          <td>{{ wb.bool_badge(event.dry_run, yes="dry", no="live") }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% else %}
+    {{ wb.empty("No audit events recorded") }}
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}

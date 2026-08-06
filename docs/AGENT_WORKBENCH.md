@@ -1,5 +1,10 @@
 # Workbench Agent monitor and controls (MVP-01B)
 
+> The redesigned [Admin Workbench](ADMIN_WORKBENCH.md) at `/admin` is now the
+> primary operator surface; this monitor remains fully functional under
+> Advanced Diagnostics and keeps sole ownership of the Agent control and
+> override write forms.
+
 The Workbench is the operator control room for the Phase 2 Agent pipeline. It
 answers, on one screen: what is every Agent doing, which Campaigns are
 progressing, which Campaign Contacts are blocked, what needs a decision, and

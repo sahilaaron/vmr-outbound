@@ -321,9 +321,16 @@ def test_company_intelligence_keeps_its_own_queue_and_worker(both_on: None) -> N
 
     agent_imports = imported_modules(agent_worker)
     assert any(name.startswith("app.services.agents") for name in agent_imports)
-    assert not any(
-        name.startswith("app.services.company_intelligence") for name in agent_imports
-    ), "the Agent worker must not have taken over the Company Intelligence queue"
+    # The shared worker DOES drain the Company Intelligence queue now — that is
+    # the automatic Research handoff's normal consumer — but only through the
+    # runner seam. It must not reach into the queue's internals: the two
+    # execution models stay owned by their own services.
+    assert "app.services.company_intelligence.runner" in agent_imports, (
+        "the shared worker is the normal consumer of the Company Intelligence queue"
+    )
+    assert "app.services.company_intelligence.jobs" not in agent_imports, (
+        "the shared worker must consume through the runner, not drive the queue directly"
+    )
 
 
 # --- 6. Company Agent and Company Intelligence are visibly distinct ---------

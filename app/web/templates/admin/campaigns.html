@@ -1,0 +1,65 @@
+{% extends "admin/base.html" %}
+{% import "admin/_wb.html" as wb %}
+{% block content %}
+
+<div class="page-head">
+  <div>
+    <h1>Campaigns</h1>
+    <div class="sub">Every Campaign with the counts an operator triages by. Open one to reach its Contacts and their Agent/Stage diagnosis.</div>
+  </div>
+</div>
+
+<div class="filters">
+  <div class="chiprow">
+    <a class="chip {{ 'on' if not view.health_filter and not view.status_filter else '' }}" href="/admin/campaigns">All <span class="c">{{ view.total }}</span></a>
+    {% for health, count in view.counts_by_health.items() | sort %}
+    <a class="chip {{ 'on' if view.health_filter == health else '' }}" href="/admin/campaigns?health={{ health }}">{{ health }} <span class="c">{{ count }}</span></a>
+    {% endfor %}
+    <span class="sep-dot">·</span>
+    {% for status in ("draft", "active", "archived") %}
+    <a class="chip {{ 'on' if view.status_filter == status else '' }}" href="/admin/campaigns?status={{ status }}">{{ status }}</a>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-body tight">
+    {% if view.rows %}
+    <div class="table-wrap">
+    <table class="data">
+      <thead><tr>
+        <th>Campaign</th><th>Status</th><th>Health</th><th>Execution</th>
+        <th class="num">Enrolled</th><th>Progress</th>
+        <th class="num">In progress</th><th class="num">Blocked</th><th class="num">Failed</th>
+        <th class="num">Review</th><th class="num">Open Jobs</th><th>Last activity</th>
+      </tr></thead>
+      <tbody>
+        {% for row in view.rows %}
+        <tr class="{{ 'attention' if row.needs_attention else '' }}">
+          <td class="primary"><a href="/admin/campaigns/{{ row.campaign_id }}">{{ row.name }}</a></td>
+          <td><span class="badge {{ 'ok' if row.status == 'active' else 'muted' }} plain">{{ row.status }}</span></td>
+          <td>{{ wb.health_badge(row.health) }}</td>
+          <td>{% if row.execution_enabled %}<span class="badge ok plain">on</span>{% else %}<span class="badge warn plain" title="{{ row.disabled_reason or '' }}">paused</span>{% endif %}</td>
+          <td class="num">{{ row.enrolled }}</td>
+          <td>{{ wb.progress(row.progress_percent) }}<span class="muted-note">{{ row.completed }} complete</span></td>
+          <td class="num">{{ row.in_progress }}</td>
+          <td class="num">{{ row.blocked }}</td>
+          <td class="num">{% set failures = row.failed + row.failed_jobs %}{% if failures %}<a href="/admin/failures?campaign={{ row.campaign_id }}">{{ failures }}</a>{% else %}0{% endif %}</td>
+          <td class="num">{{ row.awaiting_review }}</td>
+          <td class="num">{{ row.open_jobs }}</td>
+          <td class="dim">{{ row.latest_activity_at | ago }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% else %}
+    {{ wb.empty("No Campaigns match this filter", "Clear the filter or create a Campaign from the legacy Campaigns workflow.") }}
+    {% endif %}
+  </div>
+  <div class="card-foot">
+    Campaign creation and settings edits stay on the <a href="/campaigns">legacy Campaigns workflow</a> until they move here; this table is the operational truth for triage.
+  </div>
+</div>
+
+{% endblock %}

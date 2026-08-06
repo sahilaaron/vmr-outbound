@@ -1,0 +1,166 @@
+{% extends "admin/base.html" %}
+{% import "admin/_wb.html" as wb %}
+{% block content %}
+
+{{ wb.crumbs([("Companies", "/admin/companies"), (view.name, None)]) }}
+
+<div class="page-head">
+  <div>
+    <h1>{{ view.name }}
+      <span class="badge {{ 'ok' if view.research_state in ('completed', 'completed_with_warnings') else ('err' if view.research_state == 'failed' else 'muted') }} plain">research: {{ view.research_state | replace("_", " ") }}</span>
+    </h1>
+    <div class="sub">
+      {% if view.domain %}<span class="mono">{{ view.domain }}</span>{% else %}No canonical domain{% endif %}
+      {% if view.domain_state %} · domain {{ view.domain_state }}{% endif %}
+      {% if view.industry %} · {{ view.industry }}{% endif %}
+      {% if view.country %} · {{ view.country }}{% endif %}
+    </div>
+  </div>
+  <div class="page-actions">
+    <a class="btn" href="/companies/{{ view.company_id }}">Full workspace (legacy)</a>
+    {% if view.intelligence_href %}<a class="btn" href="{{ view.intelligence_href }}">Company Intelligence</a>{% endif %}
+  </div>
+</div>
+
+{% if view.domain_state == "provisional" %}
+<div class="notice warn"><div>The domain is <strong>provisional</strong>: it authorizes company Research and nothing else — never qualification, drafting, email discovery, campaign eligibility or sending.</div></div>
+{% endif %}
+{% if view.conflicts %}
+<div class="notice warn"><div><strong>Unresolved conflicts:</strong> {{ view.conflicts | map("replace", "_", " ") | join(", ") }} — resolve them in the legacy Company workspace.</div></div>
+{% endif %}
+
+<div class="grid cols-2">
+  <div class="card">
+    <div class="card-head"><h2>Identity</h2></div>
+    <div class="card-body">
+      <div class="kv">
+        <dt>Canonical domain</dt><dd class="mono">{{ view.domain or "—" }}</dd>
+        <dt>Domain state</dt><dd>{% if view.domain_state %}<span class="badge {{ 'ok' if view.domain_state == 'confirmed' else 'warn' }} plain">{{ view.domain_state }}</span>{% else %}<span class="dim">not from automatic resolution</span>{% endif %}</dd>
+        <dt>LinkedIn</dt><dd class="wrap-anywhere">{% if view.linkedin_company_url %}<a href="{{ view.linkedin_company_url }}" rel="noopener noreferrer">{{ view.linkedin_company_url }}</a>{% else %}—{% endif %}</dd>
+        <dt>Size</dt><dd>{{ view.company_size or "—" }}</dd>
+        <dt>Last researched</dt><dd>{{ view.last_researched_at | dt }}</dd>
+        <dt>Created</dt><dd>{{ view.created_at | dt }}</dd>
+        <dt>Company ID</dt><dd class="mono">{{ view.company_id }}</dd>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Research dossiers</h2><span class="hint">{{ view.dossiers | length }} version{{ "s" if view.dossiers | length != 1 else "" }}</span></div>
+    <div class="card-body tight">
+      {% if view.dossiers %}
+      <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th class="num">Version</th><th>Current</th><th>Interpreter</th><th>Created</th></tr></thead>
+        <tbody>
+          {% for dossier in view.dossiers %}
+          <tr>
+            <td class="num">v{{ dossier.version_number }}</td>
+            <td>{% if dossier.is_current %}<span class="badge ok plain">current</span>{% else %}<span class="dim">superseded</span>{% endif %}</td>
+            <td class="dim">{{ dossier.interpreter }} {{ dossier.interpreter_version or "" }}</td>
+            <td class="dim">{{ dossier.created_at | dt }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      <div class="card-foot">Dossier content is on the <a href="/companies/{{ view.company_id }}">legacy Company workspace</a>.</div>
+      {% else %}
+      {{ wb.empty("No dossiers", "Research has not produced a dossier for this Company.") }}
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Company Intelligence</h2><span class="hint">queued automatically when Research commits a usable dossier — no operator step</span></div>
+  <div class="card-body">
+    {% if not view.intelligence_available %}
+    {{ wb.unavailable("Company Intelligence is off", "The company_intelligence feature switch is not enabled; nothing is queued or produced.") }}
+    {% else %}
+    <div class="kv">
+      <dt>Versions</dt>
+      <dd>{% if view.intelligence_version_count %}{{ view.intelligence_version_count }} — <a href="{{ view.intelligence_href }}">open Company Intelligence</a>{% else %}<span class="dim">none yet</span>{% endif %}</dd>
+      <dt>Latest job</dt>
+      <dd>
+        {% if view.intelligence_job %}
+          {% set ci = view.intelligence_job %}
+          {% set tones = {"succeeded": "ok", "failed": "err", "pending": "muted", "leased": "info", "in_progress": "info", "retry_scheduled": "warn", "cancelled": "muted"} %}
+          <span class="badge {{ tones.get(ci.status, 'muted') }}">{{ ci.status | replace("_", " ") }}</span>
+          {% if ci.automatic %}<span class="badge accent plain">queued automatically after Research</span>
+          {% elif ci.requested_by %}<span class="dim">requested by {{ ci.requested_by }}</span>{% endif %}
+          <span class="dim">· attempt {{ ci.attempts }} · {{ (ci.finished_at or ci.created_at) | ago }}</span>
+          {% if ci.status == "failed" %}
+          <div class="dim wrap-anywhere">{{ ci.last_error or ci.error_class }} — re-request from the Company Intelligence pages after addressing the cause.</div>
+          {% endif %}
+        {% else %}
+          <span class="dim">no job yet — one is queued automatically when Research commits a usable dossier</span>
+        {% endif %}
+      </dd>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Research executions</h2><span class="hint">deterministic vs Claude fallback lineage per Agent Job</span></div>
+  <div class="card-body tight">
+    {% if view.research_jobs %}
+    <div class="table-wrap">
+    <table class="data">
+      <thead><tr><th>Job</th><th>Status</th><th>Campaign</th><th>Fallback</th><th>Dossier basis</th><th>Finished</th></tr></thead>
+      <tbody>
+        {% for job in view.research_jobs %}
+        <tr>
+          <td>{% if job.campaign_id and job.campaign_contact_id %}<a href="/admin/campaigns/{{ job.campaign_id }}/contacts/{{ job.campaign_contact_id }}" class="mono">{{ job.job_id | string | truncate(8, True, "") }}…</a>{% else %}<a class="mono" href="/admin/jobs/{{ job.job_id }}">{{ job.job_id | string | truncate(8, True, "") }}…</a>{% endif %}</td>
+          <td>{{ wb.job_badge(job.status) }}</td>
+          <td class="dim">{{ job.campaign_name or "—" }}</td>
+          <td>
+            {% if job.fallback_attempted is none %}<span class="badge muted plain">lineage unavailable</span>
+            {% elif job.fallback_attempted %}<span class="badge {{ 'ok' if job.fallback_status == 'succeeded' else 'warn' }} plain">fallback {{ job.fallback_status or "attempted" }}</span>
+            {% else %}<span class="badge muted plain">deterministic only</span>{% endif %}
+          </td>
+          <td class="dim mono">{{ job.dossier_basis or "—" }}</td>
+          <td class="dim nowrap">{{ job.finished_at | ago }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% else %}
+    {{ wb.empty("No Research executions recorded for this Company") }}
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Linked Contacts</h2>
+    <span class="hint">{% if view.campaign_names %}campaigns: {{ view.campaign_names | join(", ") }}{% endif %}</span></div>
+  <div class="card-body tight">
+    {% if view.linked_contacts %}
+    <div class="table-wrap">
+    <table class="data">
+      <thead><tr><th>Contact</th><th>Title</th><th>Email</th><th>Memberships</th></tr></thead>
+      <tbody>
+        {% for row in view.linked_contacts %}
+        <tr>
+          <td class="primary"><a href="/admin/contacts/{{ row.contact_id }}">{{ row.name }}</a>{% if row.suppressed %} <span class="badge err plain">suppressed</span>{% endif %}</td>
+          <td class="dim">{{ row.title or "—" }}</td>
+          <td class="dim">{{ row.email or "—" }}</td>
+          <td>
+            {% for membership in row.memberships[:3] %}
+            <a href="/admin/campaigns/{{ membership.campaign_id }}/contacts/{{ membership.campaign_contact_id }}">{{ membership.campaign_name }}</a>{{ "," if not loop.last }}
+            {% else %}<span class="dim">none</span>{% endfor %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% else %}
+    {{ wb.empty("No Contacts linked to this Company") }}
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}

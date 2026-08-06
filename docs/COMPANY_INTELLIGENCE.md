@@ -179,6 +179,47 @@ would let the model name a location deterministic extraction never found.
    place was found in is stored as a disagreement; a candidate the model ignored
    is stored `unclear` rather than lost. A settled city then infers its country —
    never the reverse.
+10. **Geography vocabulary drift.** A place the vendored extraction base knows
+    but the *active* vocabulary edition does not (an older published edition, or
+    a base updated without re-seeding) is stored `unresolved` with reason
+    `unmapped_value` — the same rule every other normalizing dimension follows —
+    with its CI-002 relationship and presence intact, and a version warning
+    naming the place and the remedy (re-seed the vocabulary). It is never stored
+    `resolved` with no term behind it; the schema's `resolved_has_value`
+    contract forbids that shape.
+
+## Operating model: automatic handoff
+
+The normal path requires no operator step and no dedicated process:
+
+1. Research commits a new **usable** dossier (a dossier stored with
+   insufficient evidence is recorded, not classified).
+2. In the same transaction, `company_intelligence.handoff.enqueue_after_research`
+   queues **one** idempotent, company-scoped job — keyed by `(company, input
+   digest)`, marked `requested_by=research_handoff`. An already-answered digest
+   queues nothing; an already-open job is reused; unchanged input never
+   duplicates work. A new job appears only when the Research input or the
+   producer policy/version changed.
+3. The **shared Agent worker** (`run_agent_worker.py`) drains the Company
+   Intelligence queue whenever the Campaign Agent queue is idle (skippable with
+   `--skip-company-intelligence`, and skipped automatically when the worker is
+   scoped with `--agent`). Claims count against `--max-jobs`: each is one model
+   call.
+4. The produced version is company-scoped and serves every Contact linked to
+   the Company; nothing is duplicated per Campaign Contact.
+5. Personalization reads the current version as bounded, provenance-preserving
+   structured context (docs/decisions/0006): resolved, supported,
+   evidence-backed, unconflicted values only; everything else is recorded as
+   excluded with its reason; labels never become citable claims; Research
+   evidence stays authoritative; the weak-evidence fallback and the Policy
+   Studio remain untouched. Each draft records the exact version id it read.
+
+`run_company_intelligence_worker.py` remains as an optional bounded
+recovery/debug tool. Backfill remains for historical Companies, recovery,
+policy-version migrations and deliberate reprocessing — it is not part of the
+normal path. The Admin Workbench surfaces the handoff on the Contact diagnosis
+(Research stage), the Company page (latest job + how it was queued) and the
+Failures inbox (failed Company Intelligence jobs).
 
 **Idempotency.** `input_digest` is SHA-256 over the dossier version, the exact
 sourced facts (id + content hash), the taxonomy editions, and the producer and
@@ -186,6 +227,15 @@ policy versions. `UNIQUE (company_id, input_digest)` means the same question
 cannot produce a second version even under a race between two workers. The runner
 checks for an existing version **before** calling the model, so a repeat run
 costs nothing.
+
+**Persistence failures.** The worker executes production under a savepoint: if a
+produced row violates a database contract (`IntegrityError` at flush), only the
+produced rows roll back — the claim survives, the job fails durably with code
+`persistence_integrity_error` (constraint named, statement and parameters never
+recorded), and the continuous worker moves on to the next job. The failure is
+not retryable: nothing was persisted, so a later re-enqueue after the defect is
+fixed costs exactly one new model call. Operational errors (a lost connection)
+still propagate — a durable outcome cannot be recorded on a broken connection.
 
 **Versioning.** Any change to the dossier, the facts, the vocabulary, the
 producer version or the policy version changes the digest and therefore produces

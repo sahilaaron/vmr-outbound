@@ -954,6 +954,39 @@ class PhaseTwoWorkbenchReader:
         if not subject and not body:
             return None
         version = payload.get("version_number")
+
+        # Company Intelligence lineage, read only from what the generation
+        # committed. A missing block means the output predates the integration
+        # and is reported exactly that way.
+        decision = payload.get("personalization_decision")
+        intelligence = decision.get("company_intelligence") if isinstance(decision, dict) else None
+        intelligence_status: str | None = None
+        intelligence_used = False
+        intelligence_version: int | None = None
+        intelligence_version_id: str | None = None
+        intelligence_accepted = 0
+        intelligence_excluded = 0
+        exclusion_reasons: tuple[str, ...] = ()
+        if isinstance(intelligence, dict):
+            intelligence_status = sanitize_text(intelligence.get("status"), limit=80)
+            intelligence_used = intelligence.get("used") is True
+            raw_version = intelligence.get("version_number")
+            intelligence_version = raw_version if isinstance(raw_version, int) else None
+            raw_version_id = intelligence.get("version_id")
+            intelligence_version_id = raw_version_id if isinstance(raw_version_id, str) else None
+            intelligence_accepted = self._count(intelligence.get("accepted_count"))
+            intelligence_excluded = self._count(intelligence.get("excluded_count"))
+            excluded = intelligence.get("excluded")
+            if isinstance(excluded, list):
+                seen: list[str] = []
+                for item in excluded:
+                    if isinstance(item, dict):
+                        reason = sanitize_text(item.get("reason"), limit=160)
+                        if reason and reason not in seen:
+                            seen.append(reason)
+                exclusion_reasons = tuple(seen[:6])
+
+        policy_version = payload.get("personalization_policy_version_number")
         return DraftOutcomeView(
             draft_version_id=(
                 str(payload["draft_version_id"])
@@ -974,6 +1007,14 @@ class PhaseTwoWorkbenchReader:
             producer=sanitize_text(payload.get("producer"), limit=120)
             if isinstance(payload.get("producer"), str)
             else None,
+            intelligence_status=intelligence_status,
+            intelligence_used=intelligence_used,
+            intelligence_version_number=intelligence_version,
+            intelligence_version_id=intelligence_version_id,
+            intelligence_accepted=intelligence_accepted,
+            intelligence_excluded=intelligence_excluded,
+            intelligence_exclusion_reasons=exclusion_reasons,
+            policy_version_number=policy_version if isinstance(policy_version, int) else None,
         )
 
     # --- email ------------------------------------------------------------

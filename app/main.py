@@ -120,6 +120,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # before any broader admin pattern can shadow them.
         app.include_router(v2_router)
 
+        # The Admin Workbench is the primary operator surface. It is included
+        # before the legacy web router on purpose: `/admin` and the new
+        # `/admin/...` areas resolve here, while every legacy route the
+        # Workbench does not redefine (Agent Studio, imports, verification,
+        # captures, knowledge base, local tools, the legacy monitor) continues
+        # to resolve in `app.web.routes` unchanged.
+        from app.web.admin_workbench import router as admin_workbench_router
+
+        app.include_router(admin_workbench_router)
+
         # Company Intelligence (CI-001) mounts as its own router, behind its own
         # default-off switch on top of `workbench`. Two consequences, both
         # deliberate: while the switch is off the paths do not exist at all

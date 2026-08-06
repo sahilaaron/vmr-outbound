@@ -1,0 +1,61 @@
+{% extends "admin/base.html" %}
+{% import "admin/_wb.html" as wb %}
+{% block content %}
+
+<div class="page-head">
+  <div>
+    <h1>Review</h1>
+    <div class="sub">Admin visibility into Personalization output and its review state. Approval and discard decisions stay in the <a href="/app/review">Customer review queue</a> — the Workbench renders drafts and never decides for anyone.</div>
+  </div>
+</div>
+
+{% if not view.available %}
+{{ wb.unavailable("Review is unavailable", "Neither drafting nor email generation is enabled, and no draft versions exist. Nothing is simulated for it.") }}
+{% else %}
+
+<div class="stats">
+  <div class="stat {{ 'warn' if view.awaiting else '' }}"><div class="n">{{ view.awaiting }}</div><div class="l">Awaiting decision</div></div>
+  <div class="stat ok"><div class="n">{{ view.approved }}</div><div class="l">Approved</div></div>
+  <div class="stat"><div class="n">{{ view.discarded }}</div><div class="l">Discarded</div></div>
+</div>
+
+<div class="filters">
+  <div class="chiprow">
+    {% for key, label in (("awaiting", "Awaiting"), ("approved", "Approved"), ("discarded", "Discarded"), ("all", "All")) %}
+    <a class="chip {{ 'on' if view.view == key else '' }}" href="/admin/review?view={{ key }}">{{ label }}</a>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-body tight">
+    {% if view.rows %}
+    <div class="table-wrap">
+    <table class="data">
+      <thead><tr><th>Contact</th><th>Campaign</th><th class="num">Version</th><th>Subject</th><th>Decision</th><th>Created</th><th></th></tr></thead>
+      <tbody>
+        {% for row in view.rows %}
+        <tr>
+          <td class="primary"><a href="/admin/contacts/{{ row.contact_id }}">{{ row.contact_label }}</a></td>
+          <td><a href="/admin/campaigns/{{ row.campaign_id }}">{{ row.campaign_name }}</a></td>
+          <td class="num">v{{ row.version_number }}</td>
+          <td class="wrap-anywhere">{{ row.subject }}</td>
+          <td>{% if row.approval_status == "approved" %}<span class="badge ok">approved</span>{% elif row.approval_status %}<span class="badge muted plain">{{ row.approval_status }}</span>{% else %}<span class="badge warn plain">awaiting decision</span>{% endif %}</td>
+          <td class="dim nowrap">{{ row.created_at | dt }}</td>
+          <td>{% if row.campaign_contact_id %}<a class="btn small" href="/admin/campaigns/{{ row.campaign_id }}/contacts/{{ row.campaign_contact_id }}">Diagnose</a>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% else %}
+    {{ wb.empty("Nothing in this view", "No drafts match the selected review state.") }}
+    {% endif %}
+  </div>
+  <div class="card-foot">
+    Editing an approved draft invalidates its approval, and no send or schedule happens without human approval of the exact draft version. Eligibility is re-checked again before any scheduling.
+  </div>
+</div>
+
+{% endif %}
+{% endblock %}
