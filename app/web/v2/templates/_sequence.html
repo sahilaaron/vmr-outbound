@@ -105,7 +105,7 @@
   One expanded message. `back` is the URL an action returns to, so the operator
   lands back on the exact message they acted on.
 #}
-{% macro message(detail, back, show_edit=true) %}
+{% macro message(detail, back, show_edit=true, read_only=false) %}
 {% set row = detail.row %}
 <div class="v2-seq-message">
   <div class="v2-seq-meta">
@@ -124,6 +124,15 @@
     </div>
     <pre class="v2-mail-body">{{ detail.body }}</pre>
     <div class="v2-mail-foot">
+      {% if read_only %}
+      <span class="v2-btn is-disabled" title="This sequence is read-only: the feature or the campaign opt-in is switched off.">Approve this message</span>
+      <span class="v2-btn is-disabled" title="This sequence is read-only.">Discard</span>
+      <span class="why">
+        This sequence is kept and fully readable, but no new decision can be recorded
+        against it while sequences are switched off for this campaign or environment.
+        Nothing already decided has changed.
+      </span>
+      {% else %}
       <form method="post" action="/app/review/sequence/messages/{{ row.version_id }}/approve">
         <input type="hidden" name="back" value="{{ back }}">
         <label class="v2-sr" for="seq-approve-{{ row.position }}">Note</label>
@@ -141,6 +150,7 @@
         message. Nothing is sent and no Gmail draft is created — there is no sending path
         in this build.
       </span>
+      {% endif %}
     </div>
   </div>
 
@@ -153,7 +163,7 @@
   </div>
   {% endif %}
 
-  {% if show_edit %}
+  {% if show_edit and not read_only %}
   <details class="v2-seq-edit">
     <summary>Edit this message</summary>
     <form method="post" action="/app/review/sequence/messages/{{ row.version_id }}/edit" class="v2-seq-form">
@@ -207,18 +217,31 @@
 {% macro unavailable(kind) %}
 {% if kind == 'feature_off' %}
   {{ empty('Sequences are switched off in this environment',
-     'The Personalization Agent is writing single drafts, exactly as it did before sequences existed. Nothing has been generated and nothing is missing.') }}
+     'The Personalization Agent is writing single drafts, exactly as it did before sequences existed. Nothing has been generated for this contact, and nothing is missing.') }}
 {% elif kind == 'campaign_off' %}
-  {{ empty('This campaign has not opted in to sequences',
-     'The feature is available in this environment, but each campaign opts in separately so that turning it on never silently changes what an existing campaign produces. This one is still on single drafts.') }}
+  {{ empty('This campaign is not set up to generate sequences',
+     'Seven-message sequences are available in this environment, but each campaign opts in separately so that switching the feature on never silently changes what an existing campaign produces. This campaign is on single drafts, and no sequence will be written for it until somebody opts it in.') }}
 {% elif kind == 'pending' %}
   {{ empty('No sequence has been written yet',
-     'The Personalization Agent writes all seven messages as one unit, and only for a contact whose mailbox has been confirmed. When it finishes, the whole sequence appears here at once.') }}
+     'This campaign is opted in, so the Personalization Agent will write all seven messages as one unit — and only for a contact whose mailbox has been confirmed. When it finishes, the whole sequence appears here at once.') }}
 {% elif kind == 'failed' %}
   {{ empty('The last generation did not produce a usable sequence',
-     'Nothing partial was kept: a sequence is written whole or not at all, so there are no half-finished messages waiting to be mistaken for finished ones. The Admin Workbench holds the validation findings.') }}
+     'Nothing partial was kept: a sequence is written whole or not at all, so there are no half-finished messages waiting to be mistaken for finished ones. Nothing further will appear here on its own — the Admin Workbench holds the validation findings that say why it was refused.') }}
 {% else %}
   {{ empty('No sequence for this contact',
      'Nothing has been generated for this campaign membership.') }}
+{% endif %}
+{% endmacro %}
+
+{#
+  Shown above an existing sequence that is still fully readable but can no
+  longer be acted on, because the deployment switch or the campaign opt-in has
+  since been turned off. Recorded work is never hidden; it is explained.
+#}
+{% macro read_only_notice(availability) %}
+{% if availability and availability.read_only and availability.notice %}
+<div class="v2-notice warn v2-seq-readonly" role="status">
+  <b>Read-only</b> — {{ availability.notice }}
+</div>
 {% endif %}
 {% endmacro %}

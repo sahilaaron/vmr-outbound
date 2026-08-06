@@ -120,16 +120,22 @@
       </div>
       {% endif %}
 
-      {% if sequences_on and membership %}
+      {% if membership and sequence_section_visible %}
       <div class="v2-card" id="sequence">
         <div class="v2-card-head">
           <h2>The seven-message sequence</h2>
           <span class="v2-note">Written as one unit. Reviewed one message at a time.</span>
         </div>
 
-        {% if not sequence_summary %}
-        <div class="v2-card-body">{{ seq.unavailable('pending') }}</div>
+        {#
+          A refused generation is shown as a refusal, not as a table of the
+          partial state that produced it. The row-level detail lives in the
+          Admin Workbench, which is where a validation finding belongs.
+        #}
+        {% if not sequence_summary or sequence_availability.state == 'failed' %}
+        <div class="v2-card-body">{{ seq.unavailable(sequence_availability.state) }}</div>
         {% else %}
+        {{ seq.read_only_notice(sequence_availability) }}
         {# The summary above the table, so the shape of the sequence is legible
            before any row is opened. #}
         <div class="v2-card-body">
@@ -161,7 +167,15 @@
                 <span class="v2-muted">— for a future delivery workflow that does not exist yet</span>
               {% else %}nothing is actionable: no message is approved{% endif %}
             </dd>
-            <dt>Mode</dt><dd>seven-message sequence, enabled for this campaign</dd>
+            <dt>Mode</dt>
+            <dd>
+              {% if sequence_availability.read_only %}
+                seven-message sequence, kept read-only —
+                {% if not sequence_generation_on %}the feature is switched off in this environment{% else %}this campaign is no longer set up to generate sequences{% endif %}
+              {% else %}
+                seven-message sequence, enabled for this campaign
+              {% endif %}
+            </dd>
           </dl>
         </div>
 
@@ -204,7 +218,7 @@
 
         {% if sequence_detail %}
         <div class="v2-card-body v2-seq-rowdetail">
-          {{ seq.message(sequence_detail, "/app/contacts/" ~ detail.contact.id ~ "?campaign=" ~ membership.campaign_id ~ "&step=" ~ sequence_step) }}
+          {{ seq.message(sequence_detail, "/app/contacts/" ~ detail.contact.id ~ "?campaign=" ~ membership.campaign_id ~ "&step=" ~ sequence_step, read_only=sequence_availability.read_only) }}
           {#
             Exact identifiers live here, in secondary diagnostic detail, rather
             than as labels on the table. An operator needs them when something is

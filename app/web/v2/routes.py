@@ -36,10 +36,10 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.core.config import Settings, get_settings
-from app.models.campaign import CampaignContact
+from app.models.campaign import Campaign, CampaignContact
 from app.models.company import Company
 from app.models.contact import Contact
-from app.models.email_sequence import SEQUENCE_LENGTH
+from app.models.email_sequence import SEQUENCE_LENGTH, EmailSequenceMessageVersion
 from app.models.enums import (
     AgentControlStatus,
     AgentIdentifier,
@@ -47,6 +47,8 @@ from app.models.enums import (
     DossierSection,
     PipelineStageStatus,
     ResearchState,
+    SequenceGenerationStatus,
+    SequenceValidationStatus,
 )
 from app.models.pipeline import CampaignContactAgentState
 from app.models.suppression import Suppression
@@ -62,6 +64,7 @@ from app.services.companies import detail as company_detail
 from app.services.companies import records as company_records
 from app.services.crm import detail as crm_detail
 from app.services.crm import records as crm_records
+from app.services.personalization.cadence import campaign_opted_in
 from app.services.resolution import service as resolution_service
 from app.services.seller import campaign_offerings as seller_campaign_offerings
 from app.services.seller import profile as seller_profile
@@ -397,15 +400,109 @@ def _agent_workbench_on(settings: Settings) -> bool:
 
 
 def _sequences_on(settings: Settings) -> bool:
-    """Whether the seven-message sequence feature exists in this deployment.
+    """Whether sequence *generation* is available in this deployment.
 
-    Deliberately only the deployment half. Whether a *particular* Campaign
-    produces sequences is that Campaign's opt-in, and the pages must be able to
-    render "this Campaign is not enabled" rather than pretend the feature is
-    absent.
+    Only the deployment half of the gate. It answers "can anything be
+    generated", never "should this page show anything" -- an existing sequence
+    stays readable after the switch is turned off, because concealing recorded
+    human decisions is not the same as disabling a feature.
     """
 
     return "email_sequences" in settings.features.enabled()
+
+
+#: Every way the sequence section can be in a state other than "here it is".
+#: Each one is rendered with its own wording; see ``_sequence.html::unavailable``.
+SEQUENCE_STATE_FEATURE_OFF = "feature_off"
+SEQUENCE_STATE_CAMPAIGN_OFF = "campaign_off"
+SEQUENCE_STATE_PENDING = "pending"
+SEQUENCE_STATE_FAILED = "failed"
+SEQUENCE_STATE_AVAILABLE = "available"
+
+
+@dataclass(frozen=True)
+class SequenceAvailability:
+    """Why the sequence section looks the way it does, for one membership.
+
+    This type exists because a boolean could not tell the truth. "No sequence"
+    covering feature-off, campaign-not-opted-in, nothing-generated-yet and
+    generation-refused is how an operator ends up waiting for something that is
+    switched off, and every one of those four needs different wording.
+
+    ``read_only`` is separate from ``state`` on purpose. A sequence that already
+    exists stays visible when the deployment switch is off or the Campaign has
+    opted out -- the work happened and the decisions are real -- but no new
+    decision may be recorded against it, because the operator has just been told
+    this configuration no longer produces sequences and a review action would
+    contradict that.
+    """
+
+    state: str
+    #: True when an existing sequence is shown but cannot be acted on.
+    read_only: bool = False
+    #: Set when the sequence is shown despite the configuration being off, so
+    #: the page can explain why it is still here.
+    notice: str | None = None
+
+    @property
+    def available(self) -> bool:
+        return self.state == SEQUENCE_STATE_AVAILABLE
+
+
+def _sequence_availability(
+    settings: Settings, *, campaign: Campaign | None, sequence: Any | None
+) -> SequenceAvailability:
+    """Resolve the exact state, given the two switches and what exists.
+
+    The order is deliberate. An existing sequence is disclosed first, because
+    hiding recorded work is the worst of the available answers; only when there
+    is nothing to show does the configuration decide the wording.
+    """
+
+    generation_on = _sequences_on(settings)
+    # ``campaign is None`` means the caller is not looking at one campaign -- the
+    # unfiltered Review queue, for instance. Opt-in is a per-campaign fact, so
+    # with no campaign in hand the honest answer is silence about it rather than
+    # a claim that some campaign has not opted in.
+    campaign_known = campaign is not None
+    opted_in = campaign_known and campaign_opted_in(campaign)
+
+    if sequence is not None:
+        if not generation_on:
+            return SequenceAvailability(
+                state=SEQUENCE_STATE_AVAILABLE,
+                read_only=True,
+                notice=(
+                    "Seven-message sequences are switched off in this environment. This "
+                    "sequence and every decision recorded against it are kept and shown in "
+                    "full, but no new sequence will be written and no review action can be "
+                    "recorded while the switch is off."
+                ),
+            )
+        if campaign_known and not opted_in:
+            return SequenceAvailability(
+                state=SEQUENCE_STATE_AVAILABLE,
+                read_only=True,
+                notice=(
+                    "This campaign is no longer configured to generate sequences, so the "
+                    "Personalization Agent has gone back to writing a single draft for it. "
+                    "The sequence below was written while the campaign was opted in; it is "
+                    "kept and readable, and no new review action can be recorded against it."
+                ),
+            )
+        failed = (
+            sequence.generation_status is not SequenceGenerationStatus.COMPLETE
+            or sequence.validation_status is SequenceValidationStatus.FAILED
+        )
+        if failed:
+            return SequenceAvailability(state=SEQUENCE_STATE_FAILED)
+        return SequenceAvailability(state=SEQUENCE_STATE_AVAILABLE)
+
+    if not generation_on:
+        return SequenceAvailability(state=SEQUENCE_STATE_FEATURE_OFF)
+    if campaign_known and not opted_in:
+        return SequenceAvailability(state=SEQUENCE_STATE_CAMPAIGN_OFF)
+    return SequenceAvailability(state=SEQUENCE_STATE_PENDING)
 
 
 def _step_position(step: str | None) -> int:
@@ -1318,26 +1415,44 @@ def review_page(
     sequence_card = None
     sequence_detail = None
     sequence_rows: tuple[sequence_read.MessageRow, ...] = ()
-    if _sequences_on(settings):
-        sequence_queue = sequence_read.list_queue(
-            db,
-            campaign_id=campaign_id,
-            view=(view if view in {key for key, _label in sequence_read.VIEWS} else "awaiting"),
-            limit=50,
-        )
-        chosen_sequence = _uuid(sequence) if sequence else None
+    sequence_availability = SequenceAvailability(state=SEQUENCE_STATE_FEATURE_OFF)
+    # The queue is listed whenever any sequence exists, not only while the
+    # deployment switch is on. Turning generation off stops new sequences; it
+    # does not make recorded human decisions disappear from the page that
+    # recorded them.
+    sequence_queue = sequence_read.list_queue(
+        db,
+        campaign_id=campaign_id,
+        view=(view if view in {key for key, _label in sequence_read.VIEWS} else "awaiting"),
+        limit=50,
+    )
+    if not _sequences_on(settings) and not sequence_queue.rows:
+        sequence_queue = None
+    chosen_sequence = _uuid(sequence) if sequence else None
+    if sequence_queue is not None:
         sequence_card = next(
             (row for row in sequence_queue.rows if row.sequence_id == chosen_sequence), None
         )
-        if sequence_card is not None:
-            record = sequence_read.get_sequence(db, sequence_card.sequence_id)
-            if record is not None:
-                sequence_rows = sequence_read.message_rows(db, sequence=record)
-                # One body, on request. Expanding a card must not become a
-                # reason to load seven of them.
-                sequence_detail = sequence_read.message_detail(
-                    db, sequence=record, position=_step_position(step)
-                )
+    if sequence_card is not None:
+        record = sequence_read.get_sequence(db, sequence_card.sequence_id)
+        if record is not None:
+            sequence_rows = sequence_read.message_rows(db, sequence=record)
+            # One body, on request. Expanding a card must not become a
+            # reason to load seven of them.
+            sequence_detail = sequence_read.message_detail(
+                db, sequence=record, position=_step_position(step)
+            )
+            sequence_availability = _sequence_availability(
+                settings,
+                campaign=db.get(Campaign, record.campaign_id),
+                sequence=record,
+            )
+    if sequence_card is None:
+        sequence_availability = _sequence_availability(
+            settings,
+            campaign=db.get(Campaign, campaign_id) if campaign_id else None,
+            sequence=None,
+        )
     execution = None
     if (
         selected is not None
@@ -1365,11 +1480,24 @@ def review_page(
             "campaign_id": campaign_id,
             "agent_workbench_on": _agent_workbench_on(settings),
             "sequences_on": _sequences_on(settings),
+            "sequence_generation_on": _sequences_on(settings),
+            "sequence_availability": sequence_availability,
+            # With the feature off and no sequence anywhere, the section is
+            # omitted rather than rendered as a permanent "switched off" banner
+            # on a page about single drafts. It reappears the moment either the
+            # feature is on or a sequence exists to disclose.
+            "sequence_section_visible": _sequences_on(settings) or sequence_queue is not None,
             "sequence_queue": sequence_queue,
             "sequence_card": sequence_card,
             "sequence_rows": sequence_rows,
             "sequence_detail": sequence_detail,
             "sequence_step": _step_position(step),
+            # A contact holding both a live sequence and a current legacy draft
+            # is a real state (the campaign opted out after generating). The
+            # page must say why both exist rather than showing two answers.
+            "sequence_and_draft_both_present": bool(
+                sequence_queue and sequence_queue.rows and queue.rows
+            ),
         },
     )
 
@@ -1586,6 +1714,50 @@ def _sequence_back(target: str) -> str:
     return candidate
 
 
+def _sequence_write_refusal(
+    db: Session, settings: Settings, *, sequence_id: uuid.UUID | None
+) -> str | None:
+    """Why this sequence cannot be acted on right now, or ``None``.
+
+    Read-only is enforced here rather than only in the template. A page can be
+    left open across a configuration change, and a form that has already been
+    rendered will happily post; the refusal has to live where the write happens.
+
+    The rule matches what the page says: a sequence stays fully readable when
+    the deployment switch is off or its Campaign has opted out, but no new
+    decision may be recorded against it. Recording one would contradict the
+    notice the operator was just shown, and would put a fresh human decision on
+    a configuration that no longer produces sequences.
+    """
+
+    if sequence_id is None:
+        return None
+    sequence = sequence_read.get_sequence(db, sequence_id)
+    if sequence is None:
+        return None
+    availability = _sequence_availability(
+        settings,
+        campaign=db.get(Campaign, sequence.campaign_id),
+        sequence=sequence,
+    )
+    if not availability.read_only:
+        return None
+    if not _sequences_on(settings):
+        return (
+            "Seven-message sequences are switched off in this environment, so no review "
+            "decision can be recorded. The sequence and its existing decisions are unchanged."
+        )
+    return (
+        "This campaign is no longer configured to generate sequences, so no new review "
+        "decision can be recorded against this one. Its existing decisions are unchanged."
+    )
+
+
+def _sequence_id_for_version(db: Session, version_id: uuid.UUID) -> uuid.UUID | None:
+    version = db.get(EmailSequenceMessageVersion, version_id)
+    return version.sequence_id if version is not None else None
+
+
 @router.post("/review/sequence/messages/{version_id}/approve")
 def sequence_message_approve(
     version_id: str,
@@ -1600,6 +1772,11 @@ def sequence_message_approve(
     identifier = _uuid(version_id)
     if identifier is None:
         return _redirect(target, err="That is not a sequence message version id.")
+    refusal = _sequence_write_refusal(
+        db, get_settings(), sequence_id=_sequence_id_for_version(db, identifier)
+    )
+    if refusal is not None:
+        return _redirect(target, err=refusal)
     try:
         sequence_review.approve_message(
             db,
@@ -1633,6 +1810,11 @@ def sequence_message_discard(
     identifier = _uuid(version_id)
     if identifier is None:
         return _redirect(target, err="That is not a sequence message version id.")
+    refusal = _sequence_write_refusal(
+        db, get_settings(), sequence_id=_sequence_id_for_version(db, identifier)
+    )
+    if refusal is not None:
+        return _redirect(target, err=refusal)
     try:
         sequence_review.discard_message(
             db,
@@ -1665,6 +1847,11 @@ def sequence_message_edit(
     identifier = _uuid(version_id)
     if identifier is None:
         return _redirect(target, err="That is not a sequence message version id.")
+    refusal = _sequence_write_refusal(
+        db, get_settings(), sequence_id=_sequence_id_for_version(db, identifier)
+    )
+    if refusal is not None:
+        return _redirect(target, err=refusal)
     try:
         sequence_review.edit_message(
             db,
@@ -1707,6 +1894,9 @@ def sequence_approve(
     identifier = _uuid(sequence_id)
     if identifier is None:
         return _redirect(target, err="That is not a sequence id.")
+    refusal = _sequence_write_refusal(db, get_settings(), sequence_id=identifier)
+    if refusal is not None:
+        return _redirect(target, err=refusal)
     parsed = tuple(
         value
         for value in (_uuid(item) for item in version_ids.split(",") if item.strip())
@@ -1873,9 +2063,17 @@ def contact_page(
     sequence_rows: tuple[sequence_read.MessageRow, ...] = ()
     sequence_detail = None
     sequence_record = None
-    if membership is not None and _sequences_on(settings):
+    sequence_availability = SequenceAvailability(state=SEQUENCE_STATE_FEATURE_OFF)
+    if membership is not None:
+        # Looked up regardless of the switches: an existing sequence is shown
+        # and explained, never hidden.
         sequence_record = sequence_read.sequence_for_membership(
             db, campaign_contact_id=membership.id
+        )
+        sequence_availability = _sequence_availability(
+            settings,
+            campaign=db.get(Campaign, membership.campaign_id),
+            sequence=sequence_record,
         )
         if sequence_record is not None:
             sequence_summary = sequence_read.summary(db, sequence=sequence_record)
@@ -1900,7 +2098,10 @@ def contact_page(
             "membership": membership,
             "latest_draft": latest_draft,
             "agent_workbench_on": _agent_workbench_on(settings),
-            "sequences_on": _sequences_on(settings),
+            "sequences_on": _sequences_on(settings) or sequence_record is not None,
+            "sequence_section_visible": _sequences_on(settings) or sequence_record is not None,
+            "sequence_generation_on": _sequences_on(settings),
+            "sequence_availability": sequence_availability,
             "sequence": sequence_record,
             "sequence_summary": sequence_summary,
             "sequence_rows": sequence_rows,

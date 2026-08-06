@@ -26,12 +26,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.email_sequence import (
+    SEQUENCE_LENGTH,
     EmailSequence,
     EmailSequenceMessage,
     EmailSequenceMessageReview,
     EmailSequenceMessageVersion,
 )
 from app.models.enums import (
+    SequenceDeliveryState,
     SequenceGenerationStatus,
     SequenceMessageOrigin,
     SequenceReviewDecision,
@@ -63,6 +65,12 @@ class MessageState:
     decision: SequenceReviewDecision | None
     decided_at: datetime | None
     decided_by: str | None
+    #: The message this one follows. ``None`` only for the initial message.
+    #: Carried so eligibility can be decided by walking the chain rather than by
+    #: counting positions -- see :func:`_actionable_position`.
+    predecessor_message_id: uuid.UUID | None = None
+    #: Future delivery eligibility. Always ``NOT_READY`` in this build.
+    delivery_state: SequenceDeliveryState = SequenceDeliveryState.NOT_READY
 
     @property
     def approved(self) -> bool:
@@ -135,51 +143,86 @@ def message_states(session: Session, *, sequence: EmailSequence) -> tuple[Messag
             decision=review.decision if review is not None else None,
             decided_at=review.decided_at if review is not None else None,
             decided_by=review.decided_by if review is not None else None,
+            predecessor_message_id=message.predecessor_message_id,
+            delivery_state=message.delivery_state,
         )
         for message, version, review in rows
     )
 
 
-def aggregate_state(sequence: EmailSequence, states: tuple[MessageState, ...]) -> SequenceAggregate:
-    """Derive the sequence's review state from the seven exact message states.
+def derive_state(
+    *,
+    superseded: bool,
+    generation_complete: bool,
+    validation_failed: bool,
+    stopped: bool,
+    total: int,
+    approved: int,
+    discarded: int,
+    awaiting: int,
+    edited: int,
+) -> SequenceReviewState:
+    """The one derivation of a sequence's review state, from counts alone.
 
-    Order matters. A failed generation is failed whatever the messages say; a
-    superseded sequence is superseded whatever its messages say; a stopped
-    sequence is blocked. Only once none of those hold does the message tally
-    decide anything, and the tally never invents an approval.
+    **This is the single source of truth, and it exists because there were
+    briefly two.** The card chip in the Review queue used to render the cached
+    ``EmailSequence.review_state`` column while the counts beside it were
+    aggregated live from the reviews table, so a card could show "approved" next
+    to a tally of 6 of 7 approved. Both readers now call this function with the
+    same numbers, which makes that class of contradiction unrepresentable rather
+    than merely unlikely.
+
+    Order matters. A superseded sequence is superseded whatever its messages
+    say; a failed generation is failed; a stopped sequence is blocked. Only once
+    none of those hold do the counts decide anything, and the counts never
+    invent an approval.
     """
+
+    if superseded:
+        return SequenceReviewState.SUPERSEDED
+    if not generation_complete or validation_failed:
+        return SequenceReviewState.FAILED
+    if stopped:
+        return SequenceReviewState.BLOCKED
+    if total != SEQUENCE_LENGTH:
+        # A sequence is exactly seven messages. Anything else was never
+        # completely written, and calling it "generated" would offer a partial
+        # sequence for review as though it were whole.
+        return SequenceReviewState.FAILED
+    if discarded:
+        # A discarded message means the sequence is not ready, and saying
+        # "partially approved" would let the approved count stand in for
+        # readiness it does not have.
+        return SequenceReviewState.CONTAINS_DISCARDED
+    if approved == total:
+        return SequenceReviewState.APPROVED
+    if approved and awaiting:
+        return SequenceReviewState.PARTIALLY_APPROVED
+    if awaiting == total:
+        return SequenceReviewState.CONTAINS_EDITS if edited else SequenceReviewState.NEEDS_REVIEW
+    return SequenceReviewState.PARTIALLY_REVIEWED
+
+
+def aggregate_state(sequence: EmailSequence, states: tuple[MessageState, ...]) -> SequenceAggregate:
+    """Derive the sequence's review state from the seven exact message states."""
 
     approved = sum(1 for state in states if state.approved)
     discarded = sum(1 for state in states if state.discarded)
     edited = sum(1 for state in states if state.edited)
     awaiting = sum(1 for state in states if state.awaiting)
     total = len(states)
-
-    if sequence.superseded_at is not None:
-        state = SequenceReviewState.SUPERSEDED
-    elif sequence.generation_status is not SequenceGenerationStatus.COMPLETE:
-        state = SequenceReviewState.FAILED
-    elif sequence.validation_status is SequenceValidationStatus.FAILED:
-        state = SequenceReviewState.FAILED
-    elif sequence.stop_state is SequenceStopState.STOPPED:
-        state = SequenceReviewState.BLOCKED
-    elif total == 0:
-        state = SequenceReviewState.GENERATED
-    elif discarded:
-        # A discarded message means the sequence is not ready, and saying
-        # "partially approved" would let the approved count stand in for
-        # readiness it does not have.
-        state = SequenceReviewState.CONTAINS_DISCARDED
-    elif approved == total:
-        state = SequenceReviewState.APPROVED
-    elif approved and awaiting:
-        state = SequenceReviewState.PARTIALLY_APPROVED
-    elif awaiting == total:
-        state = SequenceReviewState.CONTAINS_EDITS if edited else SequenceReviewState.NEEDS_REVIEW
-    else:
-        state = SequenceReviewState.PARTIALLY_REVIEWED
     return SequenceAggregate(
-        state=state,
+        state=derive_state(
+            superseded=sequence.superseded_at is not None,
+            generation_complete=(sequence.generation_status is SequenceGenerationStatus.COMPLETE),
+            validation_failed=sequence.validation_status is SequenceValidationStatus.FAILED,
+            stopped=sequence.stop_state is SequenceStopState.STOPPED,
+            total=total,
+            approved=approved,
+            discarded=discarded,
+            awaiting=awaiting,
+            edited=edited,
+        ),
         approved=approved,
         discarded=discarded,
         edited=edited,
@@ -188,20 +231,69 @@ def aggregate_state(sequence: EmailSequence, states: tuple[MessageState, ...]) -
     )
 
 
-def _actionable_position(states: tuple[MessageState, ...]) -> int | None:
-    """The first position a future delivery workflow could act on.
+#: Delivery states that mean a message has actually gone out, so the message
+#: after it may become the next actionable one. Nothing in this build ever
+#: reaches one of these -- every message stays ``NOT_READY`` -- but naming them
+#: here is what makes the walk below correct in advance rather than by accident.
+_DELIVERED_STATES: frozenset[SequenceDeliveryState] = frozenset(
+    {SequenceDeliveryState.SENT_DETECTED}
+)
 
-    Approved-and-not-yet-acted-on, in order. It authorises nothing: no code in
-    this build reads it to do anything, and the delivery state that would gate a
-    real action stays ``not_ready`` on every message.
+
+def _actionable_position(states: tuple[MessageState, ...], *, stopped: bool = False) -> int | None:
+    """The one message a future delivery workflow could act on next, if any.
+
+    Decided by walking the **predecessor chain**, never by counting positions.
+    The distinction is the whole point of the fix this function carries: an
+    earlier version returned the first approved message in numeric order and
+    skipped over discarded ones, so discarding the initial message promoted
+    follow-up 1 to actionable. A follow-up would then have opened the
+    conversation while its own copy said "following up on my earlier note" --
+    referring to a message nobody ever sent.
+
+    The rule, stated once:
+
+    * a stopped sequence has no actionable message;
+    * the chain is walked from the message that has no predecessor;
+    * a message is *cleared* only when it is approved **and** its delivery state
+      says it actually went out;
+    * the first message that is approved but not yet cleared is the actionable
+      one;
+    * anything else -- awaiting, discarded, or an unapproved gap -- ends the walk
+      and yields ``None``.
+
+    Because no message in this build ever leaves ``NOT_READY``, the only
+    position this can currently return is the head of the chain. That is the
+    truthful answer: nothing has been sent, so nothing after the first message
+    can be next. It authorises nothing either way; no code path acts on it.
     """
 
-    for state in sorted(states, key=lambda item: item.position):
-        if state.approved:
-            return state.position
-        if state.discarded:
-            continue
+    if stopped:
         return None
+    by_id = {state.message_id: state for state in states}
+    successors: dict[uuid.UUID | None, MessageState] = {
+        state.predecessor_message_id: state for state in states
+    }
+    # The head is the message with no predecessor. A chain with no head, or with
+    # two, is a corrupted sequence -- the database constraints forbid it, and
+    # refusing here rather than guessing keeps that true if they ever change.
+    heads = [state for state in states if state.predecessor_message_id is None]
+    if len(heads) != 1 or len(by_id) != len(states):
+        return None
+
+    current: MessageState | None = heads[0]
+    seen: set[uuid.UUID] = set()
+    while current is not None:
+        if current.message_id in seen:  # pragma: no cover - cycle guard
+            return None
+        seen.add(current.message_id)
+        if not current.approved:
+            # Awaiting or discarded. Either way the chain stops here, and no
+            # later message may step over the gap.
+            return None
+        if current.delivery_state not in _DELIVERED_STATES:
+            return current.position
+        current = successors.get(current.message_id)
     return None
 
 
@@ -211,7 +303,9 @@ def refresh_aggregate(session: Session, *, sequence: EmailSequence) -> SequenceA
     states = message_states(session, sequence=sequence)
     aggregate = aggregate_state(sequence, states)
     sequence.review_state = aggregate.state
-    sequence.current_actionable_position = _actionable_position(states)
+    sequence.current_actionable_position = _actionable_position(
+        states, stopped=sequence.stop_state is SequenceStopState.STOPPED
+    )
     session.flush()
     return aggregate
 
@@ -250,7 +344,20 @@ def _record(
     actor: str,
     reason: str | None,
     bulk_operation_id: uuid.UUID | None,
-) -> EmailSequenceMessageReview:
+) -> tuple[EmailSequenceMessageReview, bool]:
+    """Upsert the decision. Returns the row and whether anything changed.
+
+    The second element is what stops a double-clicked button, a browser replay
+    or a retried request from writing the same decision into the audit trail
+    three times. The review row was always idempotent; the audit event was not,
+    and an audit trail that shows one decision as three is a false record of
+    what a human did.
+
+    "Changed" means the decision, the actor, the note or the operation that
+    produced it. Re-submitting an identical decision changes nothing and is
+    recorded once.
+    """
+
     existing = session.scalars(
         select(EmailSequenceMessageReview).where(
             EmailSequenceMessageReview.message_version_id == version.id
@@ -267,13 +374,22 @@ def _record(
             bulk_operation_id=bulk_operation_id,
         )
         session.add(existing)
-    else:
+        session.flush()
+        return existing, True
+
+    changed = (
+        existing.decision is not decision
+        or existing.decided_by != actor
+        or existing.reason != trimmed
+        or existing.bulk_operation_id != bulk_operation_id
+    )
+    if changed:
         existing.decision = decision
         existing.decided_by = actor
         existing.reason = trimmed
         existing.bulk_operation_id = bulk_operation_id
-    session.flush()
-    return existing
+        session.flush()
+    return existing, changed
 
 
 def decide_message(
@@ -290,7 +406,7 @@ def decide_message(
     if decision is SequenceReviewDecision.INVALIDATED:
         raise SequenceReviewError("Invalidation is a consequence of editing, not a decision.")
     version, message, sequence = _load_version(session, message_version_id=message_version_id)
-    _record(
+    _review, changed = _record(
         session,
         version=version,
         message=message,
@@ -299,6 +415,10 @@ def decide_message(
         reason=reason,
         bulk_operation_id=bulk_operation_id,
     )
+    if not changed:
+        # The same person recording the same decision on the same version again.
+        # Nothing happened, so nothing is written to the audit trail.
+        return refresh_aggregate(session, sequence=sequence)
     record_audit_event(
         session,
         actor=actor,
@@ -391,9 +511,10 @@ def approve_sequence(
         )
 
     operation = uuid.uuid4()
+    changed_any = False
     for state in states:
         version, message, _sequence = _load_version(session, message_version_id=state.version_id)
-        _record(
+        _review, changed = _record(
             session,
             version=version,
             message=message,
@@ -402,6 +523,9 @@ def approve_sequence(
             reason=reason,
             bulk_operation_id=operation,
         )
+        changed_any = changed_any or changed
+    if not changed_any:
+        return refresh_aggregate(session, sequence=sequence)
     record_audit_event(
         session,
         actor=actor,

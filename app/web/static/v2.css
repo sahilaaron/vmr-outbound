@@ -2763,3 +2763,11 @@ progress.v2-progress::-moz-progress-bar {
 .v2-seq-rowdetail {
   border-top: 1px solid var(--line);
 }
+
+/* A sequence that is kept and readable but can no longer be acted on, because
+   the deployment switch or the campaign opt-in was turned off after it was
+   written. Styled as a notice rather than an error: nothing is wrong, and the
+   work below it is real. */
+.v2-seq-readonly {
+  margin-bottom: 12px;
+}

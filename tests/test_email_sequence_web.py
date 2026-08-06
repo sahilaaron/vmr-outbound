@@ -292,17 +292,58 @@ def test_user_content_is_escaped_on_the_review_page(
 def test_the_queue_is_truthful_when_no_sequence_exists(
     db_session: Session, client: TestClient
 ) -> None:
-    """Test 83: pending is named as pending."""
+    """The unfiltered queue with the feature on says pending, not campaign-off.
+
+    With no ``?campaign=`` there is no single campaign whose opt-in could be
+    reported, so the page must not claim one has not opted in.
+    """
 
     body = client.get("/app/review").text
     assert "No sequence has been written yet" in body
-    assert "all seven messages as one unit" in body
+    assert "not set up to generate sequences" not in body
 
 
-def test_the_review_page_shows_no_sequence_section_when_the_feature_is_off(
+def test_a_campaign_that_never_opted_in_is_told_so_rather_than_told_to_wait(
+    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
+) -> None:
+    """D-2: the campaign_off state is reachable and carries its own wording.
+
+    This replaces an earlier test that asserted the *absence* of a string no
+    route could produce. That test passed trivially and proved nothing.
+    """
+
+    campaign, _company, _contact, membership, _policy, _evidence = scenario
+    campaign.cadence_config = {"sequence": {"enabled": False}}
+    db_session.flush()
+
+    body = client.get(f"/app/review?campaign={membership.campaign_id}").text
+    assert "not set up to generate sequences" in body
+    assert "No sequence has been written yet" not in body
+    assert "each campaign opts in separately" in body
+
+
+def test_a_failed_generation_is_not_described_as_still_running(
+    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
+) -> None:
+    """D-2: the failed state is reachable and does not say 'when it finishes'."""
+
+    from app.models.enums import SequenceValidationStatus
+
+    _campaign, _company, contact, membership, _policy, _evidence = scenario
+    sequence = build(db_session, scenario)
+    sequence.validation_status = SequenceValidationStatus.FAILED
+    db_session.flush()
+
+    body = client.get(f"/app/contacts/{contact.id}?campaign={membership.campaign_id}").text
+    assert "did not produce a usable sequence" in body
+    assert "When it finishes" not in body
+    assert "Nothing partial was kept" in body
+
+
+def test_the_review_page_omits_the_section_when_the_feature_is_off_and_nothing_exists(
     db_session: Session, client_without_sequences: TestClient, scenario: tuple[Any, ...]
 ) -> None:
-    """Tests 83, 96, 115: off is genuinely off, and legacy drafts still render."""
+    """Feature off with no sequence anywhere: no section, legacy drafts intact."""
 
     _campaign, _company, contact, membership, _policy, _evidence = scenario
     db_session.add(
@@ -318,7 +359,7 @@ def test_the_review_page_shows_no_sequence_section_when_the_feature_is_off(
 
     body = client_without_sequences.get("/app/review").text
     assert "v2-seq-card" not in body
-    assert "Sequences" not in body.split("<main")[1].split("</main")[0].split("<nav")[0]
+    assert "Sequences are switched off" not in body
     # Test 84: the legacy card is still readable.
     assert "A legacy single draft" in body
 
@@ -385,17 +426,34 @@ def test_row_expansion_shows_lineage_and_secondary_identifiers(
     assert body.index("Exact identifiers") > body.index("Subject")
 
 
-def test_the_contact_page_is_truthful_when_the_feature_is_off(
+def test_the_contact_page_keeps_an_existing_sequence_visible_when_the_feature_is_off(
     db_session: Session, client_without_sequences: TestClient, scenario: tuple[Any, ...]
 ) -> None:
-    """Test 96."""
+    """D-3: switching the feature off must not conceal recorded human work.
+
+    This replaces an earlier test that asserted the section *disappears* — which
+    is the defect, not the requirement.
+    """
 
     _campaign, _company, contact, membership, _policy, _evidence = scenario
-    build(db_session, scenario)
+    sequence = build(db_session, scenario)
+    rows = sequence_read.message_rows(db_session, sequence=sequence)
+    sequence_review.approve_sequence(
+        db_session,
+        sequence_id=sequence.id,
+        expected_version_ids=tuple(row.version_id for row in rows),
+    )
+
     body = client_without_sequences.get(
         f"/app/contacts/{contact.id}?campaign={membership.campaign_id}"
     ).text
-    assert "The seven-message sequence" not in body
+
+    assert "The seven-message sequence" in body
+    assert "Read-only" in body
+    assert "switched off in this environment" in body
+    assert "7 approved" in body
+    # Read-only means read-only: no action form is offered.
+    assert f"/app/review/sequence/messages/{rows[0].version_id}/approve" not in body
 
 
 def test_the_contact_page_is_truthful_when_nothing_has_been_generated(

@@ -40,13 +40,20 @@ from app.models.email_sequence import (
     EmailSequenceMessageVersion,
 )
 from app.models.enums import (
+    SequenceGenerationStatus,
     SequenceMessageOrigin,
     SequenceMessagePurpose,
     SequenceMessageType,
     SequenceReviewDecision,
     SequenceReviewState,
+    SequenceStopState,
     SequenceValidationStatus,
 )
+
+# `review` imports nothing from this module, so this direction is safe. The
+# dependency is deliberate: the card chip and the card counts must come from one
+# derivation, and that derivation lives with the review rules.
+from app.services.sequences import review as sequence_review
 
 #: How much of the initial message a collapsed card shows.
 EXCERPT_CHARS = 180
@@ -102,7 +109,12 @@ class SequenceCardRow:
     email: str | None
     initial_subject: str
     initial_excerpt: str
+    #: Derived from the same tally the counts below come from. This is what the
+    #: card renders. It is never read from the cached column.
     review_state: SequenceReviewState
+    #: What the cached ``email_sequences.review_state`` column says. Kept only so
+    #: drift is observable; never rendered as the card's state.
+    cached_review_state: SequenceReviewState
     validation_status: SequenceValidationStatus
     message_count: int
     approved: int
@@ -124,6 +136,17 @@ class SequenceCardRow:
     @property
     def complete(self) -> bool:
         return self.message_count == SEQUENCE_LENGTH
+
+    @property
+    def cache_is_stale(self) -> bool:
+        """Whether the stored filter column disagrees with the derived truth.
+
+        Surfaced rather than silently corrected: a read model that quietly
+        rewrote the cache would hide the fact that something wrote a decision
+        without refreshing it.
+        """
+
+        return self.cached_review_state is not self.review_state
 
     @property
     def evidence_label(self) -> str:
@@ -423,6 +446,26 @@ def list_queue(
             {"total": 0, "approved": 0, "discarded": 0, "edited": 0, "awaiting": 0, "warnings": 0},
         )
         decision = _decision_block(sequence)
+        derived = sequence_review.derive_state(
+            superseded=sequence.superseded_at is not None,
+            generation_complete=(sequence.generation_status is SequenceGenerationStatus.COMPLETE),
+            validation_failed=sequence.validation_status is SequenceValidationStatus.FAILED,
+            stopped=sequence.stop_state is SequenceStopState.STOPPED,
+            total=tally["total"],
+            approved=tally["approved"],
+            discarded=tally["discarded"],
+            awaiting=tally["awaiting"],
+            edited=tally["edited"],
+        )
+        # The SQL filter runs against the cached column because that is what an
+        # index can serve. If the cache has drifted, the derived state is
+        # authoritative and the row is dropped from a view it does not belong
+        # in -- so a stale cache can slow a query down but can never put a
+        # half-approved sequence in the Approved queue.
+        if view == VIEW_APPROVED and derived is not SequenceReviewState.APPROVED:
+            continue
+        if view == VIEW_AWAITING and derived not in _AWAITING_STATES:
+            continue
         rows.append(
             SequenceCardRow(
                 sequence_id=sequence.id,
@@ -438,7 +481,8 @@ def list_queue(
                 email=contact.email,
                 initial_subject=subject or "(no subject recorded)",
                 initial_excerpt=excerpt or "",
-                review_state=sequence.review_state,
+                review_state=derived,
+                cached_review_state=sequence.review_state,
                 validation_status=sequence.validation_status,
                 message_count=tally["total"],
                 approved=tally["approved"],
@@ -599,12 +643,23 @@ def summary(session: Session, *, sequence: EmailSequence) -> SequenceSummary:
         sequence.sequence_key,
         {"total": 0, "approved": 0, "discarded": 0, "edited": 0, "awaiting": 0, "warnings": 0},
     )
+    derived = sequence_review.derive_state(
+        superseded=sequence.superseded_at is not None,
+        generation_complete=sequence.generation_status is SequenceGenerationStatus.COMPLETE,
+        validation_failed=sequence.validation_status is SequenceValidationStatus.FAILED,
+        stopped=sequence.stop_state is SequenceStopState.STOPPED,
+        total=tally["total"],
+        approved=tally["approved"],
+        discarded=tally["discarded"],
+        awaiting=tally["awaiting"],
+        edited=tally["edited"],
+    )
     return SequenceSummary(
         sequence_id=sequence.id,
         sequence_key=sequence.sequence_key,
         sequence_version=sequence.sequence_version,
         campaign_id=sequence.campaign_id,
-        review_state=sequence.review_state,
+        review_state=derived,
         validation_status=sequence.validation_status,
         generation_status=sequence.generation_status.value,
         message_count=tally["total"],

@@ -3,7 +3,7 @@
 {% import "_sequence.html" as seq %}
 {% block content %}
 
-{% if sequences_on %}
+{% if sequence_section_visible %}
 {#
   Sequences and legacy single drafts share this page deliberately. A campaign
   that opted in has sequences; one that did not still has drafts; and a contact
@@ -20,6 +20,20 @@
     </p>
   </div>
 
+  {{ seq.read_only_notice(sequence_availability) }}
+
+  {% if sequence_and_draft_both_present %}
+  <div class="v2-notice warn" role="status">
+    <b>This queue holds both sequences and single drafts.</b>
+    That is expected while some campaigns are opted in to seven-message sequences and
+    others are not — and it also happens for a contact whose campaign was opted out
+    after its sequence had already been written. A contact never has two <em>current</em>
+    outcomes: the sequence section below and the single-draft queue underneath it are
+    different campaigns, or the same campaign before and after its configuration
+    changed. Each card says which it is.
+  </div>
+  {% endif %}
+
   {% if sequence_queue and sequence_queue.rows %}
   <div class="v2-seq-list">
     {% for row in sequence_queue.rows %}
@@ -31,10 +45,16 @@
       {% set base = "/app/review?sequence=" ~ sequence_card.sequence_id ~ scope %}
       {{ seq.selector(sequence_rows, sequence_step, base) }}
       {% if sequence_detail %}
-        {{ seq.message(sequence_detail, base ~ "&step=" ~ sequence_step) }}
+        {{ seq.message(sequence_detail, base ~ "&step=" ~ sequence_step, read_only=sequence_availability.read_only) }}
       {% else %}
         {{ empty("That message is not available", "The sequence does not currently hold a message at this position.") }}
       {% endif %}
+      {% if sequence_availability.read_only %}
+      <div class="v2-seq-bulk">
+        <span class="v2-btn is-disabled">Approve all seven messages</span>
+        <span class="why">Read-only — see the notice above.</span>
+      </div>
+      {% else %}
       <form method="post" action="/app/review/sequence/{{ sequence_card.sequence_id }}/approve" class="v2-seq-bulk">
         <input type="hidden" name="back" value="{{ base }}&step={{ sequence_step }}">
         <input type="hidden" name="version_ids" value="{{ sequence_rows | map(attribute='version_id') | join(',') }}">
@@ -47,12 +67,13 @@
           approved and you are asked to reload.
         </span>
       </form>
+      {% endif %}
     </div>
     {% endif %}
     {% endfor %}
   </div>
   {% else %}
-  <div class="v2-card v2-mt">{{ seq.unavailable("pending") }}</div>
+  <div class="v2-card v2-mt">{{ seq.unavailable(sequence_availability.state) }}</div>
   {% endif %}
 </div>
 {% endif %}
