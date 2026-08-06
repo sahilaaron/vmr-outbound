@@ -140,10 +140,15 @@ def test_root_followed_through_renders_today(client: TestClient) -> None:
 def test_admin_workbench_kept_its_overview_at_its_own_address(client: TestClient) -> None:
     response = client.get("/admin")
     assert response.status_code == 200
-    # The admin shell, unchanged: its own stylesheet, its own rail.
-    assert "app.css" in response.text
+    # The redesigned admin shell: its own stylesheet, its own rail, and never
+    # the customer design system.
+    assert "admin.css" in response.text
     assert "v2.css" not in response.text
-    assert "Operator Workbench" in response.text
+    assert "Admin Workbench" in response.text
+    # The original import-centric overview survives at its legacy address.
+    legacy = client.get("/admin/legacy/overview")
+    assert legacy.status_code == 200
+    assert "app.css" in legacy.text
 
 
 def test_admin_pages_are_untouched_by_the_new_interface(client: TestClient) -> None:

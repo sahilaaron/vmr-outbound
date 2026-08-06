@@ -1,0 +1,177 @@
+{% extends "admin/base.html" %}
+{% import "admin/_wb.html" as wb %}
+{% block content %}
+
+{{ wb.crumbs([("Contacts", "/admin/contacts"), (view.name, None)]) }}
+
+<div class="page-head">
+  <div>
+    <h1>{{ view.name }}
+      {% if view.suppressed %}<span class="badge err">suppressed</span>{% endif %}
+      {% if view.merged_into_id %}<span class="badge warn plain">merged</span>{% endif %}
+    </h1>
+    <div class="sub">
+      {{ view.title or "Title not captured" }}
+      {% if view.company_label %} · {% if view.company_id %}<a href="/admin/companies/{{ view.company_id }}">{{ view.company_label }}</a>{% else %}{{ view.company_label }}{% endif %}{% endif %}
+      {% if view.location or view.country %} · {{ view.location or view.country }}{% endif %}
+    </div>
+  </div>
+  <div class="page-actions">
+    <a class="btn" href="/contacts/{{ view.contact_id }}">Full CRM record (legacy)</a>
+  </div>
+</div>
+
+{% if view.merged_into_id %}
+<div class="notice warn"><div>This Contact was merged into <a href="/admin/contacts/{{ view.merged_into_id }}">another record</a>; the surviving record carries the history.</div></div>
+{% endif %}
+
+<div class="grid cols-2">
+  <div class="card">
+    <div class="card-head"><h2>Identity</h2></div>
+    <div class="card-body">
+      <div class="kv">
+        <dt>Email</dt><dd>{{ view.email or "—" }}</dd>
+        <dt>Company domain</dt><dd class="mono">{{ view.company_domain or "—" }}</dd>
+        <dt>LinkedIn</dt><dd class="wrap-anywhere">{% if view.linkedin_url %}<a href="{{ view.linkedin_url }}" rel="noopener noreferrer">{{ view.linkedin_url }}</a>{% else %}—{% endif %}</dd>
+        <dt>Created</dt><dd>{{ view.created_at | dt }}</dd>
+        <dt>Updated</dt><dd>{{ view.updated_at | dt }}</dd>
+        <dt>Contact ID</dt><dd class="mono">{{ view.contact_id }}</dd>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Suppressions &amp; exclusions</h2></div>
+    <div class="card-body tight">
+      {% if view.suppressions %}
+      <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>Type</th><th>Value</th><th>Reason</th><th>Active</th><th>Since</th></tr></thead>
+        <tbody>
+          {% for row in view.suppressions %}
+          <tr>
+            <td>{{ row.suppression_type }}</td>
+            <td class="mono">{{ row.value }}</td>
+            <td>{{ row.reason | replace("_", " ") }}</td>
+            <td>{{ wb.bool_badge(row.active, yes="active", no="inactive") }}</td>
+            <td class="dim">{{ row.created_at | dt }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      <div class="card-foot">Suppression is authoritative over every downstream stage and cannot be released from the Workbench.</div>
+      {% else %}
+      {{ wb.empty("No active suppressions") }}
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Campaign memberships</h2><span class="hint">open one for the full Agent/Stage diagnosis</span></div>
+  <div class="card-body tight">
+    {% if view.memberships %}
+    <div class="table-wrap">
+    <table class="data">
+      <thead><tr><th>Campaign</th><th>Membership</th><th>Eligibility</th><th>Stage</th><th>Pipeline</th><th>Enrolled</th><th></th></tr></thead>
+      <tbody>
+        {% for membership in view.memberships %}
+        <tr>
+          <td class="primary"><a href="/admin/campaigns/{{ membership.campaign_id }}">{{ membership.campaign_name }}</a></td>
+          <td>{{ wb.membership_badge(membership.membership_status) }}</td>
+          <td>{{ wb.eligibility_badge(membership.eligibility) }}</td>
+          <td>{{ membership.current_stage_name or "—" }}</td>
+          <td>{{ wb.stage_badge(membership.pipeline_status) }}</td>
+          <td class="dim">{{ membership.enrolled_at | dt }}</td>
+          <td><a class="btn small" href="/admin/campaigns/{{ membership.campaign_id }}/contacts/{{ membership.campaign_contact_id }}">Diagnose</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% else %}
+    {{ wb.empty("Not enrolled in any Campaign", "Contacts are permanent and never require a Campaign.") }}
+    {% endif %}
+  </div>
+</div>
+
+<div class="grid cols-2">
+  <div class="card">
+    <div class="card-head"><h2>Email addresses &amp; verification</h2></div>
+    <div class="card-body tight">
+      {% if view.emails %}
+      <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>Address</th><th>Source</th><th>Verification</th><th>Checked</th></tr></thead>
+        <tbody>
+          {% for row in view.emails %}
+          <tr>
+            <td class="mono">{{ row.email }}</td>
+            <td class="dim">{{ row.source }}</td>
+            <td>{{ wb.verification_badge(row.verification_result) }}</td>
+            <td class="dim">{{ row.verified_at | dt }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      <div class="card-foot">Catch-all and unknown stay uncertain; a domain pattern never verifies a mailbox.</div>
+      {% else %}
+      {{ wb.empty("No email addresses recorded") }}
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Capture history</h2></div>
+    <div class="card-body tight">
+      {% if view.captures %}
+      <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>Capture</th><th>Outcome</th><th>When</th></tr></thead>
+        <tbody>
+          {% for capture in view.captures %}
+          <tr>
+            <td><a href="{{ capture.href }}">{{ capture.kind | replace("_", " ") }}</a></td>
+            <td class="dim">{{ capture.outcome | replace("_", " ") if capture.outcome else "—" }}</td>
+            <td class="dim">{{ capture.captured_at | dt }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {% else %}
+      {{ wb.empty("No promotion-linked captures", "Captures that created or refreshed this Contact would appear here.") }}
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Recent Personalization output</h2></div>
+  <div class="card-body tight">
+    {% if view.drafts %}
+    <div class="table-wrap">
+    <table class="data">
+      <thead><tr><th>Campaign</th><th class="num">Version</th><th>Subject</th><th>Approval</th><th>Created</th></tr></thead>
+      <tbody>
+        {% for draft in view.drafts %}
+        <tr>
+          <td>{{ draft.campaign_name or "—" }}</td>
+          <td class="num">v{{ draft.version_number }}</td>
+          <td class="wrap-anywhere">{{ draft.subject }}</td>
+          <td>{% if draft.approval_status %}<span class="badge {{ 'ok' if draft.approval_status == 'approved' else 'muted' }} plain">{{ draft.approval_status }}</span>{% else %}<span class="badge warn plain">awaiting decision</span>{% endif %}</td>
+          <td class="dim">{{ draft.created_at | dt }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% else %}
+    {{ wb.empty("No drafts for this Contact") }}
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}

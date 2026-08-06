@@ -1,0 +1,65 @@
+{% extends "admin/base.html" %}
+{% import "admin/_wb.html" as wb %}
+{% block content %}
+
+<div class="page-head">
+  <div>
+    <h1>Providers &amp; Usage</h1>
+    <div class="sub">Configured integrations, their availability, and the usage the ledger actually recorded. Secrets are never displayed.</div>
+  </div>
+</div>
+
+<div class="grid cols-2">
+  {% for provider in view.providers %}
+  <div class="card">
+    <div class="card-head">
+      <h2>{{ provider.display_name }}</h2>
+      <span>
+        {% if provider.configured %}<span class="badge ok">configured</span>{% else %}<span class="badge muted plain">not configured</span>{% endif %}
+        {% if provider.enabled %}<span class="badge accent plain">in use</span>{% endif %}
+      </span>
+    </div>
+    <div class="card-body">
+      <div class="kv">
+        <dt>Configuration</dt><dd>{{ provider.configuration_note }}</dd>
+        <dt>Feature switches</dt><dd>{% if provider.feature_flags %}{% for flag in provider.feature_flags %}<code>{{ flag }}</code>{{ " " }}{% endfor %}{% else %}<span class="dim">none enabled</span>{% endif %}</dd>
+        <dt>Usage (7 days)</dt>
+        <dd>{{ provider.usage_7d.calls }} call{{ "s" if provider.usage_7d.calls != 1 else "" }}{% if provider.usage_7d.cache_hits %} · {{ provider.usage_7d.cache_hits }} cache hits{% endif %}{% if provider.usage_7d.failures %} · <span class="badge err plain">{{ provider.usage_7d.failures }} failures</span>{% endif %}</dd>
+        <dt>Usage (30 days)</dt>
+        <dd>{{ provider.usage_30d.calls }} calls · {{ provider.usage_30d.units | round(1) }} units{% if provider.usage_30d.estimated_cost is not none %} · est. {{ provider.usage_30d.estimated_cost | round(4) }} {{ provider.usage_30d.currency or "" }}{% else %} · <span class="dim">no cost ledger</span>{% endif %}</dd>
+        <dt>Last used</dt><dd>{{ provider.last_used_at | ago }}</dd>
+        {% if provider.last_failure_at %}<dt>Last failure</dt><dd>{{ provider.last_failure_at | ago }}{% if provider.last_failure_reason %} <span class="dim">({{ provider.last_failure_reason }})</span>{% endif %}</dd>{% endif %}
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Recent ledger entries</h2><span class="hint">the newest 25 committed usage records</span></div>
+  <div class="card-body tight">
+    {% if view.ledger_recent %}
+    <div class="table-wrap">
+    <table class="data">
+      <thead><tr><th>Provider</th><th>Operation</th><th>Result</th><th class="num">Units</th><th>Origin</th><th>When</th></tr></thead>
+      <tbody>
+        {% for entry in view.ledger_recent %}
+        <tr>
+          <td>{{ entry.provider }}</td>
+          <td class="dim">{{ entry.operation }}</td>
+          <td>{% if entry.result in ("ok", "success", "hit") %}<span class="badge ok plain">{{ entry.result }}</span>{% elif entry.result %}<span class="badge warn plain">{{ entry.result }}</span>{% else %}—{% endif %}</td>
+          <td class="num">{{ entry.units if entry.units is not none else "—" }}</td>
+          <td class="dim">{{ entry.origin or "—" }}</td>
+          <td class="dim nowrap">{{ entry.attempted_at | ago }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% else %}
+    {{ wb.empty("No usage recorded", "The usage ledger has no entries yet.") }}
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}

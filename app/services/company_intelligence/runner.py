@@ -34,6 +34,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
@@ -238,6 +239,39 @@ def produce_for_company(
     )
 
 
+PERSISTENCE_INTEGRITY_CODE = "persistence_integrity_error"
+
+
+def _integrity_outcome(company_id: uuid.UUID, exc: IntegrityError) -> RunOutcome:
+    """A truthful, sanitized outcome for a flush-time contract violation.
+
+    Only the shape of the violation is recorded — the driver error class and,
+    when the driver names it, the constraint — never the statement or its
+    parameters, which carry produced data. Not retryable: a produced row that
+    the schema refuses is a producer defect, and re-running would spend another
+    model call to hit the same defect.
+    """
+
+    origin = exc.orig
+    constraint = getattr(getattr(origin, "diag", None), "constraint_name", None)
+    named = f" (constraint {constraint})" if constraint else ""
+    return RunOutcome(
+        succeeded=False,
+        company_id=company_id,
+        code=PERSISTENCE_INTEGRITY_CODE,
+        message=(
+            "the produced classification set violated a database contract"
+            f"{named}; nothing from this run was persisted. This is a producer "
+            "defect: fix it, then re-enqueue the company."
+        ),
+        retryable=False,
+        detail={
+            "error_class": type(origin).__name__ if origin is not None else "IntegrityError",
+            "constraint": constraint,
+        },
+    )
+
+
 def execute_job(
     session: Session,
     *,
@@ -246,7 +280,20 @@ def execute_job(
     settings: Settings | None = None,
     worker_id: str = "worker",
 ) -> RunOutcome:
-    """Run one leased job and record its outcome on the queue."""
+    """Run one leased job and record its outcome on the queue.
+
+    The production step runs under a savepoint. If persistence violates a
+    database contract, only the produced rows roll back; the claim and the
+    running checkpoint survive, so the failure is recorded durably on the job
+    and the worker moves on. Without the savepoint the whole transaction —
+    claim included — would roll back, the job would silently return to
+    pending, and every worker restart would spend another model call on the
+    same defect. Only :class:`IntegrityError` is handled this way: it is the
+    one failure that is provably a producer defect. Anything else (a lost
+    connection, an operational error) still propagates — a durable outcome
+    cannot be recorded on a broken connection, and pretending otherwise would
+    trade a visible crash for a silent lie.
+    """
 
     jobs_module.mark_running(session, job=job)
     company = session.get(Company, job.company_id)
@@ -259,14 +306,18 @@ def execute_job(
             retryable=False,
         )
     else:
-        outcome = produce_for_company(
-            session,
-            company=company,
-            thinker_factory=thinker_factory,
-            settings=settings,
-            job=job,
-            actor=worker_id,
-        )
+        try:
+            with session.begin_nested():
+                outcome = produce_for_company(
+                    session,
+                    company=company,
+                    thinker_factory=thinker_factory,
+                    settings=settings,
+                    job=job,
+                    actor=worker_id,
+                )
+        except IntegrityError as exc:
+            outcome = _integrity_outcome(job.company_id, exc)
 
     if outcome.succeeded:
         jobs_module.mark_succeeded(session, job=job, result=outcome.as_result(), actor=worker_id)

@@ -1020,6 +1020,25 @@ def _persist(
             state = IntelligenceValueState.UNRESOLVED
             evidence_status = IntelligenceEvidenceStatus.SUPPORTED
             reason = decision.unresolved_reason
+        elif term is None:
+            # The extraction base and the geography vocabulary come from the
+            # same data file *when they are seeded together*, but the database
+            # keeps whatever edition an operator last published. A place the
+            # vendored base knows and the active edition does not (an older
+            # edition, or a base updated without re-seeding) is UNMAPPED — and
+            # an unmapped value must never claim RESOLVED: the schema's
+            # ``resolved_has_value`` contract requires a resolved row to carry
+            # the controlled term it resolved to. This is the same rule
+            # ``_state_for`` applies to every other normalizing dimension.
+            state = IntelligenceValueState.UNRESOLVED
+            evidence_status = IntelligenceEvidenceStatus.SUPPORTED
+            reason = REASON_UNMAPPED
+            warnings.append(
+                f"geography {place.label!r} ({place.code}) is not in the active "
+                "geography vocabulary edition; stored unresolved as an unmapped "
+                "value. Re-seed the geography vocabulary to publish the current "
+                "edition."
+            )
         else:
             state = IntelligenceValueState.RESOLVED
             evidence_status = IntelligenceEvidenceStatus.SUPPORTED

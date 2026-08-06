@@ -124,7 +124,9 @@ def test_the_offering_detail_page_is_absent_while_the_switch_is_off(
 def test_the_nav_entry_appears_when_the_switch_is_on(client: TestClient) -> None:
     page = client.get("/admin").text
     assert 'href="/knowledge-base"' in page
-    assert "Seller context" in page
+    # The legacy shell keeps its own Seller-context section.
+    legacy = client.get("/admin/legacy/overview").text
+    assert "Seller context" in legacy
 
 
 def test_the_nav_entry_is_absent_when_the_switch_is_off(workbench_only: TestClient) -> None:

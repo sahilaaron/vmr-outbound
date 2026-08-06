@@ -51,6 +51,7 @@ from app.models.contact import Contact
 from app.models.enums import DossierSection, InsightKind, InsightState
 from app.models.verification_job import AgentJob
 from app.services.companies import dossiers
+from app.services.company_intelligence import handoff as intelligence_handoff
 from app.services.insights.evidence import EvidenceInput, InsightError, create_insight
 from app.services.research import fallback as research_fallback
 from app.services.research.contracts import (
@@ -718,6 +719,21 @@ def execute_step(
     unknown_count = len(sections.get(DossierSection.UNKNOWNS.value) or [])
     basis = _basis(results)
 
+    # --- automatic Company Intelligence handoff ----------------------------
+    # One idempotent, company-scoped job in the same transaction that commits
+    # the dossier, so the standard worker fleet picks it up with no operator
+    # step. A dossier committed with insufficient evidence is recorded, not
+    # classified: queueing it would spend a model call on evidence Research
+    # itself judged too thin.
+    if sufficient:
+        intelligence = intelligence_handoff.enqueue_after_research(session, company=company)
+    else:
+        intelligence = intelligence_handoff.skipped(
+            intelligence_handoff.OUTCOME_DOSSIER_NOT_USABLE,
+            "the dossier was committed with insufficient evidence; "
+            "Company Intelligence was not queued",
+        )
+
     output = {
         "domain": domain,
         "company_id": str(company.id),
@@ -753,6 +769,9 @@ def execute_step(
         "deterministic": deterministic_summary,
         "fallback": fallback_record.as_dict(),
         "dossier_basis": basis,
+        # The automatic Research -> Company Intelligence handoff, recorded on
+        # the durable result so the Workbench can show what happened and why.
+        "company_intelligence": intelligence.as_dict(),
     }
     return ResearchStep(
         kind=ResearchStepKind.COMPLETE,

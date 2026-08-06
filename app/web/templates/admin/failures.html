@@ -1,0 +1,81 @@
+{% extends "admin/base.html" %}
+{% import "admin/_wb.html" as wb %}
+{% block content %}
+
+<div class="page-head">
+  <div>
+    <h1>Failures</h1>
+    <div class="sub">Every operational failure, normalized: committed stage failures, blocked Contacts, orphaned Job failures and stale leases. Each row leads to its diagnosis.</div>
+  </div>
+</div>
+
+<div class="filters">
+  <div class="chiprow">
+    <a class="chip {{ 'on' if not view.category_filter else '' }}" href="/admin/failures{% if view.campaign_filter %}?campaign={{ view.campaign_filter }}{% endif %}">All <span class="c">{{ view.counts_by_category.values() | sum }}</span></a>
+    {% for key, label in categories %}
+      {% set count = view.counts_by_category.get(key, 0) %}
+      {% if count %}
+      <a class="chip {{ 'on' if view.category_filter == key else '' }}" href="/admin/failures?category={{ key }}{% if view.campaign_filter %}&campaign={{ view.campaign_filter }}{% endif %}">{{ label }} <span class="c">{{ count }}</span></a>
+      {% endif %}
+    {% endfor %}
+  </div>
+  <div class="spacer"></div>
+  <form class="inline" method="get" action="/admin/failures">
+    {% if view.category_filter %}<input type="hidden" name="category" value="{{ view.category_filter }}">{% endif %}
+    <label for="campaign-filter">Campaign</label>
+    <select id="campaign-filter" name="campaign">
+      <option value="">All</option>
+      {% for campaign_id, name in view.campaign_options %}
+      <option value="{{ campaign_id }}" {{ 'selected' if view.campaign_filter == campaign_id else '' }}>{{ name }}</option>
+      {% endfor %}
+    </select>
+    <button class="btn small" type="submit">Filter</button>
+  </form>
+</div>
+
+<div class="card">
+  <div class="card-body tight">
+    {% if view.items %}
+    <div class="table-wrap">
+    <table class="data">
+      <thead><tr>
+        <th>Category</th><th>Campaign</th><th>Contact / Company</th><th>Agent/Stage</th>
+        <th>Reason</th><th class="num">Attempts</th><th>Retryable</th><th>Age</th><th>Action</th>
+      </tr></thead>
+      <tbody>
+        {% for item in view.items %}
+        <tr class="{{ 'attention' if item.severity == 'critical' else '' }}">
+          <td><span class="badge {{ 'err' if item.severity == 'critical' else 'warn' }}">{{ item.category_label }}</span></td>
+          <td>{% if item.campaign_id %}<a href="/admin/campaigns/{{ item.campaign_id }}">{{ item.campaign_name or "Campaign" }}</a>{% else %}<span class="dim">—</span>{% endif %}</td>
+          <td class="primary">
+            <a href="{{ item.diagnosis_href }}">{{ item.contact_label or item.company_label or (item.job_id | string | truncate(8, True, "") ~ "…" if item.job_id else "—") }}</a>
+            {% if item.company_label and item.contact_label %}<span class="dim">· {{ item.company_label }}</span>{% endif %}
+          </td>
+          <td>{{ item.agent_name or "—" }}</td>
+          <td class="dim wrap-anywhere">{{ item.reason | truncate(110) }}</td>
+          <td class="num">{% if item.attempt_count is not none %}{{ item.attempt_count }}{% if item.max_attempts %}/{{ item.max_attempts }}{% endif %}{% else %}—{% endif %}</td>
+          <td>{{ wb.bool_badge(item.retryable) }}</td>
+          <td class="dim nowrap">{{ item.latest_at | ago }}</td>
+          <td>
+            <a class="btn small" href="{{ item.diagnosis_href }}">Diagnose</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% if view.total > view.items | length %}
+    <div class="card-foot">Showing the {{ view.items | length }} most recent of {{ view.total }} matching failures — narrow with the filters above.</div>
+    {% endif %}
+    {% else %}
+    {{ wb.empty("No failures match this filter", "Nothing is failing, blocked or stale in this view right now.") }}
+    {% endif %}
+  </div>
+</div>
+
+<div class="muted-note">
+  Retry and skip actions live on each Contact's diagnosis page, where the full context is visible; failures with no safe action say what requires intervention instead.
+  Suppressions and eligibility blocks are authoritative and are never released from the Workbench.
+</div>
+
+{% endblock %}

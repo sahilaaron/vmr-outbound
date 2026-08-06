@@ -1,0 +1,50 @@
+{% extends "admin/base.html" %}
+{% import "admin/_wb.html" as wb %}
+{% block content %}
+
+<div class="page-head">
+  <div>
+    <h1>Agent/Stages</h1>
+    <div class="sub">The business-level pipeline steps, in execution order — control state, queue, committed stage outcomes and the workers behind each. Control changes go through the Agent registry surfaces linked from each stage.</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-body tight">
+    <div class="table-wrap">
+    <table class="data">
+      <thead><tr>
+        <th>#</th><th>Agent/Stage</th><th>Control</th><th>Workers</th>
+        <th class="num">Queued</th><th class="num">Running</th><th class="num">Retrying</th><th class="num">Failed</th>
+        <th class="num">Stage failures</th><th class="num">Overrides</th><th>Avg duration</th>
+      </tr></thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td class="dim">{{ row.card.position }}</td>
+          <td class="primary">
+            <a href="/admin/stages/{{ row.agent_id.value }}">{{ row.display_name }}</a>
+            {% if not row.implemented %}<span class="badge muted plain">not implemented</span>{% endif %}
+            {% if row.skippable %}<span class="badge outline plain">skippable</span>{% endif %}
+          </td>
+          <td>{{ wb.control_badge(row.card.control) }}</td>
+          <td class="dim">{{ row.workers | join(" · ") if row.workers else "—" }}</td>
+          <td class="num">{{ row.card.queue.queued }}</td>
+          <td class="num">{{ row.card.queue.running }}</td>
+          <td class="num">{{ row.card.queue.retrying }}</td>
+          <td class="num">{% if row.card.queue.failed %}<a href="/admin/failures?agent={{ row.agent_id.value }}">{{ row.card.queue.failed }}</a>{% else %}0{% endif %}</td>
+          <td class="num">{{ row.stage_status_counts.get("failed", 0) }}</td>
+          <td class="num">{{ row.override_count }}</td>
+          <td class="dim">{% if row.avg_duration_seconds is not none %}{{ row.avg_duration_seconds | duration }} <span class="muted-note">({{ row.duration_sample }} runs, 30d)</span>{% else %}—{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+  <div class="card-foot">
+    Sending is registered for pipeline compatibility only: unavailable — Sending Agent not implemented in this release.
+  </div>
+</div>
+
+{% endblock %}
