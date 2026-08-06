@@ -32,6 +32,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -87,6 +88,37 @@ class ImportBatch(Base):
         default=ImportSourceFormat.CSV,
         server_default=ImportSourceFormat.CSV.name,
     )
+    # --- Recognized source schema (IMP-001) ----------------------------------
+    #
+    # Deliberately a column rather than a new ``ImportSourceFormat`` member. The
+    # format is how the bytes were encoded (csv/xlsx); the schema is whose export
+    # it is (``apollo_contact_export_v1``). Collapsing them would have made
+    # "an Apollo export saved as CSV" unrepresentable, and adding a member to a
+    # live PostgreSQL enum is a one-way migration besides.
+    #
+    # NULL on every pre-IMP-001 batch and on the generic contact-contract import,
+    # which recognizes no schema and asks the operator to map columns instead.
+    source_schema: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: The worksheet the operator selected, when the workbook had more than one.
+    selected_sheet_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    selected_sheet_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: The upload's filename after sanitization, stored beside the original so a
+    #: hostile name is visible as submitted and safe as used.
+    sanitized_filename: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    #: The header row as detected, verbatim. Lets a later reader see exactly what
+    #: the file offered without re-parsing the bytes.
+    detected_headers: Mapped[list[Any] | None] = mapped_column(JSONB, nullable=True)
+    #: Who uploaded it, where the deployment knows. Single-operator today.
+    uploaded_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: When the operator confirmed the preview — the first durable-mutation point.
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: Rows that resolved to a Contact already in this Campaign. Counted apart
+    #: from ``duplicate_rows`` because "this person is already here" and "this
+    #: file lists them twice" call for different operator actions.
+    already_in_campaign_rows: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+
     mime_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
     parser_version: Mapped[str | None] = mapped_column(String(50), nullable=True)
     mapper_version: Mapped[str | None] = mapped_column(String(50), nullable=True)
@@ -218,6 +250,64 @@ class ImportRowValidation(Base):
     )
     # Human-readable explanation (which contact matched, ambiguity, etc.).
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # --- Campaign-bound file import result detail (IMP-001) -------------------
+    #
+    # All nullable, all NULL for the pre-IMP-001 contact-contract importer, which
+    # resolves no Company and creates no imported-email evidence. Added to this
+    # table rather than a parallel one because a row already has exactly one
+    # outcome here, and a second outcome table would be a second place to look
+    # for the same question.
+    #
+    #: Deterministic fingerprint of the identity-bearing cells of the raw row.
+    #: Two files that state the same person the same way share it, which is what
+    #: makes re-importing an edited file process only what actually changed.
+    row_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: The permanent Company the row resolved to, when it resolved to one.
+    company_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("companies.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    #: The Campaign membership the row produced or reused. Both foreign keys
+    #: below are named explicitly because the naming convention would generate
+    #: identifiers at or beyond PostgreSQL's 63-byte limit, where the server
+    #: truncates silently and `alembic check` then reports a permanent drift.
+    campaign_contact_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "campaign_contacts.id",
+            ondelete="SET NULL",
+            name="fk_import_row_validations_campaign_contact",
+        ),
+        nullable=True,
+    )
+    #: The accepted imported primary address, when one was accepted.
+    imported_email_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "imported_contact_emails.id",
+            ondelete="SET NULL",
+            name="fk_import_row_validations_imported_email",
+        ),
+        nullable=True,
+    )
+    #: Which evidence decided the Contact, e.g. ``normalized_email``,
+    #: ``apollo_contact_id``, ``linkedin_profile_url``, ``created``.
+    contact_match_basis: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: Which evidence decided the Company, following the IMP-001 hierarchy.
+    company_match_basis: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: Whether the membership was created by this row or already existed.
+    membership_action: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    #: Non-fatal, operator-visible observations about this row. Each entry is a
+    #: ``{"code": ..., "message": ...}`` object. A warning never blocks an import;
+    #: it is a fact the operator should know, kept where they can see it.
+    warnings: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    #: Stable machine code for the single reason a row failed or needs review.
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

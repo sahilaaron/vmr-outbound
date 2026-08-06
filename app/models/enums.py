@@ -286,6 +286,59 @@ class ImportSourceFormat(enum.StrEnum):
     SALES_NAVIGATOR = "sales_navigator"
 
 
+class ImportedEmailSlot(enum.StrEnum):
+    """Which address of an imported row one evidence record describes (IMP-001).
+
+    A vendor export routinely carries more than one address per person, and they
+    are not interchangeable: the primary is the one the operator is asking us to
+    use, and the others are alternatives nobody has chosen. Keeping them in one
+    table separated by slot — rather than promoting a secondary into the primary
+    column when the primary looks worse — is what makes "we did not guess which
+    address to use" a property of the schema instead of a promise in a docstring.
+    """
+
+    PRIMARY = "primary"
+    SECONDARY = "secondary"
+    TERTIARY = "tertiary"
+
+
+class ImportedEmailStageOutcome(enum.StrEnum):
+    """What the Email stage did with an operator-supplied imported address.
+
+    Deliberately a separate vocabulary from anything the Email Agent's discovery
+    path produces. ``imported_email_accepted`` says exactly one thing: an address
+    that arrived in a file was taken as the campaign's address for this person.
+    It is not a claim that the mailbox exists, that a provider verified it, or
+    that it is deliverable — no candidate was generated, no pattern was applied,
+    and no provider was called, so none of those claims could be true.
+
+    ``imported_email_rejected`` covers a supplied address the import refused:
+    malformed syntax, or a suppressed identity. The row keeps the raw value as
+    evidence; the address never becomes the campaign's address.
+    """
+
+    IMPORTED_EMAIL_ACCEPTED = "imported_email_accepted"
+    IMPORTED_EMAIL_REJECTED = "imported_email_rejected"
+
+
+class ImportedVerificationOutcome(enum.StrEnum):
+    """What the Verification stage did for an imported address (IMP-001).
+
+    ``verification_bypassed_imported_email`` is a truthful *absence*: no
+    MillionVerifier call, no ZeroBounce call, no provider of any kind, and
+    therefore no evidence about the mailbox. It exists as its own durable value
+    precisely so that a bypassed Contact can never be read as a verified one —
+    :class:`EmailVerificationResult` remains reserved for answers a provider
+    actually gave about an exact address, and no import ever writes one.
+
+    ``verification_not_performed`` is the state of a slot that never reached the
+    stage at all (a rejected primary, or a retained secondary/tertiary).
+    """
+
+    VERIFICATION_BYPASSED_IMPORTED_EMAIL = "verification_bypassed_imported_email"
+    VERIFICATION_NOT_PERFORMED = "verification_not_performed"
+
+
 class EnrichmentLookupStatus(enum.StrEnum):
     """State of a company-domain lookup against logo.dev (DAT-010).
 
