@@ -141,6 +141,22 @@
             {% endif %}
 
             {# --- stage-specific committed outcomes --------------------------- #}
+            {% if stage.agent_id.value == "research" and stage.latest_job and stage.latest_job.result and stage.latest_job.result.get("company_intelligence") %}
+              {% set handoff = stage.latest_job.result.get("company_intelligence") %}
+              <hr class="soft">
+              <div class="kv">
+                <dt>Company Intelligence handoff</dt>
+                <dd>
+                  {% if handoff.get("enqueued") %}
+                    <span class="badge ok plain">queued automatically</span>
+                    <span class="dim">— the standard worker fleet processes it; the result serves every Contact at this Company.</span>
+                  {% else %}
+                    <span class="badge muted plain">{{ (handoff.get("outcome") or "not queued") | replace("_", " ") }}</span>
+                    <span class="dim">— {{ handoff.get("reason") }}</span>
+                  {% endif %}
+                </dd>
+              </div>
+            {% endif %}
             {% if stage.agent_id.value == "research" and execution.research %}
               <hr class="soft">
               <div class="kv">

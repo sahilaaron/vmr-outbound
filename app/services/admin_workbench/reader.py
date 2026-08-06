@@ -30,6 +30,10 @@ from app.models.campaign import Campaign, CampaignContact
 from app.models.capture_promotion import ContactCapturePromotion
 from app.models.company import Company
 from app.models.company_dossier import CompanyDossierVersion
+from app.models.company_intelligence import (
+    CompanyIntelligenceJob,
+    CompanyIntelligenceVersion,
+)
 from app.models.contact import Contact
 from app.models.draft import DraftApproval, DraftVersion
 from app.models.email_candidate import EmailCandidate
@@ -42,6 +46,7 @@ from app.models.enums import (
     AgentIdentifier,
     AgentJobStatus,
     CampaignContactEligibility,
+    IntelligenceJobStatus,
     PipelineStageStatus,
 )
 from app.models.pipeline import CampaignContactAgentState
@@ -53,6 +58,7 @@ from app.services.agent_studio.research_report import DurableResearchReportReade
 from app.services.agents.jobs import public_status_for
 from app.services.agents.registry import AGENT_SPECS, PIPELINE_ORDER
 from app.services.companies import detail as company_detail_service
+from app.services.company_intelligence.handoff import RESEARCH_HANDOFF_ACTOR
 from app.services.personalization import policy as personalization_policy
 from app.services.research.fallback import FALLBACK_WORKER_NAME
 from app.services.research.workers.website import WORKER_NAME as WEBSITE_WORKER_NAME
@@ -91,6 +97,7 @@ from .views import (
     FailureItem,
     FailuresInboxView,
     FallbackRunRow,
+    IntelligenceJobRow,
     MembershipRow,
     OverrideSummaryRow,
     PolicyStatusRow,
@@ -1126,6 +1133,58 @@ class AdminWorkbenchReader:
                 )
             )
 
+        # 5. Failed Company Intelligence jobs (company-scoped, outside the
+        #    Campaign pipeline; hidden per-Campaign because they belong to no
+        #    Campaign). Includes the automatically handed-off jobs, so a failed
+        #    Research -> Intelligence handoff is as visible as any other failure.
+        if campaign_filter is None:
+            company_names = {
+                company_id: name
+                for company_id, name in self._session.execute(
+                    select(Company.id, Company.name).where(
+                        Company.id.in_(
+                            select(CompanyIntelligenceJob.company_id).where(
+                                CompanyIntelligenceJob.status == IntelligenceJobStatus.FAILED
+                            )
+                        )
+                    )
+                ).all()
+            }
+            for ci_job in self._session.scalars(
+                select(CompanyIntelligenceJob)
+                .where(CompanyIntelligenceJob.status == IntelligenceJobStatus.FAILED)
+                .order_by(CompanyIntelligenceJob.finished_at.desc())
+                .limit(FAILURES_CAP)
+            ).all():
+                automatic = ci_job.requested_by == RESEARCH_HANDOFF_ACTOR
+                items.append(
+                    FailureItem(
+                        kind="ci_job",
+                        category="company_intelligence",
+                        severity="warning",
+                        reason=ci_job.last_error or ci_job.error_class or "Job failed.",
+                        campaign_id=None,
+                        campaign_name=None,
+                        campaign_contact_id=None,
+                        contact_label=None,
+                        company_label=company_names.get(ci_job.company_id),
+                        agent_id=None,
+                        agent_name="Company Intelligence",
+                        job_id=ci_job.id,
+                        attempt_count=ci_job.attempts,
+                        max_attempts=ci_job.max_attempts,
+                        retryable=False,
+                        latest_at=ci_job.finished_at,
+                        diagnosis_href=f"/admin/companies/{ci_job.company_id}",
+                        action=None,
+                        action_note=(
+                            ("Queued automatically after Research. " if automatic else "")
+                            + "Re-request it from the Company Intelligence pages "
+                            "after addressing the recorded cause."
+                        ),
+                    )
+                )
+
         items.sort(
             key=lambda item: item.latest_at or datetime.min.replace(tzinfo=UTC),
             reverse=True,
@@ -1567,6 +1626,36 @@ class AdminWorkbenchReader:
             else None
         )
 
+        latest_ci_job = self._session.scalars(
+            select(CompanyIntelligenceJob)
+            .where(CompanyIntelligenceJob.company_id == company.id)
+            .order_by(CompanyIntelligenceJob.created_at.desc())
+            .limit(1)
+        ).first()
+        intelligence_job = (
+            IntelligenceJobRow(
+                job_id=latest_ci_job.id,
+                status=latest_ci_job.status.value,
+                requested_by=latest_ci_job.requested_by,
+                automatic=latest_ci_job.requested_by == RESEARCH_HANDOFF_ACTOR,
+                error_class=latest_ci_job.error_class,
+                last_error=latest_ci_job.last_error,
+                attempts=latest_ci_job.attempts,
+                finished_at=latest_ci_job.finished_at,
+                created_at=latest_ci_job.created_at,
+            )
+            if latest_ci_job is not None
+            else None
+        )
+        intelligence_versions = int(
+            self._session.scalar(
+                select(func.count(CompanyIntelligenceVersion.id)).where(
+                    CompanyIntelligenceVersion.company_id == company.id
+                )
+            )
+            or 0
+        )
+
         return AdminCompanyView(
             company_id=company.id,
             name=company.name,
@@ -1592,6 +1681,8 @@ class AdminWorkbenchReader:
                 if self._settings.features.company_intelligence
                 else None
             ),
+            intelligence_job=intelligence_job,
+            intelligence_version_count=intelligence_versions,
         )
 
     def _company_research_jobs(

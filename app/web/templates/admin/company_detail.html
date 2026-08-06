@@ -73,6 +73,36 @@
 </div>
 
 <div class="card">
+  <div class="card-head"><h2>Company Intelligence</h2><span class="hint">queued automatically when Research commits a usable dossier — no operator step</span></div>
+  <div class="card-body">
+    {% if not view.intelligence_available %}
+    {{ wb.unavailable("Company Intelligence is off", "The company_intelligence feature switch is not enabled; nothing is queued or produced.") }}
+    {% else %}
+    <div class="kv">
+      <dt>Versions</dt>
+      <dd>{% if view.intelligence_version_count %}{{ view.intelligence_version_count }} — <a href="{{ view.intelligence_href }}">open Company Intelligence</a>{% else %}<span class="dim">none yet</span>{% endif %}</dd>
+      <dt>Latest job</dt>
+      <dd>
+        {% if view.intelligence_job %}
+          {% set ci = view.intelligence_job %}
+          {% set tones = {"succeeded": "ok", "failed": "err", "pending": "muted", "leased": "info", "in_progress": "info", "retry_scheduled": "warn", "cancelled": "muted"} %}
+          <span class="badge {{ tones.get(ci.status, 'muted') }}">{{ ci.status | replace("_", " ") }}</span>
+          {% if ci.automatic %}<span class="badge accent plain">queued automatically after Research</span>
+          {% elif ci.requested_by %}<span class="dim">requested by {{ ci.requested_by }}</span>{% endif %}
+          <span class="dim">· attempt {{ ci.attempts }} · {{ (ci.finished_at or ci.created_at) | ago }}</span>
+          {% if ci.status == "failed" %}
+          <div class="dim wrap-anywhere">{{ ci.last_error or ci.error_class }} — re-request from the Company Intelligence pages after addressing the cause.</div>
+          {% endif %}
+        {% else %}
+          <span class="dim">no job yet — one is queued automatically when Research commits a usable dossier</span>
+        {% endif %}
+      </dd>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
   <div class="card-head"><h2>Research executions</h2><span class="hint">deterministic vs Claude fallback lineage per Agent Job</span></div>
   <div class="card-body tight">
     {% if view.research_jobs %}

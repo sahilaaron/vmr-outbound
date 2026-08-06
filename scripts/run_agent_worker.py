@@ -69,7 +69,8 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from app.db.session import session_scope  # noqa: E402 - must follow the path anchor above
+from app.core.config import get_settings  # noqa: E402 - must follow the path anchor above
+from app.db.session import session_scope  # noqa: E402
 from app.models.enums import AgentIdentifier, AgentJobStatus  # noqa: E402
 from app.models.verification_job import AgentJob  # noqa: E402
 from app.services.agents import jobs, locking  # noqa: E402
@@ -79,6 +80,7 @@ from app.services.agents.orchestrator import (  # noqa: E402
     execute_started_job,
     prepare_leased_job,
 )
+from app.services.company_intelligence import runner as ci_runner  # noqa: E402
 from app.services.resolution.pending import resolve_pending  # noqa: E402
 
 
@@ -140,6 +142,15 @@ def _parser() -> argparse.ArgumentParser:
         "--skip-capture-resolution",
         action="store_true",
         help="Drain the Agent queue only; do not resolve pending captures",
+    )
+    parser.add_argument(
+        "--skip-company-intelligence",
+        action="store_true",
+        help=(
+            "Do not drain the Company Intelligence queue. By default this worker "
+            "processes it whenever the feature switch is on and the Agent queue "
+            "is idle — the Research handoff enqueues into it automatically."
+        ),
     )
     return parser
 
@@ -340,6 +351,38 @@ def _run_once(
         )
 
 
+def _run_company_intelligence_once(*, worker_id: str, lease_seconds: float) -> str | None:
+    """Claim and execute at most one Company Intelligence job.
+
+    The Research Agent enqueues these automatically when it commits a usable
+    dossier, and this shared worker is their normal consumer — no separate
+    always-on process and no manual backfill batch is required. Campaign Agent
+    work takes precedence: this runs only when the Agent queue had nothing due,
+    so classification enrichment never starves the pipeline. Claiming uses the
+    queue's own ``FOR UPDATE SKIP LOCKED`` lease path, so a pool of threads
+    shares it safely.
+
+    Returns one JSON line describing the outcome, or None when the feature is
+    off or the queue is idle.
+    """
+
+    if not get_settings().features.company_intelligence:
+        return None
+    with session_scope() as session:
+        outcome = ci_runner.run_next(session, worker_id=worker_id, lease_seconds=lease_seconds)
+    if outcome is None:
+        return None
+    line: dict[str, object] = {
+        "queue": "company_intelligence",
+        "company_id": str(outcome.company_id),
+        "status": "succeeded" if outcome.succeeded else "failed",
+        "outcome": outcome.code,
+        "version": outcome.version_number,
+        "message": outcome.message,
+    }
+    return json.dumps(line, sort_keys=True)
+
+
 class _Tally:
     """Shared job count and stop flag for a pool of worker threads.
 
@@ -373,6 +416,7 @@ def _worker_loop(
     agent_ids: tuple[AgentIdentifier, ...] | None,
     poll_seconds: float,
     tally: _Tally,
+    include_intelligence: bool,
 ) -> None:
     """Claim and execute until asked to stop.
 
@@ -398,6 +442,23 @@ def _worker_loop(
         if execution.job is not None:
             tally.record_job()
             continue
+
+        # The Agent queue is idle; give the Company Intelligence queue one turn.
+        # Counted against --max-jobs like any other claim: each of these is one
+        # model call, and the cost bound is a promise about the whole process.
+        if include_intelligence:
+            try:
+                note = _run_company_intelligence_once(
+                    worker_id=worker_id, lease_seconds=lease_seconds
+                )
+            except Exception as exc:  # noqa: BLE001 - a thread must not die quietly
+                tally.emit(json.dumps({"worker": worker_id, "error": str(exc)}))
+                note = None
+            if note is not None:
+                tally.emit(note)
+                tally.record_job()
+                continue
+
         # Nothing was due. Waiting on the stop event rather than sleeping means
         # Ctrl+C is answered immediately instead of after the poll interval.
         if poll_seconds and tally.stop.wait(poll_seconds):
@@ -418,6 +479,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     agent_ids = tuple(AgentIdentifier(value) for value in args.agents) if args.agents else None
     resolve_captures = not args.skip_capture_resolution and agent_ids is None
+    # Narrowing to specific Agents is a request to do one thing only, the same
+    # convention capture resolution follows.
+    include_intelligence = not args.skip_company_intelligence and agent_ids is None
 
     def _backfill() -> None:
         """Resolve captures that are not yet Contacts, so they have jobs to claim.
@@ -451,13 +515,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             print(_line(execution), flush=True)
 
-            if execution.job is not None:
+            claimed = execution.job is not None
+            if not claimed and include_intelligence:
+                note = _run_company_intelligence_once(
+                    worker_id=args.worker_id, lease_seconds=args.lease_seconds
+                )
+                if note is not None:
+                    print(note, flush=True)
+                    claimed = True
+
+            if claimed:
                 processed += 1
                 if args.max_jobs is not None and processed >= args.max_jobs:
                     return 0
             if args.once:
                 return 0
-            if execution.job is None and args.poll_seconds:
+            if not claimed and args.poll_seconds:
                 time.sleep(args.poll_seconds)
 
     tally = _Tally(max_jobs=args.max_jobs)
@@ -472,6 +545,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "agent_ids": agent_ids,
                 "poll_seconds": args.poll_seconds,
                 "tally": tally,
+                "include_intelligence": include_intelligence,
             },
             name=f"agent-worker-{index}",
             daemon=True,

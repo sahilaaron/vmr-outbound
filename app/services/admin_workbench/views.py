@@ -344,6 +344,7 @@ FAILURE_CATEGORIES: tuple[tuple[str, str], ...] = (
     ("model_output", "Malformed model output"),
     ("provider", "Provider unavailable"),
     ("stale_job", "Stale Agent Job"),
+    ("company_intelligence", "Company Intelligence failure"),
     ("retries_exhausted", "Retries exhausted"),
     ("blocked_contact", "Blocked Contact"),
     ("configuration", "Configuration issue"),
@@ -569,6 +570,21 @@ class CompaniesIndexView:
 
 
 @dataclass(frozen=True)
+class IntelligenceJobRow:
+    """The latest Company Intelligence job for a Company, and how it arrived."""
+
+    job_id: uuid.UUID
+    status: str
+    requested_by: str | None
+    automatic: bool  # queued by the Research handoff, not an operator or backfill
+    error_class: str | None
+    last_error: str | None
+    attempts: int
+    finished_at: datetime | None
+    created_at: datetime | None
+
+
+@dataclass(frozen=True)
 class DossierRow:
     dossier_id: uuid.UUID
     version_number: int
@@ -613,6 +629,8 @@ class AdminCompanyView:
     conflicts: tuple[str, ...]
     intelligence_available: bool
     intelligence_href: str | None
+    intelligence_job: IntelligenceJobRow | None = None
+    intelligence_version_count: int = 0
 
 
 # --- review -----------------------------------------------------------------
