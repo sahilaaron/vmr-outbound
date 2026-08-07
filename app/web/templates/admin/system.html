@@ -64,7 +64,7 @@
     {% if view.job_search_error %}<div class="notice warn" style="margin-top: 10px;"><div>{{ view.job_search_error }}</div></div>{% endif %}
     {% if view.job_search_result %}
     <div style="margin-top: 10px;">
-      Found: {{ wb.job_row_link(view.job_search_result) }} — {{ view.job_search_result.agent_name }} {{ wb.job_badge(view.job_search_result.public_status) }}
+      Found: {{ wb.job_row_link(view.job_search_result) }} — {{ (view.job_search_result.agent_name) | neutralize }} {{ wb.job_badge(view.job_search_result.public_status) }}
       <a class="btn small" href="/admin/jobs/{{ view.job_search_result.job_id }}">Open Job detail</a>
     </div>
     {% endif %}
@@ -82,7 +82,7 @@
         {% for job in view.stale_leases %}
         <tr>
           <td>{{ wb.job_row_link(job) }}</td>
-          <td>{{ job.agent_name }}</td>
+          <td>{{ (job.agent_name) | neutralize }}</td>
           <td class="mono">{{ job.lease_owner or "—" }}</td>
           <td class="dim">{{ job.lease_expires_at | ago }}</td>
           <td class="num">{{ job.attempt_count }}/{{ job.max_attempts }}</td>
@@ -111,8 +111,8 @@
           <td>{{ event.actor }}</td>
           <td class="mono">{{ event.action }}</td>
           <td class="dim wrap-anywhere">{{ event.entity_type or "" }}{% if event.entity_id %} · {{ event.entity_id | truncate(12, True) }}{% endif %}</td>
-          <td class="dim">{% if event.previous_state or event.new_state %}{{ event.previous_state or "·" }} → {{ event.new_state or "·" }}{% else %}—{% endif %}</td>
-          <td class="dim wrap-anywhere">{{ event.reason | truncate(60) if event.reason else "—" }}</td>
+          <td class="dim">{% if event.previous_state or event.new_state %}{{ (event.previous_state or "·") | neutralize }} → {{ (event.new_state or "·") | neutralize }}{% else %}—{% endif %}</td>
+          <td class="dim wrap-anywhere">{{ (event.reason | truncate(60) if event.reason else "—") | neutralize }}</td>
           <td>{{ wb.bool_badge(event.dry_run, yes="dry", no="live") }}</td>
         </tr>
         {% endfor %}

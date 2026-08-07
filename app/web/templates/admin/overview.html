@@ -19,8 +19,8 @@
 
 <div class="stats">
   <div class="stat"><div class="n">{{ view.campaigns_active }}</div><div class="l">Active Campaigns</div><div class="d">of {{ view.campaigns_total }} total</div></div>
-  <div class="stat"><div class="n">{{ view.contacts_in_progress }}</div><div class="l">Contacts in progress</div><div class="d">of {{ view.contacts_enrolled }} enrolled</div></div>
-  <div class="stat {{ 'warn' if view.contacts_blocked else '' }}"><div class="n"><a href="/admin/failures?category=blocked_contact">{{ view.contacts_blocked }}</a></div><div class="l">Blocked Contacts</div></div>
+  <div class="stat"><div class="n">{{ (view.contacts_in_progress) | neutralize }}</div><div class="l">Contacts in progress</div><div class="d">of {{ (view.contacts_enrolled) | neutralize }} enrolled</div></div>
+  <div class="stat {{ 'warn' if view.contacts_blocked else '' }}"><div class="n"><a href="/admin/failures?category=blocked_contact">{{ (view.contacts_blocked) | neutralize }}</a></div><div class="l">Blocked Contacts</div></div>
   <div class="stat {{ 'err' if view.queue.failed else '' }}"><div class="n"><a href="/admin/failures">{{ view.queue.failed }}</a></div><div class="l">Failed Agent Jobs</div><div class="d">{{ view.queue.terminal_failures }} terminal</div></div>
   <div class="stat"><div class="n">{{ view.queue.open_work }}</div><div class="l">Open queue work</div><div class="d">{{ view.queue.running }} running · {{ view.queue.queued }} queued</div></div>
   <div class="stat {{ 'warn' if view.stale_leases else '' }}"><div class="n"><a href="/admin/system">{{ view.stale_leases }}</a></div><div class="l">Stale leases</div></div>
@@ -40,8 +40,8 @@
           <a href="{{ item.href }}">
             <span class="sev {{ item.severity }}" aria-hidden="true"></span>
             <span>
-              <span class="t">{{ item.title }}</span>
-              <span class="d">{{ item.detail }}</span>
+              <span class="t">{{ (item.title) | neutralize }}</span>
+              <span class="d">{{ (item.detail) | neutralize }}</span>
             </span>
           </a>
         </li>
@@ -62,7 +62,7 @@
         <tbody>
           {% for card in view.agents %}
           <tr>
-            <td class="primary"><a href="/admin/stages/{{ card.agent_id.value }}">{{ card.display_name }}</a>
+            <td class="primary"><a href="/admin/stages/{{ card.agent_id.value }}">{{ (card.display_name) | neutralize }}</a>
               {% if not card.control.implemented %}<span class="badge muted plain">not implemented</span>{% endif %}
             </td>
             <td>{{ wb.control_badge(card.control) }}</td>
@@ -91,7 +91,7 @@
       <tbody>
         {% for row in view.campaigns[:8] %}
         <tr class="{{ 'attention' if row.needs_attention else '' }}">
-          <td class="primary"><a href="/admin/campaigns/{{ row.campaign_id }}">{{ row.name }}</a></td>
+          <td class="primary"><a href="/admin/campaigns/{{ row.campaign_id }}">{{ (row.name) | neutralize }}</a></td>
           <td>{{ wb.health_badge(row.health) }}</td>
           <td class="num">{{ row.enrolled }}</td>
           <td>{{ wb.progress(row.progress_percent) }}<span class="muted-note">{{ row.completed }} / {{ row.enrolled }} complete</span></td>
@@ -131,8 +131,8 @@
           <tr>
             <td class="primary">
               {% if run.campaign_id and run.campaign_contact_id %}
-                <a href="/admin/campaigns/{{ run.campaign_id }}/contacts/{{ run.campaign_contact_id }}">{{ run.contact_label or "(company-level)" }}</a>
-              {% else %}{{ run.contact_label or "(company-level)" }}{% endif %}
+                <a href="/admin/campaigns/{{ run.campaign_id }}/contacts/{{ run.campaign_contact_id }}">{{ (run.contact_label or "(company-level)") | neutralize }}</a>
+              {% else %}{{ (run.contact_label or "(company-level)") | neutralize }}{% endif %}
             </td>
             <td>{{ wb.job_badge("completed" if run.status == "succeeded" else ("failed" if run.status == "failed" else run.status)) }}</td>
             <td class="num">{{ run.evidence_accepted if run.evidence_accepted is not none else "—" }}</td>

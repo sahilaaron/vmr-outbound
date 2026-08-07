@@ -19,7 +19,7 @@
     <span class="badge muted plain">not started</span>
   {%- else -%}
     {%- set value = status.value if status.value is defined else status -%}
-    <span class="badge {{ tone_for_stage(value) }}">{{ value }}</span>
+    <span class="badge {{ tone_for_stage(value) }}">{{ (value) | neutralize }}</span>
   {%- endif -%}
 {%- endmacro %}
 
@@ -76,7 +76,7 @@
 {% macro crumbs(items) -%}
   <div class="crumbs">
     {%- for label, href in items -%}
-      {%- if href %}<a href="{{ href }}">{{ label }}</a>{% else %}<span>{{ label }}</span>{% endif -%}
+      {%- if href %}<a href="{{ href }}">{{ (label) | neutralize }}</a>{% else %}<span>{{ (label) | neutralize }}</span>{% endif -%}
       {%- if not loop.last %}<span class="sep">/</span>{% endif -%}
     {%- endfor -%}
   </div>
@@ -117,13 +117,13 @@
 
 {% macro empty(title, detail=None) -%}
   <div class="empty">
-    <strong>{{ title }}</strong>
-    {% if detail %}{{ detail }}{% endif %}
+    <strong>{{ (title) | neutralize }}</strong>
+    {% if detail %}{{ (detail) | neutralize }}{% endif %}
   </div>
 {%- endmacro %}
 
 {% macro unavailable(title, detail) -%}
-  <div class="unavailable"><strong>{{ title }}</strong> — {{ detail }}</div>
+  <div class="unavailable"><strong>{{ (title) | neutralize }}</strong> — {{ (detail) | neutralize }}</div>
 {%- endmacro %}
 
 {% macro progress(percent) -%}
@@ -148,8 +148,8 @@
       <span class="when" title="{{ event.occurred_at | dt }}">{{ event.occurred_at | ago }}</span>
       <span>
         {{ event.summary if event.summary is defined and event.summary else event.event_type.value | replace("_", " ") }}
-        {% if event.contact_label %}<span class="dim">· {{ event.contact_label }}</span>{% endif %}
-        {% if event.campaign_name %}<span class="dim">· {{ event.campaign_name }}</span>{% endif %}
+        {% if event.contact_label %}<span class="dim">· {{ (event.contact_label) | neutralize }}</span>{% endif %}
+        {% if event.campaign_name %}<span class="dim">· {{ (event.campaign_name) | neutralize }}</span>{% endif %}
       </span>
     </li>
     {% endfor %}

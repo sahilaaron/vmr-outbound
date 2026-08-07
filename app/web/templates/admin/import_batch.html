@@ -6,10 +6,10 @@
 
 <div class="page-head">
   <div>
-    <h1>{{ batch.display_name }}</h1>
+    <h1>{{ (batch.display_name) | neutralize }}</h1>
     <div class="sub">
-      {{ batch.schema_label }} · {{ batch.source_format }}
-      {%- if batch.sheet_name %} · sheet “{{ batch.sheet_name }}”{% endif %}
+      {{ (batch.schema_label) | neutralize }} · {{ batch.source_format }}
+      {%- if batch.sheet_name %} · sheet “{{ (batch.sheet_name) | neutralize }}”{% endif %}
       · {{ batch.total_rows | default(0) }} data row(s)
       {%- if batch.confirmed_at %} · confirmed {{ batch.confirmed_at | dt }}{% else %} · not confirmed{% endif %}
     </div>
@@ -17,7 +17,7 @@
        is visible as submitted and safe as used. The uploaded bytes themselves
        are never rendered, and no filesystem path is exposed. #}
     {% if batch.filename and batch.filename != batch.sanitized_filename %}
-    <div class="sub">Submitted as: <span class="mono">{{ batch.filename }}</span> — stored under the sanitized name above.</div>
+    <div class="sub">Submitted as: <span class="mono">{{ (batch.filename) | neutralize }}</span> — stored under the sanitized name above.</div>
     {% endif %}
   </div>
   <div class="page-actions">
@@ -26,7 +26,7 @@
 </div>
 
 {% if batch.error_detail %}
-<div class="notice warn"><div><strong>Batch-level problem:</strong> {{ batch.error_detail }}</div></div>
+<div class="notice warn"><div><strong>Batch-level problem:</strong> {{ (batch.error_detail) | neutralize }}</div></div>
 {% endif %}
 
 <div class="card">
@@ -40,7 +40,7 @@
       <dt>Refused</dt><dd>{{ batch.counts.refused }}</dd>
       <dt>Suppressed</dt><dd>{{ batch.counts.suppressed }}</dd>
       {% if batch.counts.unprocessed %}<dt>No result recorded</dt><dd>{{ batch.counts.unprocessed }} <span class="dim">— staged but never processed.</span></dd>{% endif %}
-      <dt>Contacts created</dt><dd>{{ batch.contacts_created }}</dd>
+      <dt>Contacts created</dt><dd>{{ (batch.contacts_created) | neutralize }}</dd>
       <dt>Status</dt><dd><span class="badge {{ 'ok' if batch.status == 'completed' else 'muted' }} plain">{{ batch.status }}</span></dd>
       <dt>File checksum</dt><dd class="mono wrap-anywhere">{{ batch.content_hash }}</dd>
       {% if batch.uploaded_by %}<dt>Uploaded by</dt><dd>{{ batch.uploaded_by }}</dd>{% endif %}
@@ -67,23 +67,23 @@
         <tr class="{{ 'attention' if row.held_for_review else '' }}">
           <td class="num">{{ row.row_number }}</td>
           <td>
-            <span class="badge {{ 'ok' if row.imported else ('warn' if row.held_for_review else 'muted') }} plain">{{ row.outcome_label }}</span>
+            <span class="badge {{ 'ok' if row.imported else ('warn' if row.held_for_review else 'muted') }} plain">{{ (row.outcome_label) | neutralize }}</span>
             {% if row.error_code %}<div class="dim mono">{{ row.error_code }}</div>{% endif %}
           </td>
           <td class="primary">
-            {{ row.contact_label or "—" }}
-            {% if row.contact_match_basis %}<div class="dim">{{ "created" if row.contact_match_basis == "created" else "matched on " ~ row.contact_match_basis | replace("_", " ") }}</div>{% endif %}
+            {{ (row.contact_label or "—") | neutralize }}
+            {% if row.contact_match_basis %}<div class="dim">{{ ("created" if row.contact_match_basis == "created" else "matched on " ~ row.contact_match_basis | replace("_", " ")) | neutralize }}</div>{% endif %}
           </td>
           <td>
-            {% if row.company_id %}<a href="/admin/companies/{{ row.company_id }}">{{ row.company_label }}</a>{% else %}<span class="dim">—</span>{% endif %}
-            {% if row.company_match_basis %}<div class="dim">on {{ row.company_match_basis | replace("_", " ") }}</div>{% endif %}
+            {% if row.company_id %}<a href="/admin/companies/{{ row.company_id }}">{{ (row.company_label) | neutralize }}</a>{% else %}<span class="dim">—</span>{% endif %}
+            {% if row.company_match_basis %}<div class="dim">on {{ (row.company_match_basis | replace("_", " ")) | neutralize }}</div>{% endif %}
           </td>
           <td class="dim">
-            {{ row.supplied_company_name or "—" }}
+            {{ (row.supplied_company_name or "—") | neutralize }}
             {% if row.company_name_disagrees %}<div><span class="badge warn plain">differs</span></div>{% endif %}
           </td>
           <td class="mono">
-            {% if row.primary_address %}{{ row.primary_address.email or row.primary_address.raw_email }}
+            {% if row.primary_address %}{{ (row.primary_address.email or row.primary_address.raw_email) | neutralize }}
               {% if not row.primary_address.accepted %}<div class="dim">{{ row.primary_address.rejection_code or "not accepted" }}</div>{% endif %}
             {% else %}<span class="dim">—</span>{% endif %}
           </td>

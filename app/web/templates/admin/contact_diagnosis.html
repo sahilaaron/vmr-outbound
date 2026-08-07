@@ -6,14 +6,14 @@
 
 <div class="page-head">
   <div>
-    <h1>{{ execution.contact_label }}
+    <h1>{{ (execution.contact_label) | neutralize }}
       {{ wb.membership_badge(execution.membership_status) }}
       {{ wb.eligibility_badge(execution.eligibility) }}
       {% if execution.suppressed %}<span class="badge err">suppressed</span>{% endif %}
     </h1>
     <div class="sub">
-      {{ execution.company_label or "Company not captured" }}
-      {% if execution.contact_email %} · {{ execution.contact_email }}{% endif %}
+      {{ (execution.company_label or "Company not captured") | neutralize }}
+      {% if execution.contact_email %} · {{ (execution.contact_email) | neutralize }}{% endif %}
       · enrolled {{ execution.enrolled_at | dt }}
       · <a href="/admin/contacts/{{ execution.contact_id }}">permanent Contact record</a>
     </div>
@@ -42,7 +42,7 @@
     <strong>Blocking reasons (authoritative — cannot be released from this page):</strong>
     <ul style="margin: 6px 0 0; padding-left: 18px;">
       {% for reason in execution.blocking_reasons %}
-      <li>{{ reason.get("detail") or reason.get("code") }}{% if reason.get("terminal") %} <span class="badge err plain">terminal</span>{% endif %}</li>
+      <li>{{ (reason.get("detail") or reason.get("code")) | neutralize }}{% if reason.get("terminal") %} <span class="badge err plain">terminal</span>{% endif %}</li>
       {% endfor %}
     </ul>
   </div>
@@ -62,15 +62,15 @@
     <div class="kv">
       <dt>Import</dt>
       <dd>
-        <a href="{{ import_origin.batch.href }}">{{ import_origin.batch.display_name }}</a>
-        <span class="dim">· {{ import_origin.batch.schema_label }}
-        {%- if import_origin.batch.sheet_name %} · sheet “{{ import_origin.batch.sheet_name }}”{% endif %}
+        <a href="{{ import_origin.batch.href }}">{{ (import_origin.batch.display_name) | neutralize }}</a>
+        <span class="dim">· {{ (import_origin.batch.schema_label) | neutralize }}
+        {%- if import_origin.batch.sheet_name %} · sheet “{{ (import_origin.batch.sheet_name) | neutralize }}”{% endif %}
         {%- if import_origin.batch.confirmed_at %} · confirmed {{ import_origin.batch.confirmed_at | dt }}{% endif %}</span>
       </dd>
       <dt>Source row</dt>
       <dd>
         row {{ import_origin.row.row_number }}
-        <span class="badge {{ 'ok' if import_origin.row.imported else ('warn' if import_origin.row.held_for_review else 'muted') }} plain">{{ import_origin.row.outcome_label }}</span>
+        <span class="badge {{ 'ok' if import_origin.row.imported else ('warn' if import_origin.row.held_for_review else 'muted') }} plain">{{ (import_origin.row.outcome_label) | neutralize }}</span>
         {% if import_origin.row.row_fingerprint %}<span class="dim mono">fingerprint {{ import_origin.row.row_fingerprint[:12] }}…</span>{% endif %}
       </dd>
       <dt>Contact</dt>
@@ -78,7 +78,7 @@
         {% if import_origin.contact_created %}<span class="badge info plain">created by this row</span>
         {% else %}<span class="badge muted plain">matched an existing Contact</span>{% endif %}
         {% if import_origin.row.contact_match_basis and import_origin.row.contact_match_basis != "created" %}
-        <span class="dim">on {{ import_origin.row.contact_match_basis | replace("_", " ") }}</span>
+        <span class="dim">on {{ (import_origin.row.contact_match_basis | replace("_", " ")) | neutralize }}</span>
         {% endif %}
       </dd>
       <dt>Campaign membership</dt>
@@ -90,9 +90,9 @@
       <dt>Company</dt>
       <dd>
         {% if import_origin.resolved_company_id %}
-          <a href="/admin/companies/{{ import_origin.resolved_company_id }}">{{ import_origin.resolved_company_name }}</a>
-          {% if import_origin.resolved_company_domain %}<span class="dim mono">{{ import_origin.resolved_company_domain }}</span>{% endif %}
-          {% if import_origin.row.company_match_basis %}<span class="dim">· resolved on {{ import_origin.row.company_match_basis | replace("_", " ") }}</span>{% endif %}
+          <a href="/admin/companies/{{ import_origin.resolved_company_id }}">{{ (import_origin.resolved_company_name) | neutralize }}</a>
+          {% if import_origin.resolved_company_domain %}<span class="dim mono">{{ (import_origin.resolved_company_domain) | neutralize }}</span>{% endif %}
+          {% if import_origin.row.company_match_basis %}<span class="dim">· resolved on {{ (import_origin.row.company_match_basis | replace("_", " ")) | neutralize }}</span>{% endif %}
         {% else %}
           <span class="badge muted plain">no Company resolved</span>
         {% endif %}
@@ -103,7 +103,7 @@
       {% if import_origin.row.supplied_company_name %}
       <dt>Company name in the file</dt>
       <dd>
-        “{{ import_origin.row.supplied_company_name }}”
+        “{{ (import_origin.row.supplied_company_name) | neutralize }}”
         {% if import_origin.row.company_name_disagrees %}
         <span class="badge warn plain">differs from the resolved Company</span>
         <span class="dim">— kept as supplied evidence; domain evidence decided the Company.</span>
@@ -116,7 +116,7 @@
       <dt>Source identifiers</dt>
       <dd>
         {% for identifier in import_origin.contact_identifiers %}
-        <span class="mono">{{ identifier.label }}: {{ identifier.value }}</span>{% if identifier.kind == import_origin.row.contact_match_basis %} <span class="badge ok plain">matched on this</span>{% endif %}{% if not loop.last %} · {% endif %}
+        <span class="mono">{{ (identifier.label) | neutralize }}: {{ identifier.value }}</span>{% if identifier.kind == import_origin.row.contact_match_basis %} <span class="badge ok plain">matched on this</span>{% endif %}{% if not loop.last %} · {% endif %}
         {% endfor %}
         <div class="muted-note">Recorded so re-import stays idempotent. Not canonical identity.</div>
       </dd>
@@ -129,7 +129,7 @@
         <strong>Import warnings (non-blocking, recorded with the row):</strong>
         <ul style="margin: 6px 0 0; padding-left: 18px;">
           {% for code, message in import_origin.row.warnings %}
-          <li>{{ message }} <span class="dim mono">{{ code }}</span></li>
+          <li>{{ (message) | neutralize }} <span class="dim mono">{{ code }}</span></li>
           {% endfor %}
         </ul>
       </div>
@@ -137,7 +137,7 @@
     {% endif %}
     {% if import_origin.row.error_code %}
     <hr class="soft">
-    <div class="muted-note">Row outcome code: <span class="mono">{{ import_origin.row.error_code }}</span>{% if import_origin.row.note %} — {{ import_origin.row.note }}{% endif %}</div>
+    <div class="muted-note">Row outcome code: <span class="mono">{{ import_origin.row.error_code }}</span>{% if import_origin.row.note %} — {{ (import_origin.row.note) | neutralize }}{% endif %}</div>
     {% endif %}
   </div>
 </div>
@@ -158,7 +158,7 @@
         </span>
         <div class="stage-card {{ 'attention' if stage.needs_attention else '' }}">
           <div class="stage-head">
-            <span class="name">{{ stage.display_name }}</span>
+            <span class="name">{{ (stage.display_name) | neutralize }}</span>
             {% if stage.implemented %}{{ wb.stage_badge(stage.status) }}{% else %}<span class="badge muted plain">unavailable</span>{% endif %}
             {% if not stage.control.accepting_work and stage.implemented %}{{ wb.control_badge(stage.control) }}{% endif %}
             <span class="exp">{{ stage.explanation }}</span>
@@ -186,9 +186,9 @@
                   <span class="dim">{% if stage.agent_id.value == "verification" %}The address was imported; no verification provider was contacted.{% else %}The address was imported; no candidate generator was run.{% endif %}</span>
                 </dd>
               {% elif stage.workers %}<dt>Workers</dt><dd>{{ stage.workers | join(" · ") }}</dd>{% endif %}
-              {% if stage.latest_job and stage.latest_job.error_message %}<dt>Latest error (sanitized)</dt><dd class="wrap-anywhere">{{ stage.latest_job.error_message }}</dd>{% endif %}
-              {% if stage.reason_code %}<dt>Reason code</dt><dd class="mono">{{ stage.reason_code }}</dd>{% endif %}
-              {% if stage.reason_detail and stage.reason_detail != stage.explanation %}<dt>Detail</dt><dd>{{ stage.reason_detail }}</dd>{% endif %}
+              {% if stage.latest_job and stage.latest_job.error_message %}<dt>Latest error (sanitized)</dt><dd class="wrap-anywhere">{{ (stage.latest_job.error_message) | neutralize }}</dd>{% endif %}
+              {% if stage.reason_code %}<dt>Reason code</dt><dd class="mono">{{ (stage.reason_code) | neutralize }}</dd>{% endif %}
+              {% if stage.reason_detail and stage.reason_detail != stage.explanation %}<dt>Detail</dt><dd>{{ (stage.reason_detail) | neutralize }}</dd>{% endif %}
               <dt>Downstream</dt>
               <dd>{% if stage.downstream_eligible %}<span class="badge ok plain">next stage may proceed</span>{% else %}<span class="badge muted plain">not yet eligible</span>{% endif %}</dd>
             </div>
@@ -203,7 +203,7 @@
                   <dd>
                     {{ research_report.deterministic.workers | join(", ") or "—" }} ·
                     {% if research_report.deterministic.usable is true %}<span class="badge ok plain">result usable</span>
-                    {% elif research_report.deterministic.usable is false %}<span class="badge warn plain">{{ research_report.deterministic.reason or research_report.deterministic.reason_code or "not usable" }}</span>
+                    {% elif research_report.deterministic.usable is false %}<span class="badge warn plain">{{ (research_report.deterministic.reason or research_report.deterministic.reason_code or "not usable") | neutralize }}</span>
                     {% else %}<span class="badge muted plain">usability not recorded</span>{% endif %}
                   </dd>
                 {% endif %}
@@ -219,7 +219,7 @@
                       {% if research_report.fallback.reused_committed_attempt %}<span class="badge info plain">reused committed attempt</span>{% endif %}
                     {% else %}
                       <span class="badge muted plain">not attempted</span>
-                      {% if research_report.fallback.trigger_reason %}<span class="dim">— {{ research_report.fallback.trigger_reason }}</span>{% endif %}
+                      {% if research_report.fallback.trigger_reason %}<span class="dim">— {{ (research_report.fallback.trigger_reason) | neutralize }}</span>{% endif %}
                     {% endif %}
                     {% if research_report.fallback.error %}<div class="dim">Error{% if research_report.fallback.error_code %} ({{ research_report.fallback.error_code }}){% endif %}: {{ research_report.fallback.error }}</div>{% endif %}
                   </dd>
@@ -230,7 +230,7 @@
               </div>
               {% if research_report.fallback and research_report.fallback.rejection_reasons %}
               <details class="tech"><summary>Discard reasons ({{ research_report.fallback.rejection_reasons | length }})</summary>
-                <div class="tech-body"><ul>{% for reason in research_report.fallback.rejection_reasons %}<li class="muted-note">{{ reason }}</li>{% endfor %}</ul></div>
+                <div class="tech-body"><ul>{% for reason in research_report.fallback.rejection_reasons %}<li class="muted-note">{{ (reason) | neutralize }}</li>{% endfor %}</ul></div>
               </details>
               {% endif %}
               {% if research_report.fallback and research_report.fallback.source_urls %}
@@ -257,7 +257,7 @@
                     <span class="dim">— the standard worker fleet processes it; the result serves every Contact at this Company.</span>
                   {% else %}
                     <span class="badge muted plain">{{ (handoff.get("outcome") or "not queued") | replace("_", " ") }}</span>
-                    <span class="dim">— {{ handoff.get("reason") }}</span>
+                    <span class="dim">— {{ (handoff.get("reason")) | neutralize }}</span>
                   {% endif %}
                 </dd>
               </div>
@@ -267,15 +267,15 @@
               <div class="kv">
                 <dt>Dossier</dt>
                 <dd>{% if execution.research.dossier_version %}v{{ execution.research.dossier_version }} · {{ execution.research.source_count }} sources · sections: {{ execution.research.sections_present | join(", ") or "none" }}{% else %}No dossier version committed.{% endif %}</dd>
-                {% if execution.research.summary %}<dt>Summary</dt><dd>{{ execution.research.summary }}</dd>{% endif %}
+                {% if execution.research.summary %}<dt>Summary</dt><dd>{{ (execution.research.summary) | neutralize }}</dd>{% endif %}
               </div>
             {% elif stage.agent_id.value == "email" and execution.email %}
               <hr class="soft">
               <div class="kv">
                 <dt>Outcome</dt>
-                <dd>{% if execution.email.accepted %}<span class="badge ok">accepted</span> {{ execution.email.accepted_email }}{% elif execution.email.terminal_outcome %}<span class="badge warn plain">{{ execution.email.terminal_outcome | replace("_", " ") }}</span>{% else %}<span class="badge muted plain">no committed outcome</span>{% endif %}</dd>
-                {% if execution.email.candidate_count %}<dt>Candidates</dt><dd>{{ execution.email.attempted_count }} attempted of {{ execution.email.candidate_count }}{% if execution.email.current_position %} (at position {{ execution.email.current_position }}){% endif %}</dd>{% endif %}
-                {% if execution.email.reason %}<dt>Reason</dt><dd>{{ execution.email.reason }}</dd>{% endif %}
+                <dd>{% if execution.email.accepted %}<span class="badge ok">accepted</span> {{ (execution.email.accepted_email) | neutralize }}{% elif execution.email.terminal_outcome %}<span class="badge warn plain">{{ (execution.email.terminal_outcome | replace("_", " ")) | neutralize }}</span>{% else %}<span class="badge muted plain">no committed outcome</span>{% endif %}</dd>
+                {% if execution.email.candidate_count %}<dt>Candidates</dt><dd>{{ execution.email.attempted_count }} attempted of {{ execution.email.candidate_count }}{% if execution.email.current_position %} (at position {{ (execution.email.current_position) | neutralize }}){% endif %}</dd>{% endif %}
+                {% if execution.email.reason %}<dt>Reason</dt><dd>{{ (execution.email.reason) | neutralize }}</dd>{% endif %}
               </div>
             {% elif stage.agent_id.value == "verification" and execution.verification %}
               <hr class="soft">
@@ -283,7 +283,7 @@
                 <dt>Decision</dt>
                 <dd>{% if execution.verification.decision %}<span class="badge {{ 'ok' if execution.verification.accepted else 'warn' }} plain">{{ execution.verification.decision | replace("_", " ") }}</span>{% if execution.verification.simulated %} <span class="badge info plain">simulated</span>{% endif %}{% else %}<span class="badge muted plain">no committed decision</span>{% endif %}</dd>
                 {% if execution.verification.provider %}<dt>Provider</dt><dd>{{ execution.verification.provider }}{% if execution.verification.reused_evidence %} <span class="dim">(reused evidence)</span>{% endif %}</dd>{% endif %}
-                {% if execution.verification.reason %}<dt>Reason</dt><dd>{{ execution.verification.reason }}</dd>{% endif %}
+                {% if execution.verification.reason %}<dt>Reason</dt><dd>{{ (execution.verification.reason) | neutralize }}</dd>{% endif %}
                 {% if execution.verification.attempts %}<dt>Attempts</dt><dd>{{ execution.verification.attempts | length }} ({{ execution.verification.paid_calls }} provider calls)</dd>{% endif %}
               </div>
             {% elif stage.agent_id.value == "insights" and execution.insights %}
@@ -294,16 +294,16 @@
             {% elif stage.agent_id.value == "personalization" and execution.draft %}
               <hr class="soft">
               <div class="kv">
-                <dt>Draft</dt><dd>v{{ execution.draft.version_number }} · “{{ execution.draft.subject }}” · {{ execution.draft.evidence_insight_ids | length }} of {{ execution.draft.evidence_supplied }} supplied insight(s) cited</dd>
+                <dt>Draft</dt><dd>v{{ execution.draft.version_number }} · “{{ execution.draft.subject }}” · {{ execution.draft.evidence_insight_ids | length }} of {{ (execution.draft.evidence_supplied) | neutralize }} supplied insight(s) cited</dd>
                 <dt>Inputs</dt><dd>{{ execution.draft.input_basis }}{% if execution.draft.policy_version_number %} <span class="dim">· policy v{{ execution.draft.policy_version_number }}</span>{% endif %}{% if execution.draft.producer %} <span class="dim">· {{ execution.draft.producer }}</span>{% endif %}</dd>
                 <dt>Company Intelligence</dt>
                 <dd>
                   {% if execution.draft.intelligence_used %}<span class="badge ok plain">used</span>{% elif execution.draft.intelligence_status %}<span class="badge muted plain">not used</span>{% else %}<span class="badge muted plain">lineage unavailable</span>{% endif %}
-                  <span class="dim">{{ execution.draft.intelligence_label }}</span>
+                  <span class="dim">{{ (execution.draft.intelligence_label) | neutralize }}</span>
                   {% if execution.draft.intelligence_version_number %}<span class="dim">· version v{{ execution.draft.intelligence_version_number }}</span>{% endif %}
                   {% if execution.draft.intelligence_status %}<span class="dim">· {{ execution.draft.intelligence_accepted }} accepted, {{ execution.draft.intelligence_excluded }} excluded</span>{% endif %}
                   {% if execution.draft.intelligence_exclusion_reasons %}
-                  <div class="muted-note">Excluded because: {{ execution.draft.intelligence_exclusion_reasons | join("; ") }}</div>
+                  <div class="muted-note">Excluded because: {{ (execution.draft.intelligence_exclusion_reasons | join("; ")) | neutralize }}</div>
                   {% endif %}
                 </dd>
                 <dt>Approval</dt><dd><span class="badge muted plain">not approved</span> <span class="dim">decisions happen in the Customer review queue</span></dd>
@@ -326,19 +326,19 @@
                 <dt>Address origin</dt>
                 <dd>
                   <span class="badge info plain">imported</span>
-                  <span class="mono">{{ imported.email }}</span>
-                  <span class="dim">— {{ imported.provenance_label }}</span>
+                  <span class="mono">{{ (imported.email) | neutralize }}</span>
+                  <span class="dim">— {{ (imported.provenance_label) | neutralize }}</span>
                 </dd>
                 <dt>Candidate generation</dt>
                 <dd>
                   <span class="badge muted plain">bypassed</span>
-                  <span class="dim">{{ import_no_discovery_statement }}</span>
+                  <span class="dim">{{ (import_no_discovery_statement) | neutralize }}</span>
                 </dd>
                 <dt>Source row</dt>
                 <dd>
-                  <a href="{{ import_origin.batch.href }}">{{ import_origin.batch.display_name }}</a>
-                  <span class="dim">· row {{ imported.source_row_number }}{% if imported.source_sheet_name %} of sheet “{{ imported.source_sheet_name }}”{% endif %}
-                  · {{ import_origin.batch.schema_label }}</span>
+                  <a href="{{ import_origin.batch.href }}">{{ (import_origin.batch.display_name) | neutralize }}</a>
+                  <span class="dim">· row {{ imported.source_row_number }}{% if imported.source_sheet_name %} of sheet “{{ (imported.source_sheet_name) | neutralize }}”{% endif %}
+                  · {{ (import_origin.batch.schema_label) | neutralize }}</span>
                 </dd>
               </div>
               {% if imported.has_provider_claims %}
@@ -370,7 +370,7 @@
                       {% for alt in import_origin.alternates %}
                       <tr>
                         <td class="dim">{{ alt.slot }}</td>
-                        <td class="mono">{{ alt.email or alt.raw_email }}</td>
+                        <td class="mono">{{ (alt.email or alt.raw_email) | neutralize }}</td>
                         <td class="dim mono">{{ alt.provider_claimed_status or "—" }}</td>
                         <td><span class="badge muted plain">not promoted</span></td>
                       </tr>
@@ -399,7 +399,7 @@
                   {% endif %}
                 </dd>
                 <dt>Provider called</dt>
-                <dd><span class="badge muted plain">no</span> <span class="dim">{{ import_bypass_statement }}</span></dd>
+                <dd><span class="badge muted plain">no</span> <span class="dim">{{ (import_bypass_statement) | neutralize }}</span></dd>
                 <dt>Evidence</dt>
                 <dd><span class="badge muted plain">none</span> <span class="dim">No exact-address verification record exists for this Contact, and none was written.</span></dd>
               </div>
@@ -409,7 +409,7 @@
             {% if actions_available and stage.available_action %}
             <hr class="soft">
             <div>
-              {% if stage.action_note %}<div class="muted-note" style="margin-bottom: 6px;">{{ stage.action_note }}</div>{% endif %}
+              {% if stage.action_note %}<div class="muted-note" style="margin-bottom: 6px;">{{ (stage.action_note) | neutralize }}</div>{% endif %}
               {% if stage.available_action == "retry_contact" %}
               <form class="inline" method="post" action="/admin/campaigns/{{ execution.campaign_id }}/contacts/{{ execution.campaign_contact_id }}/actions/retry">
                 <input type="text" name="reason" placeholder="Reason (recorded in the audit trail)" size="34">
@@ -424,7 +424,7 @@
             </div>
             {% elif stage.action_note %}
             <hr class="soft">
-            <div class="muted-note">{{ stage.action_note }}</div>
+            <div class="muted-note">{{ (stage.action_note) | neutralize }}</div>
             {% endif %}
 
             {# --- technical details -------------------------------------------- #}
@@ -476,7 +476,7 @@
           <td>{{ event.event_type.value | replace("_", " ") }}</td>
           <td class="dim">{{ event.agent_id.value if event.agent_id else "—" }}</td>
           <td class="dim">{% if event.from_status or event.to_status %}{{ event.from_status.value if event.from_status else "·" }} → {{ event.to_status.value if event.to_status else "·" }}{% else %}—{% endif %}</td>
-          <td class="dim wrap-anywhere">{{ event.reason_detail or event.reason_code or "—" }}</td>
+          <td class="dim wrap-anywhere">{{ (event.reason_detail or event.reason_code or "—") | neutralize }}</td>
           <td class="dim">{{ event.actor }}</td>
         </tr>
         {% endfor %}

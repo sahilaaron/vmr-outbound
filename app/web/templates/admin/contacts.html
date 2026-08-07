@@ -15,7 +15,7 @@
     <select name="campaign">
       <option value="">Any Campaign</option>
       {% for campaign_id, name in view.campaign_options %}
-      <option value="{{ campaign_id }}" {{ 'selected' if view.campaign_filter == campaign_id else '' }}>{{ name }}</option>
+      <option value="{{ campaign_id }}" {{ 'selected' if view.campaign_filter == campaign_id else '' }}>{{ (name) | neutralize }}</option>
       {% endfor %}
     </select>
     <button class="btn" type="submit">Search</button>
@@ -41,15 +41,15 @@
             <a href="/admin/contacts/{{ row.contact_id }}">{{ row.name | neutralize }}</a>
             {% if row.suppressed %}<span class="badge err plain">suppressed</span>{% endif %}
           </td>
-          <td class="dim">{{ row.title or "—" }}</td>
-          <td>{% if row.company_id %}<a href="/admin/companies/{{ row.company_id }}">{{ row.company_label | neutralize }}</a>{% else %}{{ row.company_label or "—" | neutralize }}{% endif %}</td>
-          <td class="dim">{{ row.email or "—" }}</td>
+          <td class="dim">{{ (row.title or "—") | neutralize }}</td>
+          <td>{% if row.company_id %}<a href="/admin/companies/{{ row.company_id }}">{{ row.company_label | neutralize }}</a>{% else %}{{ (row.company_label | neutralize) or "—" }}{% endif %}</td>
+          <td class="dim">{{ (row.email or "—") | neutralize }}</td>
           <td>
             {% if row.memberships %}
               {% for membership in row.memberships[:3] %}
               <div>
-                <a href="/admin/campaigns/{{ membership.campaign_id }}/contacts/{{ membership.campaign_contact_id }}">{{ membership.campaign_name }}</a>
-                <span class="dim">· {{ membership.current_stage_name or "not started" }}</span>
+                <a href="/admin/campaigns/{{ membership.campaign_id }}/contacts/{{ membership.campaign_contact_id }}">{{ (membership.campaign_name) | neutralize }}</a>
+                <span class="dim">· {{ (membership.current_stage_name or "not started") | neutralize }}</span>
                 {{ wb.stage_badge(membership.pipeline_status) }}
               </div>
               {% endfor %}
