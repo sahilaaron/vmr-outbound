@@ -303,10 +303,14 @@ def test_a_row_held_for_review_can_be_imported_after_the_file_is_corrected(
     first = _confirm(db_session, campaign, [af.row(**held_row)], "held.csv")
     assert first.review_required == 1
     assert db_session.scalar(select(func.count()).select_from(Contact)) == 0
-    # The supplied address is on record as evidence, refused rather than taken.
+    # The supplied address is on record as evidence — retained, not taken, and
+    # not refused either. An operator has simply not decided about it yet, and
+    # labelling it "rejected" said the file was wrong about an address that may
+    # well be right. (Second IMP-001 review, SR-IMP-001.)
     held_evidence = db_session.scalars(select(ImportedContactEmail)).one()
-    assert held_evidence.email_stage_outcome is not None
-    assert held_evidence.email_stage_outcome.value == "imported_email_rejected"
+    assert held_evidence.email_stage_outcome is None
+    assert held_evidence.verification_stage_outcome is None
+    assert held_evidence.rejection_code == campaign_import.HELD_CODE
     assert held_evidence.contact_id is None
 
     # The operator adds the Website the row was missing and imports again.

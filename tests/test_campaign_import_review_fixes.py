@@ -935,11 +935,26 @@ def test_an_overlong_vendor_claim_is_trimmed_rather_than_losing_the_row(
 
 
 def test_composed_and_decomposed_spellings_are_one_statement() -> None:
+    """Both forms constructed explicitly, and proven different first.
+
+    The original version of this test wrote the same literal twice — the file's
+    own encoding decided the composition — so it asserted that a value equals
+    itself and passed while proving nothing. The real NFD attack is covered in
+    depth in ``test_campaign_import_second_review.py``; this keeps the
+    assertion here honest.
+    """
+
+    import unicodedata
+
+    nfc = unicodedata.normalize("NFC", "Jos\u00e9")
+    nfd = unicodedata.normalize("NFD", "Jos\u00e9")
+    assert nfc != nfd, "the two spellings must be different byte sequences"
+
     detection = apollo.detect_schema(af.APOLLO_HEADER)
-    nfc = apollo.read_row(af.row(**{"First Name": "José"}), detection, row_number=1)
-    nfd = apollo.read_row(af.row(**{"First Name": "José"}), detection, row_number=1)
-    assert nfc.first_name == nfd.first_name
-    assert apollo.row_fingerprint(nfc) == apollo.row_fingerprint(nfd)
+    composed = apollo.read_row(af.row(**{"First Name": nfc}), detection, row_number=1)
+    decomposed = apollo.read_row(af.row(**{"First Name": nfd}), detection, row_number=1)
+    assert composed.first_name == decomposed.first_name
+    assert apollo.row_fingerprint(composed) == apollo.row_fingerprint(decomposed)
 
 
 def test_a_zero_width_space_does_not_split_a_name() -> None:
