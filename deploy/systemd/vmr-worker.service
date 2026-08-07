@@ -1,0 +1,60 @@
+# VMR Outbound Agent - Agent worker.
+# Installs to /etc/systemd/system/vmr-worker.service
+#
+# STATUS: SKELETON. Deliberately NOT enabled and NOT started.
+#
+# PLACEHOLDERS to confirm at deployment time:
+#   * /srv/vmr/app                    - deployment symlink
+#   * .venv/bin/python                - created by the deploy script
+#   * scripts/run_agent_worker.py     - exists in the repository
+#   * ${VMR_WORKER_CONCURRENCY}, ${VMR_WORKER_POLL_SECONDS} - /etc/vmr/vmr.env
+# The argument form matches the repository's own launcher (run_vmr_worker.ps1):
+#   python scripts/run_agent_worker.py --poll-seconds N --workers N
+#
+# NOTE: the worker performs outbound-sending-adjacent work. It must not be
+# enabled until sending authorisation and feature flags are explicitly settled.
+
+[Unit]
+Description=VMR Outbound Agent - Agent worker
+# Restart-loop guard. Only honoured in [Unit].
+StartLimitBurst=5
+StartLimitIntervalSec=120s
+After=network-online.target postgresql.service
+Wants=network-online.target
+Wants=postgresql.service
+
+[Service]
+Type=exec
+User=vmr
+Group=vmr
+WorkingDirectory=/srv/vmr/app
+EnvironmentFile=/etc/vmr/vmr.env
+ExecStart=/srv/vmr/app/.venv/bin/python scripts/run_agent_worker.py --poll-seconds ${VMR_WORKER_POLL_SECONDS} --workers ${VMR_WORKER_CONCURRENCY}
+
+Restart=on-failure
+RestartSec=10s
+# Allow an in-flight Agent job to finish; research jobs have a 300s ceiling, so
+# a short stop timeout would kill useful work. 120s is a deliberate compromise.
+KillSignal=SIGTERM
+TimeoutStopSec=120s
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vmr-worker
+
+# --- Sandboxing. No credentials here; they come from EnvironmentFile. ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/vmr/shared /var/log/vmr
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

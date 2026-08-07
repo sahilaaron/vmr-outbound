@@ -1,0 +1,105 @@
+﻿#!/bin/bash
+# vmr-deploy - VMR staging deployment SKELETON.
+#
+# ============================================================================
+# THIS SCRIPT IS A SKELETON. IT REFUSES TO RUN FOR REAL UNTIL COMPLETED.
+# Every PLACEHOLDER below must be resolved and the --i-have-completed-this-script
+# flag added before it will do anything beyond a dry run.
+# ============================================================================
+#
+#   Usage: vmr-deploy --sha <git-sha> [--execute]
+#
+# Default mode is DRY RUN: it prints the plan and changes nothing.
+#
+# Flow:
+#   1. fetch the exact approved Git SHA (never a branch name)
+#   2. create /srv/vmr/releases/<timestamp>-<short-sha>
+#   3. create a release-scoped venv
+#   4. install PINNED dependencies
+#   5. load the protected environment from /etc/vmr/vmr.env
+#   6. run the Alembic migration against staging
+#   7. restart vmr-web, then vmr-worker
+#   8. health + readiness checks
+#   9. switch the /srv/vmr/app symlink to mark the release active
+#
+# ---------------------------------------------------------------------------
+# ROLLBACK IS NOT SYMMETRICAL. READ THIS BEFORE AUTOMATING ANYTHING.
+#
+# Code rollback and database rollback are fundamentally different operations:
+#
+#   * Code rollback is safe and cheap: repoint the /srv/vmr/app symlink at the
+#     previous release directory and restart. Nothing is destroyed.
+#
+#   * Database rollback is NEITHER. `alembic downgrade` executes destructive DDL.
+#     A migration that dropped a column cannot restore its data by reversing the
+#     migration - the data is gone. A migration that changed a type may have
+#     lossily coerced values. Downgrade scripts are also far less tested than
+#     upgrades, because they are almost never exercised.
+#
+#   THEREFORE: this script must NEVER run `alembic downgrade` automatically as
+#   part of a failed deployment. On a failed health check, roll the CODE back and
+#   leave the SCHEMA where it is, then have a human decide.
+#
+#   This works in practice because a correctly written migration is backward
+#   compatible with the immediately preceding code release (add columns nullable,
+#   backfill separately, drop only in a later release). If a migration is NOT
+#   backward compatible, a code-only rollback will not save you and the deployment
+#   must not be attempted without a rehearsed recovery plan and a fresh backup.
+#
+#   ALWAYS run `vmr-db-backup vmr_staging` immediately BEFORE step 6.
+# ---------------------------------------------------------------------------
+#
+# Exit codes: 0 ok / 1 usage / 2 precondition / 3 refused (incomplete skeleton)
+set -uo pipefail
+
+RELEASES=/srv/vmr/releases
+APPLINK=/srv/vmr/app
+ENVFILE=/etc/vmr/vmr.env
+REPO_URL="PLACEHOLDER_GIT_REMOTE"      # e.g. git@github.com:sahilaaron/vmr-outbound.git
+HEALTH_PATH="PLACEHOLDER_HEALTH_PATH"  # /healthz or /health - SEE RUNBOOK
+READY_PATH="PLACEHOLDER_READY_PATH"    # /readyz  or /ready  - SEE RUNBOOK
+COMPLETED=0                            # set to 1 only when every PLACEHOLDER is resolved
+
+SHA=""; EXECUTE=0
+die() { echo "vmr-deploy: ERROR: $2" >&2; exit "$1"; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --sha) SHA="${2:-}"; shift 2 ;;
+    --execute) EXECUTE=1; shift ;;
+    --i-have-completed-this-script) COMPLETED=1; shift ;;
+    -h|--help) sed -n '2,60p' "$0"; exit 0 ;;
+    *) die 1 "unknown argument '$1'" ;;
+  esac
+done
+
+[ -n "$SHA" ] || die 1 "--sha is required: deploy an exact approved commit, never a branch"
+case "$SHA" in *[!0-9a-fA-F]*) die 1 "--sha must be a hex Git SHA, got '$SHA'";; esac
+[ ${#SHA} -ge 7 ] || die 1 "--sha too short"
+
+echo "vmr-deploy PLAN"
+echo "  commit          : $SHA"
+echo "  releases dir    : $RELEASES"
+echo "  active symlink  : $APPLINK"
+echo "  environment     : $ENVFILE (root:vmr 0640)"
+echo "  steps           : fetch -> release dir -> venv -> pinned deps -> backup"
+echo "                    -> migrate -> restart web -> restart worker -> health -> switch symlink"
+echo "  rollback        : CODE ONLY. Never 'alembic downgrade' automatically."
+
+if [ "$COMPLETED" -ne 1 ]; then
+  echo
+  echo "REFUSING TO PROCEED: this deployment script is still a skeleton."
+  echo "Unresolved placeholders:"
+  grep -n 'PLACEHOLDER' "$0" | sed 's/^/  /'
+  echo
+  echo "Complete them, then re-run with --i-have-completed-this-script --execute."
+  exit 3
+fi
+
+if [ "$EXECUTE" -ne 1 ]; then
+  echo
+  echo "DRY RUN only (no --execute given). Nothing changed."
+  exit 0
+fi
+
+die 3 "skeleton guard: refusing to execute an unfinished deployment script"

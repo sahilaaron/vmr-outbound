@@ -1,0 +1,81 @@
+﻿#!/bin/bash
+# vmr-db-restore - restore a VMR PostgreSQL dump.
+#
+#   Usage: vmr-db-restore --file <dump> --database <dbname> [--force]
+#
+# SAFETY POSTURE - this script is deliberately obstructive:
+#   * --database is MANDATORY. There is no default target, because the most
+#     dangerous possible default would be the live staging database.
+#   * If the target database already contains user tables, the restore is
+#     REFUSED unless --force is given explicitly.
+#   * Restoring onto 'vmr_staging' additionally requires --force, always.
+#   * The dump's integrity is checked before anything is written.
+#
+# Uses peer authentication as 'postgres'. No credential is stored here.
+#
+# Exit codes:
+#   0 success
+#   1 usage error
+#   2 precondition failure
+#   3 refused (destructive/ambiguous target without --force)
+#   4 restore failed
+set -uo pipefail
+
+DUMP=""; DB=""; FORCE=0
+die() { echo "vmr-db-restore: ERROR: $2" >&2; exit "$1"; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --file)     DUMP="${2:-}"; shift 2 ;;
+    --database) DB="${2:-}";   shift 2 ;;
+    --force)    FORCE=1;       shift ;;
+    -h|--help)  echo "Usage: vmr-db-restore --file <dump> --database <dbname> [--force]"; exit 0 ;;
+    *) die 1 "unknown argument '$1'" ;;
+  esac
+done
+
+[ "$(id -u)" -eq 0 ] || die 2 "must be run as root"
+[ -n "$DUMP" ] || die 1 "--file is required"
+[ -n "$DB" ]   || die 1 "--database is required (there is deliberately no default target)"
+[ -f "$DUMP" ] || die 2 "dump file not found: $DUMP"
+command -v pg_restore >/dev/null 2>&1 || die 2 "pg_restore not found"
+
+# Integrity check BEFORE touching the target.
+pg_restore --list "$DUMP" >/dev/null 2>&1 || die 2 "not a readable custom-format dump: $DUMP"
+if [ -f "$DUMP.sha256" ]; then
+  EXPECT=$(cat "$DUMP.sha256"); ACTUAL=$(sha256sum "$DUMP" | awk '{print $1}')
+  [ "$EXPECT" = "$ACTUAL" ] || die 2 "checksum mismatch for $DUMP"
+  echo "vmr-db-restore: checksum verified"
+fi
+
+runuser -u postgres -- psql -tAc "SELECT 1 FROM pg_database WHERE datname='$DB';" 2>/dev/null | grep -q 1 \
+  || die 2 "target database '$DB' does not exist (create it first - this script will not)"
+
+if [ "$DB" = "vmr_staging" ] && [ "$FORCE" -ne 1 ]; then
+  die 3 "refusing to restore onto the live staging database 'vmr_staging' without --force"
+fi
+
+TABLES=$(runuser -u postgres -- psql -tAd "$DB" -c \
+  "SELECT count(*) FROM information_schema.tables WHERE table_schema='public';" 2>/dev/null | tr -d ' ')
+if [ "${TABLES:-0}" -gt 0 ] && [ "$FORCE" -ne 1 ]; then
+  die 3 "target '$DB' already contains $TABLES table(s); refusing without --force"
+fi
+
+echo "vmr-db-restore: restoring '$DUMP' -> database '$DB' (force=$FORCE)"
+# Build flags explicitly. NOTE: ${FORCE:+...} would be wrong here - "0" is a
+# non-empty string, so --clean would be applied on every restore.
+CLEAN_FLAGS=()
+if [ "$FORCE" -eq 1 ]; then CLEAN_FLAGS=(--clean --if-exists); fi
+# root opens the dump and feeds it on stdin, so postgres needs no access to
+# /srv/vmr at all.
+if ! runuser -u postgres -- pg_restore --dbname="$DB" --no-owner --no-privileges \
+       "${CLEAN_FLAGS[@]}" < "$DUMP" 2>/tmp/vmr-db-restore.err; then
+  echo "vmr-db-restore: pg_restore reported errors:" >&2
+  tail -20 /tmp/vmr-db-restore.err >&2
+  exit 4
+fi
+
+echo "vmr-db-restore: OK"
+runuser -u postgres -- psql -tAd "$DB" -c \
+  "SELECT '  tables now: ' || count(*) FROM information_schema.tables WHERE table_schema='public';"
+exit 0

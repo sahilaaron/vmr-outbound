@@ -1,0 +1,59 @@
+# VMR Outbound Agent - web service.
+# Installs to /etc/systemd/system/vmr-web.service
+#
+# STATUS: SKELETON. Deliberately NOT enabled and NOT started: the application
+# is not deployed, so /srv/vmr/app does not exist yet.
+#
+# PLACEHOLDERS to confirm at deployment time:
+#   * /srv/vmr/app          - symlink created by deployment -> releases/<sha>
+#   * .venv/bin/uvicorn     - created by the deploy script's venv step
+#   * ${APP_PORT}           - from /etc/vmr/vmr.env, must match the nginx upstream
+# The ExecStart command line matches the repository's documented invocation
+# (docs/DEVELOPMENT.md and run_vmr_app_v2.bat): uvicorn app.main:app.
+
+[Unit]
+Description=VMR Outbound Agent - web service
+# Restart-loop guard. These keys are only honoured in [Unit]; in [Service]
+# systemd silently ignores them and the guard is inert.
+StartLimitBurst=5
+StartLimitIntervalSec=60s
+After=network-online.target postgresql.service
+Wants=network-online.target
+# Wants (not Requires): a PostgreSQL restart should not force-stop the web
+# service; the application handles reconnection.
+Wants=postgresql.service
+
+[Service]
+Type=exec
+User=vmr
+Group=vmr
+WorkingDirectory=/srv/vmr/app
+EnvironmentFile=/etc/vmr/vmr.env
+ExecStart=/srv/vmr/app/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port ${APP_PORT}
+
+Restart=on-failure
+RestartSec=5s
+# SIGINT is uvicorn's graceful-shutdown signal; allow in-flight requests to end.
+KillSignal=SIGINT
+TimeoutStopSec=30s
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vmr-web
+
+# --- Sandboxing. No credentials here; they come from EnvironmentFile. ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/vmr/shared /var/log/vmr
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

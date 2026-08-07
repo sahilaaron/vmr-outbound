@@ -1,0 +1,15 @@
+# Installs to /etc/logrotate.d/vmr
+# VMR application file logs. journald remains authoritative for service stdout;
+# this covers any files the application itself writes under /var/log/vmr.
+/var/log/vmr/*.log {
+    daily
+    rotate 14
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    # 0640 vmr:adm - not world-readable: these may contain contact data.
+    create 0640 vmr adm
+    su vmr adm
+}
