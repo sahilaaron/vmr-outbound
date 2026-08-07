@@ -108,9 +108,13 @@
           {% for row in view.emails %}
           <tr>
             <td class="mono">{{ row.email }}</td>
-            <td class="dim">{{ row.source }}</td>
-            <td>{{ wb.verification_badge(row.verification_result) }}</td>
-            <td class="dim">{{ row.verified_at | dt }}</td>
+            <td class="dim">{{ row.source_label }}</td>
+            <td>
+              {% if row.imported %}
+              <span class="badge muted plain" title="No verification provider was called for this address. It is an accepted imported record, not a provider-verified mailbox.">no provider called</span>
+              {% else %}{{ wb.verification_badge(row.verification_result) }}{% endif %}
+            </td>
+            <td class="dim">{% if row.imported %}<span class="dim">never checked</span>{% else %}{{ row.verified_at | dt }}{% endif %}</td>
           </tr>
           {% endfor %}
         </tbody>

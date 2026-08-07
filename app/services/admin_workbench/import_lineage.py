@@ -41,7 +41,11 @@ from sqlalchemy.orm import Session
 
 from app.models.company import Company
 from app.models.contact import Contact
-from app.models.enums import ImportedEmailSlot, ImportedEmailStageOutcome
+from app.models.enums import (
+    ImportedEmailSlot,
+    ImportedEmailStageOutcome,
+    ImportRowOutcome,
+)
 from app.models.import_batch import ImportBatch, ImportRow, ImportRowValidation
 from app.models.imported_email import ImportedContactEmail, ImportSourceIdentifier
 from app.services.imports import apollo, campaign_import
@@ -59,15 +63,41 @@ NO_DISCOVERY_STATEMENT = (
     "address came from the imported file."
 )
 
+#: A raw row that has no validation record at all.
+#:
+#: Not an ``ImportRowOutcome`` member, deliberately: it is the absence of one.
+#: This surface previously substituted ``"rejected"`` here, which asserted that
+#: the system had refused a row it had in fact never reached — the shape an
+#: interrupted batch leaves behind.
+UNPROCESSED_OUTCOME = "unprocessed"
+
 #: How an import batch's row outcomes read on an operator surface. Keys are
-#: ``ImportRowOutcome`` values as the importer commits them.
+#: ``ImportRowOutcome`` values as the importer commits them, plus
+#: :data:`UNPROCESSED_OUTCOME`. Every member of the enum has an entry: a row
+#: rendered with its raw machine name is a row the operator has to decode.
 OUTCOME_LABELS: dict[str, str] = {
+    "pending": "not yet processed",
     "accepted": "imported",
     "duplicate": "already present",
     "rejected": "refused",
     "suppressed": "suppressed",
     "ambiguous": "held for review",
+    UNPROCESSED_OUTCOME: "no result recorded",
 }
+
+#: The outcomes that mean an operator has something to decide.
+#:
+#: Keyed on the outcome, never on ``error_code``. A benign disposition carries an
+#: error code too — ``already_imported`` and ``duplicate_row_in_file`` both do —
+#: so filtering on the code put rows that had successfully resolved to a Contact
+#: on a page headed "no Contact was created".
+ATTENTION_OUTCOMES: frozenset[str] = frozenset(
+    {
+        ImportRowOutcome.REJECTED.value,
+        ImportRowOutcome.AMBIGUOUS.value,
+        ImportRowOutcome.SUPPRESSED.value,
+    }
+)
 
 
 def _safe(value: str | None) -> str | None:
@@ -170,6 +200,7 @@ class ImportBatchRow:
     status: str
     content_hash: str
     uploaded_by: str | None
+    source_name: str | None
     created_at: datetime | None
     confirmed_at: datetime | None
     completed_at: datetime | None
@@ -198,10 +229,32 @@ class ImportBatchRow:
         return bool(self.rejected_rows or self.ambiguous_rows or self.error_detail)
 
     @property
+    def counts(self) -> campaign_import.BatchCounts:
+        """The row outcomes as buckets that actually partition the file.
+
+        ``duplicate_rows`` covers three dispositions and
+        ``already_in_campaign_rows`` is one of them, so rendering the durable
+        columns side by side counted the same row twice under a heading that
+        promised one outcome per row.
+        """
+
+        return campaign_import.batch_counts(self)
+
+    @property
     def schema_label(self) -> str:
-        if self.source_schema == apollo.APOLLO_SCHEMA_ID:
-            return "Apollo contact export (schema version 1)"
-        return self.source_schema or "no recognized schema"
+        """What the file was read as — never a claim about who produced it.
+
+        A file is recognized on four required headers, which any hand-made CSV
+        can satisfy. Calling that "an Apollo export" would manufacture vendor
+        provenance out of a column list, which is the exact failure this whole
+        area exists to prevent, so a file that lacks the distinctive Apollo
+        headers is described as merely compatible with the schema.
+        """
+
+        if self.source_schema != apollo.APOLLO_SCHEMA_ID:
+            return self.source_schema or "no recognized schema"
+        recorded = self.source_name or campaign_import.APOLLO_COMPATIBLE_SOURCE_NAME
+        return f"{recorded} (schema version 1)"
 
 
 @dataclass(frozen=True)
@@ -244,6 +297,18 @@ class ImportRowLineageRow:
     @property
     def imported(self) -> bool:
         return self.outcome == "accepted"
+
+    @property
+    def needs_attention(self) -> bool:
+        """Whether this row is one an operator still has to decide about."""
+
+        return self.outcome in ATTENTION_OUTCOMES
+
+    @property
+    def unprocessed(self) -> bool:
+        """Whether no result was ever recorded for this row."""
+
+        return self.outcome == UNPROCESSED_OUTCOME
 
     @property
     def company_name_disagrees(self) -> bool:
@@ -340,6 +405,7 @@ class ImportLineageReader:
             status=batch.status.value,
             content_hash=batch.content_hash,
             uploaded_by=batch.uploaded_by,
+            source_name=batch.source_name,
             created_at=batch.created_at,
             confirmed_at=batch.confirmed_at,
             completed_at=batch.completed_at,
@@ -351,14 +417,14 @@ class ImportLineageReader:
             ambiguous_rows=batch.ambiguous_rows,
             already_in_campaign_rows=batch.already_in_campaign_rows,
             contacts_created=batch.contacts_created,
-            error_detail=batch.error_detail,
+            error_detail=_safe(batch.error_detail),
         )
 
     def _address_row(self, record: ImportedContactEmail) -> ImportedAddressRow:
         summary = campaign_import.imported_email_summary(record)
         return ImportedAddressRow(
             slot=summary["slot"],
-            email=summary["email"],
+            email=_safe(summary["email"]),
             raw_email=summary["raw_email"],
             accepted=record.email_stage_outcome
             is ImportedEmailStageOutcome.IMPORTED_EMAIL_ACCEPTED,
@@ -402,7 +468,7 @@ class ImportLineageReader:
             )
         ).all():
             row = SourceIdentifierRow(
-                system=record.system,
+                system=_safe(record.system) or record.system,
                 kind=record.identifier_kind,
                 # Opaque vendor value: neutralized for display, never re-cased.
                 value=_safe(record.identifier_value) or "",
@@ -450,7 +516,7 @@ class ImportLineageReader:
             row_id=row.id,
             row_number=row.row_number,
             sheet_name=_safe(row.sheet_name),
-            outcome=validation.outcome.value if validation else "rejected",
+            outcome=validation.outcome.value if validation else UNPROCESSED_OUTCOME,
             error_code=validation.error_code if validation else None,
             note=_safe(validation.note) if validation else None,
             warnings=self._warnings(validation),
@@ -579,7 +645,7 @@ class ImportLineageReader:
             ),
             resolved_company_id=company.id if company else None,
             resolved_company_name=_safe(company.name) if company else None,
-            resolved_company_domain=company.domain if company else None,
+            resolved_company_domain=_safe(company.domain) if company else None,
             alternates=tuple(self._address_row(record) for record in alternates),
             contact_identifiers=tuple(contact_identifiers),
             company_identifiers=tuple(company_identifiers),
@@ -600,7 +666,7 @@ class ImportLineageReader:
     def unresolved_rows(
         self, *, campaign_id: uuid.UUID | None = None, limit: int = 200
     ) -> tuple[ImportRowLineageRow, ...]:
-        """Rows a file import refused or held, newest batch first.
+        """Rows a file import refused, held or suppressed, newest batch first.
 
         Held and refused rows are exactly the ones an operator has to find, and
         they are invisible from every Phase 2 surface: a row that never became a
@@ -613,7 +679,11 @@ class ImportLineageReader:
             .join(ImportBatch, ImportBatch.id == ImportRow.batch_id)
             .where(
                 ImportBatch.source_schema.is_not(None),
-                ImportRowValidation.error_code.is_not(None),
+                # By outcome, not by error_code. The 200-row cap below is applied
+                # AFTER this predicate, so a large re-import of already-present
+                # rows can no longer evict the genuinely refused ones from the
+                # page by filling it first.
+                ImportRowValidation.outcome.in_(sorted(ATTENTION_OUTCOMES)),
             )
             .order_by(ImportBatch.created_at.desc(), ImportRow.row_number)
             .limit(limit)

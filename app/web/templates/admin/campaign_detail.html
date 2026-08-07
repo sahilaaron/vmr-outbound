@@ -44,7 +44,13 @@
          href="/admin/campaigns/{{ view.campaign_id }}?stage={{ step.agent_id.value }}" title="{{ step.display_name }}">
         <div class="fs-name">{{ step.display_name | replace(" Agent", "") }}</div>
         <div class="fs-n">{{ step.at_stage }}</div>
-        <div class="fs-d">{{ step.completed_through }} passed</div>
+        <div class="fs-d">{{ step.provider_passed }} passed</div>
+        {% if step.has_bypassed %}
+        {# An imported address completes Verification without a provider being #}
+        {# called. Counting it as "passed" would make the number mean two      #}
+        {# different things at once. #}
+        <div class="fs-d bypassed">{{ step.bypassed_through }} bypassed (imported, no provider called)</div>
+        {% endif %}
         <div class="fs-flags">
           {% if not step.implemented %}<span class="badge muted plain">unbuilt</span>
           {% elif not step.control.accepting_work %}<span class="badge warn plain">{{ step.control.status.value }}</span>{% endif %}

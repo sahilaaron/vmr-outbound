@@ -81,7 +81,7 @@
 <div class="card">
   <div class="card-head">
     <h2>File-import rows needing attention</h2>
-    <span class="hint">refused or held rows — no Contact was created, so these appear nowhere above</span>
+    <span class="hint">refused, held and suppressed rows — no Contact was created, so these appear nowhere above. Rows that were already present are not failures and are not listed here.</span>
   </div>
   <div class="card-body tight">
     <div class="table-wrap">
@@ -93,7 +93,7 @@
       <tbody>
         {% for row in import_rows %}
         <tr class="{{ 'attention' if row.held_for_review else '' }}">
-          <td><span class="badge {{ 'warn' if row.held_for_review else 'err' }}">{{ row.outcome_label }}</span></td>
+          <td><span class="badge {{ 'warn' if row.held_for_review else 'muted' if row.unprocessed else 'err' }}">{{ row.outcome_label }}</span></td>
           <td>
             {% if row.batch_href %}<a href="{{ row.batch_href }}">import</a>{% else %}<span class="dim">—</span>{% endif %}
             {% if row.campaign_id %}<span class="dim">·</span> <a href="/admin/campaigns/{{ row.campaign_id }}">campaign</a>{% endif %}

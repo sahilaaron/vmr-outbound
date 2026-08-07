@@ -33,12 +33,13 @@
   <div class="card-head"><h2>Outcome</h2><span class="hint">every raw row has exactly one outcome</span></div>
   <div class="card-body">
     <div class="kv">
-      <dt>Imported</dt><dd>{{ batch.accepted_rows }}</dd>
-      <dt>Already in this Campaign</dt><dd>{{ batch.already_in_campaign_rows }}</dd>
-      <dt>Duplicate in file</dt><dd>{{ batch.duplicate_rows }}</dd>
-      <dt>Held for review</dt><dd>{{ batch.ambiguous_rows }}{% if batch.ambiguous_rows %} <span class="dim">— a held row is not a prior successful import; correct the file and import it again.</span>{% endif %}</dd>
-      <dt>Refused</dt><dd>{{ batch.rejected_rows }}</dd>
-      <dt>Suppressed</dt><dd>{{ batch.suppressed_rows }}</dd>
+      <dt>Imported</dt><dd>{{ batch.counts.imported }}</dd>
+      <dt>Already in this Campaign</dt><dd>{{ batch.counts.already_in_campaign }}</dd>
+      <dt>Matched an existing Contact, or repeated in the file</dt><dd>{{ batch.counts.matched_or_duplicate }}</dd>
+      <dt>Held for review</dt><dd>{{ batch.counts.review_required }}{% if batch.ambiguous_rows %} <span class="dim">— a held row is not a prior successful import; correct the file and import it again.</span>{% endif %}</dd>
+      <dt>Refused</dt><dd>{{ batch.counts.refused }}</dd>
+      <dt>Suppressed</dt><dd>{{ batch.counts.suppressed }}</dd>
+      {% if batch.counts.unprocessed %}<dt>No result recorded</dt><dd>{{ batch.counts.unprocessed }} <span class="dim">— staged but never processed.</span></dd>{% endif %}
       <dt>Contacts created</dt><dd>{{ batch.contacts_created }}</dd>
       <dt>Status</dt><dd><span class="badge {{ 'ok' if batch.status == 'completed' else 'muted' }} plain">{{ batch.status }}</span></dd>
       <dt>File checksum</dt><dd class="mono wrap-anywhere">{{ batch.content_hash }}</dd>

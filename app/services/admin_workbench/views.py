@@ -187,6 +187,25 @@ class StageFunnelStep:
     completed_through: int  # contacts whose latest completed stage is >= this one
     failed_here: int
     blocked_here: int
+    #: Of :attr:`completed_through`, how many got past this stage WITHOUT the
+    #: stage's own work being done — today only the Verification stage, where an
+    #: imported address completes as ``verification_bypassed_imported_email``
+    #: and no provider is ever called (IMP-001).
+    #:
+    #: Carried separately rather than folded in, because "passed" on the
+    #: Verification stage is read as "a provider answered about this mailbox",
+    #: and a bypass is the one case where that is false.
+    bypassed_through: int = 0
+
+    @property
+    def provider_passed(self) -> int:
+        """Contacts past this stage on the strength of the stage's own work."""
+
+        return max(0, self.completed_through - self.bypassed_through)
+
+    @property
+    def has_bypassed(self) -> bool:
+        return self.bypassed_through > 0
 
 
 @dataclass(frozen=True)
@@ -501,6 +520,19 @@ class EmailStateRow:
     source: str
     verification_result: str | None
     verified_at: datetime | None
+    #: True when a contact file supplied this address and the import recorded
+    #: that no verification provider was called for it (IMP-001).
+    #:
+    #: Needed because this row is rendered inside a card headed "Email addresses
+    #: & verification", with a Verification column and a Checked column. Without
+    #: it, an imported address sat there sourced "canonical" and badged
+    #: "unverified", which reads as an address awaiting a check rather than one
+    #: that will never have one.
+    imported: bool = False
+
+    @property
+    def source_label(self) -> str:
+        return "imported (vendor-supplied)" if self.imported else self.source
 
 
 @dataclass(frozen=True)
