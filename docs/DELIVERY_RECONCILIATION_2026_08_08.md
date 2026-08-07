@@ -2,15 +2,38 @@
 
 Status: Current coordination record
 Date: 2026-08-08
-Authoritative engineering baseline: `main` at current remote head
+Authoritative engineering baseline: current remote `main`
 
-This document records the current delivery state while several reviewed successor branches remain unmerged. It does not promote branch-only behavior to merged product truth.
+This document records the current delivery state while reviewed successor branches remain unmerged. It does not promote branch-only behavior to merged-product truth.
+
+## Immediate product target — Beta 1
+
+The first internal beta should **not wait for Gmail integration**.
+
+A Campaign Contact that passes Personalization should have one generated seven-message sequence. Successful messages are approved by default. Human review is optional; operators can inspect all seven messages and make a basic auditable edit if required.
+
+The **application UI is the primary Beta 1 operating surface**:
+
+```text
+Campaign
+→ Contacts that reached Personalization
+→ seven-message sequences
+→ approved by default
+→ optional inspection/basic edit
+→ copy subject/body directly from the application
+→ paste into the team's existing sending platform
+→ operator tracks sending manually for Beta 1
+```
+
+A Campaign XLSX/CSV download is a convenience add-on only. It is not the primary workflow and is not authoritative.
+
+No Google account, Gmail API or Google Sheets synchronization is required for Beta 1.
 
 ## Current merged product
 
 The merged application already provides the contact-first Campaign pipeline, v2 customer UI, Admin Workbench, Agent Studio, Company Intelligence, Research → Company Intelligence handoff, Insights and evidence-backed Personalization. Sending remains unavailable.
 
-PR #241 is merged. Previous documentation wording that called PR #241 a current merge candidate is superseded.
+PR #241 is merged.
 
 ## Work currently in flight
 
@@ -38,54 +61,77 @@ The sequence implementation already exists as an unpublished/reconciled branch, 
 
 Status: **implemented but not publishable yet**.
 
-After final IMP-001 is accepted and merged, SEQ-001 must be reconciled again against the final IMP migration/read-model behavior, including one deliberate same-origin policy for sequence and import POSTs.
+After final IMP-001 is accepted and merged, SEQ-001 must be reconciled again against the final IMP migration/read-model behavior. That reconciliation must also change the beta approval contract from mandatory human approval to approved-by-default with optional review/basic edit, and must provide the application-first copy/paste UI.
 
 ### VPS staging foundation
 
-The Ubuntu staging foundation has passed reboot validation. The corrected publication branch `chore/vps-staging-foundation-current-main` is based on the verified then-current `main` and has a validated bundle/handoff. The server itself remains intentionally without the application deployment.
+The Ubuntu staging foundation has passed reboot validation. The corrected publication branch `chore/vps-staging-foundation-current-main` has a validated bundle/handoff. The server itself remains intentionally without the application deployment.
 
 Status: **staging foundation ready; application deployment waiting on final application branches**.
 
-## Sequential path from here to internal delivery
-
-The shortest safe delivery path is:
+## Sequential path from here to Beta 1 delivery
 
 1. Finish the two active successor repair passes: IMP-001 and Production Hardening.
 2. Cross-review both repaired heads independently. No branch moves forward on builder self-certification alone.
 3. Publish the accepted IMP-001 head to PR #242, obtain exact-head CI, then merge it.
-4. Reconcile SEQ-001 against the final merged IMP-001 history and semantics; run combined migration/import/sequence tests; independently review; publish and merge.
-5. Publish the accepted Production Hardening branch as a draft PR; obtain exact-head CI; review and merge.
-6. Publish/review the corrected VPS staging-foundation branch. Keep infrastructure changes separate from application/domain changes.
-7. Deploy the reconciled merged application to the staging VPS. Run migrations against the staging database, enable managed web/worker services, validate `/healthz` and `/readyz`, backups, logs, restart/reboot behavior and smoke tests.
-8. Add internal application users and Google Workspace authentication/mailbox ownership on the stable staging runtime.
-9. Build Gmail integration around the human-send contract:
+4. Reconcile SEQ-001 against final IMP-001 and the current merged application.
+5. During that sequence reconciliation, implement the Beta 1 operating contract:
+   - seven messages generated for each Contact that passes Personalization;
+   - successful messages approved by default;
+   - optional human inspection;
+   - basic edit with version history;
+   - one clear seven-message Contact sequence view;
+   - obvious copy-subject and copy-body controls in the application UI;
+   - operator can move between Contacts without reviewing seven separate cards.
+6. Add Campaign XLSX export as a convenience snapshot. It must be Campaign-scoped, formula-safe, deterministic and read-only; it is not required to use Beta 1.
+7. Independently review the reconciled sequence/UI/export behavior; run combined migration/import/sequence/UI tests; publish and merge.
+8. Publish the accepted Production Hardening branch as a draft PR, obtain exact-head CI, review and merge.
+9. Publish/review the corrected VPS staging-foundation branch.
+10. Deploy the merged Beta 1 application to the staging VPS. Validate migrations, managed web/worker services, backups, logs, `/healthz`, `/readyz`, restart/reboot behavior and smoke checks.
+11. Run the first internal beta using the application as the primary operating surface. Operators copy/paste messages from VMR into their existing sending platform and manually track progress. XLSX export is available only as a convenience.
+
+## Beta 2 — Gmail-assisted delivery
+
+After Beta 1 is stable:
+
+1. Add internal application users and Google Workspace authentication/mailbox ownership.
+2. Build Gmail integration around the human-send contract:
    - VMR creates only the current actionable Gmail draft;
    - the human sends manually in Gmail;
    - VMR detects the sent message;
-   - the next follow-up is created in the same Gmail thread only when appropriate;
+   - the next follow-up is created in the same Gmail thread only when cadence allows and the Contact is still eligible;
    - replies, suppression and stop conditions prevent future steps.
-10. Run a small internal multi-user pilot on staging before broad rollout.
-11. **Decision checkpoint: Google Sheets projection versus application-native internal operations view.** Do not build Sheets merely because it appeared in an earlier delivery list. Decide whether internal users actually need a Sheet once the multi-user application and Gmail workflow are tangible.
-12. If the application provides the required visibility/accessibility, defer Sheets. If a familiar Sheet materially reduces adoption friction, build it as a read/projection sync only; the application database remains authoritative.
-13. Complete controlled pilot readiness: mailbox/DNS/TLS, operational acceptance, audit/retry behavior, human-review/send procedures and measured pilot success criteria.
+3. Run a multi-user staging pilot with real mailbox ownership and delivery-state visibility.
 
-## Current Google Sheets status
+## Google Sheets status
 
-Google Sheets synchronization is **not an engineering prerequisite for the next code merge** and is **not yet a committed delivery gate**.
+Google Sheets synchronization is **not a Beta 1 prerequisite**, **not a Beta 2 prerequisite**, and **not currently a committed delivery gate**.
 
-Original rationale: give internal users a familiar operational surface without requiring them to understand the application or the background pipeline.
+The original rationale was familiarity for internal users. Beta 1 now addresses that need more directly by making the application itself copy/paste-friendly and optionally providing a downloadable Campaign workbook.
 
-That rationale must now be compared with the increasingly complete customer-facing application. The product decision is deliberately open until the Gmail/internal-user workflow is reviewed.
+Revisit live Sheets synchronization only if internal use demonstrates a collaboration/reporting need that neither the application nor the XLSX snapshot serves well.
 
-If retained, Sheets is a projection only. It must never become the source of truth for sequence state, Gmail state, evidence, approvals or delivery decisions.
+If retained later, Sheets is a projection only. It must never become the source of truth for sequence state, Gmail state, evidence, approvals or delivery decisions.
 
-## Non-negotiable delivery boundary
+## Non-negotiable delivery boundaries
+
+Beta 1:
 
 ```text
-VMR researches, generates, versions and governs
-→ Gmail receives the current actionable draft
+VMR researches, generates and versions
+→ sequence approved by default
+→ operator may inspect/edit
+→ operator copies from VMR UI (or optionally downloads workbook)
+→ operator sends/tracks manually in existing platform
+```
+
+Beta 2:
+
+```text
+VMR creates current Gmail draft
 → human sends manually
-→ VMR observes sent/reply state and advances or stops the sequence
+→ VMR observes sent/reply state
+→ next same-thread follow-up only while eligible
 ```
 
 Automatic sending remains deferred.
