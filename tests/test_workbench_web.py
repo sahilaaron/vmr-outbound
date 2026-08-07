@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 from app.api.deps import get_db
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.main import create_app
 from app.models.contact import Contact
 from app.services.campaigns import create_campaign
@@ -412,26 +412,27 @@ def test_workbench_enabled_locally_mounts_ui(client: TestClient) -> None:
     assert client.get("/", follow_redirects=False).status_code == 307
 
 
-def test_workbench_disabled_never_raises_regardless_of_env(
-    db_session: Session, monkeypatch: pytest.MonkeyPatch
+def test_workbench_disabled_is_not_mounted_in_a_safe_staging_configuration(
+    db_session: Session,
 ) -> None:
-    monkeypatch.setenv("APP_ENV", "staging")
-    monkeypatch.delenv("FEATURES__WORKBENCH", raising=False)
-    get_settings.cache_clear()
-    try:
-        app = create_app()  # no error: the guard only fires when the switch is on
+    settings = Settings(
+        _env_file=None,
+        app_env="staging",
+        trusted_hosts=("staging.example.com",),
+        trusted_proxy_cidrs=("10.0.0.0/24",),
+        database_url="postgresql+psycopg://service:password@db.example.com/vmr_staging",
+    )
+    app = create_app(settings, readiness_probe=lambda: None)
 
-        def _override() -> Iterator[Session]:
-            yield db_session
+    def _override() -> Iterator[Session]:
+        yield db_session
 
-        app.dependency_overrides[get_db] = _override
-        with TestClient(app) as staging_client:
-            assert staging_client.get("/admin").status_code == 404
-            assert staging_client.get("/", follow_redirects=False).status_code == 404
-            assert staging_client.get("/local-tools").status_code == 404
-    finally:
-        app.dependency_overrides.clear()
-        get_settings.cache_clear()
+    app.dependency_overrides[get_db] = _override
+    with TestClient(app, base_url="https://staging.example.com") as staging_client:
+        assert staging_client.get("/admin").status_code == 404
+        assert staging_client.get("/", follow_redirects=False).status_code == 404
+        assert staging_client.get("/local-tools").status_code == 404
+    app.dependency_overrides.clear()
 
 
 # --- Local tools guards -------------------------------------------------------------
