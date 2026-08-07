@@ -14,21 +14,36 @@ The unauthenticated system endpoints have deliberately small contracts:
 | `GET /readyz` | `200`, status `ready` | `503`, status `not_ready` | Startup configuration passed and PostgreSQL answered one bounded `SELECT 1`. |
 | `GET /version` | `200 {"version":"..."}` | — | The deployment-provided `RELEASE_ID`; `unknown` when unset. |
 
-`/health` and `/ready` remain compatibility aliases, but return the same safe
-contracts. Neither probe calls Claude, MillionVerifier, Gmail, Sheets, or any
-external provider. A readiness failure returns only `database: failed`; it never
-returns a DSN, host, SQL, exception type, driver text, filesystem path, or stack
-trace.
+`/healthz` and `/readyz` are the authoritative production contracts. The legacy
+paths `/health` and `/ready` remain reachable, but they now return these hardened
+contracts. That is a deliberate breaking response change: the old `/health`
+environment/feature fields are gone, and the old `/ready` flat body and always-200
+failure behavior are gone. Deployment checks must move to the `z` endpoints and
+the table above. Neither probe calls Claude, MillionVerifier, Gmail, Sheets, or
+any external provider. A readiness failure returns only `database: failed`; it
+never returns a DSN, host, SQL, exception type, driver text, filesystem path, or
+stack trace. `DRY_RUN` and default-off feature safety are configuration/startup
+invariants and tests; liveness does not disclose them.
 
-Readiness uses its own one-connection pool rather than the application's session
-pool. One process-local probe may run at a time. Pool contention, the overall
-probe response, and SQL execution are each bounded by
-`READINESS_TIMEOUT_SECONDS` (default 2 seconds); driver connection establishment
-uses the lower of that value and `DATABASE_CONNECT_TIMEOUT_SECONDS` (default 5
-seconds). Each probe invalidates its socket rather than reusing it. A final
-daemon-thread deadline returns failure even if a driver violates its configured
-timeout, while the one-probe permit prevents repeated requests from creating an
-unbounded number of stuck DB operations.
+Readiness uses a short-lived Psycopg async connection rather than the
+application's SQLAlchemy session pool. One process-local probe performs database
+work at a time. One absolute monotonic deadline covers waiting for that permit,
+connection establishment, statement-timeout setup, `SELECT 1`, and result
+receipt. The outward wall-clock bound is therefore
+`READINESS_TIMEOUT_SECONDS` (default 2 seconds), plus only scheduler and response
+serialization tolerance—not one budget for contention and another for work.
+Libpq also receives a whole-second connection timeout capped by the remaining
+budget and `DATABASE_CONNECT_TIMEOUT_SECONDS`; the absolute async deadline is the
+stricter bound when that integer backstop rounds up. A timed-out operation is
+cancelled, closes its socket, and releases the permit. There is no readiness
+worker thread, reusable readiness socket, or abandoned task that can permanently
+poison later probes after the network recovers.
+
+The application engine separately applies
+`DATABASE_CONNECT_TIMEOUT_SECONDS` (default 5 seconds) to ordinary SQLAlchemy
+connection establishment. This is an intentional behavior change from the base,
+which relied on the operating system's longer default. Pool size, overflow,
+checkout timeout, and pre-ping behavior otherwise remain unchanged.
 
 ### Worker limitation
 
@@ -67,18 +82,26 @@ email or personalization text, cookies, authorization values, tokens, or full
 database URLs. Unmatched paths are logged as `/<unmatched>` so attacker-chosen
 path content does not become log content.
 
-An unhandled exception produces a generic JSON 500 with the request ID. Internal
-logs retain correlated, bounded exception-class and stack-location metadata
-(module, function, and line) without exception messages, locals, SQL/driver
-text, or formatter-generated traceback text. Typed FastAPI/HTTP and domain
-responses continue through their existing handlers.
+Before a response starts, an unhandled exception produces a generic JSON 500
+with the request ID. The custom middleware's logs retain correlated, bounded
+exception-class and stack-location metadata (module, function, and line),
+including bounded `ExceptionGroup` member types, without exception messages,
+locals, SQL/driver text, or formatter-generated traceback text. Typed
+FastAPI/HTTP and domain responses continue through their existing handlers.
+
+Once an ASGI response has started, the middleware cannot replace it safely and
+must propagate a later exception. Its own event remains sanitized, but outer
+Starlette/Uvicorn loggers may render the propagated exception and its message.
+Preventing raw outer tracebacks is a deployment logging-configuration concern;
+operators must treat those logs as sensitive and restrict access and retention.
 
 ## Host and reverse-proxy boundary
 
 `TRUSTED_HOSTS` is the Host-header allow-list. Entries are canonicalized to
-lowercase and one terminal DNS root dot is removed. Configured entries never
-contain ports; an incoming valid port is ignored for matching. Bracketed IPv6
-literals are parsed and matched explicitly. Local defaults are `localhost`,
+lowercase and one terminal DNS root dot is removed. Leading/trailing whitespace
+is rejected rather than normalized away. Configured entries never contain
+ports; an incoming valid ASCII-decimal port is ignored for matching. Bracketed
+IPv6 literals are parsed and matched explicitly. Local defaults are `localhost`,
 `127.0.0.1`, `[::1]`, and `testserver`. Staging and production must supply their
 real hostnames and cannot start with wildcard hosts. Duplicate or malformed Host
 fields are rejected.
@@ -117,24 +140,34 @@ because existing server-rendered templates use many `style=` attributes. That is
 the exact blocker to removing `'unsafe-inline'` from `style-src`. FastAPI's local
 documentation pages receive a separate policy for their current inline bootstrap
 and jsDelivr assets; application pages do not inherit that exception.
+The destructive campaign-archive confirmation script is referenced with a
+content-derived version token, so a deployment that changes its bytes creates a
+new browser cache key rather than serving the prior safety control for an hour.
 
 ## Startup refusal
 
-`local`, `development`, `test`, and `ci` retain developer-friendly defaults.
-`staging` and `production` refuse startup when a known-dangerous setting is
-present, including:
+Every environment validates the environment label, request/upload size
+relationship, Host entries, and trusted-proxy network syntax. `local`,
+`development`, `test`, and `ci` otherwise retain developer-friendly defaults.
+`staging` and `production` add refusal for known-dangerous settings, including:
 
 - debug mode;
 - `DRY_RUN=false` before a separately approved send-capable deployment;
 - wildcard or local-only trusted hosts;
 - an invalid or all-address trusted-proxy network;
 - a malformed, non-PostgreSQL, loopback/container-service, development, or
-  maintenance database URL;
+  maintenance database URL, including legacy numeric spellings of loopback such
+  as `127.1`, octal, integer, and hexadecimal IPv4;
 - local-only intake/promotion features;
 - the unauthenticated Workbench outside `APP_ENV=local` (the pre-existing hard
   guard remains).
 
-Messages name the unsafe setting but never echo its value. There is no invented
+Messages name the unsafe setting but never echo its value. Web and worker
+services are expected to use the same validated environment file. Because the
+shared database module validates the complete runtime environment before creating
+its engine, a worker also refuses a web-only unsafe setting such as local
+`TRUSTED_HOSTS`; separate service-specific environment files must each carry the
+complete safe shared configuration. There is no invented
 session/auth secret requirement because the application does not yet have that
 system.
 
@@ -152,18 +185,6 @@ request before Starlette/Uvicorn buffers or streams it. Complete body-size
 enforcement belongs at the reverse proxy/server boundary. Set Nginx
 `client_max_body_size` to the reviewed application ceiling and apply appropriate
 header/time limits there as well.
-
-## Diagnostic values
-
-`app.core.diagnostics.serialize_diagnostic` provides a generic JSON-safe output
-boundary with bounded strings, depth, collection output **and collection
-iteration**, explicit truncation markers, HTML escaping, exception-message
-withholding, URI-userinfo removal, hostile-key handling, and redaction for
-secret-looking keys such as password, token, authorization, cookie, secret, API
-key, DSN, and database URL. Small mapping output remains key-sorted; large or
-arbitrary mappings consume only the first bounded window rather than scanning
-the full input. It is infrastructure for future health/error/admin output and
-does not rewrite import or sequence lineage.
 
 ## Staging settings
 
