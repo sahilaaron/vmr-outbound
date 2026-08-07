@@ -136,6 +136,25 @@ class ImportedContactEmail(Base):
             " OR (normalized_email IS NOT NULL)",
             name="accepted_primary_normalized",
         ),
+        # An accepted address belongs to somebody. NULL contact_id is this
+        # table's way of saying "held for review, no permanent person decided
+        # yet", so an accepted record with no Contact asserts two contradictory
+        # things at once — and the partial unique index that keeps one accepted
+        # address per person cannot see such a row at all.
+        CheckConstraint(
+            "(email_stage_outcome IS DISTINCT FROM 'IMPORTED_EMAIL_ACCEPTED')"
+            " OR (contact_id IS NOT NULL)",
+            name="accepted_requires_contact",
+        ),
+        # Only the primary slot is ever acted on. A secondary or tertiary address
+        # is retained and never promoted — deciding that an alternate is the one
+        # to use is a judgement about a person the file does not license anyone
+        # to make — so an accepted alternate contradicts the model's own rule.
+        CheckConstraint(
+            "(email_stage_outcome IS DISTINCT FROM 'IMPORTED_EMAIL_ACCEPTED')"
+            " OR (slot = 'PRIMARY')",
+            name="accepted_is_primary",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

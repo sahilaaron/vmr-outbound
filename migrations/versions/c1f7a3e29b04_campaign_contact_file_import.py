@@ -138,6 +138,20 @@ def upgrade() -> None:
             " OR (normalized_email IS NOT NULL)",
             name="accepted_primary_normalized",
         ),
+        # An accepted address belongs to somebody, and only the primary slot is
+        # ever acted on. Both are what the model already says; neither was
+        # enforceable, so a direct writer could create an accepted orphan or an
+        # accepted alternate and no constraint would object.
+        sa.CheckConstraint(
+            "(email_stage_outcome IS DISTINCT FROM 'IMPORTED_EMAIL_ACCEPTED')"
+            " OR (contact_id IS NOT NULL)",
+            name="accepted_requires_contact",
+        ),
+        sa.CheckConstraint(
+            "(email_stage_outcome IS DISTINCT FROM 'IMPORTED_EMAIL_ACCEPTED')"
+            " OR (slot = 'PRIMARY')",
+            name="accepted_is_primary",
+        ),
     )
     op.create_index(
         "ix_imported_contact_emails_contact_id",

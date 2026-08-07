@@ -385,3 +385,69 @@ be centralized rather than patched here. And the upload's size check now
 consults `Content-Length` before buffering, which is an improvement rather than
 a guarantee — that header is client-supplied and absent from a chunked request,
 so the reverse proxy's body limit remains the authoritative protection.
+
+---
+
+## Appendix B — operational warning: `c1f7a3e29b04` changed under a fixed revision id
+
+**Read this before publishing the branch or migrating any database that is not
+disposable.**
+
+`c1f7a3e29b04` has been corrected twice in place while PR #242 is unmerged. The
+revision id never changed, so its bytes did:
+
+| Version | SHA-256 of the migration file |
+| --- | --- |
+| Original (`6d04e088`) | `36e4ba647c5702a8e73ec74b7ed15fb3c0eca3e12a3a467353bd442566d65a4e` |
+| First repair (`16b16f98`) | `3644560fde83806357670b14c4ae24fb2e9cb13a463d1f00f1d4c341a0d9bb08` |
+| Second repair (this head) | `a42c1e3ff6f641068bb227c26e26e830aad64e134edfe5398a6f351f9a6014b0` |
+
+**Alembic does not repair this and does not warn about it.** A database that ran
+an earlier byte-version has `alembic_version = 'c1f7a3e29b04'`, so the revision
+is already applied and `alembic upgrade head` returns success and does nothing.
+The schema silently lacks whatever the later versions added. An independent
+review demonstrated exactly this: after upgrading with the original bytes,
+`uq_imported_contact_emails_accepted_campaign_contact` was absent, the repaired
+`upgrade head` exited 0 without creating it, and `alembic check` then exited 255
+reporting the missing index.
+
+Correcting the migration in place is nevertheless the right choice **while the
+PR is unmerged**, and a follow-on revision was deliberately not added: it would
+exist only to repair disposable databases that ran an unpublished draft, and it
+would sit in the permanent history of every fresh installation forever. A fresh
+database is unaffected — the table is created by this migration and is empty
+when the constraints and index are created on it.
+
+### What has to happen before publication
+
+**1. Recreate every disposable database.** Development, UAT, CI, and any local
+sandbox that ever ran `c1f7a3e29b04`: drop the database and migrate again from
+the repaired chain. Do **not** stamp the revision and do **not** hand-create the
+index or the check constraints — a stamped database is a database whose schema
+nobody can reason about afterwards.
+
+**2. Inventory whether any durable environment ever ran it.** This is a factual
+question about the operator's estate that cannot be answered from a repository
+and has not been answered here. The check is:
+
+```sql
+SELECT version_num FROM alembic_version;
+```
+
+Anything returning `c1f7a3e29b04` that is not disposable is in scope.
+
+**3. If any durable environment ran the old bytes, STOP.** Do not downgrade it,
+do not stamp it, and do not assume Alembic will re-run the revision — it will
+not. Such an environment needs its own follow-on repair revision with a **new**
+revision id and a preflight, because the corrected constraints cannot simply be
+added to data that the old schema permitted. Concretely, the old schema allowed
+two accepted primary addresses for one Campaign and Contact; creating
+`uq_imported_contact_emails_accepted_campaign_contact` on a database holding
+such a pair fails with a PostgreSQL `UniqueViolation`, and the same applies to
+the accepted-orphan and accepted-alternate rows the new check constraints
+forbid. The preflight has to find those rows and an operator has to decide how
+each is reconciled. **That decision is not one to make silently or by default.**
+
+**4. SEQ-001 reconciliation builds on the final chain.** Reconcile against a
+database created from the reconciled migration chain, not from one that ran any
+earlier byte-version of `c1f7a3e29b04`, and keep exactly one Alembic head.
