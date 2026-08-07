@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Smoke-check a running local instance.
 
-Confirms the app is up and the database is reachable, and reports which feature
-switches are enabled — so "is it actually working?" has a one-command answer.
+Confirms the app is up and the database is reachable, using the same bounded
+probes expected by deployment tooling.
 Read-only: it performs no import, creates nothing, and sends nothing.
 
 Usage:
@@ -37,35 +37,30 @@ def main() -> int:
     ok = True
 
     try:
-        status, health = _get(f"{base}/health")
-        print(f"[smoke] GET /health -> {status} {health.get('status')}")
-        raw_features = health.get("features_enabled")
-        features = [str(f) for f in raw_features] if isinstance(raw_features, list) else []
-        print(f"[smoke] features enabled: {', '.join(features) or '(none)'}")
-        for needed in ("workbench", "csv_import", "salesnav_intake"):
-            mark = "on" if needed in features else "OFF"
-            print(f"[smoke]   {needed}: {mark}")
-            if needed not in features:
-                ok = False
+        status, health = _get(f"{base}/healthz")
+        print(f"[smoke] GET /healthz -> {status} {health.get('status')}")
+        if status != 200 or health.get("status") != "ok":
+            ok = False
     except (urllib.error.URLError, OSError) as exc:
-        print(f"[smoke] ERROR: could not reach {base}/health — is the app running? ({exc})")
+        print(f"[smoke] ERROR: could not reach {base}/healthz — is the app running? ({exc})")
         return 2
 
     try:
-        status, ready = _get(f"{base}/ready")
-        db = ready.get("database")
-        print(f"[smoke] GET /ready -> {status} database={db}")
+        status, ready = _get(f"{base}/readyz")
+        checks = ready.get("checks")
+        db = checks.get("database") if isinstance(checks, dict) else None
+        print(f"[smoke] GET /readyz -> {status} database={db}")
         if db != "ok":
             print("[smoke] ERROR: database not reachable (run scripts/dev_up.py).")
             ok = False
     except (urllib.error.URLError, OSError) as exc:
-        print(f"[smoke] ERROR: /ready failed ({exc})")
+        print(f"[smoke] ERROR: /readyz failed ({exc})")
         return 2
 
     if ok:
-        print("[smoke] OK — app is up, database reachable, import features enabled.")
+        print("[smoke] OK — app is up and its database dependency is reachable.")
         return 0
-    print("[smoke] Some checks did not pass (see above). Enable the flags shown in dev_up.py.")
+    print("[smoke] One or more runtime checks did not pass (see above).")
     return 1
 
 
