@@ -621,18 +621,21 @@ def test_the_campaign_screen_is_the_only_page_that_auto_refreshes(
 ) -> None:
     """The monitor exception, kept as an exception.
 
-    The design's campaign screen watches a queue that is moving, so it opts into
-    the existing `live.js`. Every other customer page must render with no script
-    tag at all — the same rule the admin surface holds itself to.
+    The design's campaign detail watches a moving queue through `live.js`. The
+    campaign list loads only the same-origin archive-confirmation script; every
+    other customer page remains script-free.
     """
 
     monitor = client.get(f"/app/campaigns/{scenario.campaign.id}").text
     assert 'data-live="5"' in monitor
     assert "live.js" in monitor
 
+    campaigns = client.get("/app/campaigns").text.lower()
+    assert campaigns.count("<script") == 1
+    assert "/static/campaigns.js" in campaigns
+
     for path in (
         "/app",
-        "/app/campaigns",
         "/app/review",
         "/app/contacts",
         "/app/companies",
