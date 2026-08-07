@@ -36,7 +36,7 @@
       <tbody>
         {% for row in view.rows %}
         <tr>
-          <td class="primary"><a href="/admin/contacts/{{ row.contact_id }}">{{ row.contact_label }}</a></td>
+          <td class="primary"><a href="/admin/contacts/{{ row.contact_id }}">{{ row.contact_label | neutralize }}</a></td>
           <td><a href="/admin/campaigns/{{ row.campaign_id }}">{{ row.campaign_name }}</a></td>
           <td class="num">v{{ row.version_number }}</td>
           <td class="wrap-anywhere">{{ row.subject }}</td>

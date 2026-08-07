@@ -118,7 +118,7 @@
             <td>
               {% if view.imported_email %}
               <span class="v2-mono">
-                {{ view.imported_email.normalized_email or (view.imported_email.raw_email | neutralize) }}
+                {{ (view.imported_email.normalized_email or view.imported_email.raw_email) | neutralize }}
               </span>
               {% if view.imported_email.provider_status_normalized %}
               <div class="v2-sub">

@@ -85,7 +85,7 @@
           <li>
             <a href="/app/campaigns/{{ campaign.id }}/imports/staged/{{ staged.id }}?sheet={{ option.index }}"
                class="{{ 'active' if option.index == preview.sheet_index }}">
-              {{ option.name or "Sheet 1" }} — {{ option.data_row_count | thousands }} rows
+              {{ (option.name | neutralize) or "Sheet 1" }} — {{ option.data_row_count | thousands }} rows
             </a>
             {% if option.index == preview.sheet_index %}<span class="v2-chip on">selected</span>{% endif %}
           </li>

@@ -4,25 +4,25 @@
 <div class="v2-page detail">
 
   <div class="v2-crumbs">
-    <a href="/app/contacts">Contacts</a><span class="sep">/</span>{{ detail.full_name }}
+    <a href="/app/contacts">Contacts</a><span class="sep">/</span>{{ detail.full_name | neutralize }}
   </div>
 
   <div class="v2-title-row v2-mt-sm">
     <div class="v2-avatar-lg">{{ detail.full_name | initials }}</div>
     <div class="v2-title-main">
-      <h1 class="v2-h1">{{ detail.full_name }}</h1>
+      <h1 class="v2-h1">{{ detail.full_name | neutralize }}</h1>
       <div class="v2-note">
-        {{ detail.contact.title or 'no title captured' }}
+        {{ (detail.contact.title | neutralize) or 'no title captured' }}
         {%- if detail.company and detail.company.company %} ·
-          <a href="/app/companies/{{ detail.company.company.id }}">{{ detail.company.company.name }}</a>
-        {%- elif detail.contact.company_name %} · {{ detail.contact.company_name }}{% endif %}
-        {%- if detail.contact.location %} · {{ detail.contact.location }}{% endif %}
+          <a href="/app/companies/{{ detail.company.company.id }}">{{ detail.company.company.name | neutralize }}</a>
+        {%- elif detail.contact.company_name %} · {{ detail.contact.company_name | neutralize }}{% endif %}
+        {%- if detail.contact.location %} · {{ detail.contact.location | neutralize }}{% endif %}
       </div>
       <div class="v2-chipline">
         {% if detail.contact.email %}
           {% set status = detail.states.email_status %}
           <span class="v2-fact {{ 'ok' if status and status.visual.value == 'successful' else ('warn' if status and status.visual.value == 'warning' else 'err' if status and status.visual.value == 'failure' else '') }}">
-            <span class="m">{{ detail.contact.email }}</span> · {{ status.label if status else 'no verification on record' }}
+            <span class="m">{{ detail.contact.email | neutralize }}</span> · {{ status.label if status else 'no verification on record' }}
           </span>
         {% else %}
           <span class="v2-fact err">No address has been built for this person yet</span>
@@ -128,8 +128,8 @@
         {% for role in detail.employment %}
         <div class="v2-row">
           <div class="v2-sidelist-top">
-            <b>{{ role.job_title or 'no title read' }}</b>
-            <span class="v2-muted">{{ role.company_name or 'no company read' }}</span>
+            <b>{{ (role.job_title | neutralize) or 'no title read' }}</b>
+            <span class="v2-muted">{{ (role.company_name | neutralize) or 'no company read' }}</span>
             {% if role.is_current %}{{ tag('current', 'ok', small=true) }}{% endif %}
             {% if not role.dates_reliable %}{{ tag('dates unreliable', 'warn', small=true) }}{% endif %}
           </div>
@@ -157,7 +157,7 @@
               {% for field in detail.field_provenance %}
               <tr>
                 <td class="m v2-nowrap">{{ field.field_name | nice }}</td>
-                <td>{{ field.value or '—' }}</td>
+                <td>{{ (field.value | neutralize) or '—' }}</td>
                 <td class="v2-note">{{ field.source_name or 'not recorded' }}{% if field.is_manual_override %} · your override{% endif %}</td>
                 <td class="m v2-nowrap">{{ field.observed_at | dt }}</td>
                 <td class="v2-note">{{ field.decision_reason or '—' }}<div class="v2-sub mono">{{ field.policy_version }}</div></td>

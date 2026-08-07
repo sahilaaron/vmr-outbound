@@ -6,7 +6,7 @@
 
 <div class="page-head">
   <div>
-    <h1>{{ view.name }}
+    <h1>{{ view.name | neutralize }}
       <span class="badge {{ 'ok' if view.research_state in ('completed', 'completed_with_warnings') else ('err' if view.research_state == 'failed' else 'muted') }} plain">research: {{ view.research_state | replace("_", " ") }}</span>
     </h1>
     <div class="sub">

@@ -2,18 +2,18 @@
 {% import "admin/_wb.html" as wb %}
 {% block content %}
 
-{{ wb.crumbs([("Contacts", "/admin/contacts"), (view.name, None)]) }}
+{{ wb.crumbs([("Contacts", "/admin/contacts"), (view.name | neutralize, None)]) }}
 
 <div class="page-head">
   <div>
-    <h1>{{ view.name }}
+    <h1>{{ view.name | neutralize }}
       {% if view.suppressed %}<span class="badge err">suppressed</span>{% endif %}
       {% if view.merged_into_id %}<span class="badge warn plain">merged</span>{% endif %}
     </h1>
     <div class="sub">
-      {{ view.title or "Title not captured" }}
-      {% if view.company_label %} · {% if view.company_id %}<a href="/admin/companies/{{ view.company_id }}">{{ view.company_label }}</a>{% else %}{{ view.company_label }}{% endif %}{% endif %}
-      {% if view.location or view.country %} · {{ view.location or view.country }}{% endif %}
+      {{ (view.title | neutralize) or "Title not captured" }}
+      {% if view.company_label %} · {% if view.company_id %}<a href="/admin/companies/{{ view.company_id }}">{{ view.company_label | neutralize }}</a>{% else %}{{ view.company_label | neutralize }}{% endif %}{% endif %}
+      {% if view.location or view.country %} · {{ (view.location | neutralize) or (view.country | neutralize) }}{% endif %}
     </div>
   </div>
   <div class="page-actions">
@@ -30,8 +30,8 @@
     <div class="card-head"><h2>Identity</h2></div>
     <div class="card-body">
       <div class="kv">
-        <dt>Email</dt><dd>{{ view.email or "—" }}</dd>
-        <dt>Company domain</dt><dd class="mono">{{ view.company_domain or "—" }}</dd>
+        <dt>Email</dt><dd>{{ (view.email | neutralize) or "—" }}</dd>
+        <dt>Company domain</dt><dd class="mono">{{ (view.company_domain | neutralize) or "—" }}</dd>
         <dt>LinkedIn</dt><dd class="wrap-anywhere">{% if view.linkedin_url %}<a href="{{ view.linkedin_url }}" rel="noopener noreferrer">{{ view.linkedin_url }}</a>{% else %}—{% endif %}</dd>
         <dt>Created</dt><dd>{{ view.created_at | dt }}</dd>
         <dt>Updated</dt><dd>{{ view.updated_at | dt }}</dd>
@@ -107,7 +107,7 @@
         <tbody>
           {% for row in view.emails %}
           <tr>
-            <td class="mono">{{ row.email }}</td>
+            <td class="mono">{{ row.email | neutralize }}</td>
             <td class="dim">{{ row.source_label }}</td>
             <td>
               {% if row.imported %}

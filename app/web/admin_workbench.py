@@ -56,6 +56,7 @@ from app.services.admin_workbench.views import (
     DiagnosticsView,
 )
 from app.services.agents.registry import AGENT_SPECS, PIPELINE_ORDER
+from app.services.imports import display
 from app.services.seller.common import OPERATOR_ACTOR
 
 router = APIRouter()
@@ -109,6 +110,7 @@ def _pretty_json(value: object) -> str:
         return str(value)
 
 
+display.register_neutralize(templates.env)
 templates.env.filters["dt"] = _fmt_dt
 templates.env.filters["ago"] = _fmt_ago
 templates.env.filters["duration"] = _fmt_duration

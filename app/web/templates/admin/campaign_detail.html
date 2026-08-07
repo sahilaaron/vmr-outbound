@@ -93,7 +93,7 @@
         {% for row in view.contacts %}
         <tr class="{{ 'attention' if row.needs_attention else '' }}">
           <td class="primary">
-            <a href="/admin/campaigns/{{ view.campaign_id }}/contacts/{{ row.campaign_contact_id }}">{{ row.contact_label }}</a>
+            <a href="/admin/campaigns/{{ view.campaign_id }}/contacts/{{ row.campaign_contact_id }}">{{ row.contact_label | neutralize }}</a>
             {% if row.suppressed %}<span class="badge err plain">suppressed</span>{% endif %}
           </td>
           <td>{{ row.company_label or "—" }}</td>

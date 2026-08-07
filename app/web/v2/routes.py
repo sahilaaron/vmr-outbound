@@ -61,7 +61,7 @@ from app.services.companies import detail as company_detail
 from app.services.companies import records as company_records
 from app.services.crm import detail as crm_detail
 from app.services.crm import records as crm_records
-from app.services.imports import apollo, campaign_import, staging
+from app.services.imports import apollo, campaign_import, display, staging
 from app.services.resolution import service as resolution_service
 from app.services.seller import campaign_offerings as seller_campaign_offerings
 from app.services.seller import profile as seller_profile
@@ -306,23 +306,9 @@ def _plural(count: Any, singular: str, plural: str | None = None) -> str:
     return f"{number:,} {word}"
 
 
-def _neutralize(value: Any) -> str:
-    """Render a spreadsheet cell so it can never travel onward as a formula.
-
-    Jinja's autoescaping already makes an operator's file safe as *HTML*. This
-    handles the other direction: a value beginning with ``=``, ``+``, ``-`` or
-    ``@`` copied off this page into a spreadsheet would be evaluated there, so it
-    is prefixed on the way out. Nothing is ever evaluated here — the workbook
-    reader is opened with cached values only — and the original text is preserved
-    verbatim in the immutable raw row.
-    """
-
-    if value is None:
-        return ""
-    return apollo.neutralize_formula(str(value)) or ""
-
-
-templates.env.filters["neutralize"] = _neutralize
+# One boundary, shared with the Admin Workbench, so "neutralize" cannot come to
+# mean two different things on two screens. See app/services/imports/display.py.
+display.register_neutralize(templates.env)
 templates.env.filters["dt"] = _fmt_dt
 templates.env.filters["clock"] = _fmt_time
 templates.env.filters["day"] = _fmt_day

@@ -28,7 +28,7 @@
       <tbody>
         {% for row in view.rows %}
         <tr>
-          <td class="primary"><a href="/admin/companies/{{ row.company_id }}">{{ row.name }}</a></td>
+          <td class="primary"><a href="/admin/companies/{{ row.company_id }}">{{ row.name | neutralize }}</a></td>
           <td class="mono">{{ row.domain or "—" }}</td>
           <td><span class="badge {{ 'ok' if row.research_state in ('completed', 'completed_with_warnings') else ('err' if row.research_state == 'failed' else 'muted') }} plain">{{ row.research_state | replace("_", " ") }}</span></td>
           <td class="num">{{ row.contact_count }}</td>

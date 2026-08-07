@@ -7,7 +7,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}{{ page_title | default("Admin Workbench") }}{% endblock %} — VMR Outbound</title>
+  <title>{% block title %}{{ page_title | neutralize | default("Admin Workbench", true) }}{% endblock %} — VMR Outbound</title>
   <link rel="stylesheet" href="{{ url_for('static', path='admin.css') }}">
 </head>
 {# live_seconds is set only by the monitoring pages (Overview, Failures). Every

@@ -38,11 +38,11 @@
         {% for row in view.rows %}
         <tr>
           <td class="primary">
-            <a href="/admin/contacts/{{ row.contact_id }}">{{ row.name }}</a>
+            <a href="/admin/contacts/{{ row.contact_id }}">{{ row.name | neutralize }}</a>
             {% if row.suppressed %}<span class="badge err plain">suppressed</span>{% endif %}
           </td>
           <td class="dim">{{ row.title or "—" }}</td>
-          <td>{% if row.company_id %}<a href="/admin/companies/{{ row.company_id }}">{{ row.company_label }}</a>{% else %}{{ row.company_label or "—" }}{% endif %}</td>
+          <td>{% if row.company_id %}<a href="/admin/companies/{{ row.company_id }}">{{ row.company_label | neutralize }}</a>{% else %}{{ row.company_label or "—" | neutralize }}{% endif %}</td>
           <td class="dim">{{ row.email or "—" }}</td>
           <td>
             {% if row.memberships %}
