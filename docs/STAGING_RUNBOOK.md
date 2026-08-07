@@ -1,4 +1,4 @@
-﻿# VMR staging server runbook
+# VMR staging server runbook
 
 Infrastructure only. The application is NOT deployed.
 
