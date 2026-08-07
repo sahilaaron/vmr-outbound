@@ -61,6 +61,11 @@ MAX_EXTRA_VALUE_CHARS = 500
 #: ``=cmd|'/c calc'!A0`` must not go back *out* as one.
 _FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
+#: A plain signed number. Excel renders "-5" as the number minus five, not as an
+#: expression, so prefixing it with an apostrophe would damage an ordinary value
+#: to defend against nothing. "-2+cmd|..." is not this and is still neutralized.
+_PLAIN_NUMBER = re.compile(r"^[+-]?(\d{1,3}(,\d{3})*|\d+)(\.\d*)?([eE][+-]?\d+)?$")
+
 _CANON_STRIP = re.compile(r"[^a-z0-9# ]+")
 _WS = re.compile(r"\s+")
 
@@ -268,7 +273,10 @@ def looks_like_formula(value: str | None) -> bool:
 
     if value is None:
         return False
-    return value.strip().startswith(_FORMULA_PREFIXES)
+    stripped = value.strip()
+    if not stripped.startswith(_FORMULA_PREFIXES):
+        return False
+    return not _PLAIN_NUMBER.match(stripped)
 
 
 # ---------------------------------------------------------------------------

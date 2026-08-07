@@ -289,3 +289,99 @@ the enum types. No value is added to an existing enum type, because
   being silently misread.
 * No sending, no Gmail sync, no Sheets sync, no follow-up sequences — all
   deliberately out of scope.
+
+---
+
+## Appendix — corrections after an independent adversarial review
+
+An independent hostile review of this branch reproduced twenty defects and
+confirmed the truth model itself: no `EmailCandidate` is fabricated, no
+`ExactEmailVerification` is written, no provider is constructed, and
+`VerificationDecision` keeps its five provider-only members. Those properties
+are now asserted in `tests/test_campaign_import_review_fixes.py` so they cannot
+be lost quietly.
+
+Three findings were blockers.
+
+**A repeated header name imported the wrong column.** `detect_schema` recorded
+the first column that claims a field, reported the second as a duplicate, and
+the preview told the operator it was not applied — while both parsers built the
+row as a dict keyed by header text, so the later column overwrote the earlier
+one before the reading began. A column name is not a unique address into a
+spreadsheet row. Rows now carry `cells` by position beside the durable
+name-keyed payload, `SchemaDetection` records the winning column's position, and
+every lookup goes through the position. The durable `raw_data` payload keeps the
+first occurrence, because JSONB cannot hold two entries under one key and losing
+one silently was the original failure.
+
+**An email domain was never checked as a hostname.** `<jane@gmail.com>` — an
+ordinary mail-client paste — produced the domain `gmail.com>`, which is not in
+`PUBLIC_EMAIL_DOMAINS`, so a personal mailbox could found a Company on a string
+that cannot resolve. `normalize_email` now unwraps the angle-addr form and sheds
+trailing list punctuation, and `normalize_email_domain` canonicalizes to IDNA
+and returns `None` for anything that is not a valid hostname. `is_valid_email`
+consults it, so an accepted address always has a usable domain, and `bücher.de`
+and `xn--bcher-kva.de` stop being two employers.
+
+**The migration downgraded over data with no guard.** It dropped both new tables
+and seventeen columns from the two pre-existing import tables, silently, against
+a convention eight migrations in this repository already follow. It now refuses
+while any of four categories is populated, reads the defaults the upgrade itself
+wrote (`warnings = '[]'`, `already_in_campaign_rows = 0`) as absence so an empty
+schema still reverses, and names categories and counts in its refusal without
+quoting an address, a filename or any SQL.
+
+The important findings shared one shape, and it is worth naming because it is
+the failure this feature is most likely to repeat: **a new, careful surface was
+written, and existing surfaces were left describing an address whose meaning had
+just changed.** `BYPASS_STATEMENT` and `NO_DISCOVERY_STATEMENT` exist so that no
+template can weaken them, and exactly one template used them. So the Verification
+funnel counted a bypass under the word "passed"; the customer Contact page
+rendered the vendor's claim as "pending", promising a check that will never run;
+and the Admin contact card filed it under "Email addresses & verification",
+sourced "canonical". Each is now answered at the read model rather than in a
+template, so every consumer inherits the correction:
+`StageFunnelStep.provider_passed` and `.bypassed_through` are separate numbers,
+`StatusView.is_imported` is derived from the import's own evidence, and
+`EmailStateRow.imported` marks the address on the Admin card.
+
+Three more corrections to what an operator is told. The failures inbox filtered
+on `error_code` rather than on outcome, so rows that had resolved to a Contact
+appeared under a heading saying none was created — and its 200-row cap was
+applied before the distinction, so a large re-import of already-present rows
+could evict the genuinely refused ones from the page. A row with no validation
+record was reported as `rejected`, asserting a refusal that never happened. And
+the batch counters did not partition: `duplicate_rows` is the sum of three
+dispositions and `already_in_campaign_rows` is one of them, so the two rendered
+side by side could exceed the size of the file. `campaign_import.batch_counts`
+now produces buckets that account for every row once, with an explicit residual.
+
+**The fingerprint contract is now structural.** It claimed to cover everything
+the import persists as meaning and covered a hand-written list of seventeen
+attributes, with every provider claim outside it — so a re-export correcting
+`Email Status` from `invalid` to `valid` hashed identical to the original and
+imported nothing. It is now derived from `bounded_source_payload` minus the keys
+that describe *where* a row sat, so the two cannot drift. A restated address for
+somebody who already has an accepted one in the Campaign is stored as retained
+evidence with `rejection_code = retained_person_already_has_an_accepted_address`:
+the correction is on record, and swapping the address in use stays an operator's
+decision rather than a consequence of uploading a newer file.
+
+Two provenance corrections belong to the same principle as the truth model
+itself. A batch was labelled "Apollo contact export" whenever four required
+headers were present, which any hand-made CSV can satisfy — vendor provenance
+manufactured from a column list. `is_apollo_export` already distinguished the
+two and was consulted nowhere; a merely compatible file is now recorded as
+`Apollo-compatible contact file`. And the duplicate-file note named the other
+Campaign holding the same bytes; that the file was seen before is the useful
+part, whose it was is not.
+
+Two things are deliberately **not** fixed here. There is no CSRF protection
+anywhere in this repository, so the new routes are consistent with their
+neighbours and this branch does not introduce a repository-wide token system;
+`POST /app/campaigns/{id}/imports` is nonetheless the first cross-site-forgeable
+endpoint that accepts a file and writes Contacts campaign-wide, and that should
+be centralized rather than patched here. And the upload's size check now
+consults `Content-Length` before buffering, which is an improvement rather than
+a guarantee — that header is client-supplied and absent from a chunked request,
+so the reverse proxy's body limit remains the authoritative protection.

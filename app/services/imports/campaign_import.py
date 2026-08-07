@@ -1344,6 +1344,37 @@ def _commit_row(
     session.flush()
 
 
+#: Recorded on an address a later file supplied for somebody who already has an
+#: accepted address in this Campaign. Not a rejection: nothing is wrong with it.
+RESTATED_CODE = "retained_person_already_has_an_accepted_address"
+
+
+def _retain_restated_address(
+    session: Session,
+    *,
+    record: ImportedContactEmail,
+    superseded_by: ImportedContactEmail,
+) -> None:
+    """Store a restated address as retained evidence, never as the one in use."""
+
+    if record.normalized_email == superseded_by.normalized_email and (
+        record.provider_status_normalized == superseded_by.provider_status_normalized
+    ):
+        # Byte-identical restatement of what is already on record. Storing it
+        # again would grow the table without adding a fact.
+        return
+    record.email_stage_outcome = None
+    record.verification_stage_outcome = None
+    record.rejection_code = RESTATED_CODE
+    try:
+        with session.begin_nested():
+            session.add(record)
+            session.flush()
+    except IntegrityError:
+        # Same source row processed twice; the first copy is already there.
+        return
+
+
 def _bounded(value: str | None, limit: int) -> str | None:
     """Trim a vendor-supplied string to what its column can hold."""
 
@@ -1427,13 +1458,31 @@ def _write_addresses(
                 session.add(record)
                 session.flush()
         except IntegrityError:
-            # The same row content already produced ACCEPTED evidence for this
-            # Campaign. That is the partial unique index doing its job, not a
-            # failure — reuse what is there rather than writing a second copy.
-            if is_primary:
-                accepted_record = _existing_evidence(
-                    session, campaign_id=campaign_id, fingerprint=plan.fingerprint
-                )
+            if not is_primary:
+                continue
+            # One of two partial unique indexes refused this write, and both are
+            # doing their job. Either this exact row content already produced
+            # accepted evidence for this Campaign, or this PERSON already has an
+            # accepted address here and a later file has restated them.
+            accepted_record = _existing_evidence(
+                session, campaign_id=campaign_id, fingerprint=plan.fingerprint
+            ) or (
+                accepted_primary_email(session, campaign_id=campaign_id, contact_id=contact_id)
+                if contact_id is not None
+                else None
+            )
+            if accepted_record is None or not accepted:
+                continue
+            # The row said something new — a corrected vendor status, a different
+            # address — and it has to be recorded or the correction is lost. It is
+            # RETAINED, not promoted: exactly one address is the one this Campaign
+            # uses for this person, and deciding to swap it is an operator's call,
+            # not a consequence of uploading a newer file.
+            _retain_restated_address(
+                session,
+                record=record,
+                superseded_by=accepted_record,
+            )
             continue
         if is_primary and accepted:
             accepted_record = record
