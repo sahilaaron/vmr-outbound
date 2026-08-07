@@ -40,6 +40,7 @@ import enum
 import hashlib
 import re
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -232,7 +233,7 @@ def inspect(content: bytes, filename: str | None) -> FileInspection:
             name=sheet.name,
             header=tuple(sheet.header),
             data_row_count=sheet.data_row_count,
-            detection=apollo.detect_schema(list(sheet.header)),
+            detection=apollo.detect_schema(sheet.columns or tuple(sheet.header)),
         )
         for sheet in parsed.sheets
     )
@@ -405,6 +406,7 @@ def plan_row(
     sheet_index: int,
     sheet_name: str | None,
     registers: _Registers,
+    cells: Sequence[str] = (),
 ) -> RowPlan:
     """Decide one row's fate using read-only lookups only.
 
@@ -420,6 +422,7 @@ def plan_row(
         row_number=row_number,
         sheet_index=sheet_index,
         sheet_name=sheet_name,
+        cells=cells,
     )
     fingerprint = apollo.row_fingerprint(row)
     plan = RowPlan(
@@ -733,6 +736,7 @@ def preview(
                 session,
                 campaign_id=campaign_id,
                 raw=parsed_row.raw,
+                cells=parsed_row.cells,
                 detection=sheet.detection,
                 row_number=parsed_row.row_number,
                 sheet_index=parsed_row.sheet_index,
@@ -922,7 +926,11 @@ def confirm(
             "sheet_index": sheet.index,
         },
     )
-    import_rows: list[tuple[ImportRow, dict[str, str]]] = []
+    # The positional cells travel beside the durable ``raw_data`` payload rather
+    # than replacing it. JSONB cannot hold two entries under one key, so a file
+    # with two columns of the same name has to lose one there; the tuple is what
+    # the reading uses so that neither the loss nor the choice is silent.
+    import_rows: list[tuple[ImportRow, dict[str, str], tuple[str, ...]]] = []
     for parsed_row in rows:
         import_row = ImportRow(
             batch_id=batch.id,
@@ -932,20 +940,21 @@ def confirm(
             raw_data=parsed_row.raw,
         )
         session.add(import_row)
-        import_rows.append((import_row, parsed_row.raw))
+        import_rows.append((import_row, parsed_row.raw, parsed_row.cells))
     session.flush()
     session.commit()
 
     # --- Stage 2: one SAVEPOINT per row --------------------------------------
     tally = _Tally()
     registers = _Registers()
-    for import_row, raw in import_rows:
+    for import_row, raw, cells in import_rows:
         _process_one_row(
             session,
             campaign=campaign,
             batch=batch,
             import_row=import_row,
             raw=raw,
+            cells=cells,
             detection=sheet.detection,
             checksum=inspection.checksum,
             schema_id=schema_id,
@@ -1010,6 +1019,7 @@ def _process_one_row(
     registers: _Registers,
     tally: _Tally,
     actor: str,
+    cells: Sequence[str] = (),
 ) -> None:
     """Plan and commit one row inside its own SAVEPOINT.
 
@@ -1027,6 +1037,7 @@ def _process_one_row(
                 session,
                 campaign_id=campaign.id,
                 raw=raw,
+                cells=cells,
                 detection=detection,
                 row_number=import_row.row_number,
                 sheet_index=import_row.sheet_index,

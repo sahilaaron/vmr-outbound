@@ -31,7 +31,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from dataclasses import field as dc_field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -280,6 +282,17 @@ class SchemaDetection:
     duplicate_columns: tuple[tuple[str, str], ...] = ()
     #: How many Apollo-distinctive headers were present.
     distinctive_count: int = 0
+    #: Canonical field -> the ZERO-BASED POSITION of the column that supplies it.
+    #:
+    #: The name in :attr:`field_columns` is what the operator is shown; the
+    #: position is what the reading uses, because two columns can carry the same
+    #: name and only the position says which of them the first-claimant rule
+    #: actually chose.
+    field_positions: dict[str, int] = dc_field(default_factory=dict)
+    #: ``(position, name)`` for every unmapped column, including a duplicate that
+    #: lost its claim. The position is what lets a losing duplicate carry its own
+    #: value into ``extras`` instead of repeating the winner's.
+    unmapped_positions: tuple[tuple[int, str], ...] = ()
 
     @property
     def recognized(self) -> bool:
@@ -295,45 +308,57 @@ class SchemaDetection:
     def column_for(self, canonical_field: str) -> str | None:
         return self.field_columns.get(canonical_field)
 
+    def position_for(self, canonical_field: str) -> int | None:
+        return self.field_positions.get(canonical_field)
 
-def detect_schema(header: list[str]) -> SchemaDetection:
+
+def detect_schema(header: Sequence[str]) -> SchemaDetection:
     """Recognize *header* as the Apollo contact export, or say what is missing.
 
     Order-independent by construction, and extra columns are tolerated: the
     header is walked once, each column claims at most one canonical field, and
     the first claimant of a field keeps it.
+
+    *header* must be the **verbatim** header row, empty names included, because
+    the positions recorded here index into each row's ``cells``. A filtered
+    display list would shift every position after the first gap.
     """
 
     field_columns: dict[str, str] = {}
-    unmapped: list[str] = []
+    field_positions: dict[str, int] = {}
+    unmapped: list[tuple[int, str]] = []
     duplicates: list[tuple[str, str]] = []
 
-    for column in header:
+    for position, column in enumerate(header):
         if not column or not column.strip():
             continue
         canonical = HEADER_ALIASES.get(canonical_header(column))
         if canonical is None:
-            unmapped.append(column)
+            unmapped.append((position, column))
             continue
         if canonical in field_columns:
             # A second column claiming a taken field is reported, never applied.
-            # Silently preferring either one would make the import's reading of
-            # the file depend on column order, which is the thing this module
-            # exists to avoid.
+            # "Never applied" is now true of the reading and not only of the
+            # report: every lookup goes through the FIRST claimant's position, so
+            # a repeated header name can no longer substitute its value for the
+            # one the preview showed the operator.
             duplicates.append((column, canonical))
-            unmapped.append(column)
+            unmapped.append((position, column))
             continue
         field_columns[canonical] = column
+        field_positions[canonical] = position
 
     missing = tuple(f for f in REQUIRED_FIELDS if f not in field_columns)
     distinctive = sum(1 for f in field_columns if f in DISTINCTIVE_FIELDS)
     return SchemaDetection(
         schema_id=None if missing else APOLLO_SCHEMA_ID,
         field_columns=field_columns,
-        unmapped_columns=tuple(unmapped),
+        unmapped_columns=tuple(name for _position, name in unmapped),
         missing_required=missing,
         duplicate_columns=tuple(duplicates),
         distinctive_count=distinctive,
+        field_positions=field_positions,
+        unmapped_positions=tuple(unmapped),
     )
 
 
@@ -467,11 +492,33 @@ class ApolloRow:
         }
 
 
-def _cell(raw: dict[str, str], detection: SchemaDetection, canonical_field: str) -> str | None:
-    column = detection.column_for(canonical_field)
-    if column is None:
-        return None
-    return norm.collapse_whitespace(raw.get(column))
+def field_values(
+    raw: dict[str, str], detection: SchemaDetection, cells: Sequence[str] = ()
+) -> dict[str, str]:
+    """Resolve every canonical field to the exact cell that supplies it.
+
+    Keyed by canonical field rather than by column name, and that is the whole
+    point. A column name is not a unique address into a spreadsheet row: two
+    columns can be called ``Email``, and a dict keyed by name has to lose one of
+    them. The position is unique, so when the row carries its positional
+    ``cells`` this reads the column the first-claimant rule actually chose.
+
+    Falls back to the name lookup when no positional row is available — a caller
+    holding only a stored ``raw_data`` payload, and every historical row.
+    """
+
+    values: dict[str, str] = {}
+    for canonical_field, column in detection.field_columns.items():
+        position = detection.position_for(canonical_field)
+        if position is not None and position < len(cells):
+            values[canonical_field] = cells[position]
+        elif column in raw:
+            values[canonical_field] = raw[column]
+    return values
+
+
+def _cell(values: dict[str, str], canonical_field: str) -> str | None:
+    return norm.collapse_whitespace(values.get(canonical_field))
 
 
 _TIMESTAMP_FORMATS = (
@@ -530,8 +577,7 @@ def normalize_provider_token(value: str | None) -> str | None:
 
 
 def _read_address(
-    raw: dict[str, str],
-    detection: SchemaDetection,
+    values: dict[str, str],
     *,
     slot: str,
     email_field: str,
@@ -541,26 +587,26 @@ def _read_address(
     catch_all_field: str | None,
     last_verified_field: str | None,
 ) -> ImportedAddress | None:
-    raw_value = norm.collapse_whitespace(_raw_cell(raw, detection, email_field))
+    raw_value = norm.collapse_whitespace(_raw_cell(values, email_field))
     if raw_value is None:
         return None
     normalized = norm.normalize_email(raw_value)
     valid = normalized is not None and norm.is_valid_email(normalized)
     domain = normalized.rpartition("@")[2] if valid and normalized else None
-    last_verified_raw = _cell(raw, detection, last_verified_field) if last_verified_field else None
-    status_raw = _cell(raw, detection, status_field) if status_field else None
-    catch_all_raw = _cell(raw, detection, catch_all_field) if catch_all_field else None
+    last_verified_raw = _cell(values, last_verified_field) if last_verified_field else None
+    status_raw = _cell(values, status_field) if status_field else None
+    catch_all_raw = _cell(values, catch_all_field) if catch_all_field else None
     return ImportedAddress(
         slot=slot,
         raw=raw_value,
         normalized=normalized if valid else None,
         is_valid_syntax=valid,
         domain=domain,
-        provider_source=_cell(raw, detection, source_field) if source_field else None,
+        provider_source=_cell(values, source_field) if source_field else None,
         provider_status_raw=status_raw,
         provider_status_normalized=normalize_provider_token(status_raw),
         provider_verification_source=(
-            _cell(raw, detection, verification_source_field) if verification_source_field else None
+            _cell(values, verification_source_field) if verification_source_field else None
         ),
         provider_catch_all_raw=catch_all_raw,
         provider_catch_all_normalized=normalize_provider_token(catch_all_raw),
@@ -569,22 +615,38 @@ def _read_address(
     )
 
 
-def _raw_cell(raw: dict[str, str], detection: SchemaDetection, canonical_field: str) -> str | None:
-    column = detection.column_for(canonical_field)
-    return raw.get(column) if column is not None else None
+def _raw_cell(values: dict[str, str], canonical_field: str) -> str | None:
+    return values.get(canonical_field)
 
 
-def _extras(raw: dict[str, str], detection: SchemaDetection) -> dict[str, str]:
-    """Carry unrecognized columns verbatim, bounded in count and length."""
+def _extras(
+    raw: dict[str, str], detection: SchemaDetection, cells: Sequence[str] = ()
+) -> dict[str, str]:
+    """Carry unrecognized columns verbatim, bounded in count and length.
+
+    Read by position where one is available, so a duplicate column that lost its
+    claim carries *its own* value here rather than repeating the winner's.
+    """
 
     extras: dict[str, str] = {}
-    for column in detection.unmapped_columns:
+    seen: set[str] = set()
+    for position, column in detection.unmapped_positions:
         if len(extras) >= MAX_EXTRA_COLUMNS:
             break
-        value = raw.get(column)
+        if position < len(cells):
+            value: str | None = cells[position]
+        else:
+            value = raw.get(column)
         if value is None or not value.strip():
             continue
-        extras[column[:255]] = value[:MAX_EXTRA_VALUE_CHARS]
+        key = column[:255]
+        # Two unmapped columns can share a name or a 255-character prefix. The
+        # first keeps the plain key; later ones are suffixed with their position
+        # so neither value is silently dropped on top of the other.
+        if key in seen:
+            key = f"{key[:243]} (col {position + 1})"
+        seen.add(key)
+        extras[key] = value[:MAX_EXTRA_VALUE_CHARS]
     return extras
 
 
@@ -595,32 +657,39 @@ def read_row(
     row_number: int,
     sheet_index: int = 0,
     sheet_name: str | None = None,
+    cells: Sequence[str] = (),
 ) -> ApolloRow:
-    """Read one verbatim row through *detection* into a normalized reading."""
+    """Read one verbatim row through *detection* into a normalized reading.
+
+    *cells* is the row by column position. Supply it wherever it exists: it is
+    what makes the first-claimant rule true of the reading rather than only of
+    the report, because a name-keyed row cannot represent two columns called
+    ``Email``. Omitting it falls back to name lookup, which is correct for every
+    file whose header has no repeated names.
+    """
 
     row = ApolloRow(row_number=row_number, sheet_index=sheet_index, sheet_name=sheet_name)
+    values = field_values(raw, detection, cells)
 
-    row.first_name = norm.normalize_name(_cell(raw, detection, "first_name"))
-    row.last_name = norm.normalize_name(_cell(raw, detection, "last_name"))
-    row.title = norm.normalize_text(_cell(raw, detection, "title"))
-    row.seniority = norm.normalize_text(_cell(raw, detection, "seniority"))
-    row.departments = norm.normalize_text(_cell(raw, detection, "departments"))
-    row.sub_departments = norm.normalize_text(_cell(raw, detection, "sub_departments"))
-    person_linkedin = _cell(raw, detection, "person_linkedin_url")
+    row.first_name = norm.normalize_name(_cell(values, "first_name"))
+    row.last_name = norm.normalize_name(_cell(values, "last_name"))
+    row.title = norm.normalize_text(_cell(values, "title"))
+    row.seniority = norm.normalize_text(_cell(values, "seniority"))
+    row.departments = norm.normalize_text(_cell(values, "departments"))
+    row.sub_departments = norm.normalize_text(_cell(values, "sub_departments"))
+    person_linkedin = _cell(values, "person_linkedin_url")
     row.person_linkedin_url = norm.normalize_linkedin_url(person_linkedin)
     row.person_linkedin_identity = norm.normalize_linkedin_profile_url(person_linkedin)
-    row.city = norm.normalize_text(_cell(raw, detection, "city"))
-    row.state = norm.normalize_text(_cell(raw, detection, "state"))
-    row.country = norm.normalize_country(_cell(raw, detection, "country"))
-    row.phone = norm.normalize_text(_cell(raw, detection, "phone"))
-    row.mobile_phone = norm.normalize_text(_cell(raw, detection, "mobile_phone"))
-    row.corporate_phone = norm.normalize_text(_cell(raw, detection, "corporate_phone"))
+    row.city = norm.normalize_text(_cell(values, "city"))
+    row.state = norm.normalize_text(_cell(values, "state"))
+    row.country = norm.normalize_country(_cell(values, "country"))
+    row.phone = norm.normalize_text(_cell(values, "phone"))
+    row.mobile_phone = norm.normalize_text(_cell(values, "mobile_phone"))
+    row.corporate_phone = norm.normalize_text(_cell(values, "corporate_phone"))
 
-    row.company_name = norm.normalize_name(_cell(raw, detection, "company_name"))
-    row.company_name_for_emails = norm.normalize_name(
-        _cell(raw, detection, "company_name_for_emails")
-    )
-    row.website_raw = _cell(raw, detection, "website")
+    row.company_name = norm.normalize_name(_cell(values, "company_name"))
+    row.company_name_for_emails = norm.normalize_name(_cell(values, "company_name_for_emails"))
+    row.website_raw = _cell(values, "website")
     row.website_domain = norm.normalize_domain(row.website_raw)
     if row.website_domain is not None and not norm.is_valid_hostname(row.website_domain):
         row.warnings.append(
@@ -631,26 +700,25 @@ def read_row(
             )
         )
         row.website_domain = None
-    company_linkedin = _cell(raw, detection, "company_linkedin_url")
+    company_linkedin = _cell(values, "company_linkedin_url")
     row.company_linkedin_url = norm.normalize_linkedin_url(company_linkedin)
     row.company_linkedin_identity = norm.normalize_linkedin_company_url(company_linkedin)
-    row.company_address = norm.normalize_text(_cell(raw, detection, "company_address"))
-    row.company_city = norm.normalize_text(_cell(raw, detection, "company_city"))
-    row.company_state = norm.normalize_text(_cell(raw, detection, "company_state"))
-    row.company_country = norm.normalize_country(_cell(raw, detection, "company_country"))
-    row.employee_count = norm.normalize_text(_cell(raw, detection, "employee_count"))
-    row.industry = norm.normalize_text(_cell(raw, detection, "industry"))
-    row.keywords = norm.normalize_text(_cell(raw, detection, "keywords"))
-    row.technologies = norm.normalize_text(_cell(raw, detection, "technologies"))
-    row.annual_revenue = norm.normalize_text(_cell(raw, detection, "annual_revenue"))
+    row.company_address = norm.normalize_text(_cell(values, "company_address"))
+    row.company_city = norm.normalize_text(_cell(values, "company_city"))
+    row.company_state = norm.normalize_text(_cell(values, "company_state"))
+    row.company_country = norm.normalize_country(_cell(values, "company_country"))
+    row.employee_count = norm.normalize_text(_cell(values, "employee_count"))
+    row.industry = norm.normalize_text(_cell(values, "industry"))
+    row.keywords = norm.normalize_text(_cell(values, "keywords"))
+    row.technologies = norm.normalize_text(_cell(values, "technologies"))
+    row.annual_revenue = norm.normalize_text(_cell(values, "annual_revenue"))
 
-    row.apollo_contact_id = _identifier(_cell(raw, detection, "apollo_contact_id"))
-    row.apollo_account_id = _identifier(_cell(raw, detection, "apollo_account_id"))
-    row.apollo_record_id = _identifier(_cell(raw, detection, "apollo_record_id"))
+    row.apollo_contact_id = _identifier(_cell(values, "apollo_contact_id"))
+    row.apollo_account_id = _identifier(_cell(values, "apollo_account_id"))
+    row.apollo_record_id = _identifier(_cell(values, "apollo_record_id"))
 
     row.primary = _read_address(
-        raw,
-        detection,
+        values,
         slot="primary",
         email_field="email",
         source_field="primary_email_source",
@@ -660,8 +728,7 @@ def read_row(
         last_verified_field="primary_email_last_verified_at",
     )
     row.secondary = _read_address(
-        raw,
-        detection,
+        values,
         slot="secondary",
         email_field="secondary_email",
         source_field="secondary_email_source",
@@ -671,8 +738,7 @@ def read_row(
         last_verified_field="secondary_email_last_verified_at",
     )
     row.tertiary = _read_address(
-        raw,
-        detection,
+        values,
         slot="tertiary",
         email_field="tertiary_email",
         source_field="tertiary_email_source",
@@ -682,7 +748,7 @@ def read_row(
         last_verified_field="tertiary_email_last_verified_at",
     )
 
-    row.extras = _extras(raw, detection)
+    row.extras = _extras(raw, detection, cells)
     _add_address_warnings(row)
     _add_formula_warnings(row, raw)
     return row

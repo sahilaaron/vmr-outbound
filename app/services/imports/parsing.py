@@ -39,6 +39,26 @@ SUPPORTED_EXTENSIONS = (".csv", ".xlsx")
 
 _UNMAPPED_KEY = "_unmapped"
 
+#: Largest single CSV cell this reader will accept, in characters.
+#:
+#: Python's default is 128 KB, which a real Apollo export can exceed — the
+#: Keywords and Technologies columns routinely run to kilobytes and occasionally
+#: much further. Left at the default, an ordinary export raised ``_csv.Error``,
+#: which is not a ``MalformedFileError`` and so escaped every handler on the way
+#: out as a bare 500. Raised here to a bound of its own rather than removed:
+#: unbounded would mean one hostile cell could hold the whole upload ceiling in
+#: a single Python string, and 4 MiB is far above any plausible cell while
+#: staying well inside the 25 MB file limit.
+MAX_CSV_FIELD_CHARS = 4 * 1024 * 1024
+
+csv.field_size_limit(MAX_CSV_FIELD_CHARS)
+
+_CSV_FIELD_LIMIT_MESSAGE = (
+    "The file contains a single cell larger than this import accepts "
+    f"({MAX_CSV_FIELD_CHARS // (1024 * 1024)} MB), or a quotation mark that is never "
+    "closed. Check the file for an unterminated quoted value and re-export it."
+)
+
 
 class UnsupportedFormatError(Exception):
     """Raised for a file that is not one of the authorized formats."""
@@ -50,12 +70,28 @@ class MalformedFileError(Exception):
 
 @dataclass(frozen=True)
 class ParsedRow:
-    """One verbatim data row, keyed by the sheet's header."""
+    """One verbatim data row, by header name and by column position.
+
+    Both, because neither alone is enough. ``raw`` is what gets stored durably
+    in ``import_rows.raw_data`` as JSONB, and a JSON object cannot hold two
+    entries under one key — so a file with two columns literally named ``Email``
+    has to lose one of them there. ``cells`` is positional and loses nothing,
+    and it is what the schema reading uses.
+
+    The rule where they disagree is that **the first column of a repeated name
+    wins** in ``raw``. That is the contract :func:`app.services.imports.apollo
+    .detect_schema` states, and before this pair existed the dict silently did
+    the opposite: the later column overwrote the earlier one, so the reading
+    took a value the preview had just told the operator was not applied.
+    """
 
     sheet_index: int
     sheet_name: str | None
     row_number: int  # original per-sheet data-row number (header excluded)
     raw: dict[str, str]
+    #: Values in file column order, aligned index-for-index with
+    #: :attr:`SheetInfo.columns`. Shorter than the header when the row is short.
+    cells: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -66,6 +102,11 @@ class SheetInfo:
     name: str | None
     header: list[str]
     data_row_count: int
+    #: The header row verbatim, including empty and repeated names, so that
+    #: position ``i`` here names position ``i`` in every row's ``cells``.
+    #: :attr:`header` is the display list and drops the empties, which is why it
+    #: cannot be used for alignment.
+    columns: tuple[str, ...] = ()
 
 
 @dataclass
@@ -142,26 +183,55 @@ def parse_csv(content: bytes) -> ParsedFile:
             "UTF-8 encoding and upload again."
         ) from exc
 
-    reader = csv.DictReader(io.StringIO(text), restkey=_UNMAPPED_KEY, restval="")
+    # ``csv.reader`` rather than ``DictReader``: the dict is built here so that a
+    # repeated header name keeps its FIRST column's value instead of being
+    # overwritten by the last, and so the positional reading survives at all.
+    reader = csv.reader(io.StringIO(text))
+    try:
+        first = next(reader, None)
+    except csv.Error as exc:  # pragma: no cover - re-raised by the caller's guard
+        raise MalformedFileError(_CSV_FIELD_LIMIT_MESSAGE) from exc
+    columns: tuple[str, ...] = tuple(first or ())
+
     rows: list[ParsedRow] = []
     row_number = 0
-    for row in reader:
-        cleaned: dict[str, str] = {}
-        for key, value in row.items():
-            if key is None:
-                continue
-            if key == _UNMAPPED_KEY and isinstance(value, list):
-                cleaned[key] = ", ".join(str(v) for v in value)
-            else:
-                cleaned[key] = str(value) if value is not None else ""
-        if not any(v.strip() for v in cleaned.values()):
-            continue  # skip fully-empty lines
-        row_number += 1
-        rows.append(ParsedRow(sheet_index=0, sheet_name=None, row_number=row_number, raw=cleaned))
+    try:
+        for values in reader:
+            cells = tuple(str(v) if v is not None else "" for v in values)
+            if not any(v.strip() for v in cells):
+                continue  # skip fully-empty lines
+            cleaned: dict[str, str] = {}
+            extras: list[str] = []
+            for position, value in enumerate(cells):
+                if position < len(columns) and columns[position]:
+                    cleaned.setdefault(columns[position], value)
+                elif value.strip():
+                    extras.append(value)
+            # Every declared column is present even when the row is short, so a
+            # ragged file reads as empty cells rather than as missing fields.
+            for name in columns:
+                if name:
+                    cleaned.setdefault(name, "")
+            if extras:
+                cleaned[_UNMAPPED_KEY] = ", ".join(extras)
+            row_number += 1
+            rows.append(
+                ParsedRow(
+                    sheet_index=0,
+                    sheet_name=None,
+                    row_number=row_number,
+                    raw=cleaned,
+                    cells=cells,
+                )
+            )
+    except csv.Error as exc:
+        raise MalformedFileError(_CSV_FIELD_LIMIT_MESSAGE) from exc
 
-    header = [h for h in (reader.fieldnames or []) if h and h != _UNMAPPED_KEY]
+    header = [h for h in columns if h and h != _UNMAPPED_KEY]
     parsed = ParsedFile(source_format="csv", parser_version=CSV_PARSER_VERSION)
-    parsed.sheets = [SheetInfo(index=0, name=None, header=header, data_row_count=len(rows))]
+    parsed.sheets = [
+        SheetInfo(index=0, name=None, header=header, data_row_count=len(rows), columns=columns)
+    ]
     parsed.rows = rows
     return parsed
 
@@ -201,13 +271,19 @@ def parse_xlsx(content: bytes) -> ParsedFile:
                     header = [t.strip() for t in texts]
                     continue
                 row_number += 1
+                cells = tuple(texts)
                 raw: dict[str, str] = {}
                 extras: list[str] = []
                 for position, text in enumerate(texts):
                     if position < len(header) and header[position]:
-                        raw[header[position]] = text
+                        # First column of a repeated name wins, matching the CSV
+                        # reader and the documented detection contract.
+                        raw.setdefault(header[position], text)
                     elif text.strip():
                         extras.append(text)
+                for name in header:
+                    if name:
+                        raw.setdefault(name, "")
                 if extras:
                     raw[_UNMAPPED_KEY] = ", ".join(extras)
                 data_row_count += 1
@@ -217,6 +293,7 @@ def parse_xlsx(content: bytes) -> ParsedFile:
                         sheet_name=sheet_name,
                         row_number=row_number,
                         raw=raw,
+                        cells=cells,
                     )
                 )
             parsed.sheets.append(
@@ -225,6 +302,7 @@ def parse_xlsx(content: bytes) -> ParsedFile:
                     name=sheet_name,
                     header=[h for h in header if h],
                     data_row_count=data_row_count,
+                    columns=tuple(header),
                 )
             )
 
