@@ -6,13 +6,16 @@ import json
 import logging
 import re
 import secrets
+import traceback
 from contextvars import ContextVar, Token
 from datetime import UTC, datetime
 from ipaddress import IPv4Address, IPv6Address, ip_address, ip_network
 from time import perf_counter
 
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+from app.core.config import canonical_trusted_host
 
 REQUEST_ID_HEADER = "X-Request-ID"
 MAX_REQUEST_ID_CHARS = 64
@@ -127,6 +130,86 @@ def _timestamp() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def _host_from_scope(scope: Scope) -> str | None:
+    values = _header_values(scope, b"host")
+    if len(values) != 1:
+        return None
+    raw = values[0]
+    if raw.startswith("["):
+        closing = raw.find("]")
+        if closing < 0:
+            return None
+        host, suffix = raw[: closing + 1], raw[closing + 1 :]
+        if suffix and (not suffix.startswith(":") or not suffix[1:].isdigit()):
+            return None
+    else:
+        if raw.count(":") > 1:
+            return None
+        host, separator, port = raw.rpartition(":")
+        if not separator:
+            host = raw
+        elif not host or not port.isascii() or not port.isdigit():
+            return None
+    try:
+        return canonical_trusted_host(host)
+    except ValueError:
+        return None
+
+
+class CanonicalTrustedHostMiddleware:
+    """Exact canonical Host validation with safe local IPv6 support."""
+
+    def __init__(self, app: ASGIApp, *, allowed_hosts: tuple[str, ...]) -> None:
+        self.app = app
+        self.allowed_hosts = allowed_hosts
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] not in {"http", "websocket"}:
+            await self.app(scope, receive, send)
+            return
+        host = _host_from_scope(scope)
+        allowed = host is not None and any(
+            host == pattern
+            or (pattern.startswith("*.") and host.endswith(pattern[1:]) and host != pattern[2:])
+            for pattern in self.allowed_hosts
+        )
+        if not allowed:
+            response = PlainTextResponse("Invalid host header", status_code=400)
+            await response(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
+def _safe_exception_event(exc: BaseException, request_id: str) -> dict[str, object]:
+    """Bounded stack metadata that never renders exception values or locals."""
+
+    exceptions: list[dict[str, object]] = []
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen and len(exceptions) < 4:
+        seen.add(id(current))
+        frames = []
+        for frame, line in list(traceback.walk_tb(current.__traceback__))[-16:]:
+            module = frame.f_globals.get("__name__", "unknown")
+            frames.append(
+                {
+                    "function": frame.f_code.co_name[:120],
+                    "line": line,
+                    "module": module[:120] if isinstance(module, str) else "unknown",
+                }
+            )
+        exceptions.append({"exception_type": type(current).__name__[:120], "frames": frames})
+        current = current.__cause__ or (
+            current.__context__ if not current.__suppress_context__ else None
+        )
+    return {
+        "event": "http_unhandled_exception",
+        "exceptions": exceptions,
+        "request_id": request_id,
+        "timestamp": _timestamp(),
+    }
+
+
 class ProductionHTTPMiddleware:
     """A pure-ASGI boundary that never reads or logs request bodies."""
 
@@ -195,18 +278,13 @@ class ProductionHTTPMiddleware:
                 await length_response(scope, receive, send_hardened)
             else:
                 await self.app(scope, receive, send_hardened)
-        except Exception:
+        except Exception as exc:
             _logger.error(
                 json.dumps(
-                    {
-                        "event": "http_unhandled_exception",
-                        "request_id": request_id,
-                        "timestamp": _timestamp(),
-                    },
+                    _safe_exception_event(exc, request_id),
                     sort_keys=True,
                     separators=(",", ":"),
-                ),
-                exc_info=True,
+                )
             )
             if response_started:
                 raise
@@ -248,7 +326,12 @@ class ProductionHTTPMiddleware:
         values = _header_values(scope, b"content-length")
         if not values:
             return None
-        if len(values) != 1 or not values[0].isdigit():
+        if (
+            len(values) != 1
+            or not values[0].isascii()
+            or not values[0].isdigit()
+            or len(values[0]) > 20
+        ):
             return JSONResponse(
                 status_code=400,
                 content={"error": "invalid_content_length", "request_id": request_id},

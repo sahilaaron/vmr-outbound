@@ -28,7 +28,7 @@ class RuntimeConfigurationError(RuntimeError):
 def _local_database_host(host: str | None) -> bool:
     if not host:
         return True
-    lowered = host.lower()
+    lowered = host.lower().removesuffix(".")
     if lowered in _LOCAL_HOSTS or lowered.endswith(".local"):
         return True
     try:

@@ -11,6 +11,7 @@ import html
 import math
 import re
 from collections.abc import Mapping, Sequence
+from itertools import islice
 from typing import Any, TypeAlias
 
 DiagnosticValue: TypeAlias = (
@@ -44,6 +45,10 @@ _INLINE_SECRET = re.compile(
     r"(?i)\b(api[_-]?key|authorization|cookie|password|secret|token)"
     r"\s*[=:]\s*[^\s,;&]+"
 )
+_URL_USERINFO = re.compile(
+    r"(?i)\b(https?|postgres(?:ql)?(?:\+[a-z0-9]+)?|mysql(?:\+[a-z0-9]+)?|redis)"
+    r"://[^\s/@]+(?::[^\s/@]*)?@"
+)
 
 
 def _normalized_key(value: str) -> str:
@@ -58,6 +63,7 @@ def _secret_key(value: str) -> bool:
 
 
 def _bounded_text(value: str, *, max_string: int) -> str:
+    value = _URL_USERINFO.sub(lambda match: f"{match.group(1)}://{REDACTED}@", value)
     cleaned = _INLINE_SECRET.sub(lambda match: f"{match.group(1)}={REDACTED}", value)
     # Diagnostic strings are often rendered into HTML later. Escaping here is a
     # defence-in-depth boundary; Jinja auto-escaping remains required as well.
@@ -92,8 +98,17 @@ def serialize_diagnostic(
         return {"error_type": type(value).__name__, "message": "[exception detail withheld]"}
     if isinstance(value, Mapping):
         result: dict[str, DiagnosticValue] = {}
-        entries = sorted(((str(key), item) for key, item in value.items()), key=lambda row: row[0])
-        for key, item in entries[:max_items]:
+        entries = list(islice(iter(value.items()), max_items + 1))
+        bounded_entries: list[tuple[str, Any]] = []
+        for index, (raw_key, item) in enumerate(entries[:max_items]):
+            if isinstance(raw_key, str):
+                key = raw_key
+            elif type(raw_key) in {type(None), bool, int, float}:
+                key = str(raw_key)
+            else:
+                key = f"[unsupported key {type(raw_key).__name__} #{index + 1}]"
+            bounded_entries.append((key, item))
+        for key, item in sorted(bounded_entries, key=lambda row: row[0]):
             safe_key = _bounded_text(key, max_string=min(max_string, 120))
             result[safe_key] = (
                 REDACTED
@@ -107,10 +122,15 @@ def serialize_diagnostic(
                 )
             )
         if len(entries) > max_items:
-            result["…"] = f"[truncated {len(entries) - max_items} items]"
+            try:
+                omitted = max(1, len(value) - max_items)
+                marker = f"[truncated {omitted} items]"
+            except Exception:
+                marker = "[truncated additional items]"
+            result["…"] = marker
         return result
     if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray, memoryview)):
-        items = list(value)
+        items = list(islice(iter(value), max_items + 1))
         result_list = [
             serialize_diagnostic(
                 item,
@@ -122,7 +142,12 @@ def serialize_diagnostic(
             for item in items[:max_items]
         ]
         if len(items) > max_items:
-            result_list.append(f"[truncated {len(items) - max_items} items]")
+            try:
+                omitted = max(1, len(value) - max_items)
+                marker = f"[truncated {omitted} items]"
+            except Exception:
+                marker = "[truncated additional items]"
+            result_list.append(marker)
         return result_list
     if isinstance(value, (bytes, bytearray, memoryview)):
         return f"[{type(value).__name__} withheld: {len(value)} bytes]"

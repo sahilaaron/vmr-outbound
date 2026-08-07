@@ -13,11 +13,42 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
+from ipaddress import IPv6Address, ip_address
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.features import FeatureFlags
+
+
+def canonical_trusted_host(value: str) -> str:
+    """Return one port-free canonical Host allow-list entry.
+
+    DNS names are case-insensitive and a terminal root dot is semantically
+    insignificant. Bracketed IPv6 literals stay bracketed so they cannot be
+    confused with ``host:port`` syntax.
+    """
+
+    raw = value.strip().lower()
+    wildcard = raw.startswith("*.")
+    if wildcard:
+        raw = raw[2:]
+    if not raw or any(character in raw for character in ("\r", "\n", "/", " ", "\t")):
+        raise ValueError("trusted hosts must be bounded hostnames without spaces or paths")
+    if raw.startswith("[") and raw.endswith("]"):
+        try:
+            address = ip_address(raw[1:-1])
+        except ValueError as exc:
+            raise ValueError("trusted hosts contain an invalid bracketed IPv6 address") from exc
+        if not isinstance(address, IPv6Address) or wildcard:
+            raise ValueError("trusted hosts contain an invalid bracketed IPv6 address")
+        return f"[{address.compressed}]"
+    if ":" in raw:
+        raise ValueError("trusted hosts must not include ports or raw IPv6 addresses")
+    raw = raw.removesuffix(".")
+    if not raw or len(raw) > 253:
+        raise ValueError("trusted hosts must contain bounded non-empty hostnames")
+    return f"*.{raw}" if wildcard else raw
 
 
 def _env_file_for_environment() -> str | None:
@@ -73,6 +104,12 @@ class Settings(BaseSettings):
         min_length=1,
         description="Host header allow-list understood by Starlette TrustedHostMiddleware.",
     )
+
+    @field_validator("trusted_hosts")
+    @classmethod
+    def _canonicalize_trusted_hosts(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(canonical_trusted_host(host) for host in value)
+
     # Forwarded headers are ignored unless the immediate TCP peer belongs to
     # one of these networks. Loopback is the safe local Nginx default; a remote
     # proxy network must be supplied explicitly by deployment configuration.
