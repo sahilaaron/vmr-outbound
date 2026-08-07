@@ -326,7 +326,126 @@ def upgrade() -> None:
     )
 
 
+#: Per-row decision columns this migration adds and its downgrade drops. A row
+#: is only holding something when one of these is set — ``warnings`` defaults to
+#: an empty array, so an empty array is absence, not a decision.
+_ROW_DECISION_PREDICATE = (
+    "error_code IS NOT NULL"
+    " OR warnings <> '[]'::jsonb"
+    " OR membership_action IS NOT NULL"
+    " OR company_match_basis IS NOT NULL"
+    " OR contact_match_basis IS NOT NULL"
+    " OR imported_email_id IS NOT NULL"
+    " OR campaign_contact_id IS NOT NULL"
+    " OR company_id IS NOT NULL"
+    " OR row_fingerprint IS NOT NULL"
+)
+
+#: The same idea for the batch header. ``already_in_campaign_rows`` defaults to
+#: zero, so zero is absence.
+_BATCH_DETAIL_PREDICATE = (
+    "source_schema IS NOT NULL"
+    " OR selected_sheet_index IS NOT NULL"
+    " OR selected_sheet_name IS NOT NULL"
+    " OR sanitized_filename IS NOT NULL"
+    " OR detected_headers IS NOT NULL"
+    " OR uploaded_by IS NOT NULL"
+    " OR confirmed_at IS NOT NULL"
+    " OR already_in_campaign_rows <> 0"
+)
+
+
+def _unrecoverable_state(bind: sa.engine.Connection) -> list[str]:
+    """Which facts this database holds that a downgrade would end.
+
+    Deliberately narrow. The point of the guard is to protect decisions and
+    provenance that exist nowhere else, not to make the migration unreversible
+    for anyone who has ever run it. A database whose import tables predate this
+    migration, and which therefore holds only the defaults the upgrade wrote
+    into them, reverses without ceremony — which is also what keeps the
+    round-trip test in ``tests/test_migrations.py`` meaningful.
+
+    Every entry it returns is a count and a category name. No address, no
+    filename, no identifier and no SQL appears in the result, because the string
+    it builds is raised to whoever is running the migration and that may not be
+    the person entitled to see the contents.
+    """
+
+    holdings: list[str] = []
+    for table, label in (
+        ("imported_contact_emails", "imported address record(s)"),
+        ("import_source_identifiers", "imported source identifier(s)"),
+    ):
+        if bind.execute(sa.text("SELECT to_regclass(:name)"), {"name": f"public.{table}"}).scalar():
+            count = bind.execute(sa.text(f"SELECT count(*) FROM {table}")).scalar_one()
+            if count:
+                holdings.append(f"{count} {label}")
+
+    for table, predicate, label in (
+        (
+            "import_row_validations",
+            _ROW_DECISION_PREDICATE,
+            "per-row import decision(s) (contact and company match basis, membership "
+            "action, refusal code, warnings, row fingerprint)",
+        ),
+        (
+            "import_batches",
+            _BATCH_DETAIL_PREDICATE,
+            "file import batch record(s) with confirmation, uploader, worksheet or "
+            "detected-header provenance",
+        ),
+    ):
+        if not bind.execute(
+            sa.text("SELECT to_regclass(:name)"), {"name": f"public.{table}"}
+        ).scalar():
+            continue
+        count = bind.execute(
+            sa.text(f"SELECT count(*) FROM {table} WHERE {predicate}")
+        ).scalar_one()
+        if count:
+            holdings.append(f"{count} {label}")
+
+    return holdings
+
+
 def downgrade() -> None:
+    """Reverse cleanly on an empty schema; refuse once there is data to lose.
+
+    Four kinds of record disappear here and none of them can be re-derived. The
+    imported address records are the only place the system states which address
+    a Campaign was told to use *and* that no verification provider was asked
+    about it — the pair of facts this whole feature exists to keep. The source
+    identifiers are what make a re-import idempotent, so losing them means the
+    next import of the same file silently duplicates people. The per-row
+    decisions and the batch provenance record what an operator and this system
+    concluded about rows that may have been imported long before this migration
+    ran, on tables that already existed.
+
+    That last point is why the guard looks at more than the two new tables. A
+    downgrade that dropped only what it created would be safe; this one also
+    removes nine columns from ``import_row_validations`` and eight from
+    ``import_batches``, and those columns hold decisions about pre-existing
+    batches too.
+
+    The refusal is conditional on there being something to protect, following
+    APP-003 (``c48b1f70a3d2``) and the seven other guarded migrations in this
+    repository.
+    """
+
+    bind = op.get_bind()
+    holdings = _unrecoverable_state(bind)
+    if holdings:
+        raise RuntimeError(
+            "IMP-001 (c1f7a3e29b04) will not downgrade while the campaign contact file "
+            "import holds records that exist nowhere else: "
+            + "; ".join(holdings)
+            + ". Reversing would destroy them silently and none of them can be "
+            "re-derived — an imported address without its bypass is indistinguishable "
+            "from a verified one, and a rebuilt match is a guess rather than the "
+            "decision that was made. Restore from a backup taken before the upgrade "
+            "instead."
+        )
+
     op.drop_constraint(
         "fk_import_row_validations_imported_email",
         "import_row_validations",
