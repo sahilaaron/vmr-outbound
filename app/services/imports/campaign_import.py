@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import enum
 import hashlib
+import json
 import re
 import uuid
 from collections.abc import Sequence
@@ -257,11 +258,18 @@ def inspect(content: bytes, filename: str | None) -> FileInspection:
             "and import them one at a time."
         )
     for sheet in parsed.sheets:
-        if len(sheet.header) > MAX_COLUMNS:
+        # Physical positions, not the filtered display header. Blank columns are
+        # columns: they cost a Python object on every row and they were how a
+        # 516-column file passed a 512-column limit. The parser now refuses this
+        # at the header row as well; this check remains so the operator gets the
+        # import's own wording rather than the parser's.
+        physical = len(sheet.columns) or len(sheet.header)
+        if physical > MAX_COLUMNS:
             where = f"Sheet {sheet.name!r}" if sheet.name else "The file"
             raise UnreadableFileError(
-                f"{where} has {len(sheet.header):,} columns, which is more than the "
-                f"{MAX_COLUMNS:,}-column limit. Remove the unused columns and try again."
+                f"{where} has {physical:,} columns, which is more than the "
+                f"{MAX_COLUMNS:,}-column limit. Blank and unnamed columns count: delete "
+                "the unused columns to the right of your data and try again."
             )
 
     sheets = tuple(
@@ -422,6 +430,33 @@ def _existing_evidence(
     ).first()
 
 
+def _existing_restatement(
+    session: Session, *, campaign_id: uuid.UUID, fingerprint: str
+) -> ImportedContactEmail | None:
+    """A correction from this exact row content that is already on record.
+
+    Separate from :func:`_existing_evidence` because the two answer different
+    questions, and conflating them was how a re-upload of a corrected file
+    reached enrolment a second time with an idempotency key it had already used
+    for a different batch.
+
+    Restricted to RESTATED evidence. A row that was HELD or whose address was
+    REJECTED must stay re-importable — that is the whole reason the accepted
+    lookup is narrow — but a correction that has already been retained is simply
+    a repeat, and uploading it twice must add nothing.
+    """
+
+    return session.scalars(
+        select(ImportedContactEmail).where(
+            ImportedContactEmail.campaign_id == campaign_id,
+            ImportedContactEmail.row_fingerprint == fingerprint,
+            ImportedContactEmail.slot == ImportedEmailSlot.PRIMARY,
+            ImportedContactEmail.email_stage_outcome.is_(None),
+            ImportedContactEmail.rejection_code == RESTATED_CODE,
+        )
+    ).first()
+
+
 def _membership(
     session: Session, *, campaign_id: uuid.UUID, contact_id: uuid.UUID
 ) -> CampaignContact | None:
@@ -486,6 +521,21 @@ def plan_row(
         plan.error_code = "already_imported"
         plan.error_detail = (
             "This exact row was already imported into this Campaign by an earlier batch."
+        )
+        registers.fingerprints.add(fingerprint)
+        return plan
+
+    # 2b. The same row content already recorded as a correction. Uploading a
+    #     corrected file twice must add nothing — including no second trip
+    #     through enrolment, which would reuse this row's idempotency key.
+    restated = _existing_restatement(session, campaign_id=campaign_id, fingerprint=fingerprint)
+    if restated is not None:
+        plan.prior_evidence_id = restated.id
+        plan.disposition = RowDisposition.SKIPPED_DUPLICATE
+        plan.error_code = "already_recorded_as_a_correction"
+        plan.error_detail = (
+            "This exact row was already recorded as a correction to an address this "
+            "Campaign already holds for the person."
         )
         registers.fingerprints.add(fingerprint)
         return plan
@@ -1348,31 +1398,126 @@ def _commit_row(
 #: accepted address in this Campaign. Not a rejection: nothing is wrong with it.
 RESTATED_CODE = "retained_person_already_has_an_accepted_address"
 
+#: Recorded on the address of a row an operator still has to decide about. Also
+#: not a rejection — the row was held, and the address may well be the right one.
+HELD_CODE = "row_held_for_review"
+
+#: Columns of :class:`ImportedContactEmail` that say WHERE a statement came from,
+#: or what VMR did with it, rather than WHAT was stated.
+#:
+#: Stated as an exclusion and read off the model's own columns, for the reason
+#: the row fingerprint is: a hand-maintained inclusion list drifts. The previous
+#: version of :func:`_retain_restated_address` compared two fields — the address
+#: and the normalized status — so a vendor correcting its verification date, its
+#: source, its verification source or its catch-all claim produced a new row
+#: fingerprint, was correctly recognized as a new statement by the preview, and
+#: was then silently dropped at commit. A column added to this table later is
+#: part of the statement by default.
+_STATEMENT_EXCLUDED_COLUMNS: frozenset[str] = frozenset(
+    {
+        "id",
+        # Provenance: which upload, which row, which Campaign, which person.
+        "import_batch_id",
+        "import_row_id",
+        "campaign_id",
+        "contact_id",
+        "source_row_number",
+        "source_sheet_name",
+        "source_file_checksum",
+        # The row's fingerprint covers the whole ROW, including fields that are
+        # not about the address at all. Two rows differing only in job title
+        # make the same statement about the address, and storing a second copy
+        # of it would be noise rather than evidence.
+        "row_fingerprint",
+        # What VMR decided, which is not part of what the vendor said.
+        "email_stage_outcome",
+        "verification_stage_outcome",
+        "rejection_code",
+        "created_at",
+    }
+)
+
+
+def statement_digest(record: ImportedContactEmail) -> str:
+    """A deterministic digest of everything one imported-address record states.
+
+    Covers the slot, both forms of the address, the schema it was read under and
+    every ``provider_*`` claim — and nothing about where it came from or what was
+    done with it. Two records with the same digest say the same thing, so the
+    second adds nothing; two with different digests are different statements and
+    both have to survive.
+    """
+
+    payload: dict[str, str | None] = {}
+    for column in ImportedContactEmail.__table__.columns:
+        if column.name in _STATEMENT_EXCLUDED_COLUMNS:
+            continue
+        value = getattr(record, column.name, None)
+        if value is None:
+            payload[column.name] = None
+        elif isinstance(value, datetime):
+            payload[column.name] = value.astimezone(UTC).isoformat()
+        elif isinstance(value, enum.Enum):
+            payload[column.name] = value.value
+        else:
+            payload[column.name] = str(value)
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _statements_on_record(
+    session: Session, *, campaign_id: uuid.UUID, contact_id: uuid.UUID, slot: ImportedEmailSlot
+) -> set[str]:
+    """Every statement already durably held about this person's address here."""
+
+    return {
+        statement_digest(existing)
+        for existing in session.scalars(
+            select(ImportedContactEmail).where(
+                ImportedContactEmail.campaign_id == campaign_id,
+                ImportedContactEmail.contact_id == contact_id,
+                ImportedContactEmail.slot == slot,
+            )
+        ).all()
+    }
+
 
 def _retain_restated_address(
     session: Session,
     *,
     record: ImportedContactEmail,
-    superseded_by: ImportedContactEmail,
-) -> None:
-    """Store a restated address as retained evidence, never as the one in use."""
+    campaign_id: uuid.UUID,
+    contact_id: uuid.UUID,
+) -> ImportedContactEmail | None:
+    """Store a restated address as retained evidence, never as the one in use.
 
-    if record.normalized_email == superseded_by.normalized_email and (
-        record.provider_status_normalized == superseded_by.provider_status_normalized
-    ):
-        # Byte-identical restatement of what is already on record. Storing it
-        # again would grow the table without adding a fact.
-        return
+    Returns the record if it was written, ``None`` if this exact statement is
+    already held — which is what keeps a repeated upload of the same corrected
+    file idempotent, however many times it is repeated.
+
+    "Retained" is a real state and not a soft rejection: no stage outcome, no
+    verification outcome, and a code that says why it is not the active address.
+    Exactly one address is the one this Campaign uses for this person, and
+    swapping it is an operator's decision rather than a consequence of somebody
+    uploading a newer file.
+    """
+
+    held = _statements_on_record(
+        session, campaign_id=campaign_id, contact_id=contact_id, slot=record.slot
+    )
     record.email_stage_outcome = None
     record.verification_stage_outcome = None
     record.rejection_code = RESTATED_CODE
+    if statement_digest(record) in held:
+        return None
     try:
         with session.begin_nested():
             session.add(record)
             session.flush()
     except IntegrityError:
-        # Same source row processed twice; the first copy is already there.
-        return
+        # The same source row processed twice inside one batch.
+        return None
+    return record
 
 
 def _bounded(value: str | None, limit: int) -> str | None:
@@ -1417,9 +1562,20 @@ def _write_addresses(
                 ImportedVerificationOutcome.VERIFICATION_BYPASSED_IMPORTED_EMAIL
             )
             code = None
-        elif is_primary:
+        elif is_primary and address.normalized is None:
+            # The address itself could not be used. This is the one case that is
+            # genuinely a refusal of the address rather than of the row.
             stage_outcome = ImportedEmailStageOutcome.IMPORTED_EMAIL_REJECTED
             verification_outcome = ImportedVerificationOutcome.VERIFICATION_NOT_PERFORMED
+            code = rejection_code or plan.error_code
+        elif is_primary:
+            # A row held for review. Its address was not refused — an operator has
+            # simply not decided about it yet — so it is retained in the same
+            # neutral state a secondary address is, with a code saying why. Marking
+            # it REJECTED said the file was wrong about an address that may well be
+            # right, and made the held row's evidence look like a verdict.
+            stage_outcome = None
+            verification_outcome = None
             code = rejection_code or plan.error_code
         else:
             stage_outcome = None
@@ -1464,25 +1620,28 @@ def _write_addresses(
             # doing their job. Either this exact row content already produced
             # accepted evidence for this Campaign, or this PERSON already has an
             # accepted address here and a later file has restated them.
-            accepted_record = _existing_evidence(
+            existing_accepted = _existing_evidence(
                 session, campaign_id=campaign_id, fingerprint=plan.fingerprint
             ) or (
                 accepted_primary_email(session, campaign_id=campaign_id, contact_id=contact_id)
                 if contact_id is not None
                 else None
             )
-            if accepted_record is None or not accepted:
+            if existing_accepted is None or not accepted or contact_id is None:
+                accepted_record = accepted_record or existing_accepted
                 continue
-            # The row said something new — a corrected vendor status, a different
-            # address — and it has to be recorded or the correction is lost. It is
-            # RETAINED, not promoted: exactly one address is the one this Campaign
-            # uses for this person, and deciding to swap it is an operator's call,
-            # not a consequence of uploading a newer file.
-            _retain_restated_address(
+            # The row said something new — a corrected vendor claim, a different
+            # address — and it has to be recorded or the correction is lost.
+            retained = _retain_restated_address(
                 session,
                 record=record,
-                superseded_by=accepted_record,
+                campaign_id=campaign_id,
+                contact_id=contact_id,
             )
+            # The row's own evidence is what its batch lineage should point at.
+            # Pointing it at the address accepted by an EARLIER batch made this
+            # upload look as though it had contributed nothing.
+            accepted_record = retained or existing_accepted
             continue
         if is_primary and accepted:
             accepted_record = record
