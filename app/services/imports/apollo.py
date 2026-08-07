@@ -250,15 +250,25 @@ def neutralize_formula(value: str | None) -> str | None:
 
     if value is None:
         return None
-    if value.startswith(_FORMULA_PREFIXES):
+    if looks_like_formula(value):
         return "'" + value
     return value
 
 
 def looks_like_formula(value: str | None) -> bool:
-    """Whether a cell would be interpreted as a formula by a spreadsheet app."""
+    """Whether a value would be interpreted as a formula by a spreadsheet app.
 
-    return value is not None and value.startswith(_FORMULA_PREFIXES)
+    Judged on the value with surrounding whitespace removed, because that is the
+    value this system stores and later renders — and because a spreadsheet
+    application strips leading whitespace before deciding, so ``" =cmd|..."``
+    opens as a formula too. Reading the untrimmed cell instead meant one leading
+    space suppressed the warning while a live formula was stored under a
+    person's name.
+    """
+
+    if value is None:
+        return False
+    return value.strip().startswith(_FORMULA_PREFIXES)
 
 
 # ---------------------------------------------------------------------------
@@ -750,7 +760,7 @@ def read_row(
 
     row.extras = _extras(raw, detection, cells)
     _add_address_warnings(row)
-    _add_formula_warnings(row, raw)
+    _add_formula_warnings(row, raw, values)
     return row
 
 
@@ -843,16 +853,24 @@ def _add_address_warnings(row: ApolloRow) -> None:
             )
 
 
-def _add_formula_warnings(row: ApolloRow, raw: dict[str, str]) -> None:
+def _add_formula_warnings(row: ApolloRow, raw: dict[str, str], values: dict[str, str]) -> None:
     """Note cells a spreadsheet application would treat as formulas.
 
     Nothing evaluates them here. The warning exists because a value that looks
     like an expression is worth an operator seeing before it is stored under a
     person's name, and because anything exported later is neutralized on the way
     out by :func:`neutralize_formula`.
+
+    Both the verbatim cells and the values this reading actually keeps are
+    scanned. They can disagree — an unmapped column appears only in the first,
+    and whitespace differences used to let the second slip past the check
+    entirely — and the row is worth flagging if either of them is formula-like.
     """
 
-    offenders = [column for column, value in raw.items() if looks_like_formula(value)]
+    offenders = {column for column, value in raw.items() if looks_like_formula(value)}
+    offenders.update(
+        detection_field for detection_field, value in values.items() if looks_like_formula(value)
+    )
     if offenders:
         row.warnings.append(
             (
@@ -872,49 +890,73 @@ def _add_formula_warnings(row: ApolloRow, raw: dict[str, str]) -> None:
 #: persists as meaning. A change to any of them is a genuinely different
 #: statement about the person and deserves fresh evidence; a change to a column
 #: we do not read cannot silently invalidate what we already stored.
-_FINGERPRINT_FIELDS: tuple[str, ...] = (
-    "first_name",
-    "last_name",
-    "title",
-    "seniority",
-    "person_linkedin_identity",
-    "city",
-    "state",
-    "country",
-    "company_name",
-    "company_name_for_emails",
-    "website_domain",
-    "company_linkedin_identity",
-    "employee_count",
-    "industry",
-    "apollo_contact_id",
-    "apollo_account_id",
-    "apollo_record_id",
+#: Keys of :func:`bounded_source_payload` that say WHERE a row sat rather than
+#: WHAT it said. Everything else in that payload is part of the row's meaning and
+#: therefore part of its fingerprint.
+#:
+#: Stated as an exclusion rather than as a parallel inclusion list, deliberately.
+#: The old inclusion list drifted: it omitted every provider claim, both LinkedIn
+#: URLs, the company's geography, annual revenue, the departments and the extras
+#: — all of which the import persists — so a corrected re-export that flipped
+#: Email Status from invalid to valid hashed identical to the original and was
+#: swallowed as "already imported". An exclusion list cannot drift the same way,
+#: because a field added to the payload later is in the fingerprint by default.
+_FINGERPRINT_EXCLUDED_KEYS: frozenset[str] = frozenset(
+    {
+        # Position in the file, not content. Re-ordering rows, moving them to a
+        # differently named sheet, or splitting one file into two must not make
+        # the same person look like a different statement.
+        "row_number",
+        "sheet_name",
+        # Constant for every row read under one contract, so they add nothing;
+        # and folding reader_version in would invalidate every stored
+        # fingerprint on a reader bump, which would break idempotency across a
+        # deploy rather than protect anything.
+        "schema",
+        "reader_version",
+    }
 )
+
+#: Payload keys whose values are opaque vendor keys, compared byte for byte.
+#: Case-folding them could merge two identifiers that a vendor means to be
+#: distinct.
+_FINGERPRINT_EXACT_PREFIXES: tuple[str, ...] = ("apollo_",)
+
+
+def _fold(value: Any, *, exact: bool) -> Any:
+    """Fold one payload value into its fingerprint form, container included."""
+
+    if value is None or isinstance(value, (int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {key: _fold(item, exact=exact) for key, item in sorted(value.items())}
+    if isinstance(value, (list, tuple)):
+        return [_fold(item, exact=exact) for item in value]
+    return str(value) if exact else str(value).casefold()
 
 
 def row_fingerprint(row: ApolloRow) -> str:
-    """A deterministic fingerprint of one row's meaning.
+    """A deterministic fingerprint of everything one row states.
 
-    Case-folded on the free-text fields so a re-export that changed only casing
-    is recognized as the same statement, and exact on the identifiers, which are
-    opaque and may legitimately differ by case.
+    Computed from :func:`bounded_source_payload` minus
+    :data:`_FINGERPRINT_EXCLUDED_KEYS`, so the two cannot disagree about what
+    the import persists as meaning. Case-folded on free text, so a re-export
+    that changed only casing is the same statement; exact on vendor identifiers,
+    which are opaque and may legitimately differ by case.
+
+    The vendor's claims are inside it. That is the point of the rewrite: a
+    vendor that re-exports the same person with Email Status corrected from
+    ``invalid`` to ``valid`` is making a *different* statement, and the import
+    has to be able to see that it did. Keyed on the old fingerprint, the
+    corrected file imported nothing and the stale claim was kept forever.
     """
 
-    payload: dict[str, Any] = {}
-    for name in _FINGERPRINT_FIELDS:
-        value = getattr(row, name)
-        if value is None:
-            payload[name] = None
-        elif name.startswith("apollo_"):
-            payload[name] = value
-        else:
-            payload[name] = str(value).casefold()
-    for address in ("primary", "secondary", "tertiary"):
-        supplied: ImportedAddress | None = getattr(row, address)
-        payload[f"{address}_email"] = (
-            supplied.normalized or supplied.raw.casefold() if supplied else None
-        )
+    source = bounded_source_payload(row)
+    payload = {
+        key: _fold(value, exact=key.startswith(_FINGERPRINT_EXACT_PREFIXES))
+        for key, value in source.items()
+        if key not in _FINGERPRINT_EXCLUDED_KEYS
+    }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
@@ -960,6 +1002,18 @@ def bounded_source_payload(row: ApolloRow) -> dict[str, Any]:
         "extras": row.extras,
     }
     for address in row.addresses:
-        payload[f"{address.slot}_email"] = address.normalized or address.raw
-        payload[f"{address.slot}_email_provider_status"] = address.provider_status_normalized
+        slot = address.slot
+        payload[f"{slot}_email"] = address.normalized or address.raw
+        # Every claim the vendor made about this address, so the stored reading
+        # is complete and so the fingerprint derived from it can tell a
+        # corrected re-export from a repeat of the same one.
+        payload[f"{slot}_email_provider_status"] = address.provider_status_normalized
+        payload[f"{slot}_email_provider_source"] = address.provider_source
+        payload[f"{slot}_email_provider_verification_source"] = address.provider_verification_source
+        payload[f"{slot}_email_provider_catch_all"] = address.provider_catch_all_normalized
+        payload[f"{slot}_email_provider_last_verified_at"] = (
+            address.provider_last_verified_at.isoformat()
+            if address.provider_last_verified_at is not None
+            else address.provider_last_verified_raw
+        )
     return payload

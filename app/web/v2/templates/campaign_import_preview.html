@@ -25,7 +25,7 @@
     <span>Preview</span>
   </nav>
 
-  <h1 class="v2-h1">Preview — {{ staged.filename }}</h1>
+  <h1 class="v2-h1">Preview — {{ staged.filename | neutralize }}</h1>
 
   {% if fatal_error %}
   <div class="v2-note v2-note-err" role="alert">{{ fatal_error }}</div>
@@ -68,7 +68,7 @@
           {% endif %}
         </dd>
         <dt>Worksheet</dt>
-        <dd>{{ preview.sheet_name or "the file (CSV has one sheet)" }}</dd>
+        <dd>{{ (preview.sheet_name | neutralize) or "the file (CSV has one sheet)" }}</dd>
         <dt>Columns recognised</dt>
         <dd>{{ preview.recognized_columns | length }} of {{ preview.headers | length }}</dd>
         <dt>Total rows</dt>
@@ -102,13 +102,13 @@
           Kept verbatim with each row as source evidence. They are never guessed into a
           recognised field.
         </p>
-        <p class="v2-mono">{{ preview.unmapped_columns | join(", ") }}</p>
+        <p class="v2-mono">{{ preview.unmapped_columns | map("neutralize") | join(", ") }}</p>
       </details>
       {% endif %}
       {% if preview.duplicate_columns %}
       <div class="v2-note v2-note-warn v2-mt">
         More than one column claims the same field
-        ({% for column, target in preview.duplicate_columns %}“{{ column }}” → {{ target }}{% if not loop.last %}, {% endif %}{% endfor %}).
+        ({% for column, target in preview.duplicate_columns %}“{{ column | neutralize }}” → {{ target }}{% if not loop.last %}, {% endif %}{% endfor %}).
         The first was used; the rest are kept as unrecognised columns.
       </div>
       {% endif %}
@@ -162,25 +162,25 @@
           <tr>
             <td>{{ row.row_number }}</td>
             <td>
-              {{ row.apollo_row.first_name | default("", true) }}
-              {{ row.apollo_row.last_name | default("", true) }}
-              {% if row.apollo_row.title %}<div class="v2-sub">{{ row.apollo_row.title }}</div>{% endif %}
+              {{ row.apollo_row.first_name | neutralize | default("", true) }}
+              {{ row.apollo_row.last_name | neutralize | default("", true) }}
+              {% if row.apollo_row.title %}<div class="v2-sub">{{ row.apollo_row.title | neutralize }}</div>{% endif %}
             </td>
             <td>
               {{ row.apollo_row.company_name | neutralize | default("—", true) }}
               {% if row.apollo_row.website_domain %}
-              <div class="v2-sub">{{ row.apollo_row.website_domain }}</div>
+              <div class="v2-sub">{{ row.apollo_row.website_domain | neutralize }}</div>
               {% endif %}
             </td>
             <td>
               {% if row.apollo_row.primary %}
-              <span class="v2-mono">{{ row.apollo_row.primary.normalized
-                    or (row.apollo_row.primary.raw | neutralize) }}</span>
+              <span class="v2-mono">{{ (row.apollo_row.primary.normalized
+                    or row.apollo_row.primary.raw) | neutralize }}</span>
               {% if row.apollo_row.primary.provider_status_normalized %}
               <div class="v2-sub">
-                vendor claims: {{ row.apollo_row.primary.provider_status_normalized }}
+                vendor claims: {{ row.apollo_row.primary.provider_status_normalized | neutralize }}
                 {%- if row.apollo_row.primary.provider_catch_all_normalized %},
-                catch-all {{ row.apollo_row.primary.provider_catch_all_normalized }}{% endif %}
+                catch-all {{ row.apollo_row.primary.provider_catch_all_normalized | neutralize }}{% endif %}
               </div>
               {% endif %}
               {% else %}—{% endif %}
@@ -193,7 +193,7 @@
               {% endif %}
               {% if row.company %}
               <div>Company: {{ row.company.action.value | replace("_", " ") }}
-                {%- if row.company.domain %} <span class="v2-mono">{{ row.company.domain }}</span>{% endif %}
+                {%- if row.company.domain %} <span class="v2-mono">{{ row.company.domain | neutralize }}</span>{% endif %}
                 {%- if row.company.basis %} <span class="v2-sub">by {{ row.company.basis.value }}</span>{% endif %}
               </div>
               {% endif %}
@@ -204,9 +204,9 @@
                                       else 'on' }}">
                 {{ row.disposition.value | replace("_", " ") }}
               </span>
-              {% if row.error_detail %}<div class="v2-sub">{{ row.error_detail }}</div>{% endif %}
+              {% if row.error_detail %}<div class="v2-sub">{{ row.error_detail | neutralize }}</div>{% endif %}
               {% for code, message in row.warnings %}
-              <div class="v2-sub warn">⚠ {{ message }}</div>
+              <div class="v2-sub warn">⚠ {{ message | neutralize }}</div>
               {% endfor %}
               <div class="v2-sub">{{ row.expected_pipeline }}</div>
             </td>
