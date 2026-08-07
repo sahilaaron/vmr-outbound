@@ -2,45 +2,70 @@
 
 Last updated: 2026-08-08
 
-## Product decision
+## Locked scope for the current delivery cycle
 
-The immediate beta does **not** wait for Gmail integration.
-
-For every Campaign Contact that passes Personalization, VMR should produce one coherent seven-message sequence. Those messages are considered approved by default because mandatory human review is not operationally realistic at current quality. A human may still inspect and make a basic edit. Rich rewriting assistance can come later.
-
-The **application itself is the primary Beta 1 delivery surface**:
+The current cycle is now fixed to the following outcome:
 
 ```text
-Capture / Import
-→ Identity
-→ Company
-→ Research
-→ Company Intelligence
-→ Insights
-→ Personalization
-→ seven-message sequence
-→ approved by default
-→ optional human review/basic edit
-→ operator views all seven messages in the application
-→ operator copies subject/body directly from the UI into the existing sending platform
-→ operator tracks sending manually for Beta 1
+1. Finish/cross-review/merge IMP-001 and Production Hardening
+2. Reconcile and merge the seven-message Personalization sequence
+3. Build the Beta 1 operator UI
+   - seven messages visible together
+   - approved by default
+   - optional basic versioned edit
+   - Copy subject / Copy body / Copy email
+4. Add optional Campaign XLSX/CSV export
+5. Publish/deploy the merged application to the VPS staging runtime
+6. Run Claude CLI/background workers on the VPS service runtime
+7. Put HTTPS + internal authentication in front of the application
+8. Add Sign in with Google / Google Workspace identity
+9. Add Gmail mailbox authorization for the connected user
+10. Allow the operator to create one selected VMR message as an individual Gmail draft on demand
+11. Run real end-to-end internal acceptance with the first operator
 ```
 
-A Campaign XLSX/CSV download is an additional convenience capability, not the main workflow and not a Beta 1 source of truth.
+This is the target for the current cycle. Full Gmail cadence automation, sent/reply monitoring and automatic creation of later follow-up drafts are **not** required to declare this cycle complete.
+
+## Product decision
+
+For every Campaign Contact that passes Personalization, VMR produces one coherent seven-message sequence. Successful generated messages are considered approved by default because mandatory human review is not operationally realistic at current output quality. A human may still inspect and make a basic edit. Rich rewrite/regenerate controls can come later.
+
+The **application itself is the primary Beta 1 operating surface**:
+
+```text
+Campaign
+→ eligible Contacts
+→ seven-message sequence
+→ approved by default
+→ optional inspection/basic edit
+→ operator copies subject/body/full email directly from the VMR UI
+→ operator uses the team's existing sending platform
+```
+
+The Campaign XLSX/CSV download is an additional convenience capability only. It is not the primary workflow and is not authoritative.
 
 The application remains authoritative for evidence, generation, versions and sequence state.
 
-Beta 2 adds Gmail automation:
+## Google identity versus Gmail mailbox access
+
+These are related but distinct capabilities and must remain separate in the implementation:
+
+- **Sign in with Google / Google Workspace OAuth identity** authenticates the internal user to VMR.
+- **Gmail mailbox authorization** grants only the Gmail permissions needed by the delivery feature and associates the connected mailbox with that authenticated VMR user.
+
+Do not treat Google sign-in alone as Gmail authorization.
+
+For this cycle, the Gmail slice is deliberately narrow:
 
 ```text
-approved sequence
-→ VMR creates current actionable Gmail draft
-→ human sends manually
-→ VMR observes sent/reply state
-→ next same-thread follow-up is created at the configured cadence only while still eligible
+operator views one VMR sequence message
+→ clicks Create Gmail Draft
+→ VMR creates or updates that one selected message as a draft in the operator's authorized mailbox
+→ VMR stores durable draft/mailbox/version lineage
+→ operator continues working manually
 ```
 
-Google Sheets is not required for Beta 1 or Beta 2. Revisit it only if a live shared spreadsheet provides operational value beyond the application and optional export.
+No automatic send authority is introduced.
 
 ## Current engineering state
 
@@ -50,15 +75,17 @@ See `DELIVERY_RECONCILIATION_2026_08_08.md` for exact branch sequencing.
 
 ## Immediate delivery order
 
-### 1. Finish and independently accept IMP-001
+### 1. Finish and independently accept IMP-001 and Production Hardening
 
-Complete the successor repair, perform final independent review, publish the accepted exact head to PR #242, obtain exact-head CI and merge.
+Complete both successor repairs, cross-review them independently, publish the accepted exact heads, obtain exact-head CI and merge.
 
 Imported email truth remains non-negotiable: supplied by file is not discovered and is not provider-verified.
 
-### 2. Reconcile the seven-message sequence and change the approval contract
+Production readiness must recover after transient dependency failure without process restart.
 
-After final IMP-001 merges, reconcile SEQ-001 against the final import migration/read-model behavior.
+### 2. Reconcile and publish the seven-message sequence
+
+After final IMP-001 merges, reconcile SEQ-001 against the final import migration/read-model behavior and the current merged application.
 
 Produce one coherent versioned sequence per Campaign Contact:
 
@@ -70,16 +97,16 @@ Produce one coherent versioned sequence per Campaign Contact:
 6. Follow-up 5 — low-friction resource offer
 7. Follow-up 6 — polite close-the-loop
 
-New beta approval rule:
+Beta approval rule:
 
 - successful generated messages are **approved by default**;
 - human review is optional, not a required gate;
 - a human can inspect all seven messages;
 - a human can perform a basic edit;
-- an edit must create/preserve auditable version history rather than silently overwrite generated text;
+- edits preserve auditable version history rather than silently overwriting generated text;
 - richer rewrite/regenerate controls are deferred.
 
-### 3. Build the Beta 1 sequence operating UI
+### 3. Build the Beta 1 operator UI
 
 The application UI is the primary handoff surface.
 
@@ -87,112 +114,146 @@ For each Campaign Contact that has completed Personalization, the operator must 
 
 - see all seven generated messages together in a clear sequence view;
 - see step number/purpose and recommended timing;
-- see the subject and body for each message;
+- see subject and body for each message;
 - copy the subject directly;
 - copy the body directly;
-- preferably copy subject + body together where useful;
+- copy subject + body/full email directly where useful;
 - make a basic edit while preserving version history;
 - see whether the current text is generated or edited;
 - move between Contacts without opening seven separate review records;
 - understand that the sequence is approved by default unless they choose to intervene.
 
-The copy action should be obvious and low-friction. Beta 1 assumes operators manually paste the messages into their existing sending platform.
+Copy actions must be obvious and low-friction.
 
-### 4. Add Campaign workbook export as a convenience capability
+### 4. Add Campaign workbook export as an optional convenience
 
-Each Campaign may also provide a downloadable XLSX snapshot generated from current authoritative application data.
+Each Campaign may provide a downloadable XLSX snapshot generated from current authoritative application data.
 
-Preferred first shape: **one row per Campaign Contact**, with identity/company columns followed by seven message groups.
+Preferred first shape: one row per Campaign Contact, with identity/company columns followed by seven message groups.
 
-At minimum include:
-
-- Contact name;
-- Company;
-- email address and truthful email-origin/verification status;
-- sequence/version identifiers;
-- Message 1 subject/body through Message 7 subject/body;
-- recommended delay/timing for each follow-up where available;
-- generated/edited indicator and useful version metadata.
+At minimum include Contact, Company, truthful email status/origin, sequence/version identifiers, all seven subjects/bodies, recommended timing and useful generated/edited version metadata.
 
 Export requirements:
 
 - Campaign-scoped;
 - deterministic and repeatable;
 - no duplicate rows for the same Campaign Contact;
-- safe spreadsheet rendering / formula neutralization;
-- readable in Excel and equivalent spreadsheet software;
-- download must not mutate sequence state;
-- workbook is a snapshot, not a live sync target;
-- no Gmail, Google OAuth or Google Sheets dependency.
+- spreadsheet-formula safe;
+- readable in Excel and equivalent software;
+- download does not mutate sequence state;
+- snapshot only, never a live synchronization target;
+- no Gmail/Google dependency.
 
-CSV may be a secondary format, but XLSX is preferred because seven long email bodies are easier to operate in a formatted workbook.
+CSV may be secondary. XLSX is preferred for usability with long message bodies.
 
-This export is an **add-on**. Beta 1 remains usable from the application UI without downloading anything.
+### 5. Deploy the merged Beta 1 application to the VPS
 
-### 5. Finish and independently accept Production Hardening
+Publish/review the staging-foundation branch and deploy the final merged application.
 
-The production branch must pass the external-review readiness recovery attack before publication. One stalled dependency probe must never poison process readiness for life.
+Validate:
 
-After final review, publish as a draft PR, obtain exact-head CI and merge.
+- staging PostgreSQL migrations;
+- managed `vmr-web` and `vmr-worker` services;
+- Claude CLI/background agent runtime under the dedicated VPS service account;
+- logs and backups;
+- `/healthz` and `/readyz`;
+- restart/reboot recovery;
+- smoke tests;
+- Nginx/reverse-proxy behavior;
+- HTTPS on the chosen application hostname.
 
-### 6. Publish the VPS staging foundation and deploy Beta 1 to staging
+The same VPS-hosted VMR application serves the operator UI; a second frontend is not required for this cycle.
 
-Deploy the merged application only after application hardening contracts are stable. Validate web/worker services, staging PostgreSQL migrations, backups, logs, `/healthz`, `/readyz`, restart/reboot behavior and smoke checks.
+### 6. Add internal authentication and Google sign-in
 
-### 7. Beta 1 internal launch
+Introduce the minimum internal-user/account model required for the first operator.
 
-Operators should be able to:
+Provide **Sign in with Google** / Google Workspace OAuth identity. Authorization remains application-owned: signing into Google does not by itself authorize Gmail mailbox access.
 
-- open a Campaign;
-- see which Contacts completed Personalization;
-- open a Contact's seven-message sequence;
-- copy each message directly from the application into the existing sending platform;
-- optionally make a basic edit;
-- optionally download the Campaign workbook;
-- manually track campaign sending progress for this first beta.
+Restrict initial access to explicitly approved internal users/domain policy as appropriate.
 
-This is the immediate delivery target.
+### 7. Add the first Gmail slice — individual on-demand draft creation
 
-### 8. Beta 2 — internal users, Google Workspace and Gmail delivery state
+Allow an authenticated operator with an authorized Gmail mailbox to select an individual VMR sequence message and create it as a Gmail draft.
 
-After Beta 1 is stable, add internal application users, organization/workspace membership, Google OAuth and mailbox ownership.
+Requirements:
 
-Then build Gmail integration around the human-send contract:
+- explicit user/mailbox ownership;
+- least-privilege Gmail OAuth scope appropriate to draft creation/management;
+- encrypted refresh-token/credential storage;
+- durable Gmail draft ID;
+- VMR Campaign Contact + sequence/message/version lineage;
+- idempotency: repeated action does not create duplicate drafts accidentally;
+- operator-visible success/failure state;
+- safe retry behavior;
+- deleting/recreating a draft must not fabricate send state;
+- VMR must never auto-send.
 
-1. VMR creates or updates only the current actionable draft.
-2. A human sends manually from Gmail.
-3. VMR observes the sent message and records message/thread IDs.
-4. When cadence permits and no reply/stop/suppression applies, VMR creates the next follow-up in the same thread.
-5. A reply, suppression or operator stop holds future steps.
+For this cycle, automatic cadence scheduling, sent-message observation, replies and automatic same-thread follow-ups remain deferred.
 
-### 9. Google Sheets decision checkpoint
+### 8. Real end-to-end internal acceptance
 
-Do not build Google Sheets synchronization merely because it appeared in the earlier roadmap.
+The first operator should be able to:
 
-After Beta 1 application use and Beta 2 Gmail use are tangible, decide whether a live Google Sheet solves a remaining collaboration/adoption problem. If not, defer it.
+1. reach the HTTPS-hosted VMR application;
+2. sign in with Google;
+3. open a Campaign;
+4. find Contacts that passed Personalization;
+5. view all seven messages;
+6. optionally edit a message;
+7. copy any message directly from the UI;
+8. optionally download the Campaign workbook;
+9. connect/authorize their Gmail mailbox;
+10. click one selected message and create an individual Gmail draft;
+11. open Gmail and see the correct draft with correct lineage/state retained in VMR.
 
-If ever built, Sheets remains a projection only and never becomes authoritative for sequence state, Gmail state, evidence, approvals or delivery decisions.
+Passing this workflow is the acceptance target for this cycle.
+
+## Next cycle — Gmail delivery automation
+
+After the current cycle is stable, build the full human-send Gmail state machine:
+
+```text
+VMR creates current actionable draft at cadence
+→ human sends manually
+→ VMR observes sent message and thread ID
+→ reply/stop/suppression state is evaluated
+→ next follow-up draft is created in the same Gmail thread only when eligible
+```
+
+This later slice requires durable sent/reply/thread state, cadence scheduling and explicit stop conditions.
+
+## Google Sheets status
+
+Google Sheets synchronization is not required for the current cycle and is not currently a committed delivery gate.
+
+The application UI + optional XLSX export now cover the immediate operator handoff need. Revisit live Sheets synchronization only if internal use demonstrates a collaboration/reporting requirement that neither the application nor export serves well.
+
+If built later, Sheets remains a projection only and never becomes authoritative for sequence state, Gmail state, evidence, approvals or delivery decisions.
 
 ## Deferred but recorded
 
 - automatic sending;
-- rich AI rewrite/regenerate controls for already-generated sequence messages;
-- Google Sheets live synchronization unless a concrete need survives Beta 1/2;
+- automatic Gmail cadence/follow-up creation;
+- Gmail sent/reply/thread monitoring beyond what is required for later automation;
+- rich AI rewrite/regenerate controls;
+- Google Sheets live synchronization unless a concrete need survives internal use;
 - broad provider sending infrastructure;
 - Broadcast Campaign mode;
 - broader CRM/workflow expansion.
 
 ## Non-negotiable product boundaries
 
-- successful Personalization sequences are approved by default for Beta 1, but humans retain optional inspection/edit authority;
+- successful Personalization sequences are approved by default, while humans retain optional inspection/edit authority;
 - edits preserve version history;
-- the application UI is the primary Beta 1 operating surface;
+- the application UI is the primary operating surface;
 - exports are convenience snapshots only;
+- Google identity and Gmail mailbox authorization remain separate permission boundaries;
+- Gmail draft creation is human-invoked in this cycle and must never auto-send;
 - Company Intelligence remains company-scoped;
 - Personalization cannot treat classifications as proof independent of Research evidence;
 - imported email cannot be represented as provider-verified email;
 - exported spreadsheet cells must be safe against formula execution while source evidence remains unchanged in the database;
-- Gmail integration, when built, must be durable, auditable, retryable and idempotent;
-- replies, suppression and explicit stop conditions must prevent later Gmail sequence steps;
+- Gmail integrations must be durable, auditable, retryable and idempotent;
 - no external provider action may fabricate verification, delivery or send status;
 - new work must preserve immutable evidence and exact generation lineage.
