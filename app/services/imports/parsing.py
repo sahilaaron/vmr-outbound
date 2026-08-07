@@ -231,6 +231,64 @@ def _cell_to_text(value: Any) -> str:
     return str(value)
 
 
+def validate_csv_quoting(text: str, *, delimiter: str = ",") -> None:
+    """Raise :class:`MalformedFileError` for a quote used where CSV forbids one.
+
+    Python's reader with ``strict=True`` rejects a bad transition *after* a
+    quoted field — ``"A"da`` — and an unterminated quoted field. It does not
+    reject a quote that *begins* inside an unquoted field: ``A"da`` and
+    ``A"da"`` are both read as literal text. That is silent transformation of
+    the operator's source bytes into different immutable evidence, and it
+    contradicts the message this module already shows, which promises that a
+    quotation mark in the middle of an unquoted value is an error.
+
+    Deliberately not a CSV parser. It walks only the quote characters, in order,
+    and asks one question of each: given whether we are inside a quoted field,
+    is this quote legal here? Everything else in the file is skipped, so an
+    ordinary export costs one pass over its quotes rather than over its bytes.
+
+    Legal, and unchanged:
+
+    - ``"Ada, the first"`` — a quoted field containing the delimiter;
+    - a quoted field whose text contains doubled quotes, which CSV uses to mean
+      one literal quote character;
+    - a quoted field containing newlines;
+    - a file with no quotes at all.
+    """
+
+    if '"' not in text:
+        return
+
+    terminators = {delimiter, "\n", "\r"}
+    in_quoted = False
+    index = text.find('"')
+    while index != -1:
+        if not in_quoted:
+            # A quote may only open a field, so the character before it has to be
+            # the start of the file or a delimiter/newline. Anything else means
+            # the quote appeared part-way through an unquoted value.
+            if index != 0 and text[index - 1] not in terminators:
+                raise MalformedFileError(_CSV_QUOTING_MESSAGE)
+            in_quoted = True
+            index = text.find('"', index + 1)
+            continue
+
+        following = text[index + 1] if index + 1 < len(text) else ""
+        if following == '"':
+            # An escaped quote inside a quoted field. Skip both.
+            index = text.find('"', index + 2)
+            continue
+        if following == "" or following in terminators:
+            in_quoted = False
+            index = text.find('"', index + 1)
+            continue
+        # A closing quote followed by more of the same field: ``"A"da``.
+        raise MalformedFileError(_CSV_QUOTING_MESSAGE)
+
+    if in_quoted:
+        raise MalformedFileError(_CSV_QUOTING_MESSAGE)
+
+
 def parse_csv(content: bytes) -> ParsedFile:
     """Parse CSV bytes into the shared shape (single sheet, index 0)."""
 
@@ -242,13 +300,18 @@ def parse_csv(content: bytes) -> ParsedFile:
             "UTF-8 encoding and upload again."
         ) from exc
 
+    # Quoting is validated before anything is read, because the reader cannot be
+    # asked the question that matters: ``strict=True`` catches a bad transition
+    # after a quoted field but accepts a quote that begins inside an unquoted
+    # one, which is the difference between refusing malformed input and quietly
+    # storing text the file did not contain.
+    validate_csv_quoting(text)
+
     # ``csv.reader`` rather than ``DictReader``: the dict is built here so that a
     # repeated header name keeps its FIRST column's value instead of being
     # overwritten by the last, and so the positional reading survives at all.
-    # ``strict=True`` so a malformed quote is an error rather than a silent
-    # transformation. Without it, ``"A"da`` was quietly read as ``Ada`` — the
-    # immutable raw row then recorded text the file did not contain — and an
-    # unterminated quote swallowed the rest of the line into one cell.
+    # ``strict=True`` is kept as well: the two overlap, and neither alone covers
+    # every malformed shape.
     reader = csv.reader(io.StringIO(text), strict=True)
     try:
         first = next(reader, None)
