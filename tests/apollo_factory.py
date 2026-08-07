@@ -171,6 +171,26 @@ def xlsx_bytes(
     return stream.getvalue()
 
 
+def xlsx_positional_bytes(sheet_name: str, header: tuple[str, ...], rows: list[list[str]]) -> bytes:
+    """A workbook whose rows are given BY POSITION rather than by header name.
+
+    :func:`xlsx_bytes` takes header-keyed dictionaries, which cannot express two
+    different values under two blank headers — the dict collapses them before
+    openpyxl ever sees them. Any test about repeated blank headers written
+    against that helper is testing the helper, not the parser.
+    """
+
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    worksheet = workbook.create_sheet(title=sheet_name)
+    worksheet.append(list(header))
+    for row in rows:
+        worksheet.append(list(row))
+    stream = io.BytesIO()
+    workbook.save(stream)
+    return stream.getvalue()
+
+
 def xlsx_with_formula(header: tuple[str, ...], rows: list[dict[str, str]]) -> bytes:
     """A workbook whose first data row carries a real, uncached formula cell.
 

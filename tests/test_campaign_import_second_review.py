@@ -267,22 +267,17 @@ def test_a_changed_address_for_the_same_person_is_held_not_swapped(
     assert supplied[0].rejection_code == campaign_import.HELD_CODE
 
 
-def test_the_statement_digest_is_derived_from_the_models_own_columns() -> None:
-    """A provider column added later is part of the statement by default.
-
-    Asserted structurally because the failure being prevented is drift: the
-    previous comparison was a hand-written pair of fields, and every claim
-    outside it was discarded.
-    """
-
-    covered = {
-        column.name
-        for column in ImportedContactEmail.__table__.columns
-        if column.name not in campaign_import._STATEMENT_EXCLUDED_COLUMNS
-    }
-    for claim in (
+#: Every column of ``imported_contact_emails`` that IS part of what the vendor
+#: stated. Written out in full and asserted as an exact set, not a sample: the
+#: digest is built by exclusion, so a column added to the model later joins the
+#: statement automatically and nothing would notice unless this list is pinned.
+#: A new column arriving here should be a deliberate edit with a reason.
+STATEMENT_CLAIM_COLUMNS: frozenset[str] = frozenset(
+    {
+        "slot",
         "raw_email",
         "normalized_email",
+        "source_schema",
         "provider_source",
         "provider_status_raw",
         "provider_status_normalized",
@@ -291,11 +286,105 @@ def test_the_statement_digest_is_derived_from_the_models_own_columns() -> None:
         "provider_catch_all_normalized",
         "provider_last_verified_at",
         "provider_last_verified_raw",
-        "slot",
-    ):
-        assert claim in covered
-    for provenance in ("import_batch_id", "campaign_id", "contact_id", "created_at"):
-        assert provenance not in covered
+    }
+)
+
+#: Everything else: where the statement came from, and what VMR did with it.
+STATEMENT_PROVENANCE_COLUMNS: frozenset[str] = frozenset(
+    {
+        "id",
+        "import_batch_id",
+        "import_row_id",
+        "campaign_id",
+        "contact_id",
+        "source_row_number",
+        "source_sheet_name",
+        "source_file_checksum",
+        "row_fingerprint",
+        "email_stage_outcome",
+        "verification_stage_outcome",
+        "rejection_code",
+        "created_at",
+    }
+)
+
+
+def test_the_statement_digest_partitions_the_model_exactly() -> None:
+    """The exact partition, both directions, with nothing unaccounted for."""
+
+    columns = {column.name for column in ImportedContactEmail.__table__.columns}
+    assert STATEMENT_CLAIM_COLUMNS | STATEMENT_PROVENANCE_COLUMNS == columns, (
+        "a column was added to imported_contact_emails without being classified "
+        "as a claim or as provenance; the digest includes it by default"
+    )
+    assert not (STATEMENT_CLAIM_COLUMNS & STATEMENT_PROVENANCE_COLUMNS)
+    assert campaign_import._STATEMENT_EXCLUDED_COLUMNS == STATEMENT_PROVENANCE_COLUMNS
+
+    included = columns - campaign_import._STATEMENT_EXCLUDED_COLUMNS
+    assert included == STATEMENT_CLAIM_COLUMNS
+    assert len(STATEMENT_CLAIM_COLUMNS) == 12
+    assert len(STATEMENT_PROVENANCE_COLUMNS) == 13
+
+
+def _statement_probe(db_session: Session) -> ImportedContactEmail:
+    campaign = af.make_campaign(db_session)
+    _confirm(db_session, campaign, [af.row()], "probe.csv")
+    return db_session.scalars(select(ImportedContactEmail)).first()  # type: ignore[return-value]
+
+
+_MUTATIONS: dict[str, Any] = {
+    "slot": ImportedEmailSlot.SECONDARY,
+    "raw_email": "mutated@engines.example",
+    "normalized_email": "mutated@engines.example",
+    "source_schema": "mutated_schema_v9",
+    "provider_source": "Mutated Source",
+    "provider_status_raw": "Mutated",
+    "provider_status_normalized": "mutated",
+    "provider_verification_source": "Mutated Verification",
+    "provider_catch_all_raw": "Mutated Catch-all",
+    "provider_catch_all_normalized": "mutated catch-all",
+    "provider_last_verified_raw": "mutated timestamp",
+}
+
+
+@pytest.mark.parametrize("column", sorted(_MUTATIONS))
+def test_every_claim_column_changes_the_digest(db_session: Session, column: str) -> None:
+    record = _statement_probe(db_session)
+    before = campaign_import.statement_digest(record)
+    setattr(record, column, _MUTATIONS[column])
+    assert campaign_import.statement_digest(record) != before, column
+
+
+def test_the_datetime_claim_column_changes_the_digest(db_session: Session) -> None:
+    from datetime import UTC, datetime
+
+    record = _statement_probe(db_session)
+    before = campaign_import.statement_digest(record)
+    record.provider_last_verified_at = datetime(2031, 1, 2, 3, 4, 5, tzinfo=UTC)
+    assert campaign_import.statement_digest(record) != before
+
+
+@pytest.mark.parametrize(
+    "column",
+    sorted(
+        STATEMENT_PROVENANCE_COLUMNS
+        - {"id", "created_at", "campaign_id", "import_batch_id", "import_row_id", "contact_id"}
+    ),
+)
+def test_no_provenance_column_changes_the_digest(db_session: Session, column: str) -> None:
+    record = _statement_probe(db_session)
+    before = campaign_import.statement_digest(record)
+    replacements: dict[str, Any] = {
+        "source_row_number": 4242,
+        "source_sheet_name": "Another Sheet",
+        "source_file_checksum": "0" * 64,
+        "row_fingerprint": "f" * 64,
+        "email_stage_outcome": None,
+        "verification_stage_outcome": None,
+        "rejection_code": "some_code",
+    }
+    setattr(record, column, replacements[column])
+    assert campaign_import.statement_digest(record) == before, column
 
 
 # ===========================================================================
@@ -324,15 +413,36 @@ def test_the_boundary_leaves_ordinary_values_alone(payload: str) -> None:
     assert display.safe_text(payload) == payload
 
 
-def test_the_boundary_is_the_same_object_everywhere() -> None:
-    """One function, registered under one name, in every environment that can
-    render imported text — so ``neutralize`` cannot come to mean two things."""
+def test_the_boundary_is_the_same_object_in_all_four_environments() -> None:
+    """One function, one name, in **every** environment that renders imported
+    text — the previous version of this test checked two of the four while
+    claiming everywhere, and a missing registration in one of the other two
+    later took 223 tests down."""
 
     from app.web.admin_workbench import templates as admin_templates
+    from app.web.company_intelligence import templates as ci_templates
+    from app.web.routes import templates as legacy_templates
     from app.web.v2.routes import templates as v2_templates
 
-    assert v2_templates.env.filters["neutralize"] is display.safe_text
-    assert admin_templates.env.filters["neutralize"] is display.safe_text
+    environments = {
+        "admin": admin_templates,
+        "customer_v2": v2_templates,
+        "legacy_customer": legacy_templates,
+        "company_intelligence": ci_templates,
+    }
+    for name, templates in environments.items():
+        assert "neutralize" in templates.env.filters, f"{name} has no neutralize filter"
+        assert templates.env.filters["neutralize"] is display.safe_text, name
+    assert len(environments) == 4
+
+
+def test_every_admin_template_compiles() -> None:
+    """The filter is only useful where the template can actually be loaded."""
+
+    from app.web.admin_workbench import templates as admin_templates
+
+    for path in sorted(Path("app/web/templates/admin").glob("*.html")):
+        admin_templates.env.get_template(f"admin/{path.name}")
 
 
 def _hostile_row(prefix: str) -> dict[str, str]:
@@ -531,6 +641,53 @@ def test_the_width_limit_is_reached_before_any_data_row_is_built() -> None:
         parsing.parse_file(_csv_bytes(header, *rows), "wide.csv")
 
 
+def test_the_csv_reader_never_asks_for_a_data_row_on_an_over_wide_file() -> None:
+    """A sentinel proves the ORDERING, which a raises-assertion cannot.
+
+    ``parse_csv`` reads from a file-like object. This one counts how many lines
+    it is asked for and raises if anything past the header is requested — so if
+    the width check ever moved after the row loop, this fails with the sentinel's
+    own error rather than passing on a refusal that happened too late.
+    """
+
+    header = ",".join(("First Name", "Last Name", "Company Name", "Email") + ("",) * 600)
+    body = "Ada,Lovelace,Engines,ada@engines.example" + "," * 600
+
+    class _HeaderOnlyStream(io.StringIO):
+        reads = 0
+
+        def readline(self, *args: Any, **kwargs: Any) -> str:
+            _HeaderOnlyStream.reads += 1
+            if _HeaderOnlyStream.reads > 1:
+                raise AssertionError("the parser requested a data row before refusing")
+            return super().readline(*args, **kwargs)
+
+        def __next__(self) -> str:
+            return self.readline()
+
+    text = f"{header}\n{body}\n"
+    _HeaderOnlyStream.reads = 0
+    stream = _HeaderOnlyStream(text)
+    reader = csv.reader(stream, strict=True)
+    first = next(reader)
+    with pytest.raises(parsing.MalformedFileError):
+        parsing._check_width(tuple(first), sheet_name=None)
+    assert _HeaderOnlyStream.reads == 1
+
+    # And the real entry point refuses the same bytes.
+    with pytest.raises(parsing.MalformedFileError):
+        parsing.parse_file(text.encode("utf-8"), "wide.csv")
+
+
+def test_the_xlsx_reader_refuses_at_the_header_too() -> None:
+    header = ("First Name", "Last Name", "Company Name", "Email") + ("",) * 600
+    content = af.xlsx_positional_bytes(
+        "Contacts", header, [["Ada", "Lovelace", "Engines", "a@x.example"] + [""] * 600] * 5
+    )
+    with pytest.raises(parsing.MalformedFileError):
+        parsing.parse_file(content, "wide.xlsx")
+
+
 def test_a_file_at_the_limit_is_still_accepted() -> None:
     header = ("First Name", "Last Name", "Company Name", "Email") + tuple(
         f"Extra {index}" for index in range(parsing.MAX_PHYSICAL_COLUMNS - 4)
@@ -575,24 +732,48 @@ def test_repeated_blank_headers_do_not_collapse() -> None:
     assert set(reading.extras.values()) >= {"a", "b", "c", "d"}
 
 
-def test_xlsx_attributes_blank_headers_the_same_way() -> None:
-    content = af.xlsx_bytes(
-        {
-            "Contacts": (
-                BLANK_HEADER,
-                [
-                    {
-                        "First Name": "Ada",
-                        "Last Name": "Lovelace",
-                        "Company Name": "Engines",
-                        "Email": "ada@engines.example",
-                    }
-                ],
-            )
-        }
+def test_xlsx_attributes_repeated_blank_headers_by_position() -> None:
+    """Rows supplied by POSITION, not by header-keyed dictionary.
+
+    The previous version used the dictionary helper, which collapses two blank
+    headers into one key before openpyxl sees the row — so it could only assert
+    the column tuple, and proved nothing about whether distinct values under
+    repeated blank headers survive. Four blanks with four different values here.
+    """
+
+    header = ("First Name", "Last Name", "Company Name", "Email", "", "", "", "")
+    content = af.xlsx_positional_bytes(
+        "Contacts",
+        header,
+        [["Ada", "Lovelace", "Engines", "ada@engines.example", "w", "x", "y", "z"]],
     )
     parsed = parsing.parse_file(content, "blanks.xlsx")
-    assert parsed.sheets[0].columns == BLANK_HEADER
+    sheet = parsed.sheets[0]
+    assert sheet.columns == header
+
+    row = parsed.rows[0]
+    # Raw durable evidence keeps each physical position separately.
+    for offset, value in enumerate(("w", "x", "y", "z"), start=4):
+        assert row.raw[parsing.positional_key(offset)] == value
+    assert row.cells[4:] == ("w", "x", "y", "z")
+
+    # And all four reach the normalized extras, still distinct.
+    reading = apollo.read_row(
+        row.raw, apollo.detect_schema(sheet.columns), row_number=1, cells=row.cells
+    )
+    assert set(reading.extras.values()) >= {"w", "x", "y", "z"}
+    assert len({k for k in reading.extras if k.startswith("(column ")}) == 4
+
+
+def test_csv_and_xlsx_agree_about_repeated_blank_headers() -> None:
+    header = ("First Name", "Last Name", "Company Name", "Email", "", "", "", "")
+    values = ["Ada", "Lovelace", "Engines", "ada@engines.example", "w", "x", "y", "z"]
+    from_csv = parsing.parse_file(_csv_bytes(header, values), "b.csv").rows[0]
+    from_xlsx = parsing.parse_file(
+        af.xlsx_positional_bytes("Contacts", header, [values]), "b.xlsx"
+    ).rows[0]
+    assert from_csv.raw == from_xlsx.raw
+    assert from_csv.cells == from_xlsx.cells
 
 
 def test_preview_and_commit_agree_about_blank_header_values(db_session: Session) -> None:
