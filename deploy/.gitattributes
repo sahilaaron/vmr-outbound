@@ -1,0 +1,10 @@
+# Everything under deploy/ is copied onto a Linux server. Checking any of it out
+# with CRLF breaks it there: a shell script with CRLF fails as
+# "bad interpreter: /bin/bash^M", and sshd/nginx/systemd config files can pick up
+# stray carriage returns that are invisible in most editors.
+#
+# This is not hypothetical - a stray CR in an authorized_keys line silently
+# prevented key authentication during the initial bring-up of this server.
+#
+# Force LF regardless of the checkout platform or core.autocrlf setting.
+* text eol=lf
