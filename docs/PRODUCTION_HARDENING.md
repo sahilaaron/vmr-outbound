@@ -20,10 +20,15 @@ external provider. A readiness failure returns only `database: failed`; it never
 returns a DSN, host, SQL, exception type, driver text, filesystem path, or stack
 trace.
 
-The database connection has a configurable opening bound
-(`DATABASE_CONNECT_TIMEOUT_SECONDS`, default 5 seconds). The readiness query
-also sets a transaction-local PostgreSQL statement timeout
-(`READINESS_TIMEOUT_SECONDS`, default 2 seconds).
+Readiness uses its own one-connection pool rather than the application's session
+pool. One process-local probe may run at a time. Pool contention, the overall
+probe response, and SQL execution are each bounded by
+`READINESS_TIMEOUT_SECONDS` (default 2 seconds); driver connection establishment
+uses the lower of that value and `DATABASE_CONNECT_TIMEOUT_SECONDS` (default 5
+seconds). Each probe invalidates its socket rather than reusing it. A final
+daemon-thread deadline returns failure even if a driver violates its configured
+timeout, while the one-probe permit prevents repeated requests from creating an
+unbounded number of stuck DB operations.
 
 ### Worker limitation
 
@@ -42,6 +47,11 @@ newline. Invalid, duplicate, or oversized values are replaced by a random
 128-bit hexadecimal ID. The final value is available through request state and
 the request context used by internal logs.
 
+Caller-supplied request IDs are public, loggable metadata. Clients and operators
+must never put credentials, tokens, email addresses, or other personal data in
+them. The service cannot distinguish a grammar-valid secret-looking ID from an
+ordinary deployment correlation ID.
+
 The `vmr.http` logger emits one compact JSON object per request with:
 
 - UTC timestamp;
@@ -52,20 +62,26 @@ The `vmr.http` logger emits one compact JSON object per request with:
 - immediate peer, conservatively derived client address, scheme, and whether
   the immediate peer was a trusted proxy.
 
-It never logs the query string, request/response body, uploaded spreadsheet,
+The request event never logs the query string, request/response body, uploaded spreadsheet,
 email or personalization text, cookies, authorization values, tokens, or full
 database URLs. Unmatched paths are logged as `/<unmatched>` so attacker-chosen
 path content does not become log content.
 
 An unhandled exception produces a generic JSON 500 with the request ID. Internal
-logs retain a correlated traceback for diagnosis. Typed FastAPI/HTTP and domain
+logs retain correlated, bounded exception-class and stack-location metadata
+(module, function, and line) without exception messages, locals, SQL/driver
+text, or formatter-generated traceback text. Typed FastAPI/HTTP and domain
 responses continue through their existing handlers.
 
 ## Host and reverse-proxy boundary
 
-`TRUSTED_HOSTS` is the Host-header allow-list. Local defaults are `localhost`,
+`TRUSTED_HOSTS` is the Host-header allow-list. Entries are canonicalized to
+lowercase and one terminal DNS root dot is removed. Configured entries never
+contain ports; an incoming valid port is ignored for matching. Bracketed IPv6
+literals are parsed and matched explicitly. Local defaults are `localhost`,
 `127.0.0.1`, `[::1]`, and `testserver`. Staging and production must supply their
-real hostnames and cannot start with wildcard hosts.
+real hostnames and cannot start with wildcard hosts. Duplicate or malformed Host
+fields are rejected.
 
 `X-Forwarded-For` and `X-Forwarded-Proto` are ignored unless the immediate TCP
 peer belongs to `TRUSTED_PROXY_CIDRS`. Local defaults trust only loopback, which
@@ -140,11 +156,14 @@ header/time limits there as well.
 ## Diagnostic values
 
 `app.core.diagnostics.serialize_diagnostic` provides a generic JSON-safe output
-boundary with deterministic key order, bounded strings, depth, and collection
-size, explicit truncation markers, HTML escaping, exception-message withholding,
-and redaction for secret-looking keys such as password, token, authorization,
-cookie, secret, API key, DSN, and database URL. It is infrastructure for future
-health/error/admin output and does not rewrite import or sequence lineage.
+boundary with bounded strings, depth, collection output **and collection
+iteration**, explicit truncation markers, HTML escaping, exception-message
+withholding, URI-userinfo removal, hostile-key handling, and redaction for
+secret-looking keys such as password, token, authorization, cookie, secret, API
+key, DSN, and database URL. Small mapping output remains key-sorted; large or
+arbitrary mappings consume only the first bounded window rather than scanning
+the full input. It is infrastructure for future health/error/admin output and
+does not rewrite import or sequence lineage.
 
 ## Staging settings
 

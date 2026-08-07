@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import subprocess
+import sys
+import time
+from collections.abc import Iterator, Mapping, Sequence
+from pathlib import Path
 
 import pytest
 from app.core.config import Settings
@@ -15,6 +21,7 @@ from app.core.runtime import RuntimeConfigurationError
 from app.main import create_app
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 
 def _ready() -> None:
@@ -86,6 +93,38 @@ def test_readyz_uses_the_real_disposable_postgres() -> None:
     response = TestClient(create_app()).get("/readyz")
     assert response.status_code == 200
     assert response.json()["checks"]["database"] == "ok"
+
+
+def test_readiness_has_a_wall_clock_bound_before_sql() -> None:
+    class StalledEngine:
+        def connect(self) -> object:
+            time.sleep(0.2)
+            raise AssertionError("late connection result")
+
+    from app.core.health import DatabaseReadinessProbe
+
+    probe = DatabaseReadinessProbe(StalledEngine(), timeout_seconds=0.02)  # type: ignore[arg-type]
+    started = time.perf_counter()
+    with pytest.raises(TimeoutError, match="wall-clock"):
+        probe()
+    assert time.perf_counter() - started < 0.1
+
+
+def test_readiness_rejects_concurrent_pressure_within_the_same_budget() -> None:
+    class StalledEngine:
+        def connect(self) -> object:
+            time.sleep(0.2)
+            raise AssertionError("late connection result")
+
+    from app.core.health import DatabaseReadinessProbe
+
+    probe = DatabaseReadinessProbe(StalledEngine(), timeout_seconds=0.02)  # type: ignore[arg-type]
+    with pytest.raises(TimeoutError, match="wall-clock"):
+        probe()
+    started = time.perf_counter()
+    with pytest.raises(TimeoutError, match="already in progress"):
+        probe()
+    assert time.perf_counter() - started < 0.1
 
 
 def test_request_id_is_generated_and_returned() -> None:
@@ -178,6 +217,35 @@ def test_unhandled_exception_is_sanitized_and_correlated(
     assert exception_events[-1]["request_id"] == "incident-123"
 
 
+def test_nested_exception_log_keeps_location_but_not_messages(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app = create_app(Settings(_env_file=None), readiness_probe=_ready)  # type: ignore[call-arg]
+
+    @app.get("/nested-explode")
+    async def nested_explode() -> None:
+        try:
+            raise ValueError("password=INNER-SECRET\r\nFORGED-INNER")
+        except ValueError as exc:
+            raise RuntimeError("postgresql://u:OUTER-SECRET@db/vmr\r\nFORGED-OUTER") from exc
+
+    with caplog.at_level(logging.INFO, logger="vmr.http"):
+        response = TestClient(app, raise_server_exceptions=False).get("/nested-explode")
+    assert response.status_code == 500
+    event = next(
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if '"event":"http_unhandled_exception"' in record.getMessage()
+    )
+    assert [item["exception_type"] for item in event["exceptions"]] == [
+        "RuntimeError",
+        "ValueError",
+    ]
+    assert any(frame["function"] == "nested_explode" for frame in event["exceptions"][0]["frames"])
+    for forbidden in ("INNER-SECRET", "OUTER-SECRET", "FORGED-INNER", "FORGED-OUTER"):
+        assert forbidden not in caplog.text
+
+
 def test_known_http_exception_keeps_its_intended_response() -> None:
     app = create_app(Settings(_env_file=None), readiness_probe=_ready)  # type: ignore[call-arg]
 
@@ -226,6 +294,23 @@ def test_trusted_host_accepts_allowed_and_rejects_bad_host() -> None:
     rejected = client.get("/healthz", headers={"Host": "evil.example"})
     assert rejected.status_code == 400
     assert rejected.headers["x-request-id"]
+
+
+def test_trusted_host_normalization_matches_runtime() -> None:
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None,
+        trusted_hosts=("Example.COM.", "[::1]"),
+    )
+    assert settings.trusted_hosts == ("example.com", "[::1]")
+    client = _client(settings)
+    assert client.get("/healthz", headers={"Host": "EXAMPLE.COM.:8443"}).status_code == 200
+    assert client.get("/healthz", headers={"Host": "[::1]:8443"}).status_code == 200
+    assert client.get("/healthz", headers={"Host": "example.com.evil"}).status_code == 400
+
+
+def test_trusted_host_configuration_rejects_ports() -> None:
+    with pytest.raises(ValidationError, match="must not include ports"):
+        Settings(_env_file=None, trusted_hosts=("example.com:8443",))  # type: ignore[call-arg]
 
 
 def test_direct_peer_cannot_spoof_forwarded_headers(caplog: pytest.LogCaptureFixture) -> None:
@@ -319,6 +404,47 @@ def test_production_accepts_a_safe_known_configuration() -> None:
         assert client.get("/healthz").status_code == 200
 
 
+def test_production_rejects_canonical_local_host_variants() -> None:
+    for host in ("localhost", "LOCALHOST", "localhost."):
+        with pytest.raises(RuntimeConfigurationError, match="TRUSTED_HOSTS"):
+            create_app(_production_settings(trusted_hosts=(host,)), readiness_probe=_ready)
+
+
+def test_production_rejects_trailing_dot_local_database_host() -> None:
+    with pytest.raises(RuntimeConfigurationError, match="DATABASE_URL"):
+        create_app(
+            _production_settings(database_url="postgresql+psycopg://u:p@localhost./vmr_prod"),
+            readiness_probe=_ready,
+        )
+
+
+def test_malformed_production_database_url_is_validated_before_engine_construction() -> None:
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "APP_ENV": "production",
+            "DATABASE_URL": "not-a-sqlalchemy-url",
+            "DRY_RUN": "true",
+            "TRUSTED_HOSTS": '["outbound.example.com"]',
+            "TRUSTED_PROXY_CIDRS": '["10.20.0.0/24"]',
+            "VMR_TEST_MODE": "1",
+        }
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", "import app.main"],
+        cwd=Path.cwd(),
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "RuntimeConfigurationError" in output
+    assert "sqlalchemy.exc.ArgumentError" not in output
+
+
 def test_local_defaults_remain_compatible() -> None:
     with _client() as client:
         assert client.get("/healthz").status_code == 200
@@ -349,6 +475,27 @@ def test_request_size_under_over_malformed_and_absent() -> None:
     # GET carries no request body and no Content-Length; the middleware must not
     # fabricate one or reject the request merely because the header is absent.
     assert client.get("/healthz").status_code == 200
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["-1", "+1", " 1", "1.0", "\N{SUPERSCRIPT TWO}", "9" * 10_000],
+)
+def test_malformed_content_length_edges_are_controlled_400(value: str) -> None:
+    from app.core.http import ProductionHTTPMiddleware
+
+    middleware = ProductionHTTPMiddleware(
+        lambda _scope, _receive, _send: None,  # type: ignore[arg-type]
+        max_request_bytes=10,
+        trusted_proxy_cidrs=(),
+        hsts_max_age_seconds=0,
+    )
+    response = middleware._content_length_response(  # noqa: SLF001
+        {"headers": [(b"content-length", value.encode("latin-1"))]},  # type: ignore[arg-type]
+        "request-id",
+    )
+    assert response is not None
+    assert response.status_code == 400
 
 
 def test_global_request_limit_cannot_break_the_existing_upload_limit() -> None:
@@ -397,6 +544,90 @@ def test_bounded_diagnostics_are_deterministic_redacted_and_safe() -> None:
         "nested": {"refresh_token": REDACTED},
         "password": REDACTED,
     }
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (
+            "postgresql://reporter:db%2Fpassword@db.example.com/vmr",
+            "postgresql://[redacted]@db.example.com/vmr",
+        ),
+        (
+            "https://user:p%40ss@example.com/private",
+            "https://[redacted]@example.com/private",
+        ),
+        ("https://example.com/public", "https://example.com/public"),
+    ],
+)
+def test_diagnostic_urls_redact_userinfo(value: str, expected: str) -> None:
+    assert serialize_diagnostic({"endpoint": value}) == {"endpoint": expected}
+
+
+class _CountingSequence(Sequence[int]):
+    def __init__(self, count: int) -> None:
+        self.count = count
+        self.reads = 0
+
+    def __len__(self) -> int:
+        return self.count
+
+    def __getitem__(self, index: int) -> int:
+        if index >= self.count:
+            raise IndexError
+        self.reads += 1
+        return index
+
+
+class _CountingMapping(Mapping[str, int]):
+    def __init__(self, count: int) -> None:
+        self.count = count
+        self.reads = 0
+
+    def __len__(self) -> int:
+        return self.count
+
+    def __iter__(self) -> Iterator[str]:
+        for index in range(self.count):
+            self.reads += 1
+            yield f"key-{index:06d}"
+
+    def __getitem__(self, key: str) -> int:
+        return int(key.rsplit("-", 1)[-1])
+
+
+class _HostileKey:
+    def __str__(self) -> str:
+        raise RuntimeError("hostile __str__")
+
+    def __repr__(self) -> str:
+        raise RuntimeError("hostile __repr__")
+
+
+def test_diagnostic_collection_work_is_bounded() -> None:
+    sequence = _CountingSequence(20_000)
+    mapping = _CountingMapping(20_000)
+    assert serialize_diagnostic(sequence, max_items=3) == [0, 1, 2, "[truncated 19997 items]"]
+    mapped = serialize_diagnostic(mapping, max_items=3)
+    assert mapped["…"] == "[truncated 19997 items]"  # type: ignore[index]
+    assert sequence.reads == 4
+    assert mapping.reads == 4
+
+
+def test_diagnostic_hostile_mapping_key_uses_a_fixed_marker() -> None:
+    result = serialize_diagnostic({_HostileKey(): "value"})
+    assert result == {"[unsupported key _HostileKey #1]": "value"}
+
+
+def test_campaign_archive_confirmation_is_csp_compatible() -> None:
+    template = Path("app/web/v2/templates/campaigns.html").read_text(encoding="utf-8")
+    script = Path("app/web/static/campaigns.js").read_text(encoding="utf-8")
+    csp = _client().get("/healthz").headers["content-security-policy"]
+    assert "onsubmit=" not in template
+    assert "data-archive-confirm=" in template
+    assert "window.confirm" in script
+    assert "script-src 'self'" in csp
+    assert "script-src 'self' 'unsafe-inline'" not in csp
 
 
 def test_version_is_benign_and_deployment_provided() -> None:
