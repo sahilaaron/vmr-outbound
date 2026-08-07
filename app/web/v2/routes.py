@@ -404,6 +404,28 @@ def _uuid(value: str) -> uuid.UUID | None:
         return None
 
 
+def _sheet_index(value: str | None) -> int | None:
+    """Read a worksheet selection from a form field, or None.
+
+    One parse, no separate guard. The guard and the parse used to be different
+    predicates — ``lstrip("-").isdigit()`` accepts ``"--5"`` because it strips
+    every leading dash, and ``str.isdigit()`` accepts superscript digits, both of
+    which then raised ``ValueError`` inside a handler that catches only
+    ``CampaignImportError``. Two ordinary form values returned a bare 500.
+
+    A negative index is returned as-is rather than rejected: the caller matches
+    it against the sheets that exist and gets a clean structure error, which is a
+    better message than anything invented here.
+    """
+
+    if value is None:
+        return None
+    try:
+        return int(value.strip())
+    except ValueError:
+        return None
+
+
 def _pages(total: int, size: int = PAGE_SIZE) -> int:
     return max(1, (total + size - 1) // size)
 
@@ -1366,6 +1388,21 @@ async def campaign_import_upload(
     filename = getattr(upload, "filename", None)
     if upload is None or not filename:
         return _redirect(base, err="Choose a .csv or .xlsx file to upload.")
+    # Declared size first, so an oversized upload is refused before its bytes are
+    # buffered into this process. This is a best-effort improvement, not complete
+    # streaming protection: Content-Length is client-supplied and absent from a
+    # chunked request, so the authoritative ceiling for an untrusted client
+    # remains the reverse proxy's own body limit. The check below still runs on
+    # what actually arrived.
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit():
+        try:
+            staging.enforce_upload_size(
+                int(declared), settings.max_upload_bytes, filename=str(filename)
+            )
+        except staging.UploadTooLargeError as exc:
+            return _redirect(base, err=str(exc))
+
     content = await upload.read()  # type: ignore[union-attr]
 
     try:
@@ -1396,7 +1433,11 @@ async def campaign_import_upload(
         campaign_id=str(identifier),
         content=content,
         source_format=inspection.source_format,
-        provenance={"source_name": "Apollo contact export"},
+        provenance={
+            "source_name": campaign_import.source_name_for(
+                inspection.importable_sheets[0].detection
+            )
+        },
     )
     return _redirect(f"{base}/staged/{staged.id}")
 
@@ -1512,7 +1553,7 @@ def campaign_import_confirm(
             campaign_id=identifier,
             content=content,
             filename=staged.filename,
-            sheet_index=int(sheet) if sheet.strip().lstrip("-").isdigit() else None,
+            sheet_index=_sheet_index(sheet),
             uploaded_by=draft_service.OPERATOR_ACTOR,
         )
     except campaign_import.CampaignImportError as exc:
@@ -1592,6 +1633,7 @@ def campaign_import_batch_page(
             "page_title": f"Import — {batch.sanitized_filename or batch.filename}",
             "campaign": campaign,
             "batch": batch,
+            "counts": campaign_import.batch_counts(batch),
             "rows": rows,
             "total_rows": total,
             "page": current,

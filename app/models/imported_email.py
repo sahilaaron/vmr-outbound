@@ -87,6 +87,27 @@ class ImportedContactEmail(Base):
             unique=True,
             postgresql_where="email_stage_outcome = 'IMPORTED_EMAIL_ACCEPTED'",
         ),
+        # At most one ACCEPTED primary address per person per Campaign.
+        #
+        # The index above it is keyed on row content, which is the right key for
+        # "has this row been imported before" and the wrong one for "which
+        # address does this Campaign use for this person". Two different rows
+        # naming the same person could therefore both be accepted, and the Email
+        # Agent's lookup broke the tie on ``created_at`` — which PostgreSQL sets
+        # from transaction start, so every record one batch writes shares it and
+        # the tie cannot be broken at all. The domain allows exactly one answer,
+        # so the database now says exactly one.
+        Index(
+            "uq_imported_contact_emails_accepted_campaign_contact",
+            "campaign_id",
+            "contact_id",
+            unique=True,
+            postgresql_where=(
+                "email_stage_outcome = 'IMPORTED_EMAIL_ACCEPTED'"
+                " AND slot = 'PRIMARY'"
+                " AND contact_id IS NOT NULL"
+            ),
+        ),
         Index("ix_imported_contact_emails_contact_id", "contact_id"),
         Index("ix_imported_contact_emails_campaign_id", "campaign_id"),
         Index("ix_imported_contact_emails_batch_id", "import_batch_id"),

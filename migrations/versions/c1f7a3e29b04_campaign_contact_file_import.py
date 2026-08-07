@@ -164,6 +164,20 @@ def upgrade() -> None:
         "imported_contact_emails",
         ["campaign_id", "contact_id", "slot"],
     )
+    # Partial: at most one ACCEPTED primary address per person per Campaign.
+    # The index below keys on row CONTENT, which answers "was this row imported
+    # before"; this one keys on the person, which is what the Email stage asks.
+    op.create_index(
+        "uq_imported_contact_emails_accepted_campaign_contact",
+        "imported_contact_emails",
+        ["campaign_id", "contact_id"],
+        unique=True,
+        postgresql_where=sa.text(
+            "email_stage_outcome = 'IMPORTED_EMAIL_ACCEPTED'"
+            " AND slot = 'PRIMARY'"
+            " AND contact_id IS NOT NULL"
+        ),
+    )
     # Partial: at most one ACCEPTED address per source-row-content per Campaign.
     # A refused row still leaves its evidence, so a corrected file can be
     # imported afterwards instead of being reported as already done.
@@ -491,6 +505,7 @@ def downgrade() -> None:
     op.drop_table("import_source_identifiers")
 
     for index in (
+        "uq_imported_contact_emails_accepted_campaign_contact",
         "uq_imported_contact_emails_accepted_row",
         "ix_imported_contact_emails_campaign_contact_slot",
         "ix_imported_contact_emails_normalized_email",

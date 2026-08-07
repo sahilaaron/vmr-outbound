@@ -346,4 +346,9 @@ def test_a_duplicate_file_is_announced_rather_than_vanishing(db_session: Session
     )
     assert other_campaign.duplicate_file is not None
     assert other_campaign.duplicate_file.code == "imported_into_another_campaign"
-    assert other_campaign.duplicate_file.campaign_name == first.name
+    # The note says the file was seen before; it does NOT name the other
+    # Campaign. This is the one query in the flow that deliberately crosses the
+    # Campaign boundary, and the name is the part the uploader may have no other
+    # route to. (IMP-001 review, D-19.)
+    assert first.name not in other_campaign.duplicate_file.message
+    assert other_campaign.duplicate_file.batch_id is None

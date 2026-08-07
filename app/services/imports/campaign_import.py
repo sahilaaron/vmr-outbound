@@ -43,7 +43,7 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Protocol
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -88,6 +88,25 @@ MAX_COLUMNS = 512
 _UNSAFE_FILENAME = re.compile(r"[^A-Za-z0-9._ \-()]+")
 
 
+#: The widest address ``imported_contact_emails.normalized_email`` can hold, and
+#: the practical RFC ceiling. Enforced in application code so a row that exceeds
+#: it is refused with a reason rather than by the database with a driver error.
+MAX_EMAIL_CHARS = 320
+#: Column widths for the vendor's own claim fields. Truncated rather than
+#: refused: a claim we could not store whole is still worth storing, and it never
+#: participates in identity.
+MAX_PROVIDER_TEXT_CHARS = 255
+MAX_PROVIDER_TOKEN_CHARS = 128
+_TOKEN = MAX_PROVIDER_TOKEN_CHARS
+
+#: Recorded on a batch whose header carries the columns only a genuine Apollo
+#: export tends to have.
+APOLLO_SOURCE_NAME = "Apollo contact export"
+#: Recorded on a file that satisfies the same schema without evidencing that
+#: Apollo produced it.
+APOLLO_COMPATIBLE_SOURCE_NAME = "Apollo-compatible contact file"
+
+
 class CampaignImportError(Exception):
     """A safe, operator-facing failure of the campaign file import."""
 
@@ -102,6 +121,24 @@ class CampaignNotFound(CampaignImportError):
 
 class UnreadableFileError(CampaignImportError):
     """Raised when the upload cannot be read, or is not a recognized schema."""
+
+
+def source_name_for(detection: apollo.SchemaDetection) -> str:
+    """What to record as the batch's source, without inventing a vendor.
+
+    A file is recognized on four required headers, and any hand-made CSV can
+    carry those. Writing "Apollo contact export" onto every recognized file
+    manufactured vendor provenance out of a column list — the same failure class
+    as writing a spreadsheet cell into a verification table, and durable, since
+    it is stored on the batch and read back on every operator surface.
+
+    ``is_apollo_export`` already distinguishes the two: it counts headers only a
+    genuine export tends to carry. It just was not consulted anywhere.
+    """
+
+    if detection.is_apollo_export:
+        return APOLLO_SOURCE_NAME
+    return APOLLO_COMPATIBLE_SOURCE_NAME
 
 
 def sanitize_filename(filename: str | None) -> str:
@@ -476,6 +513,18 @@ def plan_row(
         plan.error_code = "email_malformed"
         plan.error_detail = f"The Email value {primary.raw!r} is not a valid address."
         return plan
+    if primary.normalized is not None and len(primary.normalized) > MAX_EMAIL_CHARS:
+        # Checked here rather than left to the column width. The per-row
+        # savepoint meant an over-long address never took the batch down, but the
+        # operator was shown "database_error", which says nothing about what to
+        # fix. An address is refused for a reason the operator can act on.
+        plan.disposition = RowDisposition.FAILED
+        plan.error_code = "email_too_long"
+        plan.error_detail = (
+            f"The Email value is {len(primary.normalized):,} characters, which is longer "
+            f"than the {MAX_EMAIL_CHARS}-character maximum for an address."
+        )
+        return plan
 
     normalized_email = primary.normalized
     assert normalized_email is not None
@@ -569,7 +618,6 @@ class DuplicateFileNote:
     code: str
     message: str
     batch_id: uuid.UUID | None = None
-    campaign_name: str | None = None
 
 
 @dataclass
@@ -659,16 +707,20 @@ def _duplicate_file_note(
         .limit(1)
     ).first()
     if other is not None:
-        batch, campaign = other
+        batch, _campaign = other
         return DuplicateFileNote(
             code="imported_into_another_campaign",
             message=(
-                f"This exact file was already imported into the Campaign “{campaign.name}”. "
-                "Importing it here as well is allowed — the same person may belong to more "
-                "than one Campaign — and will not duplicate any Contact or Company."
+                "This exact file was already imported into another Campaign. Importing it "
+                "here as well is allowed — the same person may belong to more than one "
+                "Campaign — and will not duplicate any Contact or Company."
             ),
-            batch_id=batch.id,
-            campaign_name=campaign.name,
+            # Deliberately no campaign_id and no campaign name. This is the one
+            # query in the flow that deliberately crosses the Campaign boundary,
+            # and telling the uploader which other Campaign holds the same file
+            # discloses a name they may have no other route to. That the file was
+            # seen before is the useful part; whose it was is not.
+            batch_id=None,
         )
     return None
 
@@ -903,7 +955,7 @@ def confirm(
         column_mapping={
             column: canonical for canonical, column in sheet.detection.field_columns.items()
         },
-        source_name="Apollo contact export",
+        source_name=source_name_for(sheet.detection),
         source_reference=inspection.sanitized_filename,
         exported_by=uploaded_by,
         total_rows=len(rows),
@@ -1292,6 +1344,12 @@ def _commit_row(
     session.flush()
 
 
+def _bounded(value: str | None, limit: int) -> str | None:
+    """Trim a vendor-supplied string to what its column can hold."""
+
+    return value[:limit] if value is not None else None
+
+
 def _write_addresses(
     session: Session,
     *,
@@ -1344,20 +1402,22 @@ def _write_addresses(
             contact_id=contact_id,
             slot=slot,
             raw_email=address.raw[:512],
-            normalized_email=address.normalized,
+            normalized_email=(address.normalized[:MAX_EMAIL_CHARS] if address.normalized else None),
             source_row_number=import_row.row_number,
             source_sheet_name=import_row.sheet_name,
             source_file_checksum=checksum,
             source_schema=schema_id,
             row_fingerprint=plan.fingerprint,
-            provider_source=address.provider_source,
-            provider_status_raw=address.provider_status_raw,
-            provider_status_normalized=address.provider_status_normalized,
-            provider_verification_source=address.provider_verification_source,
-            provider_catch_all_raw=address.provider_catch_all_raw,
-            provider_catch_all_normalized=address.provider_catch_all_normalized,
+            provider_source=_bounded(address.provider_source, MAX_PROVIDER_TEXT_CHARS),
+            provider_status_raw=_bounded(address.provider_status_raw, _TOKEN),
+            provider_status_normalized=_bounded(address.provider_status_normalized, _TOKEN),
+            provider_verification_source=_bounded(
+                address.provider_verification_source, MAX_PROVIDER_TEXT_CHARS
+            ),
+            provider_catch_all_raw=_bounded(address.provider_catch_all_raw, _TOKEN),
+            provider_catch_all_normalized=_bounded(address.provider_catch_all_normalized, _TOKEN),
             provider_last_verified_at=address.provider_last_verified_at,
-            provider_last_verified_raw=address.provider_last_verified_raw,
+            provider_last_verified_raw=_bounded(address.provider_last_verified_raw, _TOKEN),
             email_stage_outcome=stage_outcome,
             verification_stage_outcome=verification_outcome,
             rejection_code=code,
@@ -1395,6 +1455,102 @@ class BatchRowView:
     imported_email: ImportedContactEmail | None
     contact: Contact | None
     company: Company | None
+
+
+@dataclass(frozen=True)
+class BatchCounts:
+    """One import batch's row outcomes as a genuine partition of its rows.
+
+    The durable columns do not partition. ``duplicate_rows`` is the sum of three
+    dispositions and ``already_in_campaign_rows`` is one of the three, so a
+    screen that renders both side by side under "every raw row has exactly one
+    outcome" double-counts and can show a total larger than the file.
+
+    So the split is computed here instead of guessed at in a template, and
+    ``unprocessed`` absorbs whatever the recorded outcomes do not account for —
+    a batch interrupted between staging and processing has rows in exactly that
+    state, and showing them as zero would be the same lie in the other
+    direction.
+    """
+
+    total: int
+    imported: int
+    already_in_campaign: int
+    matched_or_duplicate: int
+    review_required: int
+    suppressed: int
+    refused: int
+    unprocessed: int
+
+    @property
+    def accounted(self) -> int:
+        return (
+            self.imported
+            + self.already_in_campaign
+            + self.matched_or_duplicate
+            + self.review_required
+            + self.suppressed
+            + self.refused
+            + self.unprocessed
+        )
+
+    @property
+    def partitions(self) -> bool:
+        """True when the buckets account for every row exactly once."""
+
+        return self.accounted == self.total
+
+
+class _HasBatchCounters(Protocol):
+    """The counter columns :func:`batch_counts` needs.
+
+    A protocol rather than ``ImportBatch``, so the Admin Workbench's own read
+    row can be split by the same function the ORM object is. Two implementations
+    of this arithmetic is exactly how the screens came to disagree.
+    """
+
+    @property
+    def total_rows(self) -> int: ...
+    @property
+    def accepted_rows(self) -> int: ...
+    @property
+    def rejected_rows(self) -> int: ...
+    @property
+    def duplicate_rows(self) -> int: ...
+    @property
+    def suppressed_rows(self) -> int: ...
+    @property
+    def ambiguous_rows(self) -> int: ...
+    @property
+    def already_in_campaign_rows(self) -> int: ...
+
+
+def batch_counts(batch: _HasBatchCounters) -> BatchCounts:
+    """Split one batch's durable counters into non-overlapping buckets."""
+
+    already = max(0, batch.already_in_campaign_rows or 0)
+    # ``duplicate_rows`` covers matched-existing, already-in-campaign and
+    # repeated rows together. Subtracting the one that is displayed separately
+    # is what stops the same row being counted twice on the same screen.
+    matched_or_duplicate = max(0, (batch.duplicate_rows or 0) - already)
+    recorded = (
+        (batch.accepted_rows or 0)
+        + already
+        + matched_or_duplicate
+        + (batch.ambiguous_rows or 0)
+        + (batch.suppressed_rows or 0)
+        + (batch.rejected_rows or 0)
+    )
+    return BatchCounts(
+        total=batch.total_rows or 0,
+        imported=batch.accepted_rows or 0,
+        already_in_campaign=already,
+        matched_or_duplicate=matched_or_duplicate,
+        review_required=batch.ambiguous_rows or 0,
+        suppressed=batch.suppressed_rows or 0,
+        refused=batch.rejected_rows or 0,
+        unprocessed=max(0, (batch.total_rows or 0) - recorded),
+    )
 
 
 def batch_rows(
@@ -1519,7 +1675,12 @@ def accepted_primary_email(
             ImportedContactEmail.email_stage_outcome
             == ImportedEmailStageOutcome.IMPORTED_EMAIL_ACCEPTED,
         )
-        .order_by(ImportedContactEmail.created_at.desc())
+        # ``uq_imported_contact_emails_accepted_campaign_contact`` makes this at
+        # most one row. The ordering is kept, with ``id`` as the tiebreak, so the
+        # answer stays deterministic rather than accidental if that constraint is
+        # ever relaxed: ``created_at`` alone is transaction-start time and is
+        # identical across everything one batch writes.
+        .order_by(ImportedContactEmail.created_at.desc(), ImportedContactEmail.id.desc())
         .limit(1)
     ).first()
 
