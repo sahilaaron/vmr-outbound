@@ -61,10 +61,14 @@ from app.services.company_intelligence import taxonomy as ci_taxonomy
 from app.services.company_intelligence.inputs import IntelligenceInputError
 from app.services.company_intelligence.producer import POLICY_VERSION
 from app.services.company_intelligence.runner import PRODUCER, PRODUCER_VERSION
+from app.services.imports import display
 
 router = APIRouter(prefix="/admin", include_in_schema=False)
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+# The shared spreadsheet-neutralization boundary, so every environment that
+# can render imported text has it under the same name.
+display.register_neutralize(templates.env)
 
 PAGE_SIZE = 50
 OPERATOR_ACTOR = "operator"
