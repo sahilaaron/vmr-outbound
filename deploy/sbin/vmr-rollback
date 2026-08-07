@@ -1,4 +1,4 @@
-﻿#!/bin/bash
+#!/bin/bash
 # vmr-rollback - repoint the active release symlink at a previous release.
 #
 # CODE ONLY. This script deliberately contains no database logic whatsoever.

@@ -1,4 +1,4 @@
-﻿#!/bin/bash
+#!/bin/bash
 # vmr-db-backup - PostgreSQL logical backup for VMR staging.
 #
 #   Usage: vmr-db-backup [DBNAME]        (default: vmr_staging)
