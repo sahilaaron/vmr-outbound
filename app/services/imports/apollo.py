@@ -38,6 +38,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.services.imports import normalization as norm
+from app.services.imports import parsing
 
 #: The one schema this module reads. Stored on the batch and on every piece of
 #: imported-email evidence, so a later reader never has to infer which contract a
@@ -349,6 +350,11 @@ def detect_schema(header: Sequence[str]) -> SchemaDetection:
 
     for position, column in enumerate(header):
         if not column or not column.strip():
+            # A headerless column is still a source of evidence, and two of them
+            # holding different values are two different facts. Recorded under a
+            # stable positional name so both survive into ``extras`` instead of
+            # being dropped for want of a header to file them under.
+            unmapped.append((position, parsing.positional_key(position)))
             continue
         canonical = HEADER_ALIASES.get(canonical_header(column))
         if canonical is None:

@@ -48,7 +48,7 @@ from app.models.enums import (
 )
 from app.models.import_batch import ImportBatch, ImportRow, ImportRowValidation
 from app.models.imported_email import ImportedContactEmail, ImportSourceIdentifier
-from app.services.imports import apollo, campaign_import
+from app.services.imports import apollo, campaign_import, display
 
 #: Rendered wherever the import path's Verification outcome appears. Written
 #: once, here, so no template can paraphrase it into something weaker.
@@ -103,16 +103,12 @@ ATTENTION_OUTCOMES: frozenset[str] = frozenset(
 def _safe(value: str | None) -> str | None:
     """Neutralize a spreadsheet-supplied string before it reaches a surface.
 
-    Jinja escapes HTML on its own; this covers the other hazard a cell carries —
-    a leading ``=``/``+``/``-``/``@`` that a spreadsheet would execute if an
-    operator copied the rendered value back out. Vendor identifiers are opaque
-    strings from the same file as everything else, so they get the same
-    treatment.
+    The shared projection boundary, so this reader and every template filter
+    agree about what neutralization means. See
+    :mod:`app.services.imports.display`.
     """
 
-    if value is None:
-        return None
-    return apollo.neutralize_formula(value)
+    return display.safe_optional(value)
 
 
 @dataclass(frozen=True)
