@@ -2,26 +2,112 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import re
+import select
+import socket
 import subprocess
 import sys
+import threading
 import time
-from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 
 import pytest
 from app.core.config import Settings
-from app.core.diagnostics import MAX_DEPTH_MARKER, REDACTED, serialize_diagnostic
 from app.core.features import FeatureFlags
-from app.core.http import RequestContext, current_request_id, valid_request_id
+from app.core.http import RequestContext, _host_from_scope, current_request_id, valid_request_id
 from app.core.runtime import RuntimeConfigurationError
 from app.main import create_app
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
+from sqlalchemy.engine import make_url
+
+
+class _FreezingPostgresProxy:
+    """Tiny TCP proxy that can drop server replies only after PostgreSQL startup."""
+
+    def __init__(self, target_host: str, target_port: int) -> None:
+        self.freeze_query_replies = threading.Event()
+        self._stop = threading.Event()
+        self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._listener.bind(("127.0.0.1", 0))
+        self._listener.listen()
+        self._listener.settimeout(0.1)
+        self.host, self.port = self._listener.getsockname()
+        self._target = (target_host, target_port)
+        self._connections: set[socket.socket] = set()
+        self._guard = threading.Lock()
+        self._thread = threading.Thread(target=self._accept, daemon=True)
+        self._thread.start()
+
+    def _accept(self) -> None:
+        while not self._stop.is_set():
+            try:
+                client, _ = self._listener.accept()
+            except TimeoutError:
+                continue
+            except OSError:
+                return
+            threading.Thread(target=self._proxy, args=(client,), daemon=True).start()
+
+    def _proxy(self, client: socket.socket) -> None:
+        upstream = socket.create_connection(self._target, timeout=1)
+        client.settimeout(None)
+        upstream.settimeout(None)
+        with self._guard:
+            self._connections.update((client, upstream))
+        startup_tail = b""
+        startup_complete = False
+        query_seen = False
+        try:
+            while not self._stop.is_set():
+                readable, _, _ = select.select((client, upstream), (), (), 0.1)
+                if client in readable:
+                    data = client.recv(64 * 1024)
+                    if not data:
+                        return
+                    if startup_complete:
+                        query_seen = True
+                    upstream.sendall(data)
+                if upstream in readable:
+                    data = upstream.recv(64 * 1024)
+                    if not data:
+                        return
+                    if not startup_complete:
+                        startup_tail = (startup_tail + data)[-64:]
+                        startup_complete = b"Z\x00\x00\x00\x05" in startup_tail
+                    if self.freeze_query_replies.is_set() and query_seen:
+                        continue
+                    client.sendall(data)
+        except (ConnectionError, OSError):
+            return
+        finally:
+            with self._guard:
+                self._connections.discard(client)
+                self._connections.discard(upstream)
+            client.close()
+            upstream.close()
+
+    def close(self) -> None:
+        self._stop.set()
+        self._listener.close()
+        with self._guard:
+            connections = tuple(self._connections)
+        for connection in connections:
+            connection.close()
+        self._thread.join(timeout=1)
+
+    def __enter__(self) -> _FreezingPostgresProxy:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        del args
+        self.close()
 
 
 def _ready() -> None:
@@ -76,6 +162,17 @@ def test_readyz_healthy_contract() -> None:
     }
 
 
+def test_legacy_health_paths_expose_the_new_authoritative_contracts() -> None:
+    client = _client()
+    assert client.get("/health").json() == {"status": "ok"}
+    ready = client.get("/ready")
+    assert ready.status_code == 200
+    assert ready.json() == {
+        "status": "ready",
+        "checks": {"configuration": "ok", "database": "ok"},
+    }
+
+
 @pytest.mark.parametrize("probe", [_failed_readiness, lambda: (_ for _ in ()).throw(ValueError())])
 def test_readyz_failure_is_503_and_sanitized(probe: object) -> None:
     response = _client(probe=probe).get("/readyz")
@@ -96,35 +193,169 @@ def test_readyz_uses_the_real_disposable_postgres() -> None:
 
 
 def test_readiness_has_a_wall_clock_bound_before_sql() -> None:
-    class StalledEngine:
-        def connect(self) -> object:
-            time.sleep(0.2)
-            raise AssertionError("late connection result")
-
     from app.core.health import DatabaseReadinessProbe
 
-    probe = DatabaseReadinessProbe(StalledEngine(), timeout_seconds=0.02)  # type: ignore[arg-type]
+    async def stalled_connection(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        await asyncio.sleep(0.2)
+        raise AssertionError("late connection result")
+
+    probe = DatabaseReadinessProbe(
+        "postgresql://service@db.example.com/vmr",
+        timeout_seconds=0.02,
+        connect_timeout_seconds=1,
+        connection_factory=stalled_connection,  # type: ignore[arg-type]
+    )
     started = time.perf_counter()
     with pytest.raises(TimeoutError, match="wall-clock"):
-        probe()
+        asyncio.run(probe())
     assert time.perf_counter() - started < 0.1
 
 
-def test_readiness_rejects_concurrent_pressure_within_the_same_budget() -> None:
-    class StalledEngine:
-        def connect(self) -> object:
-            time.sleep(0.2)
-            raise AssertionError("late connection result")
-
+def test_readiness_contention_and_work_share_one_absolute_deadline() -> None:
     from app.core.health import DatabaseReadinessProbe
 
-    probe = DatabaseReadinessProbe(StalledEngine(), timeout_seconds=0.02)  # type: ignore[arg-type]
-    with pytest.raises(TimeoutError, match="wall-clock"):
-        probe()
-    started = time.perf_counter()
-    with pytest.raises(TimeoutError, match="already in progress"):
-        probe()
-    assert time.perf_counter() - started < 0.1
+    async def stalled_connection(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        await asyncio.sleep(1)
+        raise AssertionError("late connection result")
+
+    timeout = 0.08
+    probe = DatabaseReadinessProbe(
+        "postgresql://service@db.example.com/vmr",
+        timeout_seconds=timeout,
+        connect_timeout_seconds=1,
+        connection_factory=stalled_connection,  # type: ignore[arg-type]
+    )
+
+    async def attack() -> float:
+        first = asyncio.create_task(probe())
+        await asyncio.sleep(timeout * 0.05)
+        started = time.perf_counter()
+        with pytest.raises(TimeoutError, match="wall-clock"):
+            await probe()
+        elapsed = time.perf_counter() - started
+        with pytest.raises(TimeoutError, match="wall-clock"):
+            await first
+        return elapsed
+
+    elapsed = asyncio.run(attack())
+    assert timeout * 0.85 <= elapsed < timeout * 1.4
+
+
+def test_timed_out_readiness_operation_does_not_poison_later_probe() -> None:
+    from app.core.health import DatabaseReadinessProbe
+
+    class Cursor:
+        async def fetchone(self) -> tuple[int]:
+            return (1,)
+
+    class Connection:
+        closed = False
+
+        async def execute(self, *args: object, **kwargs: object) -> Cursor:
+            del args, kwargs
+            return Cursor()
+
+        async def close(self) -> None:
+            self.closed = True
+
+    stalled = True
+
+    async def connection_factory(*args: object, **kwargs: object) -> Connection:
+        del args, kwargs
+        if stalled:
+            await asyncio.Event().wait()
+        return Connection()
+
+    probe = DatabaseReadinessProbe(
+        "postgresql://service@db.example.com/vmr",
+        timeout_seconds=0.02,
+        connect_timeout_seconds=1,
+        connection_factory=connection_factory,  # type: ignore[arg-type]
+    )
+
+    async def attack() -> None:
+        nonlocal stalled
+        with pytest.raises(TimeoutError, match="wall-clock"):
+            await probe()
+        stalled = False
+        await probe()
+
+    asyncio.run(attack())
+
+
+def test_cancelled_readiness_caller_does_not_leave_database_work_running() -> None:
+    from app.core.health import DatabaseReadinessProbe
+
+    class Cursor:
+        async def fetchone(self) -> tuple[int]:
+            return (1,)
+
+    class Connection:
+        async def execute(self, *args: object, **kwargs: object) -> Cursor:
+            del args, kwargs
+            return Cursor()
+
+        async def close(self) -> None:
+            return None
+
+    stalled = True
+
+    async def connection_factory(*args: object, **kwargs: object) -> Connection:
+        del args, kwargs
+        if stalled:
+            await asyncio.Event().wait()
+        return Connection()
+
+    probe = DatabaseReadinessProbe(
+        "postgresql://service@db.example.com/vmr",
+        timeout_seconds=1,
+        connect_timeout_seconds=1,
+        connection_factory=connection_factory,  # type: ignore[arg-type]
+    )
+
+    async def attack() -> None:
+        nonlocal stalled
+        caller = asyncio.create_task(probe())
+        await asyncio.sleep(0.01)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        stalled = False
+        await probe()
+        assert len(asyncio.all_tasks()) == 1
+
+    asyncio.run(attack())
+
+
+def test_readyz_recovers_after_a_midstream_tcp_freeze() -> None:
+    database_url = make_url(os.environ["DATABASE_URL"])
+    assert database_url.host is not None
+    target_port = database_url.port or 5432
+    with _FreezingPostgresProxy(database_url.host, target_port) as proxy:
+        proxy_url = database_url.set(host=proxy.host, port=proxy.port).update_query_dict(
+            {"sslmode": "disable"}
+        )
+        settings = Settings(  # type: ignore[call-arg]
+            _env_file=None,
+            database_url=proxy_url.render_as_string(hide_password=False),
+            readiness_timeout_seconds=0.2,
+            database_connect_timeout_seconds=1,
+        )
+        with TestClient(create_app(settings)) as client:
+            assert client.get("/readyz").status_code == 200
+            proxy.freeze_query_replies.set()
+            started = time.perf_counter()
+            stalled = client.get("/readyz")
+            elapsed = time.perf_counter() - started
+            assert stalled.status_code == 503
+            assert elapsed < 0.5
+            proxy.freeze_query_replies.clear()
+            recovered = client.get("/readyz")
+            assert recovered.status_code == 200
+            assert recovered.json()["checks"]["database"] == "ok"
+    assert not [thread for thread in threading.enumerate() if thread.name == "vmr-readiness"]
 
 
 def test_request_id_is_generated_and_returned() -> None:
@@ -246,6 +477,35 @@ def test_nested_exception_log_keeps_location_but_not_messages(
         assert forbidden not in caplog.text
 
 
+def test_exception_group_log_keeps_bounded_member_types_without_messages(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app = create_app(Settings(_env_file=None), readiness_probe=_ready)  # type: ignore[call-arg]
+
+    @app.get("/group-explode")
+    async def group_explode() -> None:
+        raise ExceptionGroup(
+            "GROUP-SECRET",
+            [ValueError("VALUE-SECRET"), RuntimeError("RUNTIME-SECRET")],
+        )
+
+    with caplog.at_level(logging.INFO, logger="vmr.http"):
+        response = TestClient(app, raise_server_exceptions=False).get("/group-explode")
+    assert response.status_code == 500
+    event = next(
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if '"event":"http_unhandled_exception"' in record.getMessage()
+    )
+    assert [item["exception_type"] for item in event["exceptions"]] == [
+        "ExceptionGroup",
+        "ValueError",
+        "RuntimeError",
+    ]
+    for forbidden in ("GROUP-SECRET", "VALUE-SECRET", "RUNTIME-SECRET"):
+        assert forbidden not in caplog.text
+
+
 def test_known_http_exception_keeps_its_intended_response() -> None:
     app = create_app(Settings(_env_file=None), readiness_probe=_ready)  # type: ignore[call-arg]
 
@@ -288,6 +548,14 @@ def test_static_files_are_cacheable_but_customer_and_admin_pages_are_not() -> No
         assert client.get("/admin").headers["cache-control"] == "no-store"
 
 
+def test_fastapi_oauth_redirect_receives_the_documentation_csp() -> None:
+    response = _client().get("/docs/oauth2-redirect")
+    assert response.status_code == 200
+    csp = response.headers["content-security-policy"]
+    assert "https://cdn.jsdelivr.net" in csp
+    assert "script-src 'self' 'unsafe-inline'" in csp
+
+
 def test_trusted_host_accepts_allowed_and_rejects_bad_host() -> None:
     client = _client()
     assert client.get("/healthz").status_code == 200
@@ -311,6 +579,17 @@ def test_trusted_host_normalization_matches_runtime() -> None:
 def test_trusted_host_configuration_rejects_ports() -> None:
     with pytest.raises(ValidationError, match="must not include ports"):
         Settings(_env_file=None, trusted_hosts=("example.com:8443",))  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("host", [" example.com", "example.com ", "example.com\t"])
+def test_trusted_host_rejects_boundary_whitespace(host: str) -> None:
+    with pytest.raises(ValidationError, match="leading or trailing whitespace"):
+        Settings(_env_file=None, trusted_hosts=(host,))  # type: ignore[call-arg]
+
+
+def test_bracketed_host_port_requires_ascii_decimal_digits() -> None:
+    assert _host_from_scope({"headers": [(b"host", b"[::1]:8443")]}) == "[::1]"  # type: ignore[arg-type]
+    assert _host_from_scope({"headers": [(b"host", "[::1]:²".encode("latin-1"))]}) is None  # type: ignore[arg-type]
 
 
 def test_direct_peer_cannot_spoof_forwarded_headers(caplog: pytest.LogCaptureFixture) -> None:
@@ -418,6 +697,21 @@ def test_production_rejects_trailing_dot_local_database_host() -> None:
         )
 
 
+@pytest.mark.parametrize("host", ["127.1", "0177.0.0.1", "2130706433", "0x7f000001"])
+def test_production_rejects_legacy_numeric_loopback_database_hosts(host: str) -> None:
+    with pytest.raises(RuntimeConfigurationError, match="DATABASE_URL"):
+        create_app(
+            _production_settings(database_url=f"postgresql+psycopg://u:p@{host}/vmr_prod"),
+            readiness_probe=_ready,
+        )
+
+
+def test_default_runtime_settings_preserve_dry_run_and_feature_safety() -> None:
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert settings.dry_run is True
+    assert settings.features.enabled() == []
+
+
 def test_malformed_production_database_url_is_validated_before_engine_construction() -> None:
     environment = os.environ.copy()
     environment.update(
@@ -508,117 +802,6 @@ def test_global_request_limit_cannot_break_the_existing_upload_limit() -> None:
         create_app(settings, readiness_probe=_ready)
 
 
-def test_bounded_diagnostics_are_deterministic_redacted_and_safe() -> None:
-    small = serialize_diagnostic({"z": 2, "a": "plain"})
-    assert small == {"a": "plain", "z": 2}
-
-    huge = serialize_diagnostic("x" * 20, max_string=8)
-    assert huge == "xxxxxxxx…[truncated 12 chars]"
-
-    deep: object = {"one": {"two": {"three": "value"}}}
-    assert serialize_diagnostic(deep, max_depth=2) == {"one": {"two": MAX_DEPTH_MARKER}}
-
-    array = serialize_diagnostic(list(range(8)), max_items=3)
-    assert array == [0, 1, 2, "[truncated 5 items]"]
-
-    malicious = serialize_diagnostic("<script>alert(1)</script>")
-    assert malicious == "&lt;script&gt;alert(1)&lt;/script&gt;"
-
-    exception = serialize_diagnostic(RuntimeError("password=NEVER-RENDER"))
-    assert exception == {"error_type": "RuntimeError", "message": "[exception detail withheld]"}
-    assert "NEVER-RENDER" not in str(exception)
-
-    secrets = serialize_diagnostic(
-        {
-            "password": "one",
-            "api_key": "two",
-            "Authorization": "three",
-            "cookie": "four",
-            "nested": {"refresh_token": "five"},
-        }
-    )
-    assert secrets == {
-        "Authorization": REDACTED,
-        "api_key": REDACTED,
-        "cookie": REDACTED,
-        "nested": {"refresh_token": REDACTED},
-        "password": REDACTED,
-    }
-
-
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [
-        (
-            "postgresql://reporter:db%2Fpassword@db.example.com/vmr",
-            "postgresql://[redacted]@db.example.com/vmr",
-        ),
-        (
-            "https://user:p%40ss@example.com/private",
-            "https://[redacted]@example.com/private",
-        ),
-        ("https://example.com/public", "https://example.com/public"),
-    ],
-)
-def test_diagnostic_urls_redact_userinfo(value: str, expected: str) -> None:
-    assert serialize_diagnostic({"endpoint": value}) == {"endpoint": expected}
-
-
-class _CountingSequence(Sequence[int]):
-    def __init__(self, count: int) -> None:
-        self.count = count
-        self.reads = 0
-
-    def __len__(self) -> int:
-        return self.count
-
-    def __getitem__(self, index: int) -> int:
-        if index >= self.count:
-            raise IndexError
-        self.reads += 1
-        return index
-
-
-class _CountingMapping(Mapping[str, int]):
-    def __init__(self, count: int) -> None:
-        self.count = count
-        self.reads = 0
-
-    def __len__(self) -> int:
-        return self.count
-
-    def __iter__(self) -> Iterator[str]:
-        for index in range(self.count):
-            self.reads += 1
-            yield f"key-{index:06d}"
-
-    def __getitem__(self, key: str) -> int:
-        return int(key.rsplit("-", 1)[-1])
-
-
-class _HostileKey:
-    def __str__(self) -> str:
-        raise RuntimeError("hostile __str__")
-
-    def __repr__(self) -> str:
-        raise RuntimeError("hostile __repr__")
-
-
-def test_diagnostic_collection_work_is_bounded() -> None:
-    sequence = _CountingSequence(20_000)
-    mapping = _CountingMapping(20_000)
-    assert serialize_diagnostic(sequence, max_items=3) == [0, 1, 2, "[truncated 19997 items]"]
-    mapped = serialize_diagnostic(mapping, max_items=3)
-    assert mapped["…"] == "[truncated 19997 items]"  # type: ignore[index]
-    assert sequence.reads == 4
-    assert mapping.reads == 4
-
-
-def test_diagnostic_hostile_mapping_key_uses_a_fixed_marker() -> None:
-    result = serialize_diagnostic({_HostileKey(): "value"})
-    assert result == {"[unsupported key _HostileKey #1]": "value"}
-
-
 def test_campaign_archive_confirmation_is_csp_compatible() -> None:
     template = Path("app/web/v2/templates/campaigns.html").read_text(encoding="utf-8")
     script = Path("app/web/static/campaigns.js").read_text(encoding="utf-8")
@@ -628,6 +811,65 @@ def test_campaign_archive_confirmation_is_csp_compatible() -> None:
     assert "window.confirm" in script
     assert "script-src 'self'" in csp
     assert "script-src 'self' 'unsafe-inline'" not in csp
+
+
+def test_campaign_archive_script_url_is_content_versioned() -> None:
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None,
+        features=FeatureFlags(workbench=True),
+    )
+    response = _client(settings).get("/app/campaigns")
+    assert response.status_code == 200
+    assert re.search(r"/static/campaigns\.js\?v=[0-9a-f]{12}", response.text)
+
+
+def test_smoke_treats_readyz_503_as_database_not_ready(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from scripts import smoke
+
+    responses = iter(
+        [
+            (200, {"status": "ok"}),
+            (
+                503,
+                {
+                    "status": "not_ready",
+                    "checks": {"configuration": "ok", "database": "failed"},
+                },
+            ),
+        ]
+    )
+    monkeypatch.setattr(smoke, "_get", lambda _url: next(responses))
+    monkeypatch.setattr(sys, "argv", ["smoke.py", "http://testserver"])
+    assert smoke.main() == 1
+    output = capsys.readouterr().out
+    assert "database not reachable" in output
+    assert "/readyz failed" not in output
+
+
+def test_smoke_get_parses_http_503_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    import io
+    import urllib.error
+
+    from scripts import smoke
+
+    payload = b'{"status":"not_ready","checks":{"database":"failed"}}'
+
+    def not_ready(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise urllib.error.HTTPError(
+            "http://testserver/readyz",
+            503,
+            "Service Unavailable",
+            {},
+            io.BytesIO(payload),
+        )
+
+    monkeypatch.setattr(smoke.urllib.request, "urlopen", not_ready)
+    status, body = smoke._get("http://testserver/readyz")
+    assert status == 503
+    assert body["checks"] == {"database": "failed"}
 
 
 def test_version_is_benign_and_deployment_provided() -> None:

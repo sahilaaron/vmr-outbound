@@ -22,9 +22,15 @@ DEFAULT_BASE = "http://127.0.0.1:8000"
 
 def _get(url: str) -> tuple[int, dict[str, object]]:
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=10) as resp:
+    try:
+        response = urllib.request.urlopen(req, timeout=10)
+    except urllib.error.HTTPError as exc:
+        # HTTP status failures still carry the probe's structured response. A
+        # readiness 503 is a dependency verdict, not a transport failure.
+        response = exc
+    with response as resp:
         body = resp.read().decode("utf-8")
-    status = int(resp.status)
+        status = int(resp.status)
     try:
         parsed = json.loads(body)
     except json.JSONDecodeError:

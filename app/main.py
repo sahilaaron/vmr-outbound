@@ -2,23 +2,19 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy.engine import Engine
 
 from app import __version__
 from app.api.phase2 import router as phase2_router
 from app.api.routes import router as api_router
 from app.core.config import Settings, get_settings
-from app.core.health import DatabaseReadinessProbe, ReadinessProbe
+from app.core.health import DatabaseReadinessProbe, ReadinessProbe, run_readiness_probe
 from app.core.http import CanonicalTrustedHostMiddleware, ProductionHTTPMiddleware
 from app.core.runtime import validate_runtime_settings
-from app.db.session import create_db_engine
 
 
 class WorkbenchConfigurationError(RuntimeError):
@@ -50,38 +46,19 @@ def create_app(
         )
     validate_runtime_settings(settings)
 
-    owned_readiness_engine: Engine | None = None
     if readiness_probe is None:
-        # Readiness owns a one-connection pool. It has an explicit pool wait,
-        # opens a new driver-bounded connection per probe, and never changes the
-        # application's general-purpose session pool.
-        owned_readiness_engine = create_db_engine(
-            settings.database_url,
-            connect_timeout_seconds=min(
-                settings.database_connect_timeout_seconds, settings.readiness_timeout_seconds
-            ),
-            pool_pre_ping=False,
-            pool_size=1,
-            max_overflow=0,
-            pool_timeout_seconds=settings.readiness_timeout_seconds,
-        )
+        # Readiness opens a short-lived async driver connection and never uses
+        # or changes the application's general-purpose SQLAlchemy pool.
         readiness_probe = DatabaseReadinessProbe(
-            owned_readiness_engine, timeout_seconds=settings.readiness_timeout_seconds
+            settings.database_url,
+            timeout_seconds=settings.readiness_timeout_seconds,
+            connect_timeout_seconds=settings.database_connect_timeout_seconds,
         )
-
-    @asynccontextmanager
-    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        try:
-            yield
-        finally:
-            if owned_readiness_engine is not None:
-                owned_readiness_engine.dispose()
 
     app = FastAPI(
         title=settings.app_name,
         version=__version__,
         debug=settings.debug,
-        lifespan=lifespan,
         summary=(
             "Contact-first outbound operations with durable Campaign, Agent, "
             "queue, and pipeline state."
@@ -106,16 +83,16 @@ def create_app(
         return {"status": "ok"}
 
     @app.get("/health", tags=["system"], include_in_schema=False)
-    def health_compatibility_alias() -> dict[str, str]:
-        """Backward-compatible, equally minimal liveness alias."""
+    def health_compatibility_path() -> dict[str, str]:
+        """Legacy path exposing the authoritative minimal liveness contract."""
 
         return {"status": "ok"}
 
-    def readiness_response() -> JSONResponse:
+    async def readiness_response() -> JSONResponse:
         database_status = "ok"
         status_code = 200
         try:
-            readiness_probe()
+            await run_readiness_probe(readiness_probe)
         except Exception:
             # Raw database/driver errors belong only in internal telemetry. The
             # public response has one stable, bounded failure state.
@@ -131,16 +108,16 @@ def create_app(
         )
 
     @app.get("/readyz", tags=["system"])
-    def readyz() -> JSONResponse:
+    async def readyz() -> JSONResponse:
         """Readiness for application configuration and the local database dependency."""
 
-        return readiness_response()
+        return await readiness_response()
 
     @app.get("/ready", tags=["system"], include_in_schema=False)
-    def ready_compatibility_alias() -> JSONResponse:
-        """Backward-compatible readiness alias with the hardened contract."""
+    async def ready_compatibility_path() -> JSONResponse:
+        """Legacy path exposing the authoritative hardened readiness contract."""
 
-        return readiness_response()
+        return await readiness_response()
 
     @app.get("/version", tags=["system"])
     def version() -> dict[str, str]:

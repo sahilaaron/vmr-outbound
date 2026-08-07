@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ipaddress import ip_address, ip_network
+from ipaddress import IPv4Address, ip_address, ip_network
 
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
@@ -25,6 +25,51 @@ class RuntimeConfigurationError(RuntimeError):
     """Raised before serving when configuration is known to be unsafe."""
 
 
+def _legacy_ipv4_address(host: str) -> IPv4Address | None:
+    """Parse the legacy numeric IPv4 forms accepted by libc/libpq, without DNS."""
+
+    def component(raw: str) -> int:
+        if not raw:
+            raise ValueError
+        lowered = raw.lower()
+        if lowered.startswith("0x"):
+            if len(lowered) == 2:
+                raise ValueError
+            return int(lowered[2:], 16)
+        if len(lowered) > 1 and lowered.startswith("0"):
+            return int(lowered[1:] or "0", 8)
+        return int(lowered, 10)
+
+    if not host.isascii() or any(
+        character not in "0123456789abcdefABCDEFxX." for character in host
+    ):
+        return None
+    parts = host.split(".")
+    if not 1 <= len(parts) <= 4:
+        return None
+    try:
+        values = [component(part) for part in parts]
+    except ValueError:
+        return None
+    limits = {
+        1: (0xFFFFFFFF,),
+        2: (0xFF, 0xFFFFFF),
+        3: (0xFF, 0xFF, 0xFFFF),
+        4: (0xFF, 0xFF, 0xFF, 0xFF),
+    }[len(values)]
+    if any(value < 0 or value > limit for value, limit in zip(values, limits, strict=True)):
+        return None
+    if len(values) == 1:
+        packed = values[0]
+    elif len(values) == 2:
+        packed = (values[0] << 24) | values[1]
+    elif len(values) == 3:
+        packed = (values[0] << 24) | (values[1] << 16) | values[2]
+    else:
+        packed = (values[0] << 24) | (values[1] << 16) | (values[2] << 8) | values[3]
+    return IPv4Address(packed)
+
+
 def _local_database_host(host: str | None) -> bool:
     if not host:
         return True
@@ -34,7 +79,8 @@ def _local_database_host(host: str | None) -> bool:
     try:
         return ip_address(lowered).is_loopback
     except ValueError:
-        return False
+        legacy = _legacy_ipv4_address(lowered)
+        return bool(legacy and legacy.is_loopback)
 
 
 def validate_runtime_settings(settings: Settings) -> None:

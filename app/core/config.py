@@ -29,7 +29,9 @@ def canonical_trusted_host(value: str) -> str:
     confused with ``host:port`` syntax.
     """
 
-    raw = value.strip().lower()
+    if value != value.strip():
+        raise ValueError("trusted hosts must not have leading or trailing whitespace")
+    raw = value.lower()
     wildcard = raw.startswith("*.")
     if wildcard:
         raw = raw[2:]
@@ -145,13 +147,15 @@ class Settings(BaseSettings):
         default=5,
         ge=1,
         le=30,
-        description="Upper bound for opening a PostgreSQL connection.",
+        description=(
+            "Application connection timeout and readiness connection-establishment backstop."
+        ),
     )
     readiness_timeout_seconds: float = Field(
         default=2.0,
         gt=0,
         le=30,
-        description="Database statement budget for one readiness check.",
+        description="End-to-end wall-clock budget for one readiness check.",
     )
 
     # --- Safety switches -----------------------------------------------------

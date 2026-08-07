@@ -24,6 +24,7 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -73,6 +74,9 @@ from app.web.v2 import context as shell
 router = APIRouter(prefix="/app", include_in_schema=False)
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+
+_CAMPAIGNS_JS = Path(__file__).parent.parent / "static" / "campaigns.js"
+CAMPAIGNS_JS_VERSION = sha256(_CAMPAIGNS_JS.read_bytes()).hexdigest()[:12]
 
 PAGE_SIZE = 25
 #: The campaign screen is a monitor: its whole purpose is a queue that is moving.
@@ -339,6 +343,7 @@ def _render(
         "operator_email": email,
         "operator_initials": initials,
         "capture_ready": "contact_capture_intake" in settings.features.enabled(),
+        "campaigns_js_version": CAMPAIGNS_JS_VERSION,
         "flash_ok": request.query_params.get("ok"),
         "flash_err": request.query_params.get("err"),
     }

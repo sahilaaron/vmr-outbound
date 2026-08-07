@@ -95,4 +95,4 @@
   </p>
 </div>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', path='campaigns.js') }}" defer></script>{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', path='campaigns.js') }}?v={{ campaigns_js_version }}" defer></script>{% endblock %}

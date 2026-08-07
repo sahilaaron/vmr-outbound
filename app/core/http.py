@@ -140,7 +140,9 @@ def _host_from_scope(scope: Scope) -> str | None:
         if closing < 0:
             return None
         host, suffix = raw[: closing + 1], raw[closing + 1 :]
-        if suffix and (not suffix.startswith(":") or not suffix[1:].isdigit()):
+        if suffix and (
+            not suffix.startswith(":") or not suffix[1:].isascii() or not suffix[1:].isdigit()
+        ):
             return None
     else:
         if raw.count(":") > 1:
@@ -184,9 +186,12 @@ def _safe_exception_event(exc: BaseException, request_id: str) -> dict[str, obje
     """Bounded stack metadata that never renders exception values or locals."""
 
     exceptions: list[dict[str, object]] = []
-    current: BaseException | None = exc
+    pending: list[BaseException] = [exc]
     seen: set[int] = set()
-    while current is not None and id(current) not in seen and len(exceptions) < 4:
+    while pending and len(exceptions) < 4:
+        current = pending.pop(0)
+        if id(current) in seen:
+            continue
         seen.add(id(current))
         frames = []
         for frame, line in list(traceback.walk_tb(current.__traceback__))[-16:]:
@@ -199,9 +204,13 @@ def _safe_exception_event(exc: BaseException, request_id: str) -> dict[str, obje
                 }
             )
         exceptions.append({"exception_type": type(current).__name__[:120], "frames": frames})
-        current = current.__cause__ or (
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
+        chained = current.__cause__ or (
             current.__context__ if not current.__suppress_context__ else None
         )
+        if chained is not None:
+            pending.append(chained)
     return {
         "event": "http_unhandled_exception",
         "exceptions": exceptions,
@@ -261,7 +270,9 @@ class ProductionHTTPMiddleware:
                 path = str(scope.get("path", ""))
                 set_header(
                     "Content-Security-Policy",
-                    _DOCS_CSP if path in {"/docs", "/redoc"} else _APPLICATION_CSP,
+                    _DOCS_CSP
+                    if path in {"/docs", "/docs/oauth2-redirect", "/redoc"}
+                    else _APPLICATION_CSP,
                 )
                 if context.scheme == "https" and self.hsts_max_age_seconds > 0:
                     set_header("Strict-Transport-Security", f"max-age={self.hsts_max_age_seconds}")

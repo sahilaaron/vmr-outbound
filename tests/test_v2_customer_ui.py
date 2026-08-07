@@ -632,7 +632,8 @@ def test_the_campaign_screen_is_the_only_page_that_auto_refreshes(
 
     campaigns = client.get("/app/campaigns").text.lower()
     assert campaigns.count("<script") == 1
-    assert "/static/campaigns.js" in campaigns
+    assert re.search(r"/static/campaigns\.js\?v=[0-9a-f]{12}", campaigns)
+    assert "data-live" not in campaigns, "/app/campaigns must not auto-refresh"
 
     for path in (
         "/app",
