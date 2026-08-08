@@ -87,8 +87,8 @@ from app.services.crm import annotations as crm_annotations
 from app.services.crm import detail as crm_detail
 from app.services.crm import records as crm_records
 from app.services.enrichment import companies as enrichment
+from app.services.imports import display, parsing, staging, validation
 from app.services.imports import mapping as mapping_service
-from app.services.imports import parsing, staging, validation
 from app.services.imports.importer import (
     BatchNotProcessable,
     BatchProvenance,
@@ -122,6 +122,9 @@ from app.services.workbench_agents import views as workbench_views
 router = APIRouter(include_in_schema=False)
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+# The shared spreadsheet-neutralization boundary, so every environment that
+# can render imported text has it under the same name.
+display.register_neutralize(templates.env)
 
 #: Seconds between auto-refreshes on the Agent monitor pages.
 #:

@@ -23,7 +23,7 @@
         <tr>
           <td class="dim">{{ row.card.position }}</td>
           <td class="primary">
-            <a href="/admin/stages/{{ row.agent_id.value }}">{{ row.display_name }}</a>
+            <a href="/admin/stages/{{ row.agent_id.value }}">{{ (row.display_name) | neutralize }}</a>
             {% if not row.implemented %}<span class="badge muted plain">not implemented</span>{% endif %}
             {% if row.skippable %}<span class="badge outline plain">skippable</span>{% endif %}
           </td>

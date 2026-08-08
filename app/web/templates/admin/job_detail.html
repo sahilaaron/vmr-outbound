@@ -6,14 +6,14 @@
 
 <div class="page-head">
   <div>
-    <h1>{{ job.agent_name }} Job
+    <h1>{{ (job.agent_name) | neutralize }} Job
       {{ wb.job_badge(job.public_status) }}
       <span class="badge outline plain">{{ job.stored_status.value }}</span>
     </h1>
     <div class="sub mono">{{ job.job_id }}</div>
     <div class="sub">
-      {% if job.campaign_id %}<a href="/admin/campaigns/{{ job.campaign_id }}">{{ job.campaign_name or "Campaign" }}</a>{% endif %}
-      {% if job.campaign_contact_id and job.campaign_id %} · <a href="/admin/campaigns/{{ job.campaign_id }}/contacts/{{ job.campaign_contact_id }}">{{ job.contact_label or "Contact diagnosis" }}</a>{% endif %}
+      {% if job.campaign_id %}<a href="/admin/campaigns/{{ job.campaign_id }}">{{ (job.campaign_name or "Campaign") | neutralize }}</a>{% endif %}
+      {% if job.campaign_contact_id and job.campaign_id %} · <a href="/admin/campaigns/{{ job.campaign_id }}/contacts/{{ job.campaign_contact_id }}">{{ (job.contact_label or "Contact diagnosis") | neutralize }}</a>{% endif %}
     </div>
   </div>
   <div class="page-actions">
@@ -59,7 +59,7 @@
         <dt>Outcome status</dt><dd>{% if job.outcome_status %}<span class="mono">{{ job.outcome_status }}</span>{% else %}<span class="dim">none committed</span>{% endif %}</dd>
         {% if job.completed_without_result %}<dt>Note</dt><dd>Succeeded, but the committed outcome carried no usable result — a real and different answer from failure.</dd>{% endif %}
         {% if job.error_class %}<dt>Error class</dt><dd class="mono">{{ job.error_class }}</dd>{% endif %}
-        {% if job.error_message %}<dt>Error (sanitized)</dt><dd class="wrap-anywhere">{{ job.error_message }}</dd>{% endif %}
+        {% if job.error_message %}<dt>Error (sanitized)</dt><dd class="wrap-anywhere">{{ (job.error_message) | neutralize }}</dd>{% endif %}
         <dt>Retryable failure</dt><dd>{{ wb.bool_badge(job.retryable_failure) }}</dd>
       </div>
     </div>

@@ -17,6 +17,7 @@ FAILURE that would read as a definitively bad mailbox.
 
 from __future__ import annotations
 
+import dataclasses
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -75,6 +76,26 @@ _EXPLANATIONS = {
 }
 
 
+#: Marks an address a Campaign was handed in a contact file (IMP-001) rather
+#: than one this system built and checked.
+SOURCE_IMPORTED = "imported"
+
+#: What an imported address's status says on every surface that renders one.
+#:
+#: The ordinary UNVERIFIED wording is "Not yet verified", which promises a check
+#: that is still to come. For an imported address that promise is false: the
+#: Email stage completed through the imported path, no candidate was generated,
+#: no provider was called, and none ever will be for this address in the
+#: Campaign that imported it. "Pending" was the visual label, and it said the
+#: same thing more briefly.
+IMPORTED_LABEL = "supplied by import"
+IMPORTED_EXPLANATION = (
+    "Supplied by a contact file import. No verification provider was called for "
+    "this address, so this is a vendor-supplied claim rather than a "
+    "provider-verified mailbox."
+)
+
+
 @dataclass(frozen=True)
 class StatusView:
     """The rendered verification status for one address."""
@@ -89,10 +110,18 @@ class StatusView:
     # Provenance of the evidence being shown, when any: "simulated" or "live".
     # None for in-flight/operational/unverified states with no evidence to show.
     evidence_source: str | None = None
+    #: Where the ADDRESS came from, as distinct from where its evidence came
+    #: from. ``SOURCE_IMPORTED`` when a contact file supplied it and the import
+    #: recorded the verification bypass; None otherwise.
+    address_origin: str | None = None
+
+    @property
+    def is_imported(self) -> bool:
+        return self.address_origin == SOURCE_IMPORTED
 
     @property
     def label(self) -> str:
-        return self.visual.value
+        return IMPORTED_LABEL if self.is_imported else self.visual.value
 
     @property
     def is_simulated(self) -> bool:
@@ -249,8 +278,59 @@ def _view(
     )
 
 
+def _imported_origin(session: Session, contact: Contact, email: str | None) -> bool:
+    """Whether *email* is an address a contact file supplied for this person.
+
+    Asks the import's own evidence rather than inferring anything from the
+    absence of a verification row: "no evidence yet" and "no provider will ever
+    be asked" are different states and a surface that conflates them tells the
+    operator to wait for something that is not coming.
+
+    Contact-level and therefore campaign-agnostic, which is what the caller
+    needs — this feeds the Contact page, which is not scoped to a Campaign. The
+    campaign-scoped question is answered by
+    :func:`app.services.imports.campaign_import.accepted_primary_email`, and the
+    campaign-scoped surfaces use that instead.
+    """
+
+    if not email:
+        return False
+    # Imported locally: the verification domain must not take a module-level
+    # dependency on the import subsystem.
+    from app.models.enums import ImportedEmailSlot, ImportedEmailStageOutcome
+    from app.models.imported_email import ImportedContactEmail
+
+    return (
+        session.scalars(
+            select(ImportedContactEmail.id)
+            .where(
+                ImportedContactEmail.contact_id == contact.id,
+                ImportedContactEmail.normalized_email == email,
+                ImportedContactEmail.slot == ImportedEmailSlot.PRIMARY,
+                ImportedContactEmail.email_stage_outcome
+                == ImportedEmailStageOutcome.IMPORTED_EMAIL_ACCEPTED,
+            )
+            .limit(1)
+        ).first()
+        is not None
+    )
+
+
 def derive_status_for_contact(session: Session, contact: Contact) -> StatusView:
-    return derive_status_for_email(session, address_for_contact(session, contact))
+    email = address_for_contact(session, contact)
+    view = derive_status_for_email(session, email)
+    if not view.has_address or not _imported_origin(session, contact, view.email):
+        return view
+    # Provider evidence, where it exists, outranks the import: a mailbox somebody
+    # actually checked is a stronger fact than a cell in a spreadsheet, and the
+    # import label would hide it.
+    if view.evidence_source is not None:
+        return view
+    return dataclasses.replace(
+        view,
+        explanation=IMPORTED_EXPLANATION,
+        address_origin=SOURCE_IMPORTED,
+    )
 
 
 def status_for_contact_id(session: Session, contact_id: uuid.UUID) -> StatusView | None:

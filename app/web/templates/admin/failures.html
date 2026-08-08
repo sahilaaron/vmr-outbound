@@ -11,22 +11,22 @@
 
 <div class="filters">
   <div class="chiprow">
-    <a class="chip {{ 'on' if not view.category_filter else '' }}" href="/admin/failures{% if view.campaign_filter %}?campaign={{ view.campaign_filter }}{% endif %}">All <span class="c">{{ view.counts_by_category.values() | sum }}</span></a>
+    <a class="chip {{ 'on' if not view.category_filter else '' }}" href="/admin/failures{% if view.campaign_filter %}?campaign={{ view.campaign_filter | neutralize }}{% endif %}">All <span class="c">{{ view.counts_by_category.values() | sum }}</span></a>
     {% for key, label in categories %}
       {% set count = view.counts_by_category.get(key, 0) %}
       {% if count %}
-      <a class="chip {{ 'on' if view.category_filter == key else '' }}" href="/admin/failures?category={{ key }}{% if view.campaign_filter %}&campaign={{ view.campaign_filter }}{% endif %}">{{ label }} <span class="c">{{ count }}</span></a>
+      <a class="chip {{ 'on' if view.category_filter == key else '' }}" href="/admin/failures?category={{ key }}{% if view.campaign_filter %}&campaign={{ view.campaign_filter | neutralize }}{% endif %}">{{ (label) | neutralize }} <span class="c">{{ count }}</span></a>
       {% endif %}
     {% endfor %}
   </div>
   <div class="spacer"></div>
   <form class="inline" method="get" action="/admin/failures">
-    {% if view.category_filter %}<input type="hidden" name="category" value="{{ view.category_filter }}">{% endif %}
+    {% if view.category_filter %}<input type="hidden" name="category" value="{{ view.category_filter | neutralize }}">{% endif %}
     <label for="campaign-filter">Campaign</label>
     <select id="campaign-filter" name="campaign">
       <option value="">All</option>
       {% for campaign_id, name in view.campaign_options %}
-      <option value="{{ campaign_id }}" {{ 'selected' if view.campaign_filter == campaign_id else '' }}>{{ name }}</option>
+      <option value="{{ campaign_id }}" {{ 'selected' if view.campaign_filter == campaign_id else '' }}>{{ (name) | neutralize }}</option>
       {% endfor %}
     </select>
     <button class="btn small" type="submit">Filter</button>
@@ -45,14 +45,14 @@
       <tbody>
         {% for item in view.items %}
         <tr class="{{ 'attention' if item.severity == 'critical' else '' }}">
-          <td><span class="badge {{ 'err' if item.severity == 'critical' else 'warn' }}">{{ item.category_label }}</span></td>
-          <td>{% if item.campaign_id %}<a href="/admin/campaigns/{{ item.campaign_id }}">{{ item.campaign_name or "Campaign" }}</a>{% else %}<span class="dim">—</span>{% endif %}</td>
+          <td><span class="badge {{ 'err' if item.severity == 'critical' else 'warn' }}">{{ (item.category_label) | neutralize }}</span></td>
+          <td>{% if item.campaign_id %}<a href="/admin/campaigns/{{ item.campaign_id }}">{{ (item.campaign_name or "Campaign") | neutralize }}</a>{% else %}<span class="dim">—</span>{% endif %}</td>
           <td class="primary">
             <a href="{{ item.diagnosis_href }}">{{ item.contact_label or item.company_label or (item.job_id | string | truncate(8, True, "") ~ "…" if item.job_id else "—") }}</a>
-            {% if item.company_label and item.contact_label %}<span class="dim">· {{ item.company_label }}</span>{% endif %}
+            {% if item.company_label and item.contact_label %}<span class="dim">· {{ (item.company_label) | neutralize }}</span>{% endif %}
           </td>
-          <td>{{ item.agent_name or "—" }}</td>
-          <td class="dim wrap-anywhere">{{ item.reason | truncate(110) }}</td>
+          <td>{{ (item.agent_name or "—") | neutralize }}</td>
+          <td class="dim wrap-anywhere">{{ (item.reason | truncate(110)) | neutralize }}</td>
           <td class="num">{% if item.attempt_count is not none %}{{ item.attempt_count }}{% if item.max_attempts %}/{{ item.max_attempts }}{% endif %}{% else %}—{% endif %}</td>
           <td>{{ wb.bool_badge(item.retryable) }}</td>
           <td class="dim nowrap">{{ item.latest_at | ago }}</td>
@@ -72,6 +72,48 @@
     {% endif %}
   </div>
 </div>
+
+{# A row a file import refused or held never became a Campaign Contact, so it has
+   no stage, no Agent Job and no failure the inbox above could inherit. It is
+   listed separately rather than merged in, because the corrective action is
+   different in kind: the file is fixed and re-imported, not retried. #}
+{% if import_rows %}
+<div class="card">
+  <div class="card-head">
+    <h2>File-import rows needing attention</h2>
+    <span class="hint">refused, held and suppressed rows — no Contact was created, so these appear nowhere above. Rows that were already present are not failures and are not listed here.</span>
+  </div>
+  <div class="card-body tight">
+    <div class="table-wrap">
+    <table class="data">
+      <thead><tr>
+        <th>Outcome</th><th>Import</th><th class="num">Row</th><th>Reason</th>
+        <th>Company in file</th><th>Warnings</th><th>Where</th>
+      </tr></thead>
+      <tbody>
+        {% for row in import_rows %}
+        <tr class="{{ 'attention' if row.held_for_review else '' }}">
+          <td><span class="badge {{ 'warn' if row.held_for_review else 'muted' if row.unprocessed else 'err' }}">{{ (row.outcome_label) | neutralize }}</span></td>
+          <td>
+            {% if row.batch_href %}<a href="{{ row.batch_href }}">import</a>{% else %}<span class="dim">—</span>{% endif %}
+            {% if row.campaign_id %}<span class="dim">·</span> <a href="/admin/campaigns/{{ row.campaign_id }}">campaign</a>{% endif %}
+          </td>
+          <td class="num">{{ row.row_number }}</td>
+          <td class="dim wrap-anywhere"><span class="mono">{{ row.error_code or "—" }}</span>{% if row.note %} · {{ (row.note | truncate(90)) | neutralize }}{% endif %}</td>
+          <td class="dim">{{ (row.supplied_company_name or "—") | neutralize }}</td>
+          <td class="num">{{ row.warnings | length }}</td>
+          <td>{% if row.diagnosis_href %}<a class="btn small" href="{{ row.diagnosis_href }}">Diagnose</a>{% else %}<span class="dim">no Contact</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    <div class="card-foot">
+      A held row is not a prior successful import: correcting the file and importing it again is the resolution, and the corrected row imports normally.
+    </div>
+  </div>
+</div>
+{% endif %}
 
 <div class="muted-note">
   Retry and skip actions live on each Contact's diagnosis page, where the full context is visible; failures with no safe action say what requires intervention instead.

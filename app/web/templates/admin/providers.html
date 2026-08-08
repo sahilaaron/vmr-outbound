@@ -13,7 +13,7 @@
   {% for provider in view.providers %}
   <div class="card">
     <div class="card-head">
-      <h2>{{ provider.display_name }}</h2>
+      <h2>{{ (provider.display_name) | neutralize }}</h2>
       <span>
         {% if provider.configured %}<span class="badge ok">configured</span>{% else %}<span class="badge muted plain">not configured</span>{% endif %}
         {% if provider.enabled %}<span class="badge accent plain">in use</span>{% endif %}
@@ -21,14 +21,14 @@
     </div>
     <div class="card-body">
       <div class="kv">
-        <dt>Configuration</dt><dd>{{ provider.configuration_note }}</dd>
+        <dt>Configuration</dt><dd>{{ (provider.configuration_note) | neutralize }}</dd>
         <dt>Feature switches</dt><dd>{% if provider.feature_flags %}{% for flag in provider.feature_flags %}<code>{{ flag }}</code>{{ " " }}{% endfor %}{% else %}<span class="dim">none enabled</span>{% endif %}</dd>
         <dt>Usage (7 days)</dt>
         <dd>{{ provider.usage_7d.calls }} call{{ "s" if provider.usage_7d.calls != 1 else "" }}{% if provider.usage_7d.cache_hits %} · {{ provider.usage_7d.cache_hits }} cache hits{% endif %}{% if provider.usage_7d.failures %} · <span class="badge err plain">{{ provider.usage_7d.failures }} failures</span>{% endif %}</dd>
         <dt>Usage (30 days)</dt>
         <dd>{{ provider.usage_30d.calls }} calls · {{ provider.usage_30d.units | round(1) }} units{% if provider.usage_30d.estimated_cost is not none %} · est. {{ provider.usage_30d.estimated_cost | round(4) }} {{ provider.usage_30d.currency or "" }}{% else %} · <span class="dim">no cost ledger</span>{% endif %}</dd>
         <dt>Last used</dt><dd>{{ provider.last_used_at | ago }}</dd>
-        {% if provider.last_failure_at %}<dt>Last failure</dt><dd>{{ provider.last_failure_at | ago }}{% if provider.last_failure_reason %} <span class="dim">({{ provider.last_failure_reason }})</span>{% endif %}</dd>{% endif %}
+        {% if provider.last_failure_at %}<dt>Last failure</dt><dd>{{ provider.last_failure_at | ago }}{% if provider.last_failure_reason %} <span class="dim">({{ (provider.last_failure_reason) | neutralize }})</span>{% endif %}</dd>{% endif %}
       </div>
     </div>
   </div>

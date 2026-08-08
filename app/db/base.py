@@ -48,6 +48,7 @@ from app.models import email_verification_studio as _email_verification_studio  
 from app.models import external_event as _external_event  # noqa: E402,F401
 from app.models import identity_resolution as _identity_resolution  # noqa: E402,F401
 from app.models import import_batch as _import_batch  # noqa: E402,F401
+from app.models import imported_email as _imported_email  # noqa: E402,F401
 from app.models import insight as _insight  # noqa: E402,F401
 from app.models import intelligence_taxonomy as _intelligence_taxonomy  # noqa: E402,F401
 from app.models import linkedin_company as _linkedin_company  # noqa: E402,F401

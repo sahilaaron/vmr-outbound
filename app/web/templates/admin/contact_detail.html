@@ -2,18 +2,18 @@
 {% import "admin/_wb.html" as wb %}
 {% block content %}
 
-{{ wb.crumbs([("Contacts", "/admin/contacts"), (view.name, None)]) }}
+{{ wb.crumbs([("Contacts", "/admin/contacts"), (view.name | neutralize, None)]) }}
 
 <div class="page-head">
   <div>
-    <h1>{{ view.name }}
+    <h1>{{ view.name | neutralize }}
       {% if view.suppressed %}<span class="badge err">suppressed</span>{% endif %}
       {% if view.merged_into_id %}<span class="badge warn plain">merged</span>{% endif %}
     </h1>
     <div class="sub">
-      {{ view.title or "Title not captured" }}
-      {% if view.company_label %} · {% if view.company_id %}<a href="/admin/companies/{{ view.company_id }}">{{ view.company_label }}</a>{% else %}{{ view.company_label }}{% endif %}{% endif %}
-      {% if view.location or view.country %} · {{ view.location or view.country }}{% endif %}
+      {{ (view.title | neutralize) or "Title not captured" }}
+      {% if view.company_label %} · {% if view.company_id %}<a href="/admin/companies/{{ view.company_id }}">{{ view.company_label | neutralize }}</a>{% else %}{{ view.company_label | neutralize }}{% endif %}{% endif %}
+      {% if view.location or view.country %} · {{ (view.location | neutralize) or (view.country | neutralize) }}{% endif %}
     </div>
   </div>
   <div class="page-actions">
@@ -30,8 +30,8 @@
     <div class="card-head"><h2>Identity</h2></div>
     <div class="card-body">
       <div class="kv">
-        <dt>Email</dt><dd>{{ view.email or "—" }}</dd>
-        <dt>Company domain</dt><dd class="mono">{{ view.company_domain or "—" }}</dd>
+        <dt>Email</dt><dd>{{ (view.email | neutralize) or "—" }}</dd>
+        <dt>Company domain</dt><dd class="mono">{{ (view.company_domain | neutralize) or "—" }}</dd>
         <dt>LinkedIn</dt><dd class="wrap-anywhere">{% if view.linkedin_url %}<a href="{{ view.linkedin_url }}" rel="noopener noreferrer">{{ view.linkedin_url }}</a>{% else %}—{% endif %}</dd>
         <dt>Created</dt><dd>{{ view.created_at | dt }}</dd>
         <dt>Updated</dt><dd>{{ view.updated_at | dt }}</dd>
@@ -52,7 +52,7 @@
           <tr>
             <td>{{ row.suppression_type }}</td>
             <td class="mono">{{ row.value }}</td>
-            <td>{{ row.reason | replace("_", " ") }}</td>
+            <td>{{ (row.reason | replace("_", " ")) | neutralize }}</td>
             <td>{{ wb.bool_badge(row.active, yes="active", no="inactive") }}</td>
             <td class="dim">{{ row.created_at | dt }}</td>
           </tr>
@@ -78,10 +78,10 @@
       <tbody>
         {% for membership in view.memberships %}
         <tr>
-          <td class="primary"><a href="/admin/campaigns/{{ membership.campaign_id }}">{{ membership.campaign_name }}</a></td>
+          <td class="primary"><a href="/admin/campaigns/{{ membership.campaign_id }}">{{ (membership.campaign_name) | neutralize }}</a></td>
           <td>{{ wb.membership_badge(membership.membership_status) }}</td>
           <td>{{ wb.eligibility_badge(membership.eligibility) }}</td>
-          <td>{{ membership.current_stage_name or "—" }}</td>
+          <td>{{ (membership.current_stage_name or "—") | neutralize }}</td>
           <td>{{ wb.stage_badge(membership.pipeline_status) }}</td>
           <td class="dim">{{ membership.enrolled_at | dt }}</td>
           <td><a class="btn small" href="/admin/campaigns/{{ membership.campaign_id }}/contacts/{{ membership.campaign_contact_id }}">Diagnose</a></td>
@@ -107,10 +107,14 @@
         <tbody>
           {% for row in view.emails %}
           <tr>
-            <td class="mono">{{ row.email }}</td>
-            <td class="dim">{{ row.source }}</td>
-            <td>{{ wb.verification_badge(row.verification_result) }}</td>
-            <td class="dim">{{ row.verified_at | dt }}</td>
+            <td class="mono">{{ row.email | neutralize }}</td>
+            <td class="dim">{{ (row.source_label) | neutralize }}</td>
+            <td>
+              {% if row.imported %}
+              <span class="badge muted plain" title="No verification provider was called for this address. It is an accepted imported record, not a provider-verified mailbox.">no provider called</span>
+              {% else %}{{ wb.verification_badge(row.verification_result) }}{% endif %}
+            </td>
+            <td class="dim">{% if row.imported %}<span class="dim">never checked</span>{% else %}{{ row.verified_at | dt }}{% endif %}</td>
           </tr>
           {% endfor %}
         </tbody>
@@ -158,9 +162,9 @@
       <tbody>
         {% for draft in view.drafts %}
         <tr>
-          <td>{{ draft.campaign_name or "—" }}</td>
+          <td>{{ (draft.campaign_name or "—") | neutralize }}</td>
           <td class="num">v{{ draft.version_number }}</td>
-          <td class="wrap-anywhere">{{ draft.subject }}</td>
+          <td class="wrap-anywhere">{{ draft.subject | neutralize }}</td>
           <td>{% if draft.approval_status %}<span class="badge {{ 'ok' if draft.approval_status == 'approved' else 'muted' }} plain">{{ draft.approval_status }}</span>{% else %}<span class="badge warn plain">awaiting decision</span>{% endif %}</td>
           <td class="dim">{{ draft.created_at | dt }}</td>
         </tr>
@@ -173,5 +177,7 @@
     {% endif %}
   </div>
 </div>
+
+{{ wb.source_identifiers(source_identifiers) }}
 
 {% endblock %}
