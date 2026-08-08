@@ -655,7 +655,7 @@ def _seed_sequence(conn: Connection, *, with_review: bool) -> None:
             "sequence_producer_version, validation_policy_version, cadence_source, "
             "message_count, generation_status, validation_status, review_state, stop_state) "
             "VALUES (:id, :k, 1, :m, :c, :ct, :co, 'digest', 'builder/v1', 'validation/v1', "
-            "'default', 7, 'COMPLETE', 'PASSED', 'NEEDS_REVIEW', 'RUNNING')"
+            "'default', 7, 'COMPLETE', 'PASSED', 'APPROVED', 'RUNNING')"
         ),
         {
             "id": sequence_id,
@@ -717,10 +717,17 @@ def test_seq_001_downgrade_refuses_while_sequence_data_exists(
 ) -> None:
     """Generated copy and human decisions are not re-derivable, so refuse.
 
-    Parametrised over the two cases that matter separately: a sequence with
-    generated versions but no decision yet, and one that a human has actually
-    approved. Both must block; the second is the one that would destroy a record
-    of somebody's judgement.
+    Parametrised over the two cases that matter separately, and under default
+    approval they are no longer "before review" and "after review". A generated
+    sequence is approved and carries **no** review row at all, so
+    ``with_review=False`` is the ordinary case rather than a transient one, and
+    ``with_review=True`` is the sequence somebody actually ruled on. Both must
+    block; the second is the one that would destroy a record of a human
+    judgement, and the first still holds copy nothing can re-derive.
+
+    The seeded ``review_state`` is ``APPROVED`` for the same reason: seeding
+    ``NEEDS_REVIEW`` would be seeding a state generation no longer produces, and
+    a guard proven only against unreachable data proves less than it appears to.
     """
 
     assert _alembic(["upgrade", "head"], temp_database_url).returncode == 0

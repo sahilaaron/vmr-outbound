@@ -658,3 +658,112 @@ def test_admin_diagnosis_exposes_no_raw_producer_output_or_local_paths(
     assert not any(text in body for text in BODIES)
     for marker in ("/home/", "/mnt/user-data", "postgresql://", "api_key", "Traceback"):
         assert marker not in body
+
+
+# ---------------------------------------------------------------------------
+# Review without a queue: what the page shows when nothing is waiting
+# ---------------------------------------------------------------------------
+
+
+def test_a_generated_sequence_is_visible_in_the_default_review_view(
+    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
+) -> None:
+    """The acceptance test for removing the mandatory backlog.
+
+    The default filter used to be an approval queue. Once generation approves
+    its own output that filter is structurally empty, so landing on it would
+    have shown an operator an empty page above seven readable messages.
+    """
+
+    build(db_session, scenario)
+    body = client.get("/app/review").text
+    assert body.count("v2-seq-card") == 1
+    assert "All sequences" in body
+    assert "Waiting for you" not in body.split("v2-rq")[0]
+
+
+def test_a_sequence_expands_even_when_the_active_filter_excludes_it(
+    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
+) -> None:
+    """Following a link to a sequence must show that sequence.
+
+    Expansion used to be resolved by scanning the rows the current filter had
+    returned, so asking for a sequence the filter did not include rendered a
+    page with no messages on it and no explanation.
+    """
+
+    sequence = build(db_session, scenario)
+    # "Contains a discard" excludes this sequence: it has none.
+    body = client.get(f"/app/review?sview=discarded&sequence={sequence.id}&step=1").text
+    assert "v2-seq-card" in body
+    assert BODIES[0] in body
+    assert "not in the" in body, "the page should say why it is showing an unlisted sequence"
+    for label in ("Initial", "F1", "F6"):
+        assert f">{label}<" in body
+
+
+def test_all_seven_bodies_are_readable_without_any_review(
+    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
+) -> None:
+    """Requirement: all seven messages available, with no operator action first."""
+
+    _campaign, _company, contact, membership, _policy, _evidence = scenario
+    build(db_session, scenario)
+    for position in range(1, SEQUENCE_LENGTH + 1):
+        body = client.get(
+            f"/app/contacts/{contact.id}?campaign={membership.campaign_id}&step={position}"
+        ).text
+        shown = [text for text in BODIES if text in body]
+        assert shown == [BODIES[position - 1]], f"step {position} showed {len(shown)} bodies"
+
+
+def test_the_contact_page_renders_all_seven_planned_timings(
+    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
+) -> None:
+    """The whole ladder, not only its ends."""
+
+    _campaign, _company, contact, membership, _policy, _evidence = scenario
+    build(db_session, scenario)
+    body = client.get(f"/app/contacts/{contact.id}?campaign={membership.campaign_id}").text
+    assert "Day 0 — first message" in body
+    for elapsed, delay in ((3, 3), (7, 4), (12, 5), (18, 6), (25, 7), (35, 10)):
+        assert f"Day {elapsed} — {delay} days later" in body
+
+
+def test_the_pages_never_print_the_bare_word_approved_without_saying_whose(
+    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
+) -> None:
+    """A default must never read as somebody's judgement.
+
+    Checked on the rendered pages before and after a human decision, so the
+    distinction has to survive both states rather than only the empty one.
+    """
+
+    _campaign, _company, contact, membership, _policy, _evidence = scenario
+    sequence = build(db_session, scenario)
+    contact_url = f"/app/contacts/{contact.id}?campaign={membership.campaign_id}&step=1"
+
+    fresh = client.get(contact_url).text
+    assert "approved by default" in fresh
+    assert "approved by you" not in fresh
+    assert "not by anyone" in fresh
+
+    rows = sequence_read.message_rows(db_session, sequence=sequence)
+    sequence_review.approve_message(db_session, message_version_id=rows[0].version_id)
+    db_session.commit()
+
+    after = client.get(contact_url).text
+    assert "approved by you" in after
+    assert "approved by default" in after, "the other six are still defaults"
+    assert "not by anyone" not in after
+
+
+def test_the_sequences_placeholder_no_longer_denies_the_engine_exists(
+    client: TestClient,
+) -> None:
+    """The placeholder outlived the thing it was placeholding for."""
+
+    body = client.get("/app/sequences").text
+    assert "No sequence engine exists" not in body
+    assert "there is no sequence" not in body
+    assert "no sending path" in body

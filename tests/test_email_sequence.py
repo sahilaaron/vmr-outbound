@@ -28,6 +28,7 @@ from app.models.email_sequence import (
     EmailSequenceMessageVersion,
 )
 from app.models.enums import (
+    SequenceDeliveryState,
     SequenceMessageOrigin,
     SequenceMessagePurpose,
     SequenceMessageType,
@@ -1386,3 +1387,531 @@ def test_the_generated_sequence_names_no_external_identity(
     assert not any(
         marker in name for name in columns for marker in ("gmail", "thread", "rfc", "google")
     )
+
+
+# ---------------------------------------------------------------------------
+# 12. Approved by default — and the difference between a default and a decision
+#
+# The whole design rests on one asymmetry: a review row exists if and only if a
+# person acted. Everything below either asserts that asymmetry or asserts
+# something that would be unfalsifiable without it.
+# ---------------------------------------------------------------------------
+
+
+def _audit_actions(db: Session) -> list[str]:
+    from app.models.audit_event import AuditEvent
+
+    return list(db.scalars(select(AuditEvent.action)).all())
+
+
+def test_generation_writes_no_review_row_and_is_approved_anyway(
+    db_session: Session, scenario: tuple[Any, ...]
+) -> None:
+    """The load-bearing test for default approval."""
+
+    sequence = build(db_session, scenario)
+
+    assert db_session.scalar(select(func.count(EmailSequenceMessageReview.id))) == 0
+    assert sequence.review_state is SequenceReviewState.APPROVED
+    assert sequence.current_actionable_position == 1
+
+    states = sequence_review.message_states(db_session, sequence=sequence)
+    assert len(states) == SEQUENCE_LENGTH
+    assert all(state.approved for state in states)
+    assert all(state.approved_by_default for state in states)
+    assert not any(state.human_decided for state in states)
+
+    aggregate = sequence_review.aggregate_state(sequence, states)
+    assert aggregate.fully_approved is True
+    assert aggregate.human_approved == 0
+    assert aggregate.reviewed_by_human is False
+
+
+def test_generation_writes_no_approval_audit_event(
+    db_session: Session, scenario: tuple[Any, ...]
+) -> None:
+    """The audit half of "editing must not fabricate a human review".
+
+    A default that appeared in the trail as a decision would be a false record
+    of what a person did, in the one place the record is supposed to be exact.
+    """
+
+    build(db_session, scenario)
+    actions = _audit_actions(db_session)
+    assert actions.count("email_sequence.generated") == 1
+    assert "email_sequence_message.approved" not in actions
+    assert "email_sequence.approved" not in actions
+    assert not any(action.endswith(".approved") for action in actions)
+
+
+def test_a_human_approval_is_the_only_thing_that_creates_a_review_row(
+    db_session: Session, scenario: tuple[Any, ...]
+) -> None:
+    """A default and a decision are observably different, not merely intended to be."""
+
+    sequence = build(db_session, scenario)
+    rows = sequence_read.message_rows(db_session, sequence=sequence)
+    assert db_session.scalar(select(func.count(EmailSequenceMessageReview.id))) == 0
+    assert "email_sequence_message.approved" not in _audit_actions(db_session)
+
+    sequence_review.approve_message(db_session, message_version_id=rows[0].version_id)
+
+    stored = db_session.scalars(select(EmailSequenceMessageReview)).all()
+    assert len(stored) == 1
+    assert stored[0].decided_by == sequence_review.OPERATOR_ACTOR
+    assert _audit_actions(db_session).count("email_sequence_message.approved") == 1
+
+
+def test_a_review_row_cannot_be_written_for_a_system_actor(
+    db_session: Session, scenario: tuple[Any, ...]
+) -> None:
+    """The guarantee made mechanical rather than conventional.
+
+    If a future caller reaches for the review path to express a default, it is
+    refused at the one function that constructs the row.
+    """
+
+    sequence = build(db_session, scenario)
+    rows = sequence_read.message_rows(db_session, sequence=sequence)
+    for actor in (sequence_persistence.SYSTEM_ACTOR, "system:anything", "", "   "):
+        with pytest.raises(sequence_review.SequenceReviewError):
+            sequence_review.approve_message(
+                db_session, message_version_id=rows[0].version_id, actor=actor
+            )
+    assert db_session.scalar(select(func.count(EmailSequenceMessageReview.id))) == 0
+
+
+def test_only_one_function_in_the_package_constructs_a_review_row(
+    db_session: Session, scenario: tuple[Any, ...]
+) -> None:
+    """A static guard, so the invariant survives a future refactor.
+
+    Counting construction sites is what makes "a review row means a person"
+    checkable without reading every call path by hand.
+    """
+
+    import ast
+    from pathlib import Path
+
+    from app.services import sequences as sequences_package
+
+    root = Path(sequences_package.__file__).parent
+    sites: list[str] = []
+    for path in sorted(root.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "EmailSequenceMessageReview"
+            ):
+                sites.append(f"{path.name}:{node.lineno}")
+    assert len(sites) == 1, f"expected exactly one construction site, found {sites}"
+    assert sites[0].startswith("review.py"), sites
+
+
+def test_editing_writes_a_new_version_and_no_review_row(
+    db_session: Session, scenario: tuple[Any, ...]
+) -> None:
+    """An edit records the edit, and claims nothing about review."""
+
+    sequence = build(db_session, scenario)
+    rows = sequence_read.message_rows(db_session, sequence=sequence)
+    target = rows[3]
+
+    edited = sequence_review.edit_message(
+        db_session,
+        message_version_id=target.version_id,
+        subject="A subject I wrote",
+        body="A body I wrote.",
+    )
+
+    assert edited.message_version == 2
+    assert edited.origin is SequenceMessageOrigin.HUMAN_EDITED
+    assert edited.source_version_id == target.version_id
+    assert edited.original_body is not None
+    assert db_session.scalar(select(func.count(EmailSequenceMessageReview.id))) == 0
+
+    actions = _audit_actions(db_session)
+    assert actions.count("email_sequence_message.edited") == 1
+    assert "email_sequence_message.approved" not in actions
+
+    # The edited version is approved by default, like any text nobody has ruled
+    # on. An edit neither unapproves the sequence nor claims it was reviewed.
+    refreshed = sequence_review.refresh_aggregate(db_session, sequence=sequence)
+    assert refreshed.state is SequenceReviewState.APPROVED
+    assert refreshed.human_approved == 0
+    assert refreshed.edited == 1
+
+
+def test_editing_an_approved_message_invalidates_that_approval_and_records_no_new_one(
+    db_session: Session, scenario: tuple[Any, ...]
+) -> None:
+    """The approval happened; it simply no longer applies to text nobody approved."""
+
+    sequence = build(db_session, scenario)
+    rows = sequence_read.message_rows(db_session, sequence=sequence)
+    sequence_review.approve_message(db_session, message_version_id=rows[0].version_id)
+    assert db_session.scalar(select(func.count(EmailSequenceMessageReview.id))) == 1
+
+    sequence_review.edit_message(
+        db_session,
+        message_version_id=rows[0].version_id,
+        subject="Rewritten",
+        body="Rewritten body.",
+    )
+
+    stored = db_session.scalars(select(EmailSequenceMessageReview)).all()
+    assert len(stored) == 1, "an edit must not create a second review row"
+    assert stored[0].decision is SequenceReviewDecision.INVALIDATED
+    assert stored[0].decided_by == sequence_review.OPERATOR_ACTOR
+
+
+def test_invalidated_decisions_only_ever_attach_to_superseded_versions(
+    db_session: Session, scenario: tuple[Any, ...]
+) -> None:
+    """So an invalidation can never be mistaken for the standing state."""
+
+    sequence = build(db_session, scenario)
+    rows = sequence_read.message_rows(db_session, sequence=sequence)
+    sequence_review.approve_message(db_session, message_version_id=rows[0].version_id)
+    sequence_review.edit_message(
+        db_session,
+        message_version_id=rows[0].version_id,
+        subject="Rewritten",
+        body="Rewritten body.",
+    )
+
+    invalidated = db_session.scalars(
+        select(EmailSequenceMessageReview).where(
+            EmailSequenceMessageReview.decision == SequenceReviewDecision.INVALIDATED
+        )
+    ).all()
+    assert len(invalidated) == 1
+    version = db_session.get(EmailSequenceMessageVersion, invalidated[0].message_version_id)
+    assert version is not None and version.superseded_at is not None
+
+    current = sequence_review.message_states(db_session, sequence=sequence)
+    assert all(state.decision is not SequenceReviewDecision.INVALIDATED for state in current)
+
+
+def test_nothing_blocks_an_unreviewed_sequence_from_being_complete(
+    db_session: Session, scenario: tuple[Any, ...]
+) -> None:
+    """ "No mandatory approval queue", stated positively."""
+
+    sequence = build(db_session, scenario)
+    summary = sequence_read.summary(db_session, sequence=sequence)
+    assert summary.review_state is SequenceReviewState.APPROVED
+    assert summary.current_actionable_position == 1
+    assert summary.reviewed_by_human is False
+    assert sequence_read.reviewed_count(db_session) == 0
+    # And it is visible in the default view without any operator action.
+    assert len(sequence_read.list_queue(db_session).rows) == 1
+
+
+def test_review_remains_available_and_changes_the_record_when_used(
+    db_session: Session, scenario: tuple[Any, ...]
+) -> None:
+    """Optional is not the same as absent."""
+
+    sequence = build(db_session, scenario)
+    rows = sequence_read.message_rows(db_session, sequence=sequence)
+
+    # The head of the chain, because that is the message whose discard changes
+    # what a delivery workflow could act on. Discarding a later one leaves
+    # position 1 actionable, correctly: the chain stops at the first message
+    # that has not gone out, and nothing has gone out.
+    aggregate = sequence_review.discard_message(db_session, message_version_id=rows[0].version_id)
+    assert aggregate.state is SequenceReviewState.CONTAINS_DISCARDED
+    assert aggregate.approved == SEQUENCE_LENGTH - 1
+    db_session.refresh(sequence)
+    assert sequence.current_actionable_position is None
+
+    aggregate = sequence_review.approve_message(db_session, message_version_id=rows[0].version_id)
+    assert aggregate.state is SequenceReviewState.APPROVED
+    assert aggregate.human_approved == 1
+    db_session.refresh(sequence)
+    assert sequence.current_actionable_position == 1
+
+
+def test_no_queue_filter_is_structurally_empty(
+    db_session: Session, scenario: tuple[Any, ...]
+) -> None:
+    """Every filter names something a sequence can actually be.
+
+    The filter this replaced -- "Waiting for you" -- could not hold a row once
+    generation approved its own output, and it was the default view.
+    """
+
+    sequence = build(db_session, scenario)
+    rows = sequence_read.message_rows(db_session, sequence=sequence)
+    keys = {key for key, _label in sequence_read.VIEWS}
+    assert keys == {
+        sequence_read.VIEW_ALL,
+        sequence_read.VIEW_EDITED,
+        sequence_read.VIEW_REVIEWED,
+        sequence_read.VIEW_DISCARDED,
+    }
+    assert len(sequence_read.list_queue(db_session, view=sequence_read.VIEW_ALL).rows) == 1
+
+    sequence_review.edit_message(
+        db_session, message_version_id=rows[1].version_id, subject="Mine", body="Mine."
+    )
+    assert len(sequence_read.list_queue(db_session, view=sequence_read.VIEW_EDITED).rows) == 1
+
+    sequence_review.approve_message(db_session, message_version_id=rows[0].version_id)
+    assert len(sequence_read.list_queue(db_session, view=sequence_read.VIEW_REVIEWED).rows) == 1
+
+    sequence_review.discard_message(db_session, message_version_id=rows[4].version_id)
+    assert len(sequence_read.list_queue(db_session, view=sequence_read.VIEW_DISCARDED).rows) == 1
+
+
+def test_one_live_sequence_survives_three_regenerations(
+    db_session: Session, scenario: tuple[Any, ...]
+) -> None:
+    """Requirement: exactly one coherent current sequence per Campaign Contact."""
+
+    campaign, _company, _contact, membership, _policy, _evidence = scenario
+    first = build(db_session, scenario)
+    key = first.sequence_key
+    message_ids = [row.message_id for row in sequence_read.message_rows(db_session, sequence=first)]
+
+    for index in range(3):
+        campaign.primary_cta = f"A different ask {index}"
+        db_session.flush()
+        latest = build(db_session, scenario)
+
+    live = db_session.scalars(
+        select(EmailSequence).where(
+            EmailSequence.campaign_contact_id == membership.id,
+            EmailSequence.superseded_at.is_(None),
+        )
+    ).all()
+    assert len(live) == 1 and live[0].id == latest.id
+    assert latest.sequence_key == key
+    assert latest.sequence_version == 4
+
+    # The seven logical rows were reused, not recreated: that is what makes a
+    # message's identity survive regeneration.
+    assert (
+        db_session.scalar(
+            select(func.count(EmailSequenceMessage.id)).where(
+                EmailSequenceMessage.sequence_key == key
+            )
+        )
+        == SEQUENCE_LENGTH
+    )
+    assert [
+        row.message_id for row in sequence_read.message_rows(db_session, sequence=latest)
+    ] == message_ids
+
+
+def test_a_regenerated_sequence_keeps_message_ids_and_is_approved_again(
+    db_session: Session, scenario: tuple[Any, ...]
+) -> None:
+    """Stable logical ids, fresh version ids, and no decisions carried across."""
+
+    campaign, _company, _contact, _membership, _policy, _evidence = scenario
+    first = build(db_session, scenario)
+    before = sequence_read.message_rows(db_session, sequence=first)
+    sequence_review.approve_message(db_session, message_version_id=before[0].version_id)
+
+    campaign.primary_cta = "A different ask"
+    db_session.flush()
+    second = build(db_session, scenario)
+    after = sequence_read.message_rows(db_session, sequence=second)
+
+    assert [row.message_id for row in after] == [row.message_id for row in before]
+    assert {row.version_id for row in after}.isdisjoint({row.version_id for row in before})
+    assert all(row.origin is SequenceMessageOrigin.REGENERATED for row in after)
+    # The approval applied to a version that is no longer current. It is kept,
+    # and it does not follow the message forward.
+    assert all(row.decision is None for row in after)
+    assert second.review_state is SequenceReviewState.APPROVED
+    assert second.current_actionable_position == 1
+    assert db_session.scalar(select(func.count(EmailSequenceMessageReview.id))) == 1
+
+
+def test_every_exposed_identifier_survives_an_edit(
+    db_session: Session, scenario: tuple[Any, ...]
+) -> None:
+    """What a Gmail adapter would later have to name, and name exactly once."""
+
+    sequence = build(db_session, scenario)
+    before = sequence_read.message_rows(db_session, sequence=sequence)[2]
+    sequence_review.edit_message(
+        db_session, message_version_id=before.version_id, subject="Mine", body="Mine."
+    )
+    after = sequence_read.message_rows(db_session, sequence=sequence)[2]
+
+    assert after.message_id == before.message_id, "logical identity is stable"
+    assert after.predecessor_message_id == before.predecessor_message_id
+    assert after.version_id != before.version_id, "the exact version is a new one"
+    assert after.source_version_id == before.version_id, "and it names the one it replaced"
+    superseded = db_session.get(EmailSequenceMessageVersion, before.version_id)
+    assert superseded is not None, "the old exact version is still resolvable"
+
+
+def test_row_state_distinguishes_generated_edited_and_regenerated(
+    db_session: Session, scenario: tuple[Any, ...]
+) -> None:
+    """Requirement: generated / human-edited / regenerated stays visible."""
+
+    campaign, _company, _contact, _membership, _policy, _evidence = scenario
+    sequence = build(db_session, scenario)
+    rows = sequence_read.message_rows(db_session, sequence=sequence)
+    assert {row.edit_label for row in rows} == {"generated"}
+    assert {row.decision_origin for row in rows} == {"default"}
+    assert {row.review_label for row in rows} == {"approved by default"}
+
+    detail = sequence_read.message_detail(db_session, sequence=sequence, position=1)
+    assert detail is not None
+    assert detail.original_subject is None and detail.original_body is None
+
+    sequence_review.edit_message(
+        db_session, message_version_id=rows[0].version_id, subject="Mine", body="Mine."
+    )
+    edited = sequence_read.message_rows(db_session, sequence=sequence)[0]
+    assert edited.edit_label == "human-edited"
+    assert edited.decision_origin == "default", "an edit is not a review"
+    detail = sequence_read.message_detail(db_session, sequence=sequence, position=1)
+    assert detail is not None
+    assert detail.original_body is not None
+
+    sequence_review.approve_message(db_session, message_version_id=edited.version_id)
+    confirmed = sequence_read.message_rows(db_session, sequence=sequence)[0]
+    assert confirmed.decision_origin == "human"
+    assert confirmed.review_label == "approved by you"
+    assert confirmed.human_reviewed is True
+
+    campaign.primary_cta = "A different ask"
+    db_session.flush()
+    regenerated = build(db_session, scenario)
+    assert {
+        row.edit_label for row in sequence_read.message_rows(db_session, sequence=regenerated)
+    } == {"regenerated"}
+
+
+def test_the_read_model_exposes_only_the_current_version(
+    db_session: Session, scenario: tuple[Any, ...]
+) -> None:
+    """One current version per logical message, with the prior text still readable."""
+
+    sequence = build(db_session, scenario)
+    rows = sequence_read.message_rows(db_session, sequence=sequence)
+    original_body = sequence_read.message_detail(db_session, sequence=sequence, position=1)
+    assert original_body is not None
+    was = original_body.body
+
+    sequence_review.edit_message(
+        db_session, message_version_id=rows[0].version_id, subject="Mine", body="My new body."
+    )
+    after = sequence_read.message_rows(db_session, sequence=sequence)
+    assert len(after) == SEQUENCE_LENGTH
+    detail = sequence_read.message_detail(db_session, sequence=sequence, position=1)
+    assert detail is not None
+    assert detail.body == "My new body."
+    assert detail.original_body == was
+
+
+def test_the_cadence_ladder_is_exactly_the_agreed_one(
+    db_session: Session, scenario: tuple[Any, ...]
+) -> None:
+    """0, 3, 7, 12, 18, 25, 35 — read off the persisted rows, not the constant."""
+
+    sequence = build(db_session, scenario)
+    rows = sequence_read.message_rows(db_session, sequence=sequence)
+    assert [row.position for row in rows] == list(range(1, SEQUENCE_LENGTH + 1))
+    assert [row.recommended_elapsed_day for row in rows] == [0, 3, 7, 12, 18, 25, 35]
+    assert [row.recommended_delay_days for row in rows] == [0, 3, 4, 5, 6, 7, 10]
+    assert sequence.planned_span_days == 35
+    assert cadence_service.DEFAULT_ELAPSED_DAYS == (0, 3, 7, 12, 18, 25, 35)
+
+
+def test_approved_by_default_does_not_mean_ready_to_send(
+    db_session: Session, scenario: tuple[Any, ...]
+) -> None:
+    """The test that stops "approved" being read as sending authority.
+
+    It used to be carried implicitly by the fact that nothing was approved.
+    Now everything is, so it has to be asserted directly.
+    """
+
+    sequence = build(db_session, scenario)
+    assert sequence.review_state is SequenceReviewState.APPROVED
+
+    states = sequence_review.message_states(db_session, sequence=sequence)
+    assert {state.delivery_state for state in states} == {SequenceDeliveryState.NOT_READY}
+    assert sequence.stop_state is SequenceStopState.RUNNING
+    assert db_session.scalar(select(func.count(DraftVersion.id))) == 0
+
+
+def test_the_agent_result_payload_matches_reality(
+    db_session: Session, scenario: tuple[Any, ...]
+) -> None:
+    """The payload said `approved: False`, which stopped being true."""
+
+    from app.services.agents.adapters import PersonalizationAgentAdapter
+
+    sequence = build(db_session, scenario)
+    result = PersonalizationAgentAdapter._sequence_result(
+        db_session, sequence=sequence, reused=False
+    )
+    output = result.output_reference
+    assert output is not None
+    assert output["approved"] is True
+    assert output["reviewed_by_human"] is False
+    assert output["sent"] is False
+    assert output["external_drafts_created"] == 0
+    assert output["message_count"] == SEQUENCE_LENGTH
+    assert output["review_state"] == SequenceReviewState.APPROVED.value
+
+    rows = sequence_read.message_rows(db_session, sequence=sequence)
+    sequence_review.approve_message(db_session, message_version_id=rows[0].version_id)
+    later = PersonalizationAgentAdapter._sequence_result(db_session, sequence=sequence, reused=True)
+    assert later.output_reference is not None
+    assert later.output_reference["reviewed_by_human"] is True
+
+
+def test_the_beta_one_read_model_exposes_everything_the_next_ui_needs(
+    db_session: Session, scenario: tuple[Any, ...]
+) -> None:
+    """The backend contract, asserted as a contract rather than assumed.
+
+    Named fields rather than a shape check, so removing one is a failing test
+    rather than a UI that quietly loses a column.
+    """
+
+    _campaign, _company, contact, membership, _policy, _evidence = scenario
+    sequence = build(db_session, scenario)
+    rows = sequence_read.message_rows(db_session, sequence=sequence)
+    sequence_review.approve_message(db_session, message_version_id=rows[0].version_id)
+
+    summary = sequence_read.summary(db_session, sequence=sequence)
+    assert summary.campaign_id == membership.campaign_id
+    assert summary.campaign_contact_id == membership.id
+    assert summary.contact_id == contact.id
+    assert summary.reviewed_by_human is True
+    assert summary.last_human_decision_at is not None
+    assert summary.human_approved == 1
+    assert summary.unreviewed == SEQUENCE_LENGTH - 1
+
+    fresh = sequence_read.message_rows(db_session, sequence=sequence)
+    assert len(fresh) == SEQUENCE_LENGTH
+    for row in fresh:
+        assert row.position in range(1, SEQUENCE_LENGTH + 1)
+        assert row.timing_label
+        assert row.subject
+        assert row.message_id and row.version_id
+        assert row.origin in set(SequenceMessageOrigin)
+        assert row.decision_origin in {"default", "human"}
+    decided = fresh[0]
+    assert decided.human_reviewed is True
+    assert decided.decided_by == sequence_review.OPERATOR_ACTOR
+    assert decided.decided_at is not None
+
+    detail = sequence_read.message_detail(db_session, sequence=sequence, position=7)
+    assert detail is not None and detail.body
+    assert detail.row.predecessor_message_id is not None
+    assert detail.row.source_version_id is None

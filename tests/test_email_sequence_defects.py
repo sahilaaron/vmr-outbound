@@ -792,3 +792,159 @@ def test_validation_failure_derives_as_failed_not_as_awaiting(
     assert sequence_read.list_queue(db_session, view=sequence_read.VIEW_EDITED).rows == ()
     assert sequence_read.list_queue(db_session, view=sequence_read.VIEW_DISCARDED).rows == ()
     assert len(sequence_read.list_queue(db_session, view=sequence_read.VIEW_ALL).rows) == 1
+
+
+# ===========================================================================
+# Production Hardening compatibility
+#
+# Production Hardening landed after this branch was written and changed the
+# request pipeline around these routes. Two of its behaviours reach the
+# sequence write routes, and both are covered here rather than in PH's own
+# suite, because what breaks is this feature and not that one.
+# ===========================================================================
+
+
+def test_a_form_post_with_a_null_origin_is_accepted(
+    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
+) -> None:
+    """The exact shape Production Hardening's `Referrer-Policy` produces.
+
+    PH sets `Referrer-Policy: no-referrer` on every response. Per the Fetch
+    Standard a document with that policy serialises its origin as `null` when
+    it submits a form, so every write from these pages now carries
+    `Origin: null`. Modern browsers hide it because `Sec-Fetch-Site` is checked
+    first; a browser that implements `Referrer-Policy` but not `Sec-Fetch-*`,
+    or a proxy that strips `Sec-Fetch-*`, sends `Origin: null` alone.
+
+    Before the reconciliation that combination was refused, so every approve,
+    discard and edit failed silently with a message blaming another site.
+    """
+
+    sequence = build(db_session, scenario)
+    rows = sequence_read.message_rows(db_session, sequence=sequence)
+    response = client.post(
+        f"/app/review/sequence/messages/{rows[0].version_id}/approve",
+        data={"back": "/app/review"},
+        headers={"Origin": "null"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert "err=" not in response.headers["location"]
+    assert (
+        db_session.scalar(
+            select(func.count(EmailSequenceMessageReview.id)).where(
+                EmailSequenceMessageReview.message_version_id == rows[0].version_id
+            )
+        )
+        == 1
+    ), "an opaque-origin form post from our own page must still record the decision"
+
+
+def test_a_null_origin_edit_is_accepted_and_writes_one_new_version(
+    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
+) -> None:
+    """The edit route is the one the same-origin guard exists for."""
+
+    sequence = build(db_session, scenario)
+    rows = sequence_read.message_rows(db_session, sequence=sequence)
+    response = client.post(
+        f"/app/review/sequence/messages/{rows[0].version_id}/edit",
+        data={"subject": "Rewritten by me", "body": "My own words.", "back": "/app/review"},
+        headers={"Origin": "null"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert "err=" not in response.headers["location"]
+    assert (
+        db_session.scalar(
+            select(func.count(EmailSequenceMessageVersion.id)).where(
+                EmailSequenceMessageVersion.message_id == rows[0].message_id
+            )
+        )
+        == 2
+    )
+
+
+def test_a_hostile_origin_is_still_refused(
+    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
+) -> None:
+    """Accepting `null` must not have widened the guard to accept anything.
+
+    A genuine cross-site POST carries the attacker's own origin, which is a
+    real value and still fails the host comparison. `null` only ever describes
+    a request whose origin the browser declined to disclose.
+    """
+
+    sequence = build(db_session, scenario)
+    rows = sequence_read.message_rows(db_session, sequence=sequence)
+    response = client.post(
+        f"/app/review/sequence/messages/{rows[0].version_id}/edit",
+        data={"subject": "Injected", "body": "From elsewhere.", "back": "/app/review"},
+        headers={"Origin": "https://evil.example"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert "err=" in response.headers["location"]
+    assert (
+        db_session.scalar(
+            select(func.count(EmailSequenceMessageVersion.id)).where(
+                EmailSequenceMessageVersion.message_id == rows[0].message_id
+            )
+        )
+        == 1
+    ), "a hostile origin must write nothing"
+    assert db_session.scalar(select(func.count(EmailSequenceMessageReview.id))) == 0, (
+        "and must record no decision either"
+    )
+
+
+def test_the_customer_stylesheet_carries_a_content_hash(client: TestClient) -> None:
+    """Production Hardening caches `/static/*` for an hour; this makes that safe.
+
+    The sequence UI adds a table, a step selector and a mail body to `v2.css`.
+    Without a content-derived token an operator whose browser cached the
+    stylesheet before the deploy would render all of it unstyled for up to an
+    hour -- and unstyled, a seven-row table with a mail body in it is not
+    merely plain, it is unreadable.
+
+    The token has to be derived from the file, not chosen: a hand-bumped
+    version is a version somebody forgets to bump.
+    """
+
+    from hashlib import sha256
+    from pathlib import Path
+
+    from app.web.v2 import routes as v2_routes
+
+    expected = sha256(
+        (Path(v2_routes.__file__).parent.parent / "static" / "v2.css").read_bytes()
+    ).hexdigest()[:12]
+    body = client.get("/app/review").text
+    assert f"v2.css?v={expected}" in body
+    assert v2_routes.V2_CSS_VERSION == expected
+
+
+def test_the_sequence_pages_run_no_script_under_the_deployed_csp(
+    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
+) -> None:
+    """`script-src 'self'` with no nonce: an inline script simply would not run.
+
+    Asserted on the rendered pages rather than by reading the templates, so a
+    macro that grew a handler in a partial this test does not know about is
+    still caught.
+    """
+
+    _campaign, _company, contact, membership, _policy, _evidence = scenario
+    sequence = build(db_session, scenario)
+    rows = sequence_read.message_rows(db_session, sequence=sequence)
+    urls = (
+        "/app/review",
+        f"/app/review?sequence={sequence.id}&step=1",
+        f"/app/contacts/{contact.id}?campaign={membership.campaign_id}&step=1",
+    )
+    for url in urls:
+        body = client.get(url).text
+        assert "<script>" not in body, url
+        for handler in ("onclick=", "onsubmit=", "onchange=", "onload=", "javascript:"):
+            assert handler not in body, f"{handler} on {url}"
+        assert str(rows[0].version_id) in body or "v2-seq" in body
