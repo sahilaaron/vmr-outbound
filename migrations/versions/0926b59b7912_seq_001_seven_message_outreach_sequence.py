@@ -1,10 +1,10 @@
 """SEQ-001 seven-message outreach sequence
 
 Revision ID: 0926b59b7912
-Revises: b6d4e07a1f38
+Revises: c1f7a3e29b04
 Create Date: 2026-08-06 19:58:51.625367
 
-Four new tables and nine new enum types. Nothing existing is altered: no column
+Four new tables and ten new enum types. Nothing existing is altered: no column
 is added to ``draft_versions``, no constraint on it is relaxed, no historical
 draft is read or rewritten, and no approval changes meaning. A database that
 never enables the ``email_sequences`` feature flag behaves exactly as it did
@@ -47,12 +47,34 @@ cannot claim the same purpose. A sequence whose messages share a purpose has
 not been planned as a sequence, and that is a schema-level fact here rather
 than a validator that could be bypassed.
 
+## Why this sits on top of IMP-001 rather than on ``b6d4e07a1f38``
+
+This revision and IMP-001's ``c1f7a3e29b04`` were authored in parallel, and each
+was written with ``down_revision = "b6d4e07a1f38"``. Left that way they are two
+Alembic heads, which ``alembic upgrade head`` refuses to resolve and which the
+migration-chain test rejects outright.
+
+The repair is a re-parent, not an ``alembic merge``. A merge revision would
+give one revision two parents, and
+``test_the_assembled_migration_chain_has_exactly_one_head`` asserts that no
+revision in this project has more than one down-revision. Re-parenting keeps the
+graph a straight line: ``b6d4e07a1f38 -> c1f7a3e29b04 -> 0926b59b7912``.
+
+Ordering is safe in either direction because the two revisions share no schema
+object. IMP-001 creates ``imported_contact_emails`` and
+``import_source_identifiers`` and adds columns to ``import_batches`` and
+``import_row_validations``; this revision creates four ``email_sequence*``
+tables and alters nothing that already exists. The name prefixes are disjoint,
+so nothing collides whichever runs first. Sequencing it after IMP-001 is
+therefore a bookkeeping choice, and the honest one: the import work landed on
+``main`` first.
+
 ## Reversibility
 
 ``downgrade`` refuses outright while any of the four tables holds a row -- see
-the function docstring for why generated copy and human approval decisions are
+the function docstring for why generated copy and human review decisions are
 treated as unrecoverable. On an empty schema it drops the four tables and then
-the nine enum types it created.
+the ten enum types it created.
 Dropping a table does not drop the types it used, so without the explicit
 ``DROP TYPE`` a downgrade followed by a re-upgrade would fail on
 ``CREATE TYPE ... already exists``. ``IF EXISTS`` keeps the downgrade safe to
@@ -68,7 +90,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = "0926b59b7912"
-down_revision: str | Sequence[str] | None = "b6d4e07a1f38"
+down_revision: str | Sequence[str] | None = "c1f7a3e29b04"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
