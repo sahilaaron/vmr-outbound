@@ -641,51 +641,184 @@ def test_the_width_limit_is_reached_before_any_data_row_is_built() -> None:
         parsing.parse_file(_csv_bytes(header, *rows), "wide.csv")
 
 
-def test_the_csv_reader_never_asks_for_a_data_row_on_an_over_wide_file() -> None:
-    """A sentinel proves the ORDERING, which a raises-assertion cannot.
+class _CountingStringIO(io.StringIO):
+    """A text stream that records how many lines anything asks it for.
 
-    ``parse_csv`` reads from a file-like object. This one counts how many lines
-    it is asked for and raises if anything past the header is requested — so if
-    the width check ever moved after the row loop, this fails with the sentinel's
-    own error rather than passing on a refusal that happened too late.
+    Installed *into the parsing module*, so the count is what the real parser
+    read — not what a test-constructed reader read on its behalf. The previous
+    version of this sentinel built its own ``csv.reader``, consumed the header
+    itself and then called ``_check_width`` directly, which proves the width
+    check can reject a header and proves nothing at all about when the parser
+    calls it. A deliberate late-rejection mutant survived it.
     """
 
+    lines_read = 0
+
+    def readline(self, *args: Any, **kwargs: Any) -> str:
+        type(self).lines_read += 1
+        return super().readline(*args, **kwargs)
+
+    def __next__(self) -> str:
+        line = self.readline()
+        if not line:
+            raise StopIteration
+        return line
+
+
+class _ParsingIOShim:
+    """Stands in for ``parsing.io`` so only this module's streams are counted."""
+
+    StringIO = _CountingStringIO
+    BytesIO = io.BytesIO
+
+
+def _assert_width_rejected_before_any_data_row(
+    parse: Any, content: bytes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sentinel itself, shared by the real test and the mutation proof.
+
+    *parse* is called exactly as the product calls it, with the counting stream
+    installed inside ``parsing``. It must refuse, and it must have asked for the
+    header and nothing more.
+
+    Shared deliberately: a mutation proof that exercised a *copy* of this logic
+    would only prove the copy fails.
+    """
+
+    _CountingStringIO.lines_read = 0
+    monkeypatch.setattr(parsing, "io", _ParsingIOShim)
+    with pytest.raises(parsing.MalformedFileError):
+        parse(content, "wide.csv")
+    assert _CountingStringIO.lines_read == 1, (
+        f"the parser read {_CountingStringIO.lines_read} lines; an over-wide file "
+        "must be refused after the header and before any data row is requested"
+    )
+
+
+def _over_wide_csv(rows: int = 50) -> bytes:
     header = ",".join(("First Name", "Last Name", "Company Name", "Email") + ("",) * 600)
     body = "Ada,Lovelace,Engines,ada@engines.example" + "," * 600
+    return ("\n".join([header] + [body] * rows) + "\n").encode("utf-8")
 
-    class _HeaderOnlyStream(io.StringIO):
-        reads = 0
 
-        def readline(self, *args: Any, **kwargs: Any) -> str:
-            _HeaderOnlyStream.reads += 1
-            if _HeaderOnlyStream.reads > 1:
-                raise AssertionError("the parser requested a data row before refusing")
-            return super().readline(*args, **kwargs)
+def test_the_real_parser_refuses_an_over_wide_file_before_reading_a_data_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Through ``parsing.parse_file`` — the entrypoint the product uses.
 
-        def __next__(self) -> str:
-            return self.readline()
+    The parser reads the header, the parser applies the width check, and the
+    stream records that nothing past the header was ever requested.
+    """
 
-    text = f"{header}\n{body}\n"
-    _HeaderOnlyStream.reads = 0
-    stream = _HeaderOnlyStream(text)
-    reader = csv.reader(stream, strict=True)
-    first = next(reader)
+    _assert_width_rejected_before_any_data_row(parsing.parse_file, _over_wide_csv(), monkeypatch)
+
+
+def _late_rejecting_parse_file(content: bytes, filename: str | None) -> parsing.ParsedFile:
+    """A mutant parser that checks the width one data row too late.
+
+    Exactly the regression the sentinel claims to prevent. Written here rather
+    than by editing the repository, so no production file is touched.
+    """
+
+    text = content.decode("utf-8-sig")
+    reader = csv.reader(parsing.io.StringIO(text), strict=True)  # type: ignore[attr-defined]
+    header = next(reader, None) or []
+    next(reader, None)  # <- the mutation: one data row consumed first
+    parsing._check_width(tuple(header), sheet_name=None)
+    raise AssertionError("unreachable for an over-wide file")
+
+
+def test_the_sentinel_fails_against_a_parser_that_checks_the_width_too_late(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The mutation proof: the sentinel must turn red for the exact regression.
+
+    A green test is worth nothing until it has been shown to fail for the reason
+    it exists. The mutant is refused for width just as the real parser is, so
+    the ONLY thing separating them is when the data row was read — which is what
+    the sentinel is supposed to detect.
+    """
+
+    with pytest.raises(AssertionError) as excinfo:
+        _assert_width_rejected_before_any_data_row(
+            _late_rejecting_parse_file, _over_wide_csv(), monkeypatch
+        )
+    assert "before any data row is requested" in str(excinfo.value)
+
+
+def test_the_real_parser_is_restored_after_the_mutation_proof() -> None:
+    """``monkeypatch`` undoes the stream shim; the mutant was never installed."""
+
+    assert parsing.io is io
     with pytest.raises(parsing.MalformedFileError):
-        parsing._check_width(tuple(first), sheet_name=None)
-    assert _HeaderOnlyStream.reads == 1
-
-    # And the real entry point refuses the same bytes.
-    with pytest.raises(parsing.MalformedFileError):
-        parsing.parse_file(text.encode("utf-8"), "wide.csv")
+        parsing.parse_file(_over_wide_csv(rows=1), "wide.csv")
 
 
-def test_the_xlsx_reader_refuses_at_the_header_too() -> None:
+def _counting_workbook(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+    """Wrap ``load_workbook`` so every row the parser pulls is counted."""
+
+    counter = {"rows": 0}
+    real = parsing.load_workbook
+
+    class _Sheet:
+        def __init__(self, inner: Any) -> None:
+            self._inner = inner
+
+        def iter_rows(self, *args: Any, **kwargs: Any) -> Any:
+            for row in self._inner.iter_rows(*args, **kwargs):
+                counter["rows"] += 1
+                yield row
+
+    class _Book:
+        def __init__(self, inner: Any) -> None:
+            self._inner = inner
+            self.sheetnames = inner.sheetnames
+
+        def __getitem__(self, name: str) -> Any:
+            return _Sheet(self._inner[name])
+
+        def close(self) -> None:
+            self._inner.close()
+
+    monkeypatch.setattr(parsing, "load_workbook", lambda *a, **k: _Book(real(*a, **k)))
+    return counter
+
+
+def test_the_real_xlsx_parser_refuses_before_reading_a_data_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same proof for the workbook path, at the same entrypoint."""
+
+    counter = _counting_workbook(monkeypatch)
     header = ("First Name", "Last Name", "Company Name", "Email") + ("",) * 600
     content = af.xlsx_positional_bytes(
         "Contacts", header, [["Ada", "Lovelace", "Engines", "a@x.example"] + [""] * 600] * 5
     )
     with pytest.raises(parsing.MalformedFileError):
         parsing.parse_file(content, "wide.xlsx")
+    assert counter["rows"] == 1, (
+        f"the workbook reader pulled {counter['rows']} rows; the header alone is enough "
+        "to know the sheet is too wide"
+    )
+
+
+def test_the_xlsx_sentinel_fails_if_the_width_check_is_removed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mutation proof for the workbook path.
+
+    With the width check neutered, the parser reads the whole sheet — so the
+    sentinel's row count rises and the assertion it makes has to fail.
+    """
+
+    counter = _counting_workbook(monkeypatch)
+    monkeypatch.setattr(parsing, "_check_width", lambda *a, **k: None)
+    header = ("First Name", "Last Name", "Company Name", "Email") + ("",) * 600
+    content = af.xlsx_positional_bytes(
+        "Contacts", header, [["Ada", "Lovelace", "Engines", "a@x.example"] + [""] * 600] * 5
+    )
+    parsing.parse_file(content, "wide.xlsx")
+    assert counter["rows"] > 1, "the mutant must read past the header"
 
 
 def test_a_file_at_the_limit_is_still_accepted() -> None:
