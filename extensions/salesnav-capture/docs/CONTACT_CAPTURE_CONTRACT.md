@@ -111,7 +111,8 @@ capture path, and the contract makes that structurally unrepresentable.
     "labels_applied": 2, "notes_recorded": 2,
     "campaign_filings_applied": 2,
     "campaign_filings_pending": 0,
-    "campaign_filings_failed": 0
+    "campaign_filings_failed": 0,
+    "auto_resolved": 1
   },
   "results": [ { "client_capture_id": "…", "capture_id": "…",
                  "outcome": "exact_match_refreshed", "matched_contact_id": "…",
@@ -127,12 +128,21 @@ capture path, and the contract makes that structurally unrepresentable.
 
 ### Outcomes
 
+**Intake stores evidence; it does not create Contacts.** A submission always
+persists permanent per-person capture evidence, and refreshes a Contact only
+where it matches an exact LinkedIn identity the backend already knows. A person
+the backend has not seen before stays **staged**: a `Contact` requires a company
+domain, a LinkedIn page never shows one, and guessing is forbidden. Creating the
+Contact is promotion's job, and it happens inside this request only when
+automatic company-domain resolution is enabled and succeeds — reported by the
+`auto_resolved` count. Otherwise the agent worker or an operator finishes it.
+
 | Outcome | Meaning |
 | --- | --- |
-| `created` | A permanent Contact was created. Unobserved name/company fields remain `null` and block dependent Agents |
+| `created` | A permanent Contact exists for this capture. Only reachable when in-request automatic domain resolution promoted it (see `auto_resolved`); unobserved name/company fields remain `null` and block dependent Agents |
 | `exact_match_refreshed` | Exactly one contact carries this normalized URL; ≥1 field changed under the freshness policy |
 | `exact_match_unchanged` | Exactly one match; evidence recorded, nothing newer than the current winners |
-| `unmatched_staged` | Compatibility outcome for an older stored response. New safe unmatched captures create an unresolved permanent Contact |
+| `unmatched_staged` | No exact identity matched. Evidence is stored permanently and the person stays staged until promotion resolves a company domain — **no Contact is created** |
 | `ambiguous_review` | More than one contact carries this URL. Surfaced, never merged |
 | `duplicate_in_submission` | The same person appeared earlier in this submission. Evidence kept; reconciled once |
 | `suppressed` | The matched contact is suppressed. Evidence linked, no canonical field touched, suppression untouched |
@@ -140,13 +150,16 @@ capture path, and the contract makes that structurally unrepresentable.
 `rejected_invalid` is not an outcome: a rejected submission is never persisted,
 so it is reported as an HTTP error instead of a stored row.
 
-### Permanent Contact, unresolved fields
+### Permanent evidence, unresolved fields
 
-Capture always creates or updates the permanent person record. A LinkedIn page
-usually does not expose a company domain, and inferring one from a company name
-would be fabricated evidence. The backend therefore stores missing values as
-`null`; Company and Email Agents remain blocked until later evidence resolves
-them. It never creates placeholder names or domains merely to satisfy storage.
+Capture always stores the permanent per-person evidence record, and updates a
+Contact where one already matches exactly. It does not create a new Contact: a
+LinkedIn page usually does not expose a company domain, inferring one from a
+company name would be fabricated evidence, and a `Contact` cannot exist without
+one. Unmatched people therefore stay staged rather than becoming a half-built
+Contact. Where a value is genuinely missing the backend stores `null`; Company
+and Email Agents remain blocked until later evidence resolves it. It never
+creates placeholder names or domains merely to satisfy storage.
 
 The extension plays no part in resolution: it never calls a domain provider,
 never holds a provider key, and never claims an inferred domain was observed.
@@ -155,9 +168,13 @@ never holds a provider key, and never claims an inferred domain was observed.
 
 When `campaign_id` is a UUID, the backend records a durable filing intent and
 upserts one Campaign Contact for `(campaign_id, contact_id)`. Filing runs behind
-a savepoint. A missing or archived Campaign produces a truthful
-`campaign_filing.status: "failed"` while the permanent Contact and capture still
-commit. An identical submission replay cannot duplicate the Campaign Contact.
+a savepoint. Where no Contact exists yet the intent is held as
+`campaign_filing.status: "pending"` and applied when promotion creates one. A
+missing or archived Campaign produces a truthful
+`campaign_filing.status: "failed"` while the capture — and any Contact it
+matched — still commits. An identical submission replay cannot duplicate the
+Campaign Contact. A value that is not a UUID is refused outright with HTTP 422
+`validation_failed`.
 
 ## Collections (shown as Labels)
 

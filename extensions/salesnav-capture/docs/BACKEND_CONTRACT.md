@@ -132,8 +132,13 @@ The extension additionally handles transport failures locally: `timeout`
 
 ## CORS and local-origin assumptions
 
-- The extension talks only to **loopback** origins (`127.0.0.1`, `localhost`,
-  `[::1]`). It refuses any non-loopback target and never embeds a remote URL.
+- The extension talks only to **loopback** origins (`127.0.0.1`, `localhost`).
+  It refuses any non-loopback target and never embeds a remote URL. The IPv6
+  spelling `[::1]` is deliberately **not** an accepted send target: the manifest
+  declares no matching optional host permission, so a `[::1]` target used to
+  validate and then fail at permission time every single send. Accepting it
+  would mean declaring a further optional host permission, which is a manifest
+  change and a re-grant for the operator.
 - The loopback hosts (`http://127.0.0.1/*`, `http://localhost/*`) are declared as
   **optional** host permissions and are requested at runtime (with a user gesture)
   before the first send / campaign fetch. Once granted, the service worker can POST

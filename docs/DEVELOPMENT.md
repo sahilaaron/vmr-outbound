@@ -280,6 +280,24 @@ set FEATURES__SALESNAV_DOMAIN_ENRICHMENT=true
 set LOGO_DEV_API_KEY=your-local-key
 ```
 
+That is the **operator-driven** flow: you resolve and promote by hand.
+
+To let the backend resolve and promote *without* an operator — inside the intake
+request, and in the agent worker — add the fourth switch:
+
+```bat
+set FEATURES__AUTOMATIC_COMPANY_DOMAIN_RESOLUTION=true
+```
+
+Automatic promotion needs all four together:
+`FEATURES__CONTACT_CAPTURE_PROMOTION`,
+`FEATURES__AUTOMATIC_COMPANY_DOMAIN_RESOLUTION`,
+`FEATURES__SALESNAV_DOMAIN_ENRICHMENT` and a configured `LOGO_DEV_API_KEY`. With
+any one of them missing the capture simply stays pending and the intake response
+reports `auto_resolved: 0` — nothing is guessed and no decision is recorded. See
+[CAPTURE_PROMOTION.md](./CAPTURE_PROMOTION.md) for the full table and the three
+routes a promotion can take.
+
 Then, in the workbench:
 
 1. Open `http://127.0.0.1:8000/contact-captures/pending`.

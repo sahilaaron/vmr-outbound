@@ -18,7 +18,15 @@
   "use strict";
 
   // Hostnames permitted for the local backend / mock receiver.
-  const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
+  //
+  // Exactly the hosts the manifest declares under `optional_host_permissions`.
+  // The IPv6 loopback spellings (`[::1]`, `::1`) used to be accepted here and
+  // yielded the pattern `http://[::1]/*`, which the manifest does not declare —
+  // so `chrome.permissions.request` could never grant it and the send failed
+  // with `permission_denied` after the operator had already been prompted. This
+  // set and the manifest must stay in step: a host here that the manifest does
+  // not declare is a target that validates and then always fails.
+  const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost"]);
 
   function parse(urlStr) {
     try {

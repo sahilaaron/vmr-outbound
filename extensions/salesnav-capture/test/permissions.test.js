@@ -23,3 +23,14 @@ test("isLoopbackUrl matches only http(s) loopback hosts", () => {
   assert.equal(perms.isLoopbackUrl("https://linkedin.com/"), false);
   assert.equal(perms.isLoopbackUrl("http://192.168.0.1/"), false);
 });
+
+test("the IPv6 loopback spelling produces no permission pattern", () => {
+  // `[::1]` used to be a loopback host here and yielded `http://[::1]/*`, which
+  // the manifest does not declare under optional_host_permissions. The operator
+  // was prompted for a permission Chrome could never grant, and every send then
+  // failed `permission_denied`. This set and the manifest must stay in step;
+  // test/config-parity.test.js asserts that invariant across the whole matrix.
+  assert.equal(perms.originPatternForUrl("http://[::1]:8000/api/x"), null);
+  assert.equal(perms.originPatternForUrl("https://[::1]:8000/api/x"), null);
+  assert.equal(perms.isLoopbackUrl("http://[::1]:8000/"), false);
+});
