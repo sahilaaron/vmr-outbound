@@ -231,10 +231,50 @@ silently rewriting it into timing nobody chose would be worse.
 
 ## 9. Review
 
+### Approved by default; a review row means a person
+
+Generated messages are **approved**. Review is available and never required:
+there is no queue to clear, nothing downstream waits on an operator, and a
+sequence nobody has opened is as complete as one somebody confirmed.
+
+The default is carried by the **absence** of a row. An
+`email_sequence_message_reviews` row exists if and only if a human actually
+acted — approving or discarding. Generation writes none. Editing writes none.
+`review._record` is the only function in the codebase that constructs one, and
+it refuses an empty or `system:`-prefixed actor.
+
+The alternative considered and rejected was writing seven "system approved" rows
+at generation. In the table and in the audit trail those are indistinguishable
+from seven approvals a person made, so a reviews table containing decisions
+nobody took cannot answer the one question it exists to answer. It would also
+have made an operator's first real approval look like an amendment to an
+existing decision rather than a decision, because `_record` decides whether to
+write an audit event by comparing `decided_by`.
+
+So the two are reported apart, everywhere:
+
+| | Meaning | Where it comes from |
+|---|---|---|
+| `approved` | ready — default or human | no decision, or `APPROVED` |
+| `human_approved` | a person confirmed this exact version | `APPROVED` |
+| `unreviewed` | nobody has ruled on it; **not** a backlog | no decision |
+| `discarded` | a person stopped the chain here | `DISCARDED` |
+
+`MessageRow.decision_origin` is `"default"` or `"human"`, and every surface that
+shows the word "approved" says which. `NEEDS_REVIEW`, `GENERATED`,
+`PARTIALLY_REVIEWED` and `CONTAINS_EDITS` are no longer derivable; the members
+remain so rows written before this change still load.
+
+**Approved is not sendable.** Every message stays `not_ready` whatever the
+review says, `current_actionable_position` authorises nothing, and no code path
+reads either to decide whether to act.
+
+### One decision, one exact version
+
 Every decision names one exact immutable message version. There is no decision
 recorded against "the sequence".
 
-- An operator can approve, discard or edit one message without touching the
+- An operator can confirm, discard or edit one message without touching the
   other six.
 - Bulk approval is one operation that records approval for **every** exact
   message version it covered, sharing a `bulk_operation_id`. If the stored
@@ -249,11 +289,18 @@ recorded against "the sequence".
   never hide a sequence from the view it belongs in or place one in a view it
   does not. `SequenceCardRow.cache_is_stale` exposes any disagreement rather
   than silently repairing it.
-- The sequence aggregate is **derived** from the seven exact message states:
-  `generated`, `needs_review`, `partially_reviewed`, `partially_approved`,
-  `approved`, `contains_edits`, `contains_discarded`, `blocked`, `failed`,
+- The sequence aggregate is **derived** from the seven exact message states.
+  A complete, unstopped sequence with no discard is `approved`; a discard makes
+  it `contains_discarded`; the terminal states are `blocked`, `failed` and
   `superseded`. `EmailSequence.review_state` caches that derivation and is never
   the authority.
+- The Review filters are facts about the messages — *all sequences*, *you
+  changed these*, *you reviewed these*, *contains a discard* — and the default
+  is *all*. There is deliberately no "waiting for you" filter: under default
+  approval it could never hold a row, and it used to be the page an operator
+  landed on.
+- A sequence can be expanded by id whichever filter is active. The filter
+  narrows the list; it does not decide what can be read.
 
 Six approvals and one discard is `contains_discarded`, not "partially approved"
 — letting an approved count stand in for readiness it does not have is the
@@ -270,6 +317,14 @@ it derived from in `source_version_id`. Three things follow and nothing else:
    deleted, because the approval did happen; it simply no longer applies to text
    nobody approved;
 3. the aggregate is recomputed.
+
+**No review row is written for the new version**, and that is the guarantee
+rather than an omission. The new version carries no decision, which under
+default approval means it is approved — so an edit neither silently unapproves a
+sequence nor manufactures a record claiming somebody reviewed text written a
+moment ago. `origin = human_edited` is the honest signal that a person changed
+it. An `invalidated` decision can therefore only ever stand against a superseded
+version, never against a current one.
 
 The other six messages, their versions and their decisions are untouched, and
 the *sequence* is not re-versioned. Editing one message must not re-version the
@@ -467,7 +522,11 @@ never by counting positions. The rule:
 - a message is *cleared* only when it is approved **and** its delivery state says
   it actually went out;
 - the first message that is approved but not yet cleared is the actionable one;
-- awaiting, discarded, or an unapproved gap ends the walk and yields `None`.
+- a discard, or an approval an edit withdrew, ends the walk and yields `None`.
+
+Under default approval the walk reaches position 1 on a freshly generated
+sequence, where it previously returned `None`. That is the intended consequence
+and not an escalation: the value still authorises nothing.
 
 **A discarded message is never stepped over.** Discarding the initial message
 leaves the whole sequence with no actionable position until that message is

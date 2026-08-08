@@ -131,9 +131,22 @@ Central middleware applies:
 - a Permissions Policy denying camera, microphone, and geolocation;
 - a same-origin Content Security Policy;
 - `Cache-Control: no-store` on non-static responses;
-- `Cache-Control: public, max-age=3600` on `/static/*`;
+- `Cache-Control: public, max-age=3600` on `/static/*`. Every stylesheet and
+  script served from there must carry a content-derived token in its URL, or a
+  deploy that changes the file leaves browsers on the old copy for up to an
+  hour. `campaigns.js` and `v2.css` both do (`CAMPAIGNS_JS_VERSION`,
+  `V2_CSS_VERSION` in `app/web/v2/routes.py`, each a `sha256` prefix of the
+  file). A hand-chosen version number is one somebody forgets to change;
 - HSTS only when the direct scheme is HTTPS or a trusted proxy supplies
   `X-Forwarded-Proto: https`.
+
+One consequence worth naming, because it is not obvious and it silently broke a
+feature: `Referrer-Policy: no-referrer` makes a browser serialise a form POST's
+`Origin` as `null`, per the Fetch Standard. Any handler that compares `Origin`
+against `Host` must accept `null` or it will refuse writes from this
+application's own pages. `Sec-Fetch-Site` masks this in current browsers, so the
+failure only appears where that header is absent or stripped. See
+`_same_origin` in `app/web/v2/routes.py`.
 
 The main CSP keeps scripts same-origin. It temporarily permits inline styles
 because existing server-rendered templates use many `style=` attributes. That is

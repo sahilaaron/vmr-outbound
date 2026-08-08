@@ -155,7 +155,9 @@ Campaign produces:
 
 `elapsed_days` is optional; omit it for the default ladder. Sequences appear at
 the top of `/app/review` as one compact card per contact, and on the contact
-page under "The seven-message sequence". Nothing is sent by approving one — see
+page under "The seven-message sequence". Generated messages are approved by
+default and review is optional, so the cards are there on arrival rather than
+waiting in a queue. Nothing is sent by confirming one — see
 `docs/EMAIL_SEQUENCE.md` for what exists and what is deliberately deferred.
 
 ## 6. Run the checks (same as CI)
