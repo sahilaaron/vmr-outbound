@@ -30,6 +30,7 @@ import pytest
 from app.models.campaign import Campaign
 from app.models.company import Company
 from app.models.contact import Contact
+from app.models.draft import DraftVersion
 from app.services.imports import campaign_import, display, parsing
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -154,10 +155,25 @@ def hostile_admin_state(committed_session: Session) -> Any:
             filename=f"{lead}{prefix}cmd|file2.csv",
         )
         committed_session.commit()
+        contact = committed_session.scalars(select(Contact)).first()
+        # A draft awaiting review, so /admin/review has a row at all. Without one
+        # that page renders an empty queue and every absence assertion on it is
+        # vacuous — which is exactly what an independent re-review found.
+        if contact is not None:
+            committed_session.add(
+                DraftVersion(
+                    contact_id=contact.id,
+                    campaign_id=campaign.id,
+                    version_number=1,
+                    subject=f"{lead}{prefix}cmd|subject",
+                    body="body",
+                )
+            )
+            committed_session.commit()
         return {
             "campaign": campaign,
             "batch_id": batch.batch_id,
-            "contact": committed_session.scalars(select(Contact)).first(),
+            "contact": contact,
             "company": committed_session.scalars(select(Company)).first(),
         }
 
@@ -202,34 +218,195 @@ def test_the_four_reproduced_admin_surfaces_render_no_live_formula(
         assert not leaks, f"{surface} leaked {prefix!r} after {lead!r}: {leaks[:3]}"
 
 
-@pytest.mark.parametrize("prefix", PREFIXES)
-def test_every_other_admin_surface_renders_no_live_formula(
-    client: Any, hostile_admin_state: Any, prefix: str
-) -> None:
-    """The rest of the Admin Workbench, because the four named pages were only
-    the ones the reviewer happened to probe."""
+def _reachable_markers(body: str, needle: str) -> int:
+    """How many times the hostile value appears anywhere in the rendered page.
 
-    state = hostile_admin_state(prefix, "")
+    Counted on the whole body, neutralized or not, because this answers a
+    different question from :func:`_live_formulas`: not "is it inert" but "did
+    it get here at all". An absence assertion on a page the fixture cannot
+    reach is not evidence of anything.
+    """
+
+    return body.count(needle.lstrip())
+
+
+@pytest.mark.parametrize("prefix", PREFIXES)
+@pytest.mark.parametrize("lead", LEADS)
+def test_every_admin_surface_shows_the_hostile_value_and_shows_it_inert(
+    client: Any, hostile_admin_state: Any, prefix: str, lead: str
+) -> None:
+    """Reachability first, inertness second — on every page, every combination.
+
+    The previous version swept the same URLs asserting only absence, and one of
+    them (``/admin/review``) had no hostile value on it at all: the fixture
+    seeded no draft, so the review queue was empty and the assertion passed on
+    a blank page. Two others were reachable only by accident of page-size
+    ordering. This fixture creates exactly one Campaign, one Contact, one
+    Company and one draft, so first-page ordering is not a question, and each
+    page must **prove** the value arrived before it is credited with making it
+    inert.
+    """
+
+    state = hostile_admin_state(prefix, lead)
     needle = f"{prefix}cmd|"
     for surface, url in _urls(state).items():
-        body = client.get(url).text
+        response = client.get(url)
+        assert response.status_code == 200, f"{surface} returned {response.status_code}"
+        body = response.text
+        assert _reachable_markers(body, needle) > 0, (
+            f"{surface} rendered no hostile value for {prefix!r} after {lead!r}: "
+            "its absence assertion would be vacuous"
+        )
         leaks = _live_formulas(body, needle)
-        assert not leaks, f"{surface} leaked {prefix!r}: {leaks[:3]}"
+        assert not leaks, f"{surface} leaked {prefix!r} after {lead!r}: {leaks[:3]}"
+
+
+def test_the_admin_sweep_covers_every_page_the_workbench_serves(
+    client: Any, hostile_admin_state: Any
+) -> None:
+    """The sweep's URL list is the contract, so it is asserted rather than
+    assumed — a page added later is not silently left out of the matrix."""
+
+    state = hostile_admin_state("=", "")
+    covered = set(_urls(state))
+    assert covered == {
+        "admin_contacts_list",
+        "admin_company_detail",
+        "admin_campaign_detail",
+        "admin_failures",
+        "admin_import_batch",
+        "admin_contact_detail",
+        "admin_campaigns_list",
+        "admin_companies_list",
+        "admin_overview",
+        "admin_review",
+    }
+    assert set(ADMIN_SURFACES) <= covered
+
+
+def test_the_review_page_really_carries_imported_text(
+    client: Any, hostile_admin_state: Any
+) -> None:
+    """The page the re-review found unreachable, proven reachable on its own.
+
+    ``/admin/review`` renders a draft queue: the campaign name, the contact
+    label and the draft subject. All three can carry text that came from an
+    imported file, so the page belongs in the matrix — it just needed a queue
+    row to render.
+    """
+
+    state = hostile_admin_state("=", "")
+    body = client.get(_urls(state)["admin_review"]).text
+    assert "cmd|" in body
+    # The contact label on that row is the imported name.
+    contact: Contact | None = state["contact"]
+    assert contact is not None and contact.first_name.endswith("cmd|first")
+    assert "cmd|first" in body
+    assert not _live_formulas(body, "=cmd|")
 
 
 def test_the_hostile_values_are_actually_present_on_the_pages(
     client: Any, hostile_admin_state: Any
 ) -> None:
-    """Otherwise the assertions above would pass on an empty page.
+    """A per-page reachability census, reported by name.
 
-    Every one of these tests is an absence assertion, and an absence assertion
-    is only worth anything once the presence is shown to be reachable.
+    Kept as its own test so a page that stops carrying hostile values fails
+    here — saying which page, and how many markers it lost — rather than being
+    quietly re-credited as protected.
     """
 
     state = hostile_admin_state("=", "")
-    for surface in ADMIN_SURFACES:
-        body = client.get(_urls(state)[surface]).text
-        assert "cmd|" in body, f"{surface} showed none of the imported values"
+    census = {
+        surface: _reachable_markers(client.get(url).text, "=cmd|")
+        for surface, url in _urls(state).items()
+    }
+    unreachable = sorted(name for name, count in census.items() if count == 0)
+    assert not unreachable, f"no hostile value reached: {unreachable} (census: {census})"
+
+
+# ---------------------------------------------------------------------------
+# Non-vacuity: the matrix above must turn red for the regression it guards.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def disabled_boundary(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Turn the projection boundary into a pass-through, in-process only.
+
+    The boundary is applied in **two** places, and a mutation that removed only
+    one would be as misleading as the vacuous assertions this pass exists to
+    fix. Templates call it through the ``neutralize`` filter; the Admin lineage
+    reader calls ``display.safe_optional`` before the template ever sees the
+    value. Writing this fixture the first way — filters only — showed the import
+    batch page as still-clean and correctly failed, which is how the second
+    application came to be covered here.
+
+    Both are replaced: the module attributes, because the reader looks them up
+    at call time, and the four filter registries, because those hold a direct
+    reference to the original function object. No repository file is touched and
+    ``monkeypatch`` restores everything.
+    """
+
+    from app.services.admin_workbench import import_lineage
+    from app.web.admin_workbench import templates as admin_templates
+    from app.web.company_intelligence import templates as ci_templates
+    from app.web.routes import templates as legacy_templates
+    from app.web.v2.routes import templates as v2_templates
+
+    def _passthrough(value: Any) -> str:
+        return "" if value is None else str(value)
+
+    def _passthrough_optional(value: str | None) -> str | None:
+        return value
+
+    monkeypatch.setattr(display, "safe_text", _passthrough)
+    monkeypatch.setattr(display, "safe_optional", _passthrough_optional)
+    monkeypatch.setattr(import_lineage, "_safe", _passthrough_optional)
+    for templates in (admin_templates, v2_templates, legacy_templates, ci_templates):
+        monkeypatch.setitem(templates.env.filters, "neutralize", _passthrough)
+    return _passthrough
+
+
+@pytest.mark.parametrize("prefix", PREFIXES)
+def test_the_matrix_would_fail_if_the_boundary_were_removed(
+    client: Any, hostile_admin_state: Any, disabled_boundary: Any, prefix: str
+) -> None:
+    """The mutation proof for Blocker 1.
+
+    With the boundary neutered, EVERY page in the sweep must produce a live
+    formula — otherwise the corresponding assertion in
+    ``test_every_admin_surface_shows_the_hostile_value_and_shows_it_inert``
+    could pass for a reason other than the projection working, and would not
+    stop the regression it exists for.
+    """
+
+    state = hostile_admin_state(prefix, "")
+    needle = f"{prefix}cmd|"
+    unprotected: list[str] = []
+    for surface, url in _urls(state).items():
+        body = client.get(url).text
+        if not _live_formulas(body, needle):
+            unprotected.append(surface)
+    assert not unprotected, (
+        "with the boundary disabled these pages still showed no live formula, so "
+        f"their absence assertion proves nothing: {unprotected}"
+    )
+
+
+def test_the_detector_itself_recognizes_a_live_formula() -> None:
+    """And the detector is not the thing that is broken.
+
+    ``_live_formulas`` is the instrument every absence assertion depends on. If
+    it silently matched nothing the whole matrix would be green and empty.
+    """
+
+    for prefix in PREFIXES:
+        rendered = f"<td>{prefix}cmd|first</td>"
+        assert _live_formulas(rendered, f"{prefix}cmd|") == [f"{prefix}cmd|first"]
+        neutralized = f"<td>&#39;{prefix}cmd|first</td>"
+        assert _live_formulas(neutralized, f"{prefix}cmd|") == []
+    # A tag or an attribute containing the text is not a rendered value.
+    assert _live_formulas('<a title="=cmd|x">ok</a>', "=cmd|") == []
 
 
 def test_the_no_company_branch_neutralizes_the_label_not_the_fallback(
