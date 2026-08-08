@@ -17,7 +17,7 @@
         <dt>APP_ENV</dt><dd class="mono">{{ view.app_env }}</dd>
         <dt>Dry-run</dt><dd>{% if view.dry_run %}<span class="badge ok">on — the safe state</span>{% else %}<span class="badge err">OFF</span>{% endif %}</dd>
         <dt>Verification TTLs</dt>
-        <dd>{% for name, days in view.verification_ttls.items() %}{{ name | replace("_", " ") }}: {{ days }}d{{ " · " if not loop.last }}{% endfor %}</dd>
+        <dd>{% for name, days in view.verification_ttls.items() %}{{ (name | replace("_", " ")) | neutralize }}: {{ days }}d{{ " · " if not loop.last }}{% endfor %}</dd>
       </div>
     </div>
   </div>
@@ -50,10 +50,10 @@
       <tbody>
         {% for control in view.controls %}
         <tr>
-          <td class="primary">{{ control.display_name }}{% if not control.implemented %} <span class="badge muted plain">not implemented</span>{% endif %}</td>
+          <td class="primary">{{ (control.display_name) | neutralize }}{% if not control.implemented %} <span class="badge muted plain">not implemented</span>{% endif %}</td>
           <td>{{ wb.control_badge(control) }}</td>
           <td class="dim">{{ control.source | replace("_", " ") }}</td>
-          <td class="dim">{{ control.reason or "—" }}</td>
+          <td class="dim">{{ (control.reason or "—") | neutralize }}</td>
           <td class="dim">{{ control.updated_at | ago }}</td>
           <td>{% if 'agent_workbench' in features_enabled %}<a class="btn small" href="/workbench/agents/{{ control.agent_id.value }}">Manage</a>{% else %}<span class="muted-note">requires agent_workbench</span>{% endif %}</td>
         </tr>
@@ -76,10 +76,10 @@
         <tbody>
           {% for override in view.overrides %}
           <tr>
-            <td class="primary"><a href="/admin/campaigns/{{ override.campaign_id }}">{{ override.campaign_name }}</a></td>
-            <td>{{ override.agent_name }}</td>
+            <td class="primary"><a href="/admin/campaigns/{{ override.campaign_id }}">{{ (override.campaign_name) | neutralize }}</a></td>
+            <td>{{ (override.agent_name) | neutralize }}</td>
             <td><span class="badge {{ 'ok' if override.status.value == 'enabled' else 'warn' }} plain">{{ override.status.value }}</span></td>
-            <td class="dim">{{ override.reason or "—" }}</td>
+            <td class="dim">{{ (override.reason or "—") | neutralize }}</td>
             <td class="dim">{{ override.updated_at | ago }}</td>
           </tr>
           {% endfor %}
@@ -101,7 +101,7 @@
         <tbody>
           {% for policy in view.policies %}
           <tr>
-            <td class="primary">{{ policy.label }}</td>
+            <td class="primary">{{ (policy.label) | neutralize }}</td>
             <td>{% if policy.active_version %}<span class="badge ok plain">{{ policy.active_version }}</span>{% else %}<span class="badge muted plain">none active</span>{% endif %}</td>
             <td class="num">{{ policy.version_count }}</td>
             <td>{% if policy.manage_href and 'agent_workbench' in features_enabled %}<a class="btn small" href="{{ policy.manage_href }}">Manage</a>{% endif %}</td>
@@ -119,7 +119,7 @@
   <div class="card-body">
     <div class="chiprow">
       {% for name, enabled in view.flags %}
-      <span class="chip {{ 'on' if enabled else '' }}">{{ name }}</span>
+      <span class="chip {{ 'on' if enabled else '' }}">{{ (name) | neutralize }}</span>
       {% endfor %}
     </div>
   </div>

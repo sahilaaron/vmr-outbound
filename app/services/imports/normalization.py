@@ -11,9 +11,19 @@ always preserved on the immutable raw row, so normalization can stay cautious.
 from __future__ import annotations
 
 import re
+import unicodedata
 from urllib.parse import quote, unquote, urlsplit
 
 _WHITESPACE = re.compile(r"\s+")
+#: Invisible characters that carry no linguistic meaning but split an otherwise
+#: identical name into two records. Deliberately narrow: the zero-width joiner
+#: and non-joiner are NOT listed, because they are meaningful in Persian, Hindi
+#: and several other scripts and removing them would change how a name is
+#: written.
+_INVISIBLE = re.compile("[\u200b\ufeff]")
+#: Wrappers and trailing punctuation an address picks up from a mail client, a
+#: signature block or a comma-separated list.
+_ADDRESS_TRIM = "<>,;'\"() \t"
 # A pragmatic email shape check: one @, non-space local and domain, a dotted
 # domain. Not RFC-complete on purpose — it rejects the obviously malformed
 # without pretending to prove deliverability (that is verification, a later phase).
@@ -22,6 +32,30 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _HOSTNAME_RE = re.compile(
     r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$"
 )
+
+
+def normalize_unicode(value: str | None) -> str | None:
+    """Put human text into one canonical Unicode form (IMP-001 D-15).
+
+    Two things happen. Composition is normalized to NFC, so a name typed on
+    macOS (which tends to produce decomposed forms) and the same name typed on
+    Windows stop being two different strings — they render identically, no
+    operator can tell them apart, and before this they produced two different
+    row fingerprints and therefore two Contacts.
+
+    And zero-width space and the byte-order mark are removed, because they are
+    invisible, carry no meaning inside a name, and a single one defeats every
+    dedup signal the import has.
+
+    Applied to human text only. Deliberately NOT applied to opaque vendor
+    identifiers, whose whole value is that they are compared byte for byte, and
+    handled separately for addresses and hostnames, where the canonical form is
+    IDNA rather than NFC.
+    """
+
+    if value is None:
+        return None
+    return unicodedata.normalize("NFC", _INVISIBLE.sub("", value))
 
 
 def collapse_whitespace(value: str | None) -> str | None:
@@ -37,16 +71,17 @@ def normalize_name(value: str | None) -> str | None:
     """Normalize a person or company name: trim + collapse whitespace only.
 
     Case is preserved: "McDonald", "O'Brien", and "van der Berg" must not be
-    mangled by naive title-casing.
+    mangled by naive title-casing. Unicode composition is not preserved, because
+    two spellings that render identically are not two names.
     """
 
-    return collapse_whitespace(value)
+    return collapse_whitespace(normalize_unicode(value))
 
 
 def normalize_text(value: str | None) -> str | None:
     """Normalize a free-text field (title, industry, company size): trim/collapse."""
 
-    return collapse_whitespace(value)
+    return collapse_whitespace(normalize_unicode(value))
 
 
 def normalize_country(value: str | None) -> str | None:
@@ -75,14 +110,66 @@ def normalize_email(value: str | None) -> str | None:
 
     if value is None:
         return None
-    cleaned = value.strip().lower()
-    return cleaned or None
+    cleaned = normalize_unicode(value) or ""
+    # Unwrap the angle-addr form and shed the punctuation an address collects
+    # from being pasted out of a mail client or a comma-separated list. This is
+    # the ordinary reading of "<jane@example.com>," and doing it here is what
+    # stops the stray character travelling on inside the domain.
+    cleaned = cleaned.strip().strip(_ADDRESS_TRIM).strip()
+    if not cleaned:
+        return None
+    local, separator, domain = cleaned.rpartition("@")
+    if not separator:
+        return cleaned.lower() or None
+    canonical_domain = normalize_email_domain(domain)
+    if canonical_domain is None:
+        # Keep the value as the operator wrote it so the refusal can quote it.
+        return f"{local}@{domain}".lower() or None
+    return f"{local.lower()}@{canonical_domain}"
+
+
+def normalize_email_domain(value: str | None) -> str | None:
+    """Canonicalize the domain half of an address, or return None if it cannot be.
+
+    Returns the lower-cased, punycode (IDNA) form with any trailing root dot
+    removed, and ``None`` when the result is not a syntactically valid hostname.
+
+    None is the important half. Before this existed, the domain was whatever
+    survived the address regex, so ``<jane@gmail.com>`` yielded ``gmail.com>`` —
+    which is not in the public-mailbox set, which meant a personal mailbox could
+    found a Company, and which put a string that cannot resolve into a permanent
+    Company record. IDNA is used rather than NFC because it is the form a domain
+    actually takes on the wire, so ``bücher.de`` and ``xn--bcher-kva.de`` stop
+    being two employers.
+    """
+
+    if value is None:
+        return None
+    host = (normalize_unicode(value) or "").strip().strip(_ADDRESS_TRIM).strip().rstrip(".")
+    if not host:
+        return None
+    if not host.isascii():
+        try:
+            host = host.encode("idna").decode("ascii")
+        except (UnicodeError, ValueError):
+            return None
+    host = host.lower()
+    return host if is_valid_hostname(host) else None
 
 
 def is_valid_email(value: str) -> bool:
-    """Return True if *value* has a plausible email shape."""
+    """Return True if *value* has a plausible email shape AND a valid domain.
 
-    return bool(_EMAIL_RE.match(value))
+    The domain check is not decoration. An address is the only evidence this
+    import path has, and its domain is used to decide whether the mailbox is a
+    personal one and, if not, which employer the person belongs to. A shape
+    check alone accepted ``jane@gmail.com>``, ``jane@x..com`` and ``jane@-.-``,
+    every one of which then established company identity.
+    """
+
+    if not _EMAIL_RE.match(value):
+        return False
+    return normalize_email_domain(value.rpartition("@")[2]) is not None
 
 
 def normalize_domain(value: str | None) -> str | None:

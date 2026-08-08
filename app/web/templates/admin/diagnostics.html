@@ -11,7 +11,7 @@
 
 {% for group_name, links in view.groups %}
 <div class="card">
-  <div class="card-head"><h2>{{ group_name }}</h2></div>
+  <div class="card-head"><h2>{{ (group_name) | neutralize }}</h2></div>
   <div class="card-body tight">
     <div class="table-wrap">
     <table class="data">
@@ -19,11 +19,11 @@
         {% for link in links %}
         <tr>
           <td class="primary" style="width: 260px;">
-            {% if link.available %}<a href="{{ link.href }}">{{ link.title }}</a>{% else %}{{ link.title }}{% endif %}
+            {% if link.available %}<a href="{{ link.href }}">{{ (link.title) | neutralize }}</a>{% else %}{{ (link.title) | neutralize }}{% endif %}
           </td>
           <td class="dim">{{ link.description }}</td>
           <td style="width: 220px;">
-            {% if not link.available %}<span class="badge muted plain">{{ link.note or "unavailable" }}</span>{% endif %}
+            {% if not link.available %}<span class="badge muted plain">{{ (link.note or "unavailable") | neutralize }}</span>{% endif %}
           </td>
         </tr>
         {% endfor %}

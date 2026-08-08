@@ -18,7 +18,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}{{ page_title | default("Outbound") }}{% endblock %} — VMR Outbound</title>
+  <title>{% block title %}{{ page_title | neutralize | default("Outbound", true) }}{% endblock %} — VMR Outbound</title>
   <link rel="icon" href="{{ url_for('static', path='vmr-mark.svg') }}" type="image/svg+xml">
   <link rel="stylesheet" href="{{ url_for('static', path='v2.css') }}">
 </head>

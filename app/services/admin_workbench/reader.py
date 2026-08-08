@@ -46,9 +46,12 @@ from app.models.enums import (
     AgentIdentifier,
     AgentJobStatus,
     CampaignContactEligibility,
+    ImportedEmailSlot,
+    ImportedEmailStageOutcome,
     IntelligenceJobStatus,
     PipelineStageStatus,
 )
+from app.models.imported_email import ImportedContactEmail
 from app.models.pipeline import CampaignContactAgentState
 from app.models.suppression import Suppression
 from app.models.usage_ledger import UsageLedgerEntry
@@ -73,6 +76,7 @@ from app.services.workbench_agents.views import (
     QueueCounts,
 )
 
+from .import_lineage import ImportLineageReader
 from .views import (
     AdminCompanyView,
     AdminContactView,
@@ -285,6 +289,10 @@ class AdminWorkbenchReader:
         self._session = session
         self._settings = settings
         self._phase2 = PhaseTwoWorkbenchReader(session)
+        #: Campaign-bound file-import lineage (IMP-001). A separate reader over
+        #: the import services' own public helpers, so the Workbench explains an
+        #: import without reimplementing one.
+        self.imports = ImportLineageReader(session)
 
     # -- shared helpers ------------------------------------------------------
 
@@ -655,6 +663,35 @@ class AdminWorkbenchReader:
         ).all():
             stage_state_counts.setdefault(agent_value, {})[status_value.value] = int(count)
 
+        # How many of this Campaign's contacts reached the far side of
+        # Verification without a provider being asked. One statement, and only
+        # the Verification row uses it — see StageFunnelStep.bypassed_through.
+        verification_position = AGENT_SPECS[AgentIdentifier.VERIFICATION].position
+        bypassed_through_verification = int(
+            self._session.scalar(
+                select(func.count(func.distinct(CampaignContact.id)))
+                .join(
+                    ImportedContactEmail,
+                    ImportedContactEmail.contact_id == CampaignContact.contact_id,
+                )
+                .where(
+                    CampaignContact.campaign_id == campaign_id,
+                    ImportedContactEmail.campaign_id == campaign_id,
+                    ImportedContactEmail.slot == ImportedEmailSlot.PRIMARY,
+                    ImportedContactEmail.email_stage_outcome
+                    == ImportedEmailStageOutcome.IMPORTED_EMAIL_ACCEPTED,
+                    CampaignContact.latest_completed_stage.in_(
+                        [
+                            agent
+                            for agent, spec in AGENT_SPECS.items()
+                            if spec.position >= verification_position
+                        ]
+                    ),
+                )
+            )
+            or 0
+        )
+
         controls = {control.agent_id: control for control in execution.controls}
         funnel: list[StageFunnelStep] = []
         for agent_id in PIPELINE_ORDER:
@@ -675,6 +712,11 @@ class AdminWorkbenchReader:
                     ),
                     failed_here=states.get(PipelineStageStatus.FAILED.value, 0),
                     blocked_here=states.get(PipelineStageStatus.BLOCKED.value, 0),
+                    bypassed_through=(
+                        bypassed_through_verification
+                        if agent_id is AgentIdentifier.VERIFICATION
+                        else 0
+                    ),
                 )
             )
 
@@ -1464,6 +1506,25 @@ class AdminWorkbenchReader:
             ).all():
                 verifications.setdefault(verification.email, verification)
 
+        # Which of these addresses a contact file supplied. One statement, so the
+        # card can distinguish "no provider has answered yet" from "no provider
+        # was ever asked" without a query per row.
+        imported_addresses: set[str] = set()
+        if addresses:
+            imported_addresses = {
+                value
+                for value in self._session.scalars(
+                    select(ImportedContactEmail.normalized_email).where(
+                        ImportedContactEmail.contact_id == contact.id,
+                        ImportedContactEmail.normalized_email.in_(addresses),
+                        ImportedContactEmail.slot == ImportedEmailSlot.PRIMARY,
+                        ImportedContactEmail.email_stage_outcome
+                        == ImportedEmailStageOutcome.IMPORTED_EMAIL_ACCEPTED,
+                    )
+                ).all()
+                if value
+            }
+
         def _email_row(address: str, source: str) -> EmailStateRow:
             verification = verifications.get(address)
             return EmailStateRow(
@@ -1471,6 +1532,7 @@ class AdminWorkbenchReader:
                 source=source,
                 verification_result=verification.result.value if verification else None,
                 verified_at=verification.checked_at if verification else None,
+                imported=verification is None and address in imported_addresses,
             )
 
         emails: list[EmailStateRow] = []

@@ -699,7 +699,58 @@ def _complete_verification_from_email(
     if membership.next_stage is not AgentIdentifier.VERIFICATION:
         return False
     result = email_job.result or {}
-    if result.get("domain_outcome") not in {
+    outcome = result.get("domain_outcome")
+
+    # --- The imported-address bypass (IMP-001) -------------------------------
+    #
+    # An address that arrived in a contact file has no verification evidence and
+    # is not going to acquire any: this path never calls MillionVerifier,
+    # ZeroBounce or any other provider. The stage still has to reach a legal
+    # terminal state or the Contact stops here forever, so it completes through
+    # an outcome that says exactly what happened and claims nothing about the
+    # mailbox. It is kept separate from the branch below precisely because that
+    # branch REQUIRES an evidence reference — and inventing one to satisfy it is
+    # the failure this whole design exists to prevent.
+    if outcome == "imported_email_accepted":
+        imported_email_id = result.get("imported_email_id")
+        if not isinstance(imported_email_id, str):
+            raise jobs.AgentJobError(
+                "an imported-email acceptance cannot advance Verification without its "
+                "imported-address evidence reference"
+            )
+        bypass_reference = {
+            "decision": "bypassed",
+            "verification_id": None,
+            "email": result.get("email"),
+            "provider": None,
+            "provider_called": False,
+            "reused_evidence": False,
+            "source": "campaign_file_import",
+            "imported_email_id": imported_email_id,
+            "import_batch_id": result.get("import_batch_id"),
+            "source_schema": result.get("source_schema"),
+            "provider_claimed_status": result.get("provider_claimed_status"),
+            "email_job_id": str(email_job.id),
+        }
+        transition_stage(
+            session,
+            membership=membership,
+            agent_id=AgentIdentifier.VERIFICATION,
+            target=PipelineStageStatus.COMPLETED,
+            event_type=PipelineEventType.STAGE_COMPLETED,
+            actor=actor,
+            job=None,
+            reason_code="verification_bypassed_imported_email",
+            reason_detail=(
+                "The address was supplied by a contact file import. No verification "
+                "provider was called and no deliverability is claimed."
+            ),
+            output_reference=bypass_reference,
+            detail=bypass_reference,
+        )
+        return True
+
+    if outcome not in {
         "existing_accepted_email_reused",
         "verified_email_accepted",
     }:

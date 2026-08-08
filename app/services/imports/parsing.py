@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import csv
 import io
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from typing import Any
@@ -39,6 +40,84 @@ SUPPORTED_EXTENSIONS = (".csv", ".xlsx")
 
 _UNMAPPED_KEY = "_unmapped"
 
+#: Largest single CSV cell this reader will accept, in characters.
+#:
+#: Python's default is 128 KB, which a real Apollo export can exceed — the
+#: Keywords and Technologies columns routinely run to kilobytes and occasionally
+#: much further. Left at the default, an ordinary export raised ``_csv.Error``,
+#: which is not a ``MalformedFileError`` and so escaped every handler on the way
+#: out as a bare 500. Raised here to a bound of its own rather than removed:
+#: unbounded would mean one hostile cell could hold the whole upload ceiling in
+#: a single Python string, and 4 MiB is far above any plausible cell while
+#: staying well inside the 25 MB file limit.
+MAX_CSV_FIELD_CHARS = 4 * 1024 * 1024
+
+csv.field_size_limit(MAX_CSV_FIELD_CHARS)
+
+#: Most physical columns a sheet may have, counted by POSITION.
+#:
+#: Positions, not names. The operator-facing ceiling was applied to the filtered
+#: list of non-blank headers, so a file with the four required columns and five
+#: hundred blank ones passed a five-hundred-and-twelve-column limit at five
+#: hundred and sixteen columns — and every one of those blanks becomes a Python
+#: object on every row before the limit is consulted. Enforced here, at the
+#: moment the header row is read, so the expansion is never materialized.
+MAX_PHYSICAL_COLUMNS = 512
+
+_CSV_FIELD_LIMIT_MESSAGE = (
+    "The file contains a single cell larger than this import accepts "
+    f"({MAX_CSV_FIELD_CHARS // (1024 * 1024)} MB). Split the value or remove the "
+    "column and re-export the file."
+)
+
+_CSV_QUOTING_MESSAGE = (
+    "The file has a quoting error: a quoted value is never closed, or a quotation "
+    "mark appears in the middle of an unquoted value. Open the file in a "
+    "spreadsheet application and re-export it as CSV so the quoting is written "
+    "correctly."
+)
+
+
+def _csv_error_message(exc: Exception) -> str:
+    """Say which of the two CSV failures happened, accurately.
+
+    One message used to cover both and asserted that an unclosed quote was
+    rejected — which was not true before the reader was made strict, and is a
+    claim worth keeping honest now that it is.
+    """
+
+    return _CSV_FIELD_LIMIT_MESSAGE if "field limit" in str(exc) else _CSV_QUOTING_MESSAGE
+
+
+def positional_key(index: int) -> str:
+    """A stable durable name for a physical column that has no header.
+
+    One-based, matching the column letters an operator sees in a spreadsheet
+    application after converting them. Needed because ``import_rows.raw_data``
+    is the immutable record of the file and a JSON object needs a key: before
+    this, every headerless column's value was joined into a single ``_unmapped``
+    string, so two blank columns holding ``left`` and ``right`` became one cell
+    and nobody could say afterwards which position supplied which value.
+
+    Deliberately not a human-looking header. Inventing ``Column E`` would put a
+    name in the record that the file does not contain.
+    """
+
+    return f"(column {index + 1})"
+
+
+def _check_width(columns: Sequence[str], *, sheet_name: str | None) -> None:
+    """Refuse a sheet that is wider than the reader will process."""
+
+    if len(columns) <= MAX_PHYSICAL_COLUMNS:
+        return
+    where = f"Sheet {sheet_name!r}" if sheet_name else "The file"
+    raise MalformedFileError(
+        f"{where} has {len(columns):,} columns, which is more than the "
+        f"{MAX_PHYSICAL_COLUMNS:,}-column limit. Blank and unnamed columns count: "
+        "delete the unused columns to the right of your data and re-export."
+    )
+
 
 class UnsupportedFormatError(Exception):
     """Raised for a file that is not one of the authorized formats."""
@@ -50,12 +129,28 @@ class MalformedFileError(Exception):
 
 @dataclass(frozen=True)
 class ParsedRow:
-    """One verbatim data row, keyed by the sheet's header."""
+    """One verbatim data row, by header name and by column position.
+
+    Both, because neither alone is enough. ``raw`` is what gets stored durably
+    in ``import_rows.raw_data`` as JSONB, and a JSON object cannot hold two
+    entries under one key — so a file with two columns literally named ``Email``
+    has to lose one of them there. ``cells`` is positional and loses nothing,
+    and it is what the schema reading uses.
+
+    The rule where they disagree is that **the first column of a repeated name
+    wins** in ``raw``. That is the contract :func:`app.services.imports.apollo
+    .detect_schema` states, and before this pair existed the dict silently did
+    the opposite: the later column overwrote the earlier one, so the reading
+    took a value the preview had just told the operator was not applied.
+    """
 
     sheet_index: int
     sheet_name: str | None
     row_number: int  # original per-sheet data-row number (header excluded)
     raw: dict[str, str]
+    #: Values in file column order, aligned index-for-index with
+    #: :attr:`SheetInfo.columns`. Shorter than the header when the row is short.
+    cells: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -66,6 +161,11 @@ class SheetInfo:
     name: str | None
     header: list[str]
     data_row_count: int
+    #: The header row verbatim, including empty and repeated names, so that
+    #: position ``i`` here names position ``i`` in every row's ``cells``.
+    #: :attr:`header` is the display list and drops the empties, which is why it
+    #: cannot be used for alignment.
+    columns: tuple[str, ...] = ()
 
 
 @dataclass
@@ -131,6 +231,64 @@ def _cell_to_text(value: Any) -> str:
     return str(value)
 
 
+def validate_csv_quoting(text: str, *, delimiter: str = ",") -> None:
+    """Raise :class:`MalformedFileError` for a quote used where CSV forbids one.
+
+    Python's reader with ``strict=True`` rejects a bad transition *after* a
+    quoted field — ``"A"da`` — and an unterminated quoted field. It does not
+    reject a quote that *begins* inside an unquoted field: ``A"da`` and
+    ``A"da"`` are both read as literal text. That is silent transformation of
+    the operator's source bytes into different immutable evidence, and it
+    contradicts the message this module already shows, which promises that a
+    quotation mark in the middle of an unquoted value is an error.
+
+    Deliberately not a CSV parser. It walks only the quote characters, in order,
+    and asks one question of each: given whether we are inside a quoted field,
+    is this quote legal here? Everything else in the file is skipped, so an
+    ordinary export costs one pass over its quotes rather than over its bytes.
+
+    Legal, and unchanged:
+
+    - ``"Ada, the first"`` — a quoted field containing the delimiter;
+    - a quoted field whose text contains doubled quotes, which CSV uses to mean
+      one literal quote character;
+    - a quoted field containing newlines;
+    - a file with no quotes at all.
+    """
+
+    if '"' not in text:
+        return
+
+    terminators = {delimiter, "\n", "\r"}
+    in_quoted = False
+    index = text.find('"')
+    while index != -1:
+        if not in_quoted:
+            # A quote may only open a field, so the character before it has to be
+            # the start of the file or a delimiter/newline. Anything else means
+            # the quote appeared part-way through an unquoted value.
+            if index != 0 and text[index - 1] not in terminators:
+                raise MalformedFileError(_CSV_QUOTING_MESSAGE)
+            in_quoted = True
+            index = text.find('"', index + 1)
+            continue
+
+        following = text[index + 1] if index + 1 < len(text) else ""
+        if following == '"':
+            # An escaped quote inside a quoted field. Skip both.
+            index = text.find('"', index + 2)
+            continue
+        if following == "" or following in terminators:
+            in_quoted = False
+            index = text.find('"', index + 1)
+            continue
+        # A closing quote followed by more of the same field: ``"A"da``.
+        raise MalformedFileError(_CSV_QUOTING_MESSAGE)
+
+    if in_quoted:
+        raise MalformedFileError(_CSV_QUOTING_MESSAGE)
+
+
 def parse_csv(content: bytes) -> ParsedFile:
     """Parse CSV bytes into the shared shape (single sheet, index 0)."""
 
@@ -142,26 +300,65 @@ def parse_csv(content: bytes) -> ParsedFile:
             "UTF-8 encoding and upload again."
         ) from exc
 
-    reader = csv.DictReader(io.StringIO(text), restkey=_UNMAPPED_KEY, restval="")
+    # Quoting is validated before anything is read, because the reader cannot be
+    # asked the question that matters: ``strict=True`` catches a bad transition
+    # after a quoted field but accepts a quote that begins inside an unquoted
+    # one, which is the difference between refusing malformed input and quietly
+    # storing text the file did not contain.
+    validate_csv_quoting(text)
+
+    # ``csv.reader`` rather than ``DictReader``: the dict is built here so that a
+    # repeated header name keeps its FIRST column's value instead of being
+    # overwritten by the last, and so the positional reading survives at all.
+    # ``strict=True`` is kept as well: the two overlap, and neither alone covers
+    # every malformed shape.
+    reader = csv.reader(io.StringIO(text), strict=True)
+    try:
+        first = next(reader, None)
+    except csv.Error as exc:
+        raise MalformedFileError(_csv_error_message(exc)) from exc
+    columns: tuple[str, ...] = tuple(first or ())
+    # Before a single data row is materialized.
+    _check_width(columns, sheet_name=None)
+
     rows: list[ParsedRow] = []
     row_number = 0
-    for row in reader:
-        cleaned: dict[str, str] = {}
-        for key, value in row.items():
-            if key is None:
-                continue
-            if key == _UNMAPPED_KEY and isinstance(value, list):
-                cleaned[key] = ", ".join(str(v) for v in value)
-            else:
-                cleaned[key] = str(value) if value is not None else ""
-        if not any(v.strip() for v in cleaned.values()):
-            continue  # skip fully-empty lines
-        row_number += 1
-        rows.append(ParsedRow(sheet_index=0, sheet_name=None, row_number=row_number, raw=cleaned))
+    try:
+        for values in reader:
+            cells = tuple(str(v) if v is not None else "" for v in values)
+            if not any(v.strip() for v in cells):
+                continue  # skip fully-empty lines
+            cleaned: dict[str, str] = {}
+            for position, value in enumerate(cells):
+                if position < len(columns) and columns[position]:
+                    cleaned.setdefault(columns[position], value)
+                elif value.strip():
+                    # A headerless or overflow column keeps its own position, so
+                    # the durable record can still say which cell held what.
+                    cleaned[positional_key(position)] = value
+            # Every declared column is present even when the row is short, so a
+            # ragged file reads as empty cells rather than as missing fields.
+            for name in columns:
+                if name:
+                    cleaned.setdefault(name, "")
+            row_number += 1
+            rows.append(
+                ParsedRow(
+                    sheet_index=0,
+                    sheet_name=None,
+                    row_number=row_number,
+                    raw=cleaned,
+                    cells=cells,
+                )
+            )
+    except csv.Error as exc:
+        raise MalformedFileError(_csv_error_message(exc)) from exc
 
-    header = [h for h in (reader.fieldnames or []) if h and h != _UNMAPPED_KEY]
+    header = [h for h in columns if h and h != _UNMAPPED_KEY]
     parsed = ParsedFile(source_format="csv", parser_version=CSV_PARSER_VERSION)
-    parsed.sheets = [SheetInfo(index=0, name=None, header=header, data_row_count=len(rows))]
+    parsed.sheets = [
+        SheetInfo(index=0, name=None, header=header, data_row_count=len(rows), columns=columns)
+    ]
     parsed.rows = rows
     return parsed
 
@@ -199,17 +396,21 @@ def parse_xlsx(content: bytes) -> ParsedFile:
                     continue  # skip fully-empty rows (including leading ones)
                 if not header:
                     header = [t.strip() for t in texts]
+                    _check_width(header, sheet_name=sheet_name)
                     continue
                 row_number += 1
+                cells = tuple(texts)
                 raw: dict[str, str] = {}
-                extras: list[str] = []
                 for position, text in enumerate(texts):
                     if position < len(header) and header[position]:
-                        raw[header[position]] = text
+                        # First column of a repeated name wins, matching the CSV
+                        # reader and the documented detection contract.
+                        raw.setdefault(header[position], text)
                     elif text.strip():
-                        extras.append(text)
-                if extras:
-                    raw[_UNMAPPED_KEY] = ", ".join(extras)
+                        raw[positional_key(position)] = text
+                for name in header:
+                    if name:
+                        raw.setdefault(name, "")
                 data_row_count += 1
                 parsed.rows.append(
                     ParsedRow(
@@ -217,6 +418,7 @@ def parse_xlsx(content: bytes) -> ParsedFile:
                         sheet_name=sheet_name,
                         row_number=row_number,
                         raw=raw,
+                        cells=cells,
                     )
                 )
             parsed.sheets.append(
@@ -225,6 +427,7 @@ def parse_xlsx(content: bytes) -> ParsedFile:
                     name=sheet_name,
                     header=[h for h in header if h],
                     data_row_count=data_row_count,
+                    columns=tuple(header),
                 )
             )
 

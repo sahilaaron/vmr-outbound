@@ -90,3 +90,20 @@ the truthful-extraction standard if forced in.
 | Contact-level research | RES-001 researches the permanent Company, which is where reuse across Contacts and Campaigns comes from. Per-person research has no demonstrated need before the first campaign. |
 | Promoting sourced facts onto canonical Company fields | Research stores claims with evidence; it does not overwrite canonical values. Turning a sourced fact into a canonical field is a separate, reviewable decision with its own provenance rules (`CompanyFieldSource.RESEARCH_DOSSIER` already exists for it). |
 | Generalised Agent parent/child jobs | The orchestrator's parent/child machinery is hard-coded to the EMAIL to VERIFICATION pair. RES-001 needs no children, so generalising it stays unbuilt until a second Agent actually needs one. |
+
+## Deferred by IMP-001 (campaign contact file import)
+
+Each is a real idea. None was needed to make a campaign-bound Apollo import
+independently useful, and several would have required guessing about a person to
+force in — see [`CAMPAIGN_FILE_IMPORT.md`](CAMPAIGN_FILE_IMPORT.md).
+
+| Idea | Why deferred |
+| --- | --- |
+| Operator-driven column mapping on the campaign path | The Apollo reader recognizes headers by name, so nothing has to be mapped. A file it does not recognize is refused with the exact missing headers named, and the existing generic mapped importer at `/imports` still handles arbitrary schemas. Adding a mapping UI here before a second real schema exists would be a screen with one supported answer. |
+| Additional vendor schemas (ZoomInfo, Lusha, Cognism) | The reader is a schema *profile* — an alias table plus a row reader — so a second vendor is a new profile rather than a new pipeline. Nothing is built until a real file exists to test against; guessing at another vendor's column names is exactly the kind of silent mis-mapping this design refuses. |
+| Delimiter sniffing for semicolon/tab CSVs | Deliberately not attempted. A mis-sniffed delimiter produces a single-column file that fails header recognition anyway, and the actionable "missing required header" message is a better outcome than a heuristic that is wrong occasionally and invisibly. |
+| Resolving review-required rows in the customer UI | Held rows are recorded with their reason and shown on the batch page. Deciding an ambiguous identity is the existing DAT-004 review path, and giving it a second, campaign-scoped entry point would be two places to make the same decision. |
+| Promoting a secondary address to primary | Retained with full provider metadata and never promoted. Which address to write to is a judgement about a person; the file does not license anyone to make it, and a malformed primary with a valid secondary is flagged rather than swapped. |
+| Re-running the imported-email path after an operator edits an address | The Email stage reads the imported record only while it still matches the Contact's current address. A deliberate operator change therefore falls back to ordinary discovery, which is correct but silent; an explicit re-import or refresh action is the follow-up. |
+| Per-user import ownership | The application is single-operator: an import is scoped to a Campaign, not a person, and the page says so. Real ownership arrives with the user-account system, not before it. |
+| CSV export of row errors | The batch page shows every row's outcome. An export needs the formula-neutralization path exercised end to end (`neutralize_formula` exists and is tested) and a decision about who may download PII; neither was needed to run the first import. |

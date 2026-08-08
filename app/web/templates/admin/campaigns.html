@@ -36,10 +36,10 @@
       <tbody>
         {% for row in view.rows %}
         <tr class="{{ 'attention' if row.needs_attention else '' }}">
-          <td class="primary"><a href="/admin/campaigns/{{ row.campaign_id }}">{{ row.name }}</a></td>
+          <td class="primary"><a href="/admin/campaigns/{{ row.campaign_id }}">{{ (row.name) | neutralize }}</a></td>
           <td><span class="badge {{ 'ok' if row.status == 'active' else 'muted' }} plain">{{ row.status }}</span></td>
           <td>{{ wb.health_badge(row.health) }}</td>
-          <td>{% if row.execution_enabled %}<span class="badge ok plain">on</span>{% else %}<span class="badge warn plain" title="{{ row.disabled_reason or '' }}">paused</span>{% endif %}</td>
+          <td>{% if row.execution_enabled %}<span class="badge ok plain">on</span>{% else %}<span class="badge warn plain" title="{{ (row.disabled_reason or '') | neutralize }}">paused</span>{% endif %}</td>
           <td class="num">{{ row.enrolled }}</td>
           <td>{{ wb.progress(row.progress_percent) }}<span class="muted-note">{{ row.completed }} complete</span></td>
           <td class="num">{{ row.in_progress }}</td>

@@ -4,14 +4,14 @@
 <div class="v2-page detail">
 
   <div class="v2-crumbs">
-    <a href="/app/companies">Companies</a><span class="sep">/</span>{{ detail.company.name }}
+    <a href="/app/companies">Companies</a><span class="sep">/</span>{{ detail.company.name | neutralize }}
   </div>
 
   <div class="v2-title-row v2-mt-sm">
     <div class="v2-avatar-lg accent">{{ detail.company.name | initials }}</div>
     <div class="v2-title-main">
       <div class="v2-title-line">
-        <h1 class="v2-h1">{{ detail.company.name }}</h1>
+        <h1 class="v2-h1">{{ detail.company.name | neutralize }}</h1>
         {% if detail.conflicts %}{{ tag(detail.conflicts | length ~ ' identity disagreement(s)', 'warn') }}{% endif %}
       </div>
       <p class="v2-note">
@@ -33,7 +33,7 @@
           <span class="v2-note">A domain and a LinkedIn company page are two independent axes. Neither confirms the other.</span>
         </div>
         <dl class="v2-dl">
-          <div class="v2-kv"><dt>Name</dt><dd>{{ detail.company.name }}</dd></div>
+          <div class="v2-kv"><dt>Name</dt><dd>{{ detail.company.name | neutralize }}</dd></div>
           <div class="v2-kv"><dt>Domain</dt><dd class="m">
             {% if detail.company.domain %}
               {{ detail.company.domain }}
@@ -57,8 +57,8 @@
           <div class="v2-kv"><dt>Sales Navigator</dt><dd class="v2-break">{{ detail.captured_salesnav_url }}</dd></div>
           {% endif %}
           <div class="v2-kv"><dt>LinkedIn identifier</dt><dd class="m">{{ detail.company.linkedin_company_id or '—' }}</dd></div>
-          <div class="v2-kv"><dt>Industry</dt><dd>{{ detail.company.industry or 'unknown' }}</dd></div>
-          <div class="v2-kv"><dt>Country</dt><dd>{{ detail.company.country or 'unknown' }}</dd></div>
+          <div class="v2-kv"><dt>Industry</dt><dd>{{ (detail.company.industry | neutralize) or 'unknown' }}</dd></div>
+          <div class="v2-kv"><dt>Country</dt><dd>{{ (detail.company.country | neutralize) or 'unknown' }}</dd></div>
           <div class="v2-kv"><dt>Size</dt><dd>{{ detail.company.company_size or 'unknown' }}</dd></div>
         </dl>
       </div>
@@ -186,7 +186,7 @@
               <tr>
                 <td class="m v2-nowrap">{{ field.field_name | nice }}</td>
                 <td>
-                  {% if field.current_value %}<b>{{ field.current_value }}</b>
+                  {% if field.current_value %}<b>{{ field.current_value | neutralize }}</b>
                   {% else %}{{ tag('unknown') }}{% endif %}
                 </td>
                 <td class="v2-note">
@@ -346,8 +346,8 @@
         {% for link in detail.linked_contacts %}
         <div class="v2-row tight">
           <div class="v2-sidelist-top">
-            <a href="/app/contacts/{{ link.contact.id }}">{{ link.display_name }}</a>
-            <span class="v2-hint">{{ link.contact.title or 'no title' }}</span>
+            <a href="/app/contacts/{{ link.contact.id }}">{{ link.display_name | neutralize }}</a>
+            <span class="v2-hint">{{ (link.contact.title | neutralize) or 'no title' }}</span>
           </div>
         </div>
         {% endfor %}
@@ -363,7 +363,7 @@
           </div>
           {% for link in detail.transitional_contacts %}
           <div class="v2-hint">
-            <a href="/app/contacts/{{ link.contact.id }}">{{ link.display_name }}</a> — {{ link.contact.title or 'no title' }}
+            <a href="/app/contacts/{{ link.contact.id }}">{{ link.display_name | neutralize }}</a> — {{ (link.contact.title | neutralize) or 'no title' }}
           </div>
           {% endfor %}
         </div>
