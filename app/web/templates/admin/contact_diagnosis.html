@@ -308,7 +308,127 @@
                 </dd>
                 <dt>Approval</dt><dd><span class="badge muted plain">not approved</span> <span class="dim">decisions happen in the Customer review queue</span></dd>
               </div>
-            {% elif stage.agent_id.value == "sending" %}
+            {% endif %}
+
+            {#
+              Sequence diagnosis. Shown under the Personalization stage because
+              that is the one stage that produces it -- seven follow-ups did not
+              become seven stages, and the page must not imply that they did.
+
+              Every value is a committed one. The producer's raw output is not
+              carried here at all: an operator diagnosis must not become a
+              channel for unbounded model text.
+            #}
+            {% if stage.agent_id.value == "personalization" %}
+              {% if view.sequences %}
+              <hr class="soft">
+              {% for sequence in view.sequences %}
+              <details class="tech" {% if loop.first %}open{% endif %}>
+                <summary>
+                  Sequence v{{ sequence.sequence_version }} —
+                  {{ sequence.messages | length }} of 7 messages ·
+                  {{ sequence.review_state | replace('_', ' ') }}
+                  {% if not sequence.is_current %}<span class="dim">· superseded {{ sequence.superseded_at | dt }}</span>{% endif %}
+                </summary>
+                <div class="kv">
+                  <dt>Identity</dt>
+                  <dd class="mono">{{ sequence.sequence_id }}<br>key {{ sequence.sequence_key }}</dd>
+                  <dt>Agent Job</dt>
+                  <dd>
+                    {% if sequence.agent_job_id %}<a href="/admin/jobs/{{ sequence.agent_job_id }}" class="mono">{{ sequence.agent_job_id }}</a>
+                    {% else %}<span class="dim">no job recorded — produced outside the queue</span>{% endif %}
+                  </dd>
+                  <dt>Input digest</dt>
+                  <dd class="mono" title="Two generations sharing this digest are the same generation; the second must not spend.">{{ sequence.input_digest }}</dd>
+                  <dt>Producer</dt>
+                  <dd>{{ sequence.producer or 'unrecorded' }} {{ sequence.producer_version or '' }} <span class="dim">· builder {{ sequence.sequence_producer_version }} · validation {{ sequence.validation_policy_version }}</span></dd>
+                  <dt>Policy and strategy</dt>
+                  <dd>
+                    {% if sequence.policy_version_number %}policy v{{ sequence.policy_version_number }}{% else %}<span class="dim">policy unrecorded</span>{% endif %}
+                    {% if sequence.strategy_id %}<span class="dim">· {{ sequence.strategy_id }}</span>{% endif %}
+                  </dd>
+                  <dt>Generation / validation</dt>
+                  <dd>
+                    <span class="badge {{ 'ok' if sequence.generation_status == 'complete' else 'err' }} plain">{{ sequence.generation_status }}</span>
+                    <span class="badge {{ 'ok' if sequence.validation_status == 'passed' else ('warn' if sequence.validation_status == 'passed_with_warnings' else 'err') }} plain">{{ sequence.validation_status | replace('_', ' ') }}</span>
+                    {% if not sequence.complete %}<span class="badge err plain">incomplete — never offered for review</span>{% endif %}
+                  </dd>
+                  <dt>Timing</dt>
+                  <dd>{{ sequence.cadence_source }} cadence · planned over {{ sequence.planned_span_days }} days <span class="dim">— planned timing, never a schedule</span></dd>
+                  <dt>Delivery</dt>
+                  <dd>
+                    stop {{ sequence.stop_state }}{% if sequence.stop_reason %} ({{ sequence.stop_reason }}){% endif %} ·
+                    actionable position {{ sequence.current_actionable_position or 'none' }}
+                    <span class="dim">— domain state only; nothing in this build acts on it</span>
+                  </dd>
+                  <dt>Research lineage</dt><dd class="mono">{{ sequence.research_lineage | pretty_json }}</dd>
+                  <dt>Insights lineage</dt><dd class="mono">{{ sequence.insights_lineage | pretty_json }}</dd>
+                  <dt>Company Intelligence lineage</dt><dd class="mono">{{ sequence.intelligence_lineage | pretty_json }}</dd>
+                </div>
+
+                <table class="data">
+                  <thead>
+                    <tr>
+                      <th>#</th><th>Purpose</th><th>Type</th><th>Version</th><th>Origin</th>
+                      <th>Generation</th><th>Validation</th><th>Review</th><th>Day</th>
+                      <th>Delivery</th><th>Cited</th><th>CI</th><th>Predecessor</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for message in sequence.messages %}
+                    <tr>
+                      <td>{{ message.position }}</td>
+                      <td>{{ message.purpose }}</td>
+                      <td>{{ message.message_type }}</td>
+                      <td class="mono">v{{ message.message_version }}</td>
+                      <td>{{ message.origin }}</td>
+                      <td>{{ message.generation_status }}</td>
+                      <td>{{ message.validation_status | replace('_', ' ') }}{% if message.warnings %} <span class="dim">({{ message.warnings | length }} warning)</span>{% endif %}</td>
+                      <td>{{ message.review_state }}{% if message.decided_by %} <span class="dim">by {{ message.decided_by }} {{ message.decided_at | dt }}</span>{% endif %}</td>
+                      <td>{{ message.planned_day }} <span class="dim">(+{{ message.planned_delay_days }})</span></td>
+                      <td>{{ message.delivery_state }}</td>
+                      <td>{{ message.cited_evidence_ids | length }}</td>
+                      <td>{{ message.intelligence_accepted }}/{{ message.intelligence_excluded }}</td>
+                      <td class="mono">{{ message.predecessor_message_id or '—' }}</td>
+                    </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+
+                {% if sequence.validation_findings %}
+                <div class="muted-note">
+                  <b>Validation findings</b> (bounded)
+                  <ul>
+                    {% for finding in sequence.validation_findings %}
+                    <li>
+                      [{{ finding.severity }}] {{ finding.code }}
+                      {% if finding.position %}· position {{ finding.position }}{% endif %}
+                      — {{ finding.detail }}
+                    </li>
+                    {% endfor %}
+                  </ul>
+                </div>
+                {% endif %}
+
+                {% for message in sequence.messages if message.warnings %}
+                <div class="muted-note">
+                  <b>Position {{ message.position }} warnings</b>
+                  <ul>{% for warning in message.warnings %}<li>{{ warning }}</li>{% endfor %}</ul>
+                </div>
+                {% endfor %}
+              </details>
+              {% endfor %}
+              {% elif view.sequences_enabled %}
+              <hr class="soft">
+              <div class="muted-note">
+                No sequence has been generated for this membership. Sequence generation is
+                available in this deployment, so this is either a campaign that has not opted
+                in or a stage that has not run — the stage status above says which.
+              </div>
+              {% endif %}
+            {% endif %}
+
+            {% if stage.agent_id.value == "sending" %}
               <hr class="soft">
               <div class="muted-note">Unavailable — Sending Agent not implemented in this release.</div>
             {% endif %}

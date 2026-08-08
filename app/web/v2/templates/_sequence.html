@@ -1,0 +1,247 @@
+{#
+  Sequence rendering, shared by the Review queue and the Contact page.
+
+  The rule that shapes every macro here: a collapsed card carries no message
+  body, and an expanded card carries exactly one. Seven bodies per contact would
+  make a Review queue of forty contacts unreadable and slow, and neither cost
+  buys anything -- an operator reads one message at a time.
+
+  Every value shown is escaped by Jinja's default autoescaping, exactly as the
+  single-draft card is. Nothing here uses `| safe`.
+#}
+{% from "_ui.html" import tag, dot, empty %}
+
+{% macro state_tone(state) -%}
+{%- if state == 'approved' -%}ok
+{%- elif state in ('failed', 'blocked', 'contains_discarded') -%}err
+{%- elif state in ('superseded', 'contains_edits', 'partially_approved', 'partially_reviewed') -%}warn
+{%- else -%}brand
+{%- endif -%}
+{%- endmacro %}
+
+{% macro state_label(state) -%}
+{%- if state == 'needs_review' -%}waiting for you
+{%- elif state == 'partially_reviewed' -%}partly reviewed
+{%- elif state == 'partially_approved' -%}partly approved
+{%- elif state == 'contains_edits' -%}contains your edits
+{%- elif state == 'contains_discarded' -%}contains a discarded message
+{%- elif state == 'generated' -%}just written
+{%- elif state == 'blocked' -%}blocked
+{%- elif state == 'failed' -%}generation failed
+{%- elif state == 'superseded' -%}superseded
+{%- else -%}{{ state | replace('_', ' ') }}
+{%- endif -%}
+{%- endmacro %}
+
+{#
+  One collapsed card. `expanded_href` is where "View sequence" goes; when the
+  card is the open one, the caller passes the URL that closes it again.
+#}
+{% macro card(row, href, open=false) %}
+<article class="v2-seq-card{{ ' on' if open }}">
+  <div class="v2-seq-top">
+    <div class="v2-seq-who">
+      <span class="v2-seq-name">{{ row.contact_name }}</span>
+      <span class="v2-seq-sub">{{ row.company_name or 'no company on file' }} · {{ row.campaign_name }}</span>
+    </div>
+    <div class="v2-seq-flags">
+      {{ tag(state_label(row.review_state.value), state_tone(row.review_state.value), small=true) }}
+      <span class="v2-seq-count m" title="A sequence is exactly seven messages.">{{ row.message_count }} of {{ row.step_total }} messages</span>
+      <span class="v2-seq-ver m">sequence v{{ row.sequence_version }}</span>
+    </div>
+  </div>
+
+  <div class="v2-seq-subject">{{ row.initial_subject }}</div>
+  <p class="v2-seq-excerpt">{{ row.initial_excerpt }}{% if row.initial_excerpt %}…{% endif %}</p>
+
+  <div class="v2-chipline v2-seq-tally">
+    <span class="v2-fact ok" title="Messages you have approved, each against its exact version.">{{ row.approved }} approved</span>
+    <span class="v2-fact" title="Messages still waiting for your decision.">{{ row.awaiting }} waiting</span>
+    {% if row.edited %}<span class="v2-fact warn">{{ row.edited }} edited</span>{% endif %}
+    {% if row.discarded %}<span class="v2-fact err">{{ row.discarded }} discarded</span>{% endif %}
+    {% if row.warning_count %}<span class="v2-fact warn" title="Deterministic validation flagged something worth reading before you approve.">{{ row.warning_count }} warning{{ '' if row.warning_count == 1 else 's' }}</span>{% endif %}
+    {% if not row.complete %}{{ tag('incomplete', 'err', small=true) }}{% endif %}
+  </div>
+
+  <div class="v2-seq-basis">
+    <span title="Which evidence tier the whole sequence was written from.">{{ row.evidence_label }}</span>
+    {% if row.policy_version_number %}<span class="v2-muted"> · policy v{{ row.policy_version_number }}</span>{% endif %}
+    {% if row.strategy_id %}<span class="v2-muted"> · {{ row.strategy_id | replace('_', ' ') }}</span>{% endif %}
+    {% if row.planned_span_days %}<span class="v2-muted"> · planned over {{ row.planned_span_days }} days</span>{% endif %}
+  </div>
+
+  <div class="v2-seq-actions">
+    <a class="v2-btn sm" href="{{ href }}" aria-expanded="{{ 'true' if open else 'false' }}">{{ 'Hide sequence' if open else 'View sequence …' }}</a>
+    <a class="v2-btn sm ghost" href="/app/contacts/{{ row.contact_id }}?campaign={{ row.campaign_id }}">Open the contact</a>
+  </div>
+</article>
+{% endmacro %}
+
+{#
+  The message selector: Initial | F1 | F2 … Rendered as links so it works
+  without JavaScript and is reachable by keyboard, which is how the rest of this
+  application already behaves.
+#}
+{% macro selector(rows, current, base) %}
+<nav class="v2-seq-steps" aria-label="Sequence messages">
+  {% for row in rows %}
+  <a class="v2-seq-step{{ ' on' if row.position == current }}"
+     href="{{ base }}&step={{ row.position }}"
+     aria-current="{{ 'true' if row.position == current else 'false' }}"
+     title="{{ row.purpose_label }} — {{ row.timing_label }}">
+    <span class="v2-seq-step-label">{{ row.step_label }}</span>
+    <span class="v2-seq-step-dot">
+      {%- if row.decision and row.decision.value == 'approved' -%}{{ dot('ok') }}
+      {%- elif row.decision and row.decision.value == 'discarded' -%}{{ dot('err') }}
+      {%- elif row.origin.value == 'human_edited' -%}{{ dot('warn') }}
+      {%- else -%}{{ dot('brand') }}{%- endif -%}
+    </span>
+  </a>
+  {% endfor %}
+</nav>
+{% endmacro %}
+
+{#
+  One expanded message. `back` is the URL an action returns to, so the operator
+  lands back on the exact message they acted on.
+#}
+{% macro message(detail, back, show_edit=true, read_only=false) %}
+{% set row = detail.row %}
+<div class="v2-seq-message">
+  <div class="v2-seq-meta">
+    <span class="v2-fact">{{ row.purpose_label }}</span>
+    <span class="v2-fact">{{ row.timing_label }}</span>
+    <span class="v2-fact">message version {{ row.message_version }}</span>
+    <span class="v2-fact">{{ row.edit_label }}</span>
+    <span class="v2-fact {{ 'ok' if row.decision and row.decision.value == 'approved' else ('err' if row.decision and row.decision.value == 'discarded' else '') }}">{{ row.review_label }}</span>
+    {% if row.decided_at %}<span class="v2-fact">decided {{ row.decided_at | dt }}</span>{% endif %}
+  </div>
+
+  <div class="v2-mail">
+    <div class="v2-mail-head">
+      <div class="v2-mail-line"><span>From</span><span class="v2-muted">Not set — no sending account can be connected yet</span></div>
+      <div class="v2-mail-line"><span>Subject</span><b>{{ row.subject }}</b></div>
+    </div>
+    <pre class="v2-mail-body">{{ detail.body }}</pre>
+    <div class="v2-mail-foot">
+      {% if read_only %}
+      <span class="v2-btn is-disabled" title="This sequence is read-only: the feature or the campaign opt-in is switched off.">Approve this message</span>
+      <span class="v2-btn is-disabled" title="This sequence is read-only.">Discard</span>
+      <span class="why">
+        This sequence is kept and fully readable, but no new decision can be recorded
+        against it while sequences are switched off for this campaign or environment.
+        Nothing already decided has changed.
+      </span>
+      {% else %}
+      <form method="post" action="/app/review/sequence/messages/{{ row.version_id }}/approve">
+        <input type="hidden" name="back" value="{{ back }}">
+        <label class="v2-sr" for="seq-approve-{{ row.position }}">Note</label>
+        <input class="v2-sr" id="seq-approve-{{ row.position }}" name="reason" value="">
+        <button class="v2-btn primary" type="submit">Approve this message</button>
+      </form>
+      <form method="post" action="/app/review/sequence/messages/{{ row.version_id }}/discard">
+        <input type="hidden" name="back" value="{{ back }}">
+        <label class="v2-sr" for="seq-discard-{{ row.position }}">Reason</label>
+        <input class="v2-sr" id="seq-discard-{{ row.position }}" name="reason" value="">
+        <button class="v2-btn danger" type="submit">Discard</button>
+      </form>
+      <span class="why">
+        Your decision is recorded against this exact message version, and against no other
+        message. Nothing is sent and no Gmail draft is created — there is no sending path
+        in this build.
+      </span>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if detail.warnings %}
+  <div class="v2-notice warn v2-mt-sm" role="alert">
+    <b>Read before approving</b>
+    <ul class="v2-seq-warnings">
+      {% for warning in detail.warnings %}<li>{{ warning }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {% if show_edit and not read_only %}
+  <details class="v2-seq-edit">
+    <summary>Edit this message</summary>
+    <form method="post" action="/app/review/sequence/messages/{{ row.version_id }}/edit" class="v2-seq-form">
+      <input type="hidden" name="back" value="{{ back }}">
+      <label for="seq-subject-{{ row.position }}">Subject</label>
+      <input id="seq-subject-{{ row.position }}" name="subject" value="{{ row.subject }}" required>
+      <label for="seq-body-{{ row.position }}">Body</label>
+      <textarea id="seq-body-{{ row.position }}" name="body" rows="12" required>{{ detail.body }}</textarea>
+      <label for="seq-note-{{ row.position }}">Why (optional)</label>
+      <input id="seq-note-{{ row.position }}" name="reason" value="">
+      <button class="v2-btn" type="submit">Save as a new version</button>
+      <p class="v2-note">
+        Saving writes a new immutable version of this message only. The text you are
+        replacing is kept, any approval against it is marked invalidated, and the other
+        six messages and their decisions are untouched.
+      </p>
+    </form>
+  </details>
+  {% endif %}
+
+  {% if detail.original_body %}
+  <details class="v2-seq-original">
+    <summary>What the Agent originally wrote</summary>
+    <div class="v2-seq-original-body">
+      <div class="v2-mail-line"><span>Subject</span><b>{{ detail.original_subject }}</b></div>
+      <pre class="v2-mail-body">{{ detail.original_body }}</pre>
+    </div>
+  </details>
+  {% endif %}
+
+  <div class="v2-card v2-mt-sm">
+    <div class="v2-card-head tight"><h2>What this message was written from</h2></div>
+    <div class="v2-card-body">
+      <dl class="v2-dl">
+        <dt>Research</dt><dd>{{ detail.research_basis }}</dd>
+        <dt>Insights</dt><dd>{{ detail.insights_basis }}</dd>
+        <dt>Company Intelligence</dt><dd>{{ detail.intelligence_basis }}</dd>
+        {% if detail.strategy_id %}<dt>Strategy</dt><dd>{{ detail.strategy_id | replace('_', ' ') }}</dd>{% endif %}
+        <dt>Written</dt><dd>{{ detail.created_at | dt }}{% if detail.created_by %} · {{ detail.created_by }}{% endif %}</dd>
+      </dl>
+    </div>
+  </div>
+</div>
+{% endmacro %}
+
+{#
+  Truthful states for every way a sequence can be absent. Each says which of
+  them it is, because "no sequence" covering five different situations is how an
+  operator ends up waiting for something that is switched off.
+#}
+{% macro unavailable(kind) %}
+{% if kind == 'feature_off' %}
+  {{ empty('Sequences are switched off in this environment',
+     'The Personalization Agent is writing single drafts, exactly as it did before sequences existed. Nothing has been generated for this contact, and nothing is missing.') }}
+{% elif kind == 'campaign_off' %}
+  {{ empty('This campaign is not set up to generate sequences',
+     'Seven-message sequences are available in this environment, but each campaign opts in separately so that switching the feature on never silently changes what an existing campaign produces. This campaign is on single drafts, and no sequence will be written for it until somebody opts it in.') }}
+{% elif kind == 'pending' %}
+  {{ empty('No sequence has been written yet',
+     'This campaign is opted in, so the Personalization Agent will write all seven messages as one unit — and only for a contact whose mailbox has been confirmed. When it finishes, the whole sequence appears here at once.') }}
+{% elif kind == 'failed' %}
+  {{ empty('The last generation did not produce a usable sequence',
+     'Nothing partial was kept: a sequence is written whole or not at all, so there are no half-finished messages waiting to be mistaken for finished ones. Nothing further will appear here on its own — the Admin Workbench holds the validation findings that say why it was refused.') }}
+{% else %}
+  {{ empty('No sequence for this contact',
+     'Nothing has been generated for this campaign membership.') }}
+{% endif %}
+{% endmacro %}
+
+{#
+  Shown above an existing sequence that is still fully readable but can no
+  longer be acted on, because the deployment switch or the campaign opt-in has
+  since been turned off. Recorded work is never hidden; it is explained.
+#}
+{% macro read_only_notice(availability) %}
+{% if availability and availability.read_only and availability.notice %}
+<div class="v2-notice warn v2-seq-readonly" role="status">
+  <b>Read-only</b> — {{ availability.notice }}
+</div>
+{% endif %}
+{% endmacro %}
