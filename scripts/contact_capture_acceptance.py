@@ -206,12 +206,28 @@ def run(base: str) -> list[tuple[str, str]]:
         ("8. Capture with no visible identity", "HTTP 422 `validation_failed`, nothing stored")
     )
 
-    # 9. A campaign field is refused outright.
+    # 9. A malformed campaign id is refused.
+    #
+    # This check predates contract 2.1.0 and used to be described as "the
+    # contract has no campaign property". That is no longer true: 2.1.0 declares
+    # an optional `campaign_id`, and intake files the Campaign Contact
+    # idempotently when one is supplied. What is still refused — and what this
+    # actually exercises — is a value that is not a UUID: the schema pins
+    # `campaign_id` to a UUID string or null, so `camp_demo_001` fails
+    # validation. The assertion is unchanged; only the claim it was making was
+    # wrong. Well-formed filing behaviour (pending → applied, unknown campaign,
+    # replay) is covered by tests/test_contact_capture_intake.py, which runs
+    # against a database this script does not own.
     with_campaign = fresh(PROFILE_SUBMISSION)
     with_campaign["campaign_id"] = "camp_demo_001"
     status, body = request(base, INTAKE, with_campaign)
     expect(status == 422, "9", f"expected 422, got {status}")
-    rows.append(("9. Submission carrying a campaign", "HTTP 422 — the contract has no campaign"))
+    rows.append(
+        (
+            "9. Submission carrying a malformed campaign id",
+            "HTTP 422 — `campaign_id` must be a UUID string or null",
+        )
+    )
 
     # 10. The legacy contract is refused with a pointer to its own route.
     legacy = copy.deepcopy(LEGACY_PROFILE)

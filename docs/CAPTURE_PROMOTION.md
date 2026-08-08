@@ -196,6 +196,12 @@ and Company appear on the same card.
 The flow is deliberately small. It is not a company-management UI: renaming,
 merging, or editing companies is not part of it.
 
+Promotion is **not** operator-only. When the automatic-resolution switches below
+are enabled, a capture may already have been resolved and promoted before an
+operator ever opens this page — in the intake request itself or by the agent
+worker. The pending list then simply does not contain it. This page remains the
+authority for anything automation declined to decide.
+
 ## Boundaries
 
 **The extension is not involved.** Its responsibility ends when DAT-013 accepts
@@ -203,12 +209,50 @@ the submission. It never calls logo.dev, never holds a provider key, and never
 resolves a domain — the backend and the workbench own the provider lookup,
 candidate storage, operator confirmation, company resolution, and promotion.
 
-**Feature switches.** `FEATURES__CONTACT_CAPTURE_PROMOTION` (default off) gates
-the whole flow; `FEATURES__WORKBENCH` gates the operator pages, which the app
-factory refuses to mount outside `APP_ENV=local`; a provider lookup additionally
-needs `FEATURES__SALESNAV_DOMAIN_ENRICHMENT` and `LOGO_DEV_API_KEY`. Without a
-key the flow still works — the operator can enter a domain by hand or leave the
-capture pending.
+## Feature switches
+
+All switches default to **off** (`app/core/features.py`), so none of the
+automatic behaviour below happens unless it is deliberately enabled.
+
+| Switch | Required for | Enforced at |
+| --- | --- | --- |
+| `FEATURES__CONTACT_CAPTURE_PROMOTION` | the promotion flow at all | `app/services/resolution/pending.py:138`, `app/services/captures/intake.py:1063` |
+| `FEATURES__AUTOMATIC_COMPANY_DOMAIN_RESOLUTION` | resolving a domain *without* an operator — both in-request and in the worker | `pending.py:147`, `intake.py:1064` |
+| `FEATURES__SALESNAV_DOMAIN_ENRICHMENT` | any logo.dev provider lookup | `pending.py:157`, `intake.py:1073` |
+| `LOGO_DEV_API_KEY` | the same provider lookup (a key, not a switch) | `pending.py:164`, `intake.py:1073` |
+| `FEATURES__WORKBENCH` | the operator pages under `/contact-captures/` | app factory, which refuses to mount them outside `APP_ENV=local` |
+
+Two additional facts that are easy to get wrong:
+
+- **Automatic promotion needs all four together.** `contact_capture_promotion`
+  alone enables only the operator-driven flow. Automatic resolution — in the
+  intake request *or* in the agent worker — additionally requires
+  `automatic_company_domain_resolution`, `salesnav_domain_enrichment` and a
+  configured `LOGO_DEV_API_KEY`. With any one of them missing the capture simply
+  stays pending; `intake.py` deliberately declines to record a decision it could
+  not actually make, because a recorded non-decision would stop the capture ever
+  resolving automatically later.
+- **`FEATURES__MODEL_COMPANY_DOMAIN_LOOKUP` is an optional extra resolver, not a
+  prerequisite** (`pending.py:73,178`). It is consulted only when the provider
+  path is already available.
+
+Without a provider key the flow still works — the operator can enter a domain by
+hand or leave the capture pending.
+
+### Where a Contact actually gets created
+
+Intake never constructs a `Contact` (`app/services/captures/intake.py`,
+`CANONICAL_CREATION_NOTE`). Promotion does, in `app/services/captures/promotion.py`,
+reached by one of three routes:
+
+1. **In the intake request**, when all four prerequisites above are satisfied.
+   The pass is bounded — 40 % of the request budget, 15 s, 10 provider calls —
+   and reports how many captures it promoted in the `auto_resolved` response
+   count. Anything it does not finish is left pending on purpose.
+2. **In the agent worker** (`scripts/run_agent_worker.py` → `resolve_pending`),
+   where time is not bounded by an HTTP request.
+3. **By an operator** in the workbench, which is the only route that needs no
+   provider key.
 
 ## Current Contact and Company boundary
 

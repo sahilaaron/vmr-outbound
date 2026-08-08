@@ -134,11 +134,27 @@ fails loudly rather than reporting a pass it did not earn.
 | 6 | Sales Navigator rows saved without a campaign | HTTP 201 · 2 contacts · `staged_unmatched` = 2; the row with no `/in/` URL keeps a null identity |
 | 7 | Same person twice in one submission | `duplicate_in_submission` = 1 · evidence preserved · reconciled once |
 | 8 | Capture with no visible identity | HTTP 422 `validation_failed`, nothing stored |
-| 9 | Submission carrying a campaign | HTTP 422 — the contract declares no campaign property |
+| 9 | Submission carrying a **malformed** campaign id | HTTP 422 `validation_failed` — `campaign_id` must be a UUID string or null |
 | 10 | Legacy campaign-era payload posted to the new route | HTTP 422 `unsupported_contract` naming `/api/intake/linkedin-profile/stage` |
 | 11 | Label registry is backend-owned and reusable | HTTP 200 · `Conference Lead`, `Healthcare`, `High Priority`, `Market Entry` |
 | 12 | Save-vs-refresh lookup | HTTP 200 · `match: exact` · existence only, no contact field returned |
 | 13 | Resulting capture and submission records open | Both operator pages render HTTP 200 |
+
+**On Campaign filing (contract 2.1.0).** Row 9 is a *malformed-value* check, not
+a statement that captures cannot carry a Campaign. Schema 2.1.0 declares an
+optional `campaign_id`, and a well-formed one is filed idempotently after the
+capture is stored — a filing failure never discards the capture. That behaviour
+is covered by `tests/test_contact_capture_intake.py`
+(`test_campaign_selection_waits_for_safe_promotion_then_files_once`,
+`test_unknown_campaign_filing_fails_without_losing_the_capture`), which runs
+against a database rather than this loopback script.
+
+**On rows 1, 6 and `staged_unmatched`.** Those outcomes are what intake produces
+on its own: a capture is stored as permanent evidence and only refreshes a
+Contact it can match exactly. A capture becomes a *new* permanent Contact
+through promotion, not through intake — see
+[CAPTURE_PROMOTION.md](./CAPTURE_PROMOTION.md) for the switches and the three
+routes that get there.
 
 Directly verified against the live database after the run:
 
