@@ -14,9 +14,11 @@
   <div class="v2-seq-head">
     <h1 class="v2-h1">Sequences</h1>
     <p class="v2-lede">
-      Each card is one contact's seven-message sequence, written as one unit. Open a card to
-      read the messages one at a time and decide on each. Nothing is sent by approving:
-      there is no sending path and no mailbox connected to this build.
+      Each card is one contact's seven-message sequence, written as one unit and approved
+      as written. Open a card to read the messages one at a time. Reviewing is optional —
+      nothing is held up waiting for you — and confirming a message records your judgement
+      against that exact version so it can be told apart from the default. Nothing is sent
+      either way: there is no sending path and no mailbox connected to this build.
     </p>
   </div>
 
@@ -49,6 +51,34 @@
   </div>
   {% endif %}
 
+  {#
+    The expanded sequence is resolved by id, so it may be one the active filter
+    does not list. When that happens it is rendered above the list rather than
+    dropped: following a link to a sequence must show that sequence, and the
+    filter narrows the list beneath it.
+  #}
+  {% set open_ids = sequence_queue.rows | map(attribute='sequence_id') | list if sequence_queue else [] %}
+  {% set open_outside = sequence_card and sequence_card.sequence_id not in open_ids %}
+  {% if open_outside %}
+  <div class="v2-seq-list">
+    <div class="v2-notice" role="status">
+      This sequence is not in the <b>{{ sequence_view }}</b> filter, and is shown because you
+      asked for it by name.
+    </div>
+    {% set scope = "&sview=" ~ sequence_view ~ ("&campaign=" ~ campaign_id if campaign_id else "") %}
+    {{ seq.card(sequence_card, "/app/review?" ~ scope, open=true) }}
+    <div class="v2-seq-open">
+      {% set base = "/app/review?sequence=" ~ sequence_card.sequence_id ~ scope %}
+      {{ seq.selector(sequence_rows, sequence_step, base) }}
+      {% if sequence_detail %}
+        {{ seq.message(sequence_detail, base ~ "&step=" ~ sequence_step, read_only=sequence_availability.read_only) }}
+      {% else %}
+        {{ empty("That message is not available", "The sequence does not currently hold a message at this position.") }}
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
   {% if sequence_queue and sequence_queue.rows %}
   <div class="v2-seq-list">
     {% for row in sequence_queue.rows %}
@@ -66,7 +96,7 @@
       {% endif %}
       {% if sequence_availability.read_only %}
       <div class="v2-seq-bulk">
-        <span class="v2-btn is-disabled">Approve all seven messages</span>
+        <span class="v2-btn is-disabled">Confirm all seven messages</span>
         <span class="why">Read-only — see the notice above.</span>
       </div>
       {% else %}
@@ -75,11 +105,12 @@
         <input type="hidden" name="version_ids" value="{{ sequence_rows | map(attribute='version_id') | join(',') }}">
         <label class="v2-sr" for="seq-bulk-note">Note</label>
         <input class="v2-sr" id="seq-bulk-note" name="reason" value="">
-        <button class="v2-btn primary" type="submit">Approve all seven messages</button>
+        <button class="v2-btn primary" type="submit">Confirm all seven messages</button>
         <span class="why">
-          One operation, recording your approval against each of the seven exact message
-          versions listed above. If any of them changed while you were reading, nothing is
-          approved and you are asked to reload.
+          These seven are already approved by default. One operation records
+          <em>your</em> approval against each of the seven exact message versions listed
+          above, which is what puts a person's name on them. If any of them changed while
+          you were reading, nothing is recorded and you are asked to reload.
         </span>
       </form>
       {% endif %}

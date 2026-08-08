@@ -97,8 +97,15 @@ def test_the_review_queue_renders_one_compact_card_per_campaign_contact(
     assert body.count("v2-seq-card") == 1
     assert f"of {SEQUENCE_LENGTH} messages" in body
     assert SUBJECTS[0] in body
-    assert "0 approved" in body
-    assert f"{SEQUENCE_LENGTH} waiting" in body
+    # Approved on arrival, with nobody's name on it. Both halves are asserted:
+    # the count alone would pass whether or not the page said who approved.
+    assert f"{SEQUENCE_LENGTH} approved" in body
+    assert f"{SEQUENCE_LENGTH} unreviewed" in body
+    assert "approved by you" not in body
+    # No count on the card claims anything is queued. The lede says "nothing is
+    # held up waiting for you", which is the opposite claim, so the assertion
+    # targets the tally wording rather than the word itself.
+    assert "waiting</span>" not in body
     assert "View sequence" in body
 
 
@@ -388,7 +395,11 @@ def test_the_contact_page_renders_a_summary_and_seven_rows(
         assert subject in body
     assert "Day 0 — first message" in body
     assert "Day 35 — 10 days later" in body
-    assert "waiting for you" in body
+    # Every row says approved-by-default rather than the bare word, and the
+    # summary says in as many words that nobody has looked.
+    assert body.count("approved by default") >= SEQUENCE_LENGTH
+    assert "not by anyone" in body
+    assert "review is optional" in body
     assert "planned timing, not a schedule" in body
 
 

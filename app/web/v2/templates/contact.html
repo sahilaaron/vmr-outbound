@@ -143,8 +143,9 @@
             {{ tag(seq.state_label(sequence_summary.review_state.value), seq.state_tone(sequence_summary.review_state.value), small=true) }}
             <span class="v2-fact">sequence v{{ sequence_summary.sequence_version }}</span>
             <span class="v2-fact">{{ sequence_summary.message_count }} of 7 written</span>
-            <span class="v2-fact ok">{{ sequence_summary.approved }} approved</span>
-            <span class="v2-fact">{{ sequence_summary.awaiting }} waiting</span>
+            <span class="v2-fact ok" title="Generated messages are approved by default; so is anything you approved yourself.">{{ sequence_summary.approved }} approved</span>
+            {% if sequence_summary.human_approved %}<span class="v2-fact ok">{{ sequence_summary.human_approved }} approved by you</span>{% endif %}
+            {% if sequence_summary.unreviewed %}<span class="v2-fact" title="Approved by default. Nothing is waiting on a review.">{{ sequence_summary.unreviewed }} unreviewed</span>{% endif %}
             {% if sequence_summary.edited %}<span class="v2-fact warn">{{ sequence_summary.edited }} edited</span>{% endif %}
             {% if sequence_summary.discarded %}<span class="v2-fact err">{{ sequence_summary.discarded }} discarded</span>{% endif %}
             {% if sequence_summary.warning_count %}<span class="v2-fact warn">{{ sequence_summary.warning_count }} warning(s)</span>{% endif %}
@@ -160,12 +161,21 @@
                 <span class="v2-muted">— planned timing, not a schedule. Nothing here sends anything.</span>
               {% else %}not recorded{% endif %}
             </dd>
+            <dt>Reviewed</dt>
+            <dd>
+              {% if sequence_summary.reviewed_by_human %}
+                yes — last decision {{ sequence_summary.last_human_decision_at | dt }}
+              {% else %}
+                not by anyone
+                <span class="v2-muted">— review is optional, and these messages are approved without it</span>
+              {% endif %}
+            </dd>
             <dt>Next actionable</dt>
             <dd>
               {% if sequence_summary.current_actionable_position %}
                 message {{ sequence_summary.current_actionable_position }}
-                <span class="v2-muted">— for a future delivery workflow that does not exist yet</span>
-              {% else %}nothing is actionable: no message is approved{% endif %}
+                <span class="v2-muted">— for a future delivery workflow that does not exist yet. Approved is not sendable, and nothing reads this to decide whether to send.</span>
+              {% else %}nothing is actionable: the chain stops at a discarded message{% endif %}
             </dd>
             <dt>Mode</dt>
             <dd>
@@ -201,7 +211,7 @@
               <td>{{ 'initial' if row.position == 1 else 'follow-up' }}</td>
               <td>{{ row.purpose_label }}</td>
               <td>{{ row.timing_label }}</td>
-              <td class="v2-seq-cell-subject">{{ row.subject }}</td>
+              <td class="v2-seq-cell-subject">{{ row.subject | neutralize }}</td>
               <td>{{ row.review_label }}</td>
               <td>{{ row.edit_label }}</td>
               <td class="m">v{{ row.message_version }}</td>
@@ -231,6 +241,7 @@
               <dt>Message</dt><dd class="m">{{ sequence_detail.row.message_id }}</dd>
               <dt>This version</dt><dd class="m">{{ sequence_detail.row.version_id }}</dd>
               <dt>Predecessor</dt><dd class="m">{{ sequence_detail.row.predecessor_message_id or 'none — this is the initial message' }}</dd>
+              <dt>Edited from</dt><dd class="m">{{ sequence_detail.row.source_version_id or 'none — this version was generated, not edited' }}</dd>
             </dl>
           </details>
         </div>

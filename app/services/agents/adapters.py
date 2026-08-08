@@ -24,6 +24,7 @@ from app.models.enums import (
     InsightKind,
     InsightState,
     LinkedInIdentifierKind,
+    SequenceReviewState,
 )
 from app.models.linkedin_profile import LinkedInProfileSnapshot
 from app.models.personalization_policy import PersonalizationPolicyVersion
@@ -1518,6 +1519,7 @@ class PersonalizationAgentAdapter:
         session: Session, *, sequence: EmailSequence, reused: bool
     ) -> AgentExecutionResult:
         rows = sequence_read.message_rows(session, sequence=sequence)
+        reviewed_by_human = any(row.human_reviewed for row in rows)
         output = {
             "sequence_id": str(sequence.id),
             "sequence_key": str(sequence.sequence_key),
@@ -1544,7 +1546,15 @@ class PersonalizationAgentAdapter:
             "validation_status": sequence.validation_status.value,
             "review_state": sequence.review_state.value,
             # Said explicitly rather than left to be inferred from an absence.
-            "approved": False,
+            #
+            # A generated sequence is approved by default, so this reports the
+            # derived state rather than a hardcoded ``False`` that stopped being
+            # true. ``reviewed_by_human`` is what keeps the two apart, and the
+            # two keys below are what stop either being read as sending
+            # authority: nothing was sent, no external draft exists, and an
+            # approval -- default or human -- changes neither.
+            "approved": sequence.review_state is SequenceReviewState.APPROVED,
+            "reviewed_by_human": reviewed_by_human,
             "sent": False,
             "external_drafts_created": 0,
             "reused_existing_sequence": reused,

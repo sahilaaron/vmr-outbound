@@ -85,6 +85,16 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 _CAMPAIGNS_JS = Path(__file__).parent.parent / "static" / "campaigns.js"
 CAMPAIGNS_JS_VERSION = sha256(_CAMPAIGNS_JS.read_bytes()).hexdigest()[:12]
 
+# The same content-derived token, for the same reason, on the stylesheet every
+# customer page loads. Production Hardening serves `/static/*` with
+# `Cache-Control: public, max-age=3600`, so without a token a browser that
+# cached the stylesheet before a deploy renders the new markup against the old
+# rules for up to an hour. The sequence UI adds a table, a step selector and a
+# mail body to that stylesheet, which is exactly the kind of markup that is
+# unreadable unstyled rather than merely plain.
+_V2_CSS = Path(__file__).parent.parent / "static" / "v2.css"
+V2_CSS_VERSION = sha256(_V2_CSS.read_bytes()).hexdigest()[:12]
+
 PAGE_SIZE = 25
 #: How many planned rows the import preview renders. The preview's job is to make
 #: the file's *shape* legible, not to be a spreadsheet viewer; the counts above it
@@ -198,13 +208,21 @@ SOON_SECTIONS: dict[str, dict[str, Any]] = {
     "sequences": {
         "title": "Sequences",
         "nav": "sequences",
+        # This page used to say the sequence engine did not exist. It does: the
+        # Personalization Agent writes all seven messages as one unit, and they
+        # are readable on Review and on the contact. What is still missing is
+        # everything *after* writing them -- sending, stop rules, anything in
+        # flight -- so the page now points at what exists and is honest about
+        # what does not.
         "lede": (
-            "A follow-up after a first message, and the rules for when to stop, will live "
-            "here. There is no first message yet, so there is no sequence."
+            "Seven-message sequences are written and readable today, on Review and on each "
+            "contact. What will live here is the rest of the story: when a sequence stops, "
+            "what is in flight, and what came back. None of that exists yet, because "
+            "nothing in this build sends."
         ),
         "tiles": [
-            ("Steps", "No sequence engine exists."),
-            ("In flight", "Nothing is in flight."),
+            ("Steps", "Seven messages per contact, written as one unit. Read them on Review."),
+            ("In flight", "Nothing is in flight: there is no sending path in this build."),
         ],
         "note": "",
     },
@@ -359,6 +377,7 @@ def _render(
         "operator_initials": initials,
         "capture_ready": "contact_capture_intake" in settings.features.enabled(),
         "campaigns_js_version": CAMPAIGNS_JS_VERSION,
+        "v2_css_version": V2_CSS_VERSION,
         "flash_ok": request.query_params.get("ok"),
         "flash_err": request.query_params.get("err"),
     }
@@ -1818,12 +1837,15 @@ def review_page(
     # does not make recorded human decisions disappear from the page that
     # recorded them.
     # The sequence section carries its own view parameter. It used to inherit the
-    # single-draft queue's, which has a "Discarded" filter the sequence queue does
-    # not -- so choosing Discarded silently showed sequences that were *awaiting*
-    # review. A filter that shows something other than what it says is worse than
-    # one that is missing.
+    # single-draft queue's, whose filters mean different things -- so choosing one
+    # silently showed sequences it did not describe. A filter that shows something
+    # other than what it says is worse than one that is missing.
+    #
+    # The default is "all". Sequences are approved when they are generated, so a
+    # filter for work waiting on the operator would be permanently empty, and
+    # landing on it would show an empty page above seven readable messages.
     _sequence_view_keys = {key for key, _label in sequence_read.VIEWS}
-    sequence_view = sview if sview in _sequence_view_keys else sequence_read.VIEW_AWAITING
+    sequence_view = sview if sview in _sequence_view_keys else sequence_read.VIEW_ALL
     sequence_queue = sequence_read.list_queue(
         db,
         campaign_id=campaign_id,
@@ -1839,10 +1861,14 @@ def review_page(
     ):
         sequence_queue = None
     chosen_sequence = _uuid(sequence) if sequence else None
-    if sequence_queue is not None:
-        sequence_card = next(
-            (row for row in sequence_queue.rows if row.sequence_id == chosen_sequence), None
-        )
+    if sequence_queue is not None and chosen_sequence is not None:
+        # Resolved by id, not by scanning the filtered rows. Expanding a
+        # sequence must work whichever filter is active: a link to a specific
+        # sequence is a request to read that sequence, and narrowing the list
+        # is not an answer to it. The card still renders inside the queue, so a
+        # sequence outside the current filter is shown expanded above a list
+        # that does not include it -- which is the truthful arrangement.
+        sequence_card = sequence_read.card_for_sequence(db, chosen_sequence)
     if sequence_card is not None:
         record = sequence_read.get_sequence(db, sequence_card.sequence_id)
         if record is not None:
@@ -2160,8 +2186,12 @@ def _oversized(request: Request) -> bool:
     point where refusing costs nothing. This does not close the hole completely
     -- a chunked request declares no length, and Starlette buffers as it parses
     -- so it is a bound on the ordinary case rather than a guarantee. The
-    complete fix is a body-size limit at the server or proxy layer, which is a
-    deployment concern rather than a route one; see docs/EMAIL_SEQUENCE.md.
+    complete fix is a body-size limit at the server or proxy layer. Production
+    Hardening now supplies one -- ``MAX_REQUEST_BYTES``, enforced in
+    ``app/core/http.py`` before a route is reached -- but at 25 MiB, which is a
+    ceiling for uploads rather than for a review note. This route-level bound
+    stays because the two answer different questions: PH stops a request that
+    could exhaust the process, this stops a message body that is not a message.
     """
 
     declared = request.headers.get("content-length")
@@ -2194,13 +2224,31 @@ def _same_origin(request: Request) -> bool:
     neither, and this check is a cross-site guard rather than an authentication
     mechanism. Treating "no headers" as hostile would break every non-browser
     caller while stopping no browser attack, because browsers always send them.
+
+    ``Origin: null`` is allowed for the same reason, and this is not a gap that
+    was tolerated -- it is one Production Hardening created. PH sets
+    ``Referrer-Policy: no-referrer`` on every response, and the Fetch Standard
+    says a document with that policy serialises its origin as ``null`` when it
+    sends a form POST. So every write from these very pages carries
+    ``Origin: null``. Modern browsers hide the consequence because
+    ``Sec-Fetch-Site`` is checked first and short-circuits; a browser that
+    implements ``Referrer-Policy`` but not ``Sec-Fetch-*``, or any proxy or
+    extension that strips ``Sec-Fetch-*`` while leaving ``Origin``, would have
+    had every approve, discard and edit silently refused with a message saying
+    the request came from another site.
+
+    Refusing ``null`` also buys nothing. A genuine cross-site POST from an
+    attacker's page carries *that page's* origin, which still fails the host
+    comparison below; the only requests ``null`` describes are ones whose origin
+    the browser declined to disclose, and this application's own pages are now
+    permanently among them.
     """
 
     site = request.headers.get("sec-fetch-site")
     if site is not None:
         return site in {"same-origin", "none"}
     origin = request.headers.get("origin")
-    if origin is None:
+    if origin is None or origin == "null":
         return True
     host = request.headers.get("host")
     if host is None:  # pragma: no cover - Host is mandatory in HTTP/1.1

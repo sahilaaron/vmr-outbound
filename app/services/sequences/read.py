@@ -58,28 +58,42 @@ from app.services.sequences import review as sequence_review
 #: How much of the initial message a collapsed card shows.
 EXCERPT_CHARS = 180
 
-VIEW_AWAITING = "awaiting"
-VIEW_APPROVED = "approved"
 VIEW_ALL = "all"
-VIEWS: tuple[tuple[str, str], ...] = (
-    (VIEW_AWAITING, "Waiting for you"),
-    (VIEW_APPROVED, "Approved"),
-    (VIEW_ALL, "All"),
-)
+VIEW_EDITED = "edited"
+VIEW_REVIEWED = "reviewed"
+VIEW_DISCARDED = "discarded"
 
-_AWAITING_STATES = (
-    SequenceReviewState.NEEDS_REVIEW,
-    SequenceReviewState.GENERATED,
-    SequenceReviewState.PARTIALLY_REVIEWED,
-    SequenceReviewState.PARTIALLY_APPROVED,
-    SequenceReviewState.CONTAINS_EDITS,
-    SequenceReviewState.CONTAINS_DISCARDED,
+#: The Review filters, in the order they render. ``all`` leads because it is the
+#: only one that is never empty for a working campaign.
+#:
+#: There used to be a "Waiting for you" filter here, and it was the default. It
+#: was the visible half of a mandatory approval queue: every generated sequence
+#: landed in it and stayed there until an operator cleared it. Under default
+#: approval nothing waits, so that filter would be permanently empty and the
+#: default landing page would show nothing at all. Every filter below names
+#: something a sequence can actually be.
+VIEWS: tuple[tuple[str, str], ...] = (
+    (VIEW_ALL, "All sequences"),
+    (VIEW_EDITED, "You changed these"),
+    (VIEW_REVIEWED, "You reviewed these"),
+    (VIEW_DISCARDED, "Contains a discard"),
 )
 
 #: Every state a live, non-failed sequence can hold. Used as the SQL pre-filter
-#: for both the Awaiting and Approved views so that a drifted cache can only
-#: cost a row's worth of work, never hide it from the right view.
-_ACTIVE_STATES = (*_AWAITING_STATES, SequenceReviewState.APPROVED)
+#: for the narrowing views so that a drifted cache can only cost a row's worth
+#: of work, never hide it from the right view.
+_ACTIVE_STATES = (
+    SequenceReviewState.APPROVED,
+    SequenceReviewState.CONTAINS_DISCARDED,
+    SequenceReviewState.PARTIALLY_APPROVED,
+    # Kept in the superset so a row written before default approval, whose
+    # cached column still reads one of these, cannot be filtered out of a view
+    # its derived state belongs in.
+    SequenceReviewState.NEEDS_REVIEW,
+    SequenceReviewState.GENERATED,
+    SequenceReviewState.PARTIALLY_REVIEWED,
+    SequenceReviewState.CONTAINS_EDITS,
+)
 
 #: Customer-facing wording for each purpose. The enum value is a stable
 #: identifier; this is what a person reads.
@@ -122,10 +136,17 @@ class SequenceCardRow:
     cached_review_state: SequenceReviewState
     validation_status: SequenceValidationStatus
     message_count: int
+    #: Approved by default plus approved by a person. What "ready" means.
     approved: int
+    #: The subset of ``approved`` a person actually decided. Rendered
+    #: separately, always: a card that showed only ``approved`` would let a
+    #: generated default read as somebody's judgement.
+    human_approved: int
     discarded: int
     edited: int
-    awaiting: int
+    #: Current versions no human has ruled on. Not a backlog -- these are
+    #: approved. The number answers "has anyone looked at this", nothing else.
+    unreviewed: int
     warning_count: int
     strategy_id: str | None
     policy_version_number: int | None
@@ -141,6 +162,27 @@ class SequenceCardRow:
     @property
     def complete(self) -> bool:
         return self.message_count == SEQUENCE_LENGTH
+
+    @property
+    def reviewed_by_human(self) -> bool:
+        """Whether a person has ruled on any message in this sequence."""
+
+        return (self.human_approved + self.discarded) > 0
+
+    @property
+    def review_summary(self) -> str:
+        """One phrase that never lets a default read as a decision."""
+
+        if not self.reviewed_by_human:
+            return "approved by default — nobody has reviewed it"
+        parts = []
+        if self.human_approved:
+            parts.append(f"{self.human_approved} approved by you")
+        if self.discarded:
+            parts.append(f"{self.discarded} discarded")
+        if self.unreviewed:
+            parts.append(f"{self.unreviewed} approved by default")
+        return ", ".join(parts)
 
     @property
     def cache_is_stale(self) -> bool:
@@ -191,6 +233,9 @@ class MessageRow:
     recommended_delay_days: int
     recommended_elapsed_day: int
     predecessor_message_id: uuid.UUID | None
+    #: The exact version this one was edited from, when it was. Lets a caller
+    #: name the text that was replaced, not merely show it.
+    source_version_id: uuid.UUID | None
     warning_count: int
 
     @property
@@ -202,14 +247,37 @@ class MessageRow:
         return PURPOSE_LABELS.get(self.purpose, self.purpose.value.replace("_", " "))
 
     @property
+    def human_reviewed(self) -> bool:
+        """Whether a person ruled on this exact version."""
+
+        return self.decision is not None
+
+    @property
+    def approved(self) -> bool:
+        """Approved by default or by a person. False for a standing discard."""
+
+        return self.decision is None or self.decision is SequenceReviewDecision.APPROVED
+
+    @property
+    def decision_origin(self) -> str:
+        """Who the standing state came from: ``"default"`` or ``"human"``.
+
+        The field the UI needs in order to never print the bare word
+        "approved". A generated default and an operator's approval are the same
+        readiness and different facts, and only this distinguishes them.
+        """
+
+        return "human" if self.human_reviewed else "default"
+
+    @property
     def review_label(self) -> str:
         if self.decision is SequenceReviewDecision.APPROVED:
-            return "approved"
+            return "approved by you"
         if self.decision is SequenceReviewDecision.DISCARDED:
             return "discarded"
         if self.decision is SequenceReviewDecision.INVALIDATED:
             return "approval invalidated by an edit"
-        return "waiting for you"
+        return "approved by default"
 
     @property
     def edit_label(self) -> str:
@@ -283,14 +351,19 @@ class SequenceSummary:
     sequence_key: uuid.UUID
     sequence_version: int
     campaign_id: uuid.UUID
+    #: Carried so a caller can navigate from a sequence back to the person and
+    #: the membership it belongs to without a second query.
+    campaign_contact_id: uuid.UUID
+    contact_id: uuid.UUID
     review_state: SequenceReviewState
     validation_status: SequenceValidationStatus
     generation_status: str
     message_count: int
     approved: int
+    human_approved: int
     discarded: int
     edited: int
-    awaiting: int
+    unreviewed: int
     planned_span_days: int | None
     cadence_source: str
     created_at: datetime
@@ -301,10 +374,16 @@ class SequenceSummary:
     stop_state: str
     stop_reason: str | None
     current_actionable_position: int | None
+    #: When a person last ruled on any message here, if one ever has.
+    last_human_decision_at: datetime | None
 
     @property
     def complete(self) -> bool:
         return self.message_count == SEQUENCE_LENGTH
+
+    @property
+    def reviewed_by_human(self) -> bool:
+        return (self.human_approved + self.discarded) > 0
 
 
 # ---------------------------------------------------------------------------
@@ -346,23 +425,39 @@ def _initial_subjects(
 def _tallies(
     session: Session, *, sequence_keys: list[uuid.UUID]
 ) -> dict[uuid.UUID, dict[str, int]]:
-    """Approved / discarded / edited / awaiting / warnings per sequence, in one query."""
+    """Every per-sequence count the queue needs, in one query.
+
+    Under default approval ``approved`` is no longer "rows saying APPROVED": a
+    current version with no review row is approved too. Both are counted here,
+    in the same statement, so a page of forty cards still costs one query and
+    the card can show readiness and human involvement as two separate numbers
+    rather than one ambiguous one.
+    """
 
     if not sequence_keys:
         return {}
     decision = EmailSequenceMessageReview.decision
+    version_id = EmailSequenceMessageVersion.id
     rows = session.execute(
         select(
             EmailSequenceMessage.sequence_key,
-            func.count(EmailSequenceMessageVersion.id),
+            func.count(version_id),
+            # Approved: no decision at all, or an explicit human approval.
+            # `INVALIDATED` is deliberately excluded -- a withdrawn approval is
+            # not an approval.
+            func.count(version_id).filter(
+                (decision.is_(None)) | (decision == SequenceReviewDecision.APPROVED)
+            ),
             func.count(decision).filter(decision == SequenceReviewDecision.APPROVED),
             func.count(decision).filter(decision == SequenceReviewDecision.DISCARDED),
-            func.count(EmailSequenceMessageVersion.id).filter(
+            func.count(version_id).filter(decision.is_(None)),
+            func.count(version_id).filter(
                 EmailSequenceMessageVersion.origin == SequenceMessageOrigin.HUMAN_EDITED
             ),
             func.coalesce(
                 func.sum(func.jsonb_array_length(EmailSequenceMessageVersion.warnings)), 0
             ),
+            func.max(EmailSequenceMessageReview.decided_at),
         )
         .join(
             EmailSequenceMessageVersion,
@@ -382,13 +477,39 @@ def _tallies(
         key: {
             "total": int(total),
             "approved": int(approved),
+            "human_approved": int(human_approved),
             "discarded": int(discarded),
+            "unreviewed": int(unreviewed),
             "edited": int(edited),
-            "awaiting": int(total) - int(approved) - int(discarded),
             "warnings": int(warnings or 0),
+            "last_decision_at": last_decision_at,
         }
-        for key, total, approved, discarded, edited, warnings in rows
+        for (
+            key,
+            total,
+            approved,
+            human_approved,
+            discarded,
+            unreviewed,
+            edited,
+            warnings,
+            last_decision_at,
+        ) in rows
     }
+
+
+#: The shape ``_tallies`` returns for a sequence that has no message rows at
+#: all. Named so the two call sites cannot drift apart.
+EMPTY_TALLY: dict[str, Any] = {
+    "total": 0,
+    "approved": 0,
+    "human_approved": 0,
+    "discarded": 0,
+    "unreviewed": 0,
+    "edited": 0,
+    "warnings": 0,
+    "last_decision_at": None,
+}
 
 
 def _decision_block(sequence: EmailSequence) -> dict[str, Any]:
@@ -404,6 +525,116 @@ def _intelligence_status(sequence: EmailSequence) -> str | None:
     return None
 
 
+def _derived_state(sequence: EmailSequence, tally: dict[str, Any]) -> SequenceReviewState:
+    """The card's state, derived from the tally rather than read from the cache."""
+
+    return sequence_review.derive_state(
+        superseded=sequence.superseded_at is not None,
+        generation_complete=(sequence.generation_status is SequenceGenerationStatus.COMPLETE),
+        validation_failed=sequence.validation_status is SequenceValidationStatus.FAILED,
+        stopped=sequence.stop_state is SequenceStopState.STOPPED,
+        total=tally["total"],
+        approved=tally["approved"],
+        discarded=tally["discarded"],
+    )
+
+
+def _card_row(
+    sequence: EmailSequence,
+    *,
+    contact: Contact,
+    campaign: Campaign,
+    company: Company | None,
+    subject: str,
+    excerpt: str,
+    tally: dict[str, Any],
+    derived: SequenceReviewState,
+) -> SequenceCardRow:
+    """Build one card. Shared by the queue and by the single-sequence lookup.
+
+    Extracted so a card fetched by id is byte-for-byte the same shape as one
+    that arrived through a filter -- see :func:`card_for_sequence` for why a
+    sequence has to be reachable by id at all.
+    """
+
+    decision = _decision_block(sequence)
+    return SequenceCardRow(
+        sequence_id=sequence.id,
+        sequence_key=sequence.sequence_key,
+        sequence_version=sequence.sequence_version,
+        campaign_contact_id=sequence.campaign_contact_id,
+        campaign_id=sequence.campaign_id,
+        campaign_name=campaign.name,
+        contact_id=sequence.contact_id,
+        contact_name=_contact_name(contact),
+        contact_title=contact.title,
+        company_name=company.name if company is not None else None,
+        email=contact.email,
+        initial_subject=subject or "(no subject recorded)",
+        initial_excerpt=excerpt or "",
+        review_state=derived,
+        cached_review_state=sequence.review_state,
+        validation_status=sequence.validation_status,
+        message_count=tally["total"],
+        approved=tally["approved"],
+        human_approved=tally["human_approved"],
+        discarded=tally["discarded"],
+        edited=tally["edited"],
+        unreviewed=tally["unreviewed"],
+        warning_count=tally["warnings"],
+        strategy_id=sequence.personalization_strategy_id,
+        policy_version_number=sequence.personalization_policy_version_number,
+        fallback_identifier=(
+            str(decision.get("fallback_identifier"))
+            if decision.get("fallback_identifier")
+            else None
+        ),
+        intelligence_status=_intelligence_status(sequence),
+        planned_span_days=sequence.planned_span_days,
+        created_at=sequence.created_at,
+    )
+
+
+def card_for_sequence(session: Session, sequence_id: uuid.UUID) -> SequenceCardRow | None:
+    """One card, fetched by id, ignoring every filter.
+
+    The Review page used to resolve an expanded sequence by scanning the rows
+    the current filter had returned. That coupled *reading* a sequence to
+    *matching* a filter: pick a filter the sequence is not in, and following a
+    link to it rendered a page with no messages on it and no explanation. The
+    filter narrows the list; it must not decide whether a named sequence can be
+    opened.
+    """
+
+    record = session.execute(
+        select(EmailSequence, Contact, Campaign, Company)
+        .join(Contact, Contact.id == EmailSequence.contact_id)
+        .join(Campaign, Campaign.id == EmailSequence.campaign_id)
+        .outerjoin(Company, Company.id == EmailSequence.company_id)
+        .where(EmailSequence.id == sequence_id)
+        .limit(1)
+    ).first()
+    if record is None:
+        return None
+    sequence, contact, campaign, company = record
+    subject, excerpt = _initial_subjects(session, sequence_keys=[sequence.sequence_key]).get(
+        sequence.sequence_key, ("", "")
+    )
+    tally = _tallies(session, sequence_keys=[sequence.sequence_key]).get(
+        sequence.sequence_key, dict(EMPTY_TALLY)
+    )
+    return _card_row(
+        sequence,
+        contact=contact,
+        campaign=campaign,
+        company=company,
+        subject=subject,
+        excerpt=excerpt,
+        tally=tally,
+        derived=_derived_state(sequence, tally),
+    )
+
+
 def _queue_statement(*, campaign_id: uuid.UUID | None, view: str) -> Select[Any]:
     statement = (
         select(EmailSequence, Contact, Campaign, Company)
@@ -414,14 +645,16 @@ def _queue_statement(*, campaign_id: uuid.UUID | None, view: str) -> Select[Any]
     )
     if campaign_id is not None:
         statement = statement.where(EmailSequence.campaign_id == campaign_id)
-    if view in {VIEW_AWAITING, VIEW_APPROVED}:
+    if view != VIEW_ALL:
         # A *superset*, deliberately. The stored column is a cache, and a cache
         # that has drifted must not be able to hide a sequence from the view it
-        # actually belongs in -- filtering narrowly here would let a stale
-        # "approved" keep a half-approved sequence out of Awaiting entirely,
-        # where no Python reconciliation could put it back. Both views therefore
-        # select every non-terminal state and the caller narrows on the derived
-        # truth.
+        # actually belongs in -- filtering narrowly here would let a stale value
+        # keep a sequence out of a view entirely, where no Python reconciliation
+        # could put it back. The narrowing views therefore select every
+        # non-terminal state and the caller narrows on the derived truth.
+        #
+        # ``all`` applies no state filter at all, so a failed or blocked
+        # sequence is still visible somewhere rather than vanishing.
         statement = statement.where(EmailSequence.review_state.in_(_ACTIVE_STATES))
     return statement
 
@@ -430,14 +663,19 @@ def list_queue(
     session: Session,
     *,
     campaign_id: uuid.UUID | None = None,
-    view: str = VIEW_AWAITING,
+    view: str = VIEW_ALL,
     limit: int = 50,
     offset: int = 0,
 ) -> SequenceQueue:
-    """One compact card per Campaign Contact with a live sequence."""
+    """One compact card per Campaign Contact with a live sequence.
+
+    The default view is ``all``. It used to be an approval backlog, which under
+    default approval would be permanently empty -- so the page an operator lands
+    on would show nothing while seven perfectly readable messages sat behind it.
+    """
 
     if view not in {key for key, _label in VIEWS}:
-        view = VIEW_AWAITING
+        view = VIEW_ALL
     statement = _queue_statement(campaign_id=campaign_id, view=view)
     records = session.execute(
         statement.order_by(EmailSequence.created_at.desc()).limit(limit).offset(offset)
@@ -450,65 +688,33 @@ def list_queue(
     rows: list[SequenceCardRow] = []
     for sequence, contact, campaign, company in records:
         subject, excerpt = subjects.get(sequence.sequence_key, ("", ""))
-        tally = tallies.get(
-            sequence.sequence_key,
-            {"total": 0, "approved": 0, "discarded": 0, "edited": 0, "awaiting": 0, "warnings": 0},
-        )
-        decision = _decision_block(sequence)
-        derived = sequence_review.derive_state(
-            superseded=sequence.superseded_at is not None,
-            generation_complete=(sequence.generation_status is SequenceGenerationStatus.COMPLETE),
-            validation_failed=sequence.validation_status is SequenceValidationStatus.FAILED,
-            stopped=sequence.stop_state is SequenceStopState.STOPPED,
-            total=tally["total"],
-            approved=tally["approved"],
-            discarded=tally["discarded"],
-            awaiting=tally["awaiting"],
-            edited=tally["edited"],
-        )
+        tally = tallies.get(sequence.sequence_key, dict(EMPTY_TALLY))
+        derived = _derived_state(sequence, tally)
         # The SQL filter runs against the cached column because that is what an
         # index can serve. If the cache has drifted, the derived state is
         # authoritative and the row is dropped from a view it does not belong
         # in -- so a stale cache can slow a query down but can never put a
-        # half-approved sequence in the Approved queue.
-        if view == VIEW_APPROVED and derived is not SequenceReviewState.APPROVED:
+        # sequence in a view it does not belong to.
+        #
+        # Every narrowing filter below is a fact about the *messages*, not about
+        # a workflow stage, so none of them can become permanently empty the way
+        # an approval backlog did.
+        if view == VIEW_DISCARDED and derived is not SequenceReviewState.CONTAINS_DISCARDED:
             continue
-        if view == VIEW_AWAITING and derived not in _AWAITING_STATES:
+        if view == VIEW_EDITED and not tally["edited"]:
+            continue
+        if view == VIEW_REVIEWED and not (tally["human_approved"] + tally["discarded"]):
             continue
         rows.append(
-            SequenceCardRow(
-                sequence_id=sequence.id,
-                sequence_key=sequence.sequence_key,
-                sequence_version=sequence.sequence_version,
-                campaign_contact_id=sequence.campaign_contact_id,
-                campaign_id=sequence.campaign_id,
-                campaign_name=campaign.name,
-                contact_id=sequence.contact_id,
-                contact_name=_contact_name(contact),
-                contact_title=contact.title,
-                company_name=company.name if company is not None else None,
-                email=contact.email,
-                initial_subject=subject or "(no subject recorded)",
-                initial_excerpt=excerpt or "",
-                review_state=derived,
-                cached_review_state=sequence.review_state,
-                validation_status=sequence.validation_status,
-                message_count=tally["total"],
-                approved=tally["approved"],
-                discarded=tally["discarded"],
-                edited=tally["edited"],
-                awaiting=tally["awaiting"],
-                warning_count=tally["warnings"],
-                strategy_id=sequence.personalization_strategy_id,
-                policy_version_number=sequence.personalization_policy_version_number,
-                fallback_identifier=(
-                    str(decision.get("fallback_identifier"))
-                    if decision.get("fallback_identifier")
-                    else None
-                ),
-                intelligence_status=_intelligence_status(sequence),
-                planned_span_days=sequence.planned_span_days,
-                created_at=sequence.created_at,
+            _card_row(
+                sequence,
+                contact=contact,
+                campaign=campaign,
+                company=company,
+                subject=subject,
+                excerpt=excerpt,
+                tally=tally,
+                derived=derived,
             )
         )
     # ``total`` counts what this window actually holds after narrowing, not a
@@ -525,15 +731,20 @@ def _contact_name(contact: Contact) -> str:
     return name or contact.email or "(unnamed contact)"
 
 
-def awaiting_count(session: Session, *, campaign_id: uuid.UUID | None = None) -> int:
-    """How many sequences are waiting for a decision, by derived truth.
+def reviewed_count(session: Session, *, campaign_id: uuid.UUID | None = None) -> int:
+    """How many live sequences a person has ruled on, by derived truth.
+
+    This replaces ``awaiting_count``, which counted a backlog. Under default
+    approval that number is structurally zero, and a badge showing a permanent
+    zero is worse than no badge: it invites the reading that there is nothing
+    to look at, when in fact everything is there and readable.
 
     Goes through ``list_queue`` rather than counting the cached column, for the
     same reason the queue narrows in Python: a count taken from a cache that has
     drifted is a number nobody can act on.
     """
 
-    return len(list_queue(session, campaign_id=campaign_id, view=VIEW_AWAITING, limit=500).rows)
+    return len(list_queue(session, campaign_id=campaign_id, view=VIEW_REVIEWED, limit=500).rows)
 
 
 def any_sequence_exists(session: Session, *, campaign_id: uuid.UUID | None = None) -> bool:
@@ -604,6 +815,7 @@ def message_rows(session: Session, *, sequence: EmailSequence) -> tuple[MessageR
             recommended_delay_days=version.recommended_delay_days,
             recommended_elapsed_day=version.recommended_elapsed_day,
             predecessor_message_id=message.predecessor_message_id,
+            source_version_id=version.source_version_id,
             warning_count=len(version.warnings or []),
         )
         for message, version, review in records
@@ -651,6 +863,7 @@ def message_detail(
         recommended_delay_days=version.recommended_delay_days,
         recommended_elapsed_day=version.recommended_elapsed_day,
         predecessor_message_id=message.predecessor_message_id,
+        source_version_id=version.source_version_id,
         warning_count=len(version.warnings or []),
     )
     return MessageDetail(
@@ -675,8 +888,7 @@ def message_detail(
 
 def summary(session: Session, *, sequence: EmailSequence) -> SequenceSummary:
     tally = _tallies(session, sequence_keys=[sequence.sequence_key]).get(
-        sequence.sequence_key,
-        {"total": 0, "approved": 0, "discarded": 0, "edited": 0, "awaiting": 0, "warnings": 0},
+        sequence.sequence_key, dict(EMPTY_TALLY)
     )
     derived = sequence_review.derive_state(
         superseded=sequence.superseded_at is not None,
@@ -686,22 +898,23 @@ def summary(session: Session, *, sequence: EmailSequence) -> SequenceSummary:
         total=tally["total"],
         approved=tally["approved"],
         discarded=tally["discarded"],
-        awaiting=tally["awaiting"],
-        edited=tally["edited"],
     )
     return SequenceSummary(
         sequence_id=sequence.id,
         sequence_key=sequence.sequence_key,
         sequence_version=sequence.sequence_version,
         campaign_id=sequence.campaign_id,
+        campaign_contact_id=sequence.campaign_contact_id,
+        contact_id=sequence.contact_id,
         review_state=derived,
         validation_status=sequence.validation_status,
         generation_status=sequence.generation_status.value,
         message_count=tally["total"],
         approved=tally["approved"],
+        human_approved=tally["human_approved"],
         discarded=tally["discarded"],
         edited=tally["edited"],
-        awaiting=tally["awaiting"],
+        unreviewed=tally["unreviewed"],
         planned_span_days=sequence.planned_span_days,
         cadence_source=sequence.cadence_source,
         created_at=sequence.created_at,
@@ -712,6 +925,7 @@ def summary(session: Session, *, sequence: EmailSequence) -> SequenceSummary:
         stop_state=sequence.stop_state.value,
         stop_reason=sequence.stop_reason.value if sequence.stop_reason else None,
         current_actionable_position=sequence.current_actionable_position,
+        last_human_decision_at=tally["last_decision_at"],
     )
 
 

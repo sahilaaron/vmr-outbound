@@ -200,16 +200,18 @@ def test_flag_off_keeps_approved_work_visible_and_read_only(
     assert "The seven-message sequence" in contact_page
     assert "switched off in this environment" in contact_page
     assert "7 approved" in contact_page
+    assert "7 approved by you" in contact_page
     assert f"/app/review/sequence/messages/{rows[0].version_id}/approve" not in contact_page
 
-    # The section and its filters stay reachable, and the approved view still
-    # shows the work. The default filter is "awaiting", which correctly holds
-    # nothing -- the sequence is approved.
+    # The section and its filters stay reachable, and recorded human work is
+    # still shown. The default filter is "all", which shows it directly --
+    # there is no filter an operator has to find first.
     default_view = client_off.get("/app/review").text
-    assert "Waiting for you" in default_view and "Approved" in default_view
-    approved_view = client_off.get("/app/review?sview=approved").text
-    assert "v2-seq-card" in approved_view
-    assert "switched off in this environment" in approved_view
+    assert "All sequences" in default_view and "You reviewed these" in default_view
+    assert "v2-seq-card" in default_view
+    reviewed_view = client_off.get("/app/review?sview=reviewed").text
+    assert "v2-seq-card" in reviewed_view
+    assert "switched off in this environment" in reviewed_view
 
 
 def test_flag_off_refuses_new_decisions_but_changes_nothing_recorded(
@@ -304,8 +306,12 @@ def test_regeneration_after_a_discard_clears_the_actionable_position(
     db_session.flush()
     second = build(db_session, scenario)
 
-    # A fresh sequence has no decisions, so nothing is actionable yet.
-    assert second.current_actionable_position is None
+    # A regenerated sequence carries no decisions at all -- the discard applied
+    # to a version that no longer exists -- so every message is approved by
+    # default and the chain clears to its head again. Before default approval
+    # this asserted `is None`, which measured the absence of review rather than
+    # the absence of a blocker.
+    assert second.current_actionable_position == 1
     db_session.refresh(first)
     assert first.review_state is SequenceReviewState.SUPERSEDED
 
@@ -434,15 +440,18 @@ def test_a_stale_cached_state_cannot_put_a_half_approved_sequence_in_approved(
     )
     db_session.flush()
 
-    approved_queue = sequence_read.list_queue(db_session, view=sequence_read.VIEW_APPROVED)
-    assert approved_queue.rows == (), "a stale cache must not misclassify the Approved queue"
-
-    awaiting_queue = sequence_read.list_queue(db_session, view=sequence_read.VIEW_AWAITING)
-    assert len(awaiting_queue.rows) == 1
-    card = awaiting_queue.rows[0]
-    assert card.review_state is SequenceReviewState.PARTIALLY_APPROVED
-    assert card.approved == SEQUENCE_LENGTH - 1
-    assert card.cache_is_stale is True
+    # Deleting the row does not unapprove the message -- under default approval
+    # a version with no decision is approved -- so what is left stale is the
+    # *human* tally, and the card must report that rather than the cache's
+    # memory of it.
+    reviewed = sequence_read.list_queue(db_session, view=sequence_read.VIEW_REVIEWED)
+    assert len(reviewed.rows) == 1
+    card = reviewed.rows[0]
+    assert card.review_state is SequenceReviewState.APPROVED
+    assert card.approved == SEQUENCE_LENGTH
+    assert card.human_approved == SEQUENCE_LENGTH - 1
+    assert card.unreviewed == 1
+    assert card.cache_is_stale is False
 
 
 def test_the_card_state_and_counts_never_disagree(
@@ -455,9 +464,9 @@ def test_the_card_state_and_counts_never_disagree(
         sequence_id=sequence.id,
         expected_version_ids=tuple(row.version_id for row in rows),
     )
-    card = sequence_read.list_queue(db_session, view=sequence_read.VIEW_APPROVED).rows[0]
+    card = sequence_read.list_queue(db_session, view=sequence_read.VIEW_REVIEWED).rows[0]
     assert card.review_state is SequenceReviewState.APPROVED
-    assert card.approved == card.message_count == SEQUENCE_LENGTH
+    assert card.approved == card.human_approved == card.message_count == SEQUENCE_LENGTH
     assert card.cache_is_stale is False
 
 
@@ -638,7 +647,7 @@ def test_an_oversized_lineage_cannot_produce_a_huge_admin_page(
 def test_the_sequence_filter_is_independent_of_the_draft_filter(
     db_session: Session, client: TestClient, scenario: tuple[Any, ...]
 ) -> None:
-    """Choosing 'Discarded' for drafts used to silently show awaiting sequences."""
+    """Choosing 'Discarded' for drafts used to silently reinterpret the sequence filter."""
 
     sequence = build(db_session, scenario)
     rows = sequence_read.message_rows(db_session, sequence=sequence)
@@ -649,12 +658,13 @@ def test_the_sequence_filter_is_independent_of_the_draft_filter(
     )
 
     # The draft view says "discarded"; the sequence section has its own filter
-    # and must not reinterpret it.
-    awaiting = client.get("/app/review?view=discarded&sview=awaiting").text
-    assert "v2-seq-card" not in awaiting
+    # and must not reinterpret it. The sequence here has no discarded message,
+    # so the sequence "discarded" filter is empty while "reviewed" is not.
+    discarded = client.get("/app/review?view=discarded&sview=discarded").text
+    assert "v2-seq-card" not in discarded
 
-    approved = client.get("/app/review?view=discarded&sview=approved").text
-    assert "v2-seq-card" in approved
+    reviewed = client.get("/app/review?view=discarded&sview=reviewed").text
+    assert "v2-seq-card" in reviewed
 
 
 def test_a_cross_site_submission_is_refused(
@@ -775,4 +785,10 @@ def test_validation_failure_derives_as_failed_not_as_awaiting(
     db_session.flush()
     aggregate = sequence_review.refresh_aggregate(db_session, sequence=sequence)
     assert aggregate.state is SequenceReviewState.FAILED
-    assert sequence_read.list_queue(db_session, view=sequence_read.VIEW_AWAITING).rows == ()
+    # A failed sequence is not offered by any narrowing filter. It stays
+    # visible under "all", because a failure an operator cannot find is worse
+    # than one they can.
+    assert sequence_read.list_queue(db_session, view=sequence_read.VIEW_REVIEWED).rows == ()
+    assert sequence_read.list_queue(db_session, view=sequence_read.VIEW_EDITED).rows == ()
+    assert sequence_read.list_queue(db_session, view=sequence_read.VIEW_DISCARDED).rows == ()
+    assert len(sequence_read.list_queue(db_session, view=sequence_read.VIEW_ALL).rows) == 1

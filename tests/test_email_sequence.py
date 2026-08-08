@@ -902,15 +902,29 @@ def test_invalid_cadence_is_refused_rather_than_clamped(
 def test_approving_one_message_targets_one_exact_version(
     db_session: Session, scenario: tuple[Any, ...]
 ) -> None:
-    """Tests 65, 71, 72: partial approval is represented truthfully."""
+    """Tests 65, 71, 72: one human approval lands on one exact version.
+
+    Rewritten for default approval. It used to assert ``approved == 1`` and a
+    ``PARTIALLY_APPROVED`` state, which measured a backlog draining. All seven
+    are approved before the call and all seven after; what the call changes is
+    that exactly one of them now carries a person's name. That is what this
+    asserts, and it is the property the route actually has to have.
+    """
 
     sequence = build(db_session, scenario)
     rows = sequence_read.message_rows(db_session, sequence=sequence)
+    before = sequence_review.aggregate_state(
+        sequence, sequence_review.message_states(db_session, sequence=sequence)
+    )
+    assert before.approved == SEQUENCE_LENGTH
+    assert before.human_approved == 0
+
     aggregate = sequence_review.approve_message(db_session, message_version_id=rows[0].version_id)
 
-    assert aggregate.approved == 1
-    assert aggregate.awaiting == SEQUENCE_LENGTH - 1
-    assert aggregate.state is SequenceReviewState.PARTIALLY_APPROVED
+    assert aggregate.approved == SEQUENCE_LENGTH
+    assert aggregate.human_approved == 1
+    assert aggregate.unreviewed == SEQUENCE_LENGTH - 1
+    assert aggregate.state is SequenceReviewState.APPROVED
     stored = db_session.scalars(select(EmailSequenceMessageReview)).all()
     assert len(stored) == 1
     assert stored[0].message_version_id == rows[0].version_id
@@ -929,7 +943,11 @@ def test_bulk_approval_records_every_exact_message_version(
         expected_version_ids=tuple(row.version_id for row in rows),
     )
     assert aggregate.state is SequenceReviewState.APPROVED
+    assert aggregate.human_approved == SEQUENCE_LENGTH
     stored = db_session.scalars(select(EmailSequenceMessageReview)).all()
+    # Seven rows *created* by this call, not seven rows updated: generation
+    # wrote none, so the count is the proof that a bulk confirmation records
+    # every exact version rather than one summary decision.
     assert len(stored) == SEQUENCE_LENGTH
     assert {item.message_version_id for item in stored} == {row.version_id for row in rows}
     assert len({item.bulk_operation_id for item in stored}) == 1
@@ -1138,8 +1156,10 @@ def test_the_queue_card_carries_counts_and_an_excerpt_but_no_body(
     card = queue.rows[0]
     assert card.message_count == SEQUENCE_LENGTH
     assert card.step_total == SEQUENCE_LENGTH
-    assert card.approved == 1
-    assert card.awaiting == SEQUENCE_LENGTH - 1
+    assert card.approved == SEQUENCE_LENGTH
+    assert card.human_approved == 1
+    assert card.unreviewed == SEQUENCE_LENGTH - 1
+    assert card.reviewed_by_human is True
     assert card.initial_subject == SUBJECTS[0]
     assert card.initial_excerpt and len(card.initial_excerpt) <= sequence_read.EXCERPT_CHARS
     # The card type has no body field at all -- the bound is structural, not a
@@ -1230,11 +1250,16 @@ def test_the_summary_reports_derived_counts_and_the_planned_span(
     sequence = build(db_session, scenario)
     summary = sequence_read.summary(db_session, sequence=sequence)
     assert summary.message_count == SEQUENCE_LENGTH
-    assert summary.approved == 0
-    assert summary.awaiting == SEQUENCE_LENGTH
+    # Approved by default, reviewed by nobody, and the two are reported apart.
+    assert summary.approved == SEQUENCE_LENGTH
+    assert summary.human_approved == 0
+    assert summary.unreviewed == SEQUENCE_LENGTH
+    assert summary.reviewed_by_human is False
+    assert summary.last_human_decision_at is None
     assert summary.planned_span_days == 35
     assert summary.cadence_source == "default"
-    assert summary.current_actionable_position is None
+    # The chain now clears to its head, because its head is approved.
+    assert summary.current_actionable_position == 1
 
 
 # ---------------------------------------------------------------------------

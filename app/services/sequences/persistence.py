@@ -21,6 +21,14 @@ from, and the retry calls the model again. That is a deliberate choice: the
 alternative is committing unvalidated model output outside the sequence
 transaction, which buys back one call's cost by creating a row that is not yet
 known to be safe. See ``docs/EMAIL_SEQUENCE.md`` for the full replay contract.
+
+**Nothing here writes a review row, and nothing here records an approval
+event.** Generated messages are approved by default, and the default is carried
+by the absence of a review row rather than by seven rows attributed to a system
+actor. The only audit event this module writes is
+``email_sequence.generated``, whose actor is the agent that generated it. An
+``email_sequence_message.approved`` event means a person approved something,
+always, and this module must never be able to produce one.
 """
 
 from __future__ import annotations
@@ -168,12 +176,19 @@ def persist_sequence(
             if generated.warnings
             else SequenceValidationStatus.PASSED
         ),
-        review_state=SequenceReviewState.NEEDS_REVIEW,
+        # Generated messages are approved. This seeds the cached column with
+        # what `refresh_aggregate` derives a few lines below from the rows
+        # themselves, so the column is never briefly wrong even inside this
+        # transaction. **No review row is written for any of the seven.** The
+        # default is carried by their absence; a row would claim a person
+        # decided something, and no person has.
+        review_state=SequenceReviewState.APPROVED,
         validation_findings=generated.validation_findings,
         stop_state=SequenceStopState.RUNNING,
-        # Deliberately null. Nothing is approved at generation time, so claiming
-        # position 1 is actionable would be a claim about a decision nobody has
-        # made. refresh_aggregate below computes the truthful value.
+        # Left to the derivation rather than asserted here: `_actionable_position`
+        # walks the predecessor chain and returns 1 for a healthy sequence, and
+        # `None` for one that is stopped or malformed. Hard-coding 1 would claim
+        # a chain this function has not yet inserted.
         current_actionable_position=None,
         created_by=actor,
     )
@@ -241,7 +256,7 @@ def persist_sequence(
         new_state=f"v{version_number}",
         reason=(
             "seven-message sequence written by the Personalization Agent; "
-            "not approved and not sendable"
+            "approved by default, reviewed by nobody, and not sendable"
         ),
         context={
             "campaign_contact_id": str(membership.id),

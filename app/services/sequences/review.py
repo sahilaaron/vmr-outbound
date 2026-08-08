@@ -6,14 +6,38 @@ one exact immutable message version. A bulk approval is not an exception to
 that rule -- it is seven applications of it, stamped with one shared operation
 id so the operator's single action stays reconstructable as a single action.
 
+## Approved by default, and what that costs to say honestly
+
+Generated messages are approved. Review is available and is never required.
+
+That is expressed by the *absence* of a row, not the presence of one: a
+``EmailSequenceMessageReview`` row exists **if and only if a human actually
+acted**. Generation writes none, editing writes none, and no code path in this
+package constructs one with a non-human actor.
+
+The alternative -- writing seven "system approved" rows at generation -- was
+rejected because it is indistinguishable, in the table and in the audit trail,
+from seven approvals a person made. A reviews table that contains decisions
+nobody took cannot answer "did anyone look at this", which is the only question
+the table exists to answer. Absence carries the default; presence carries the
+person.
+
+So ``MessageState.approved`` is true for a message with no review row and for
+one a human explicitly approved, and false for an active discard. The two are
+never conflated: ``approved_by_default`` and ``human_approved`` are separate,
+and every surface that shows the word "approved" to an operator is expected to
+say which of the two it means.
+
 The aggregate is therefore always *derived*. There is no state a caller can set
-that makes a sequence claim to be approved; a sequence is approved when all
-seven of its current message versions carry an approval, and at no other time.
+that makes a sequence claim to be approved; a sequence is approved when none of
+its seven current message versions is discarded, and at no other time.
 ``EmailSequence.review_state`` is a cached copy of that derivation, refreshed
 whenever a decision is written, and it is never the authority.
 
-Approval is not sending authority. Nothing in this build can send, and
-``approve`` says so in the audit trail rather than leaving it implied.
+Approval is not sending authority, and under a default approval it is even less
+so. Nothing in this build can send; ``delivery_state`` stays ``NOT_READY`` for
+every message whatever the review says, and ``approve`` says so in the audit
+trail rather than leaving it implied.
 """
 
 from __future__ import annotations
@@ -74,7 +98,34 @@ class MessageState:
 
     @property
     def approved(self) -> bool:
+        """Whether this message stands approved, by default or by a person.
+
+        Deliberately true for ``decision is None``. A generated message is
+        approved; nobody has to say so. It is *not* written as
+        ``decision is not DISCARDED``, because that would also swallow
+        ``INVALIDATED`` -- a state that means an approval was withdrawn by an
+        edit and should never read as approval.
+        """
+
+        return self.decision is None or self.decision is SequenceReviewDecision.APPROVED
+
+    @property
+    def approved_by_default(self) -> bool:
+        """Approved because it was generated, not because anyone decided."""
+
+        return self.decision is None
+
+    @property
+    def human_approved(self) -> bool:
+        """A person looked at this exact version and approved it."""
+
         return self.decision is SequenceReviewDecision.APPROVED
+
+    @property
+    def human_decided(self) -> bool:
+        """Whether any human decision stands against this exact version."""
+
+        return self.decision is not None
 
     @property
     def discarded(self) -> bool:
@@ -85,7 +136,14 @@ class MessageState:
         return self.origin is SequenceMessageOrigin.HUMAN_EDITED
 
     @property
-    def awaiting(self) -> bool:
+    def unreviewed(self) -> bool:
+        """No human decision stands against this version.
+
+        This used to be called ``awaiting``, and the rename is the point: the
+        message is not waiting for anything. It is approved and readable, and
+        nothing downstream is held up by the absence of a decision.
+        """
+
         return self.decision is None
 
 
@@ -94,15 +152,25 @@ class SequenceAggregate:
     """The derived truth about a sequence's review state."""
 
     state: SequenceReviewState
+    #: Approved by default plus approved by a human. What "ready" means.
     approved: int
+    #: The subset of ``approved`` a person actually decided.
+    human_approved: int
     discarded: int
     edited: int
-    awaiting: int
+    #: Current versions carrying no human decision at all.
+    unreviewed: int
     total: int
 
     @property
     def decided(self) -> int:
-        return self.approved + self.discarded
+        """How many current versions a human has ruled on, either way."""
+
+        return self.human_approved + self.discarded
+
+    @property
+    def reviewed_by_human(self) -> bool:
+        return self.decided > 0
 
     @property
     def fully_approved(self) -> bool:
@@ -159,8 +227,6 @@ def derive_state(
     total: int,
     approved: int,
     discarded: int,
-    awaiting: int,
-    edited: int,
 ) -> SequenceReviewState:
     """The one derivation of a sequence's review state, from counts alone.
 
@@ -174,8 +240,20 @@ def derive_state(
 
     Order matters. A superseded sequence is superseded whatever its messages
     say; a failed generation is failed; a stopped sequence is blocked. Only once
-    none of those hold do the counts decide anything, and the counts never
-    invent an approval.
+    none of those hold do the counts decide anything.
+
+    ``approved`` counts default approvals and human approvals together, because
+    the sequence's *readiness* does not depend on which it is. Whether a person
+    has looked is a separate question, answered by
+    :attr:`SequenceAggregate.reviewed_by_human` and shown separately, so that a
+    single word on a card can never imply a decision nobody made.
+
+    Three members of :class:`SequenceReviewState` are no longer derivable and
+    are kept only so rows written before default approval still load:
+    ``NEEDS_REVIEW`` and ``GENERATED`` (nothing waits any more) and
+    ``PARTIALLY_REVIEWED``. ``CONTAINS_EDITS`` likewise: a human edit does not
+    change whether a sequence is approved, and the edit is reported by
+    ``origin`` on the message and by the ``edited`` tally, where it is precise.
     """
 
     if superseded:
@@ -194,22 +272,24 @@ def derive_state(
         # "partially approved" would let the approved count stand in for
         # readiness it does not have.
         return SequenceReviewState.CONTAINS_DISCARDED
-    if approved == total:
-        return SequenceReviewState.APPROVED
-    if approved and awaiting:
+    if approved != total:
+        # Not reachable through any write this package performs: every current
+        # version is approved by default until a human discards it. It becomes
+        # reachable only if an ``INVALIDATED`` row is ever left standing against
+        # a version that is still current, and reporting that honestly as
+        # partial is better than rounding it up to approved.
         return SequenceReviewState.PARTIALLY_APPROVED
-    if awaiting == total:
-        return SequenceReviewState.CONTAINS_EDITS if edited else SequenceReviewState.NEEDS_REVIEW
-    return SequenceReviewState.PARTIALLY_REVIEWED
+    return SequenceReviewState.APPROVED
 
 
 def aggregate_state(sequence: EmailSequence, states: tuple[MessageState, ...]) -> SequenceAggregate:
     """Derive the sequence's review state from the seven exact message states."""
 
     approved = sum(1 for state in states if state.approved)
+    human_approved = sum(1 for state in states if state.human_approved)
     discarded = sum(1 for state in states if state.discarded)
     edited = sum(1 for state in states if state.edited)
-    awaiting = sum(1 for state in states if state.awaiting)
+    unreviewed = sum(1 for state in states if state.unreviewed)
     total = len(states)
     return SequenceAggregate(
         state=derive_state(
@@ -220,13 +300,12 @@ def aggregate_state(sequence: EmailSequence, states: tuple[MessageState, ...]) -
             total=total,
             approved=approved,
             discarded=discarded,
-            awaiting=awaiting,
-            edited=edited,
         ),
         approved=approved,
+        human_approved=human_approved,
         discarded=discarded,
         edited=edited,
-        awaiting=awaiting,
+        unreviewed=unreviewed,
         total=total,
     )
 
@@ -259,13 +338,18 @@ def _actionable_position(states: tuple[MessageState, ...], *, stopped: bool = Fa
       says it actually went out;
     * the first message that is approved but not yet cleared is the actionable
       one;
-    * anything else -- awaiting, discarded, or an unapproved gap -- ends the walk
-      and yields ``None``.
+    * anything else -- a discard, or a withdrawn approval -- ends the walk and
+      yields ``None``.
+
+    Under default approval the walk reaches position 1 on a freshly generated
+    sequence, where it previously returned ``None``. That is the intended
+    change and it is not an escalation of authority: the value still authorises
+    nothing, and nothing reads it to decide whether to act.
 
     Because no message in this build ever leaves ``NOT_READY``, the only
     position this can currently return is the head of the chain. That is the
     truthful answer: nothing has been sent, so nothing after the first message
-    can be next. It authorises nothing either way; no code path acts on it.
+    can be next.
     """
 
     if stopped:
@@ -288,8 +372,8 @@ def _actionable_position(states: tuple[MessageState, ...], *, stopped: bool = Fa
             return None
         seen.add(current.message_id)
         if not current.approved:
-            # Awaiting or discarded. Either way the chain stops here, and no
-            # later message may step over the gap.
+            # Discarded, or an approval a later edit withdrew. Either way the
+            # chain stops here, and no later message may step over the gap.
             return None
         if current.delivery_state not in _DELIVERED_STATES:
             return current.position
@@ -356,7 +440,20 @@ def _record(
     "Changed" means the decision, the actor, the note or the operation that
     produced it. Re-submitting an identical decision changes nothing and is
     recorded once.
+
+    This is the only place in the codebase that constructs an
+    :class:`EmailSequenceMessageReview`, which is what makes "a review row
+    exists if and only if a human acted" checkable rather than merely intended.
+    The actor guard below keeps it true if a future caller reaches for this
+    function to express a default.
     """
+
+    if not actor.strip() or actor.startswith("system:"):
+        raise SequenceReviewError(
+            "A review row records a decision a person made. Default approval is "
+            "carried by the absence of a row, so there is nothing here for a "
+            "system actor to write."
+        )
 
     existing = session.scalars(
         select(EmailSequenceMessageReview).where(
@@ -566,8 +663,14 @@ def edit_message(
     sequence aggregate is recomputed.
 
     What deliberately does *not* happen: the other six messages are untouched,
-    their approvals stand, the sequence is not re-versioned, and no
+    their decisions stand, the sequence is not re-versioned, and no
     regeneration is triggered.
+
+    **No review row is written here, and that is the guarantee.** The new
+    version carries no decision, which under default approval means it is
+    approved -- so an edit does not silently unapprove a sequence, and it also
+    does not manufacture a record claiming somebody reviewed text that was
+    written a moment ago. The only human act this records is the edit itself.
     """
 
     version, message, sequence = _load_version(session, message_version_id=message_version_id)
