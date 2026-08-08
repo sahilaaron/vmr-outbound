@@ -19,6 +19,13 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
+  // Deliberately wider than `permissions.LOOPBACK_HOSTS`, and for a different
+  // job. That set decides which host the operator may *configure as a send
+  // target*, so it must match the manifest's optional host permissions exactly.
+  // This set only decides whether a URL the backend *returned* is safe to open,
+  // so it stays a plain "is this still on this machine" test and keeps the IPv6
+  // spellings. Narrowing it would gain nothing and could refuse a legitimate
+  // link from a backend whose OPERATOR_BASE_URL is written that way.
   const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
   // The only workbench destinations the extension will open: the contact-first
   // capture and contact records, the legacy batch/profile pages, and the dev
@@ -182,10 +189,16 @@
         return { code: "origin_not_allowed", headline: "Send target must be a loopback (127.0.0.1 / localhost) URL.", detail: "", canRetry: false };
       case "permission_denied":
         return { code: "permission_denied", headline: "Loopback access was not granted. Approve the permission prompt, then retry.", detail: "", canRetry: true };
+      // `timeout` and `network_error` describe the transport, not the target.
+      // The same two failures will be produced by any backend the extension is
+      // ever pointed at, so the wording states what happened and what is known
+      // (nothing was saved) instead of naming one deployment shape. Telling an
+      // operator to check a loopback port is actively misleading when the real
+      // cause is a slow backend, a wrong address or a rejected Host header.
       case "timeout":
-        return { code: "timeout", headline: "No response from the backend (timed out). Is it running?", detail: "", canRetry: true };
+        return { code: "timeout", headline: "The backend did not respond in time.", detail: "It may be busy or still starting up. Retry, or check the configured address.", canRetry: true };
       case "network_error":
-        return { code: "network_error", headline: "Could not reach the backend. Is it running on the configured loopback port?", detail: "", canRetry: true };
+        return { code: "network_error", headline: "Could not reach the backend at the configured address.", detail: "Check that it is running and that the address is correct.", canRetry: true };
       case "receiver_rejected": {
         const backendCode = resp.body && typeof resp.body.error === "string" ? resp.body.error : null;
         const headline = (backendCode && BACKEND_MESSAGES[backendCode]) || `The backend rejected the batch (HTTP ${resp.status || "?"}).`;

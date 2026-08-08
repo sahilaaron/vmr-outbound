@@ -95,9 +95,22 @@ not a spreadsheet row. It has its own versioned contract
 - Only an **exact normalized LinkedIn profile URL** may match and refresh an
   existing contact. Name / company / title / location similarity produces
   review candidates only.
-- A permanent Contact is always created or exactly matched. A missing LinkedIn
-  profile URL or company domain remains `NULL`; the system never repairs
-  identity from a lead URL or fabricates a domain.
+- **Intake alone does not produce a permanent Contact.** Accepting a capture
+  always stores immutable evidence. It refreshes a permanent Contact only when
+  the capture matches an *already known* exact LinkedIn identity; a person the
+  system has not seen before stays **staged** until promotion resolves a company
+  domain (see [CAPTURE_PROMOTION.md](./CAPTURE_PROMOTION.md)). A `Contact`
+  requires `company_domain`, a LinkedIn page never shows one, and guessing it is
+  forbidden — so intake reports `created: 0` rather than inventing an identity.
+  A missing LinkedIn profile URL or company domain remains `NULL`; the system
+  never repairs identity from a lead URL or fabricates a domain.
+- A Contact can therefore appear in the intake response only when in-request
+  automatic domain resolution is enabled and succeeds — three feature switches
+  plus a provider key, listed in
+  [CAPTURE_PROMOTION.md](./CAPTURE_PROMOTION.md) under "Feature switches".
+  Otherwise the agent worker, or an operator in the workbench, completes the
+  promotion afterwards. The `auto_resolved` response count reports how many
+  captures were promoted inside the request.
 - Optional **Collections** (called Labels in the extension) classify permanent
   Contacts and optional **notes** are append-only. Collection membership is not
   Campaign membership.

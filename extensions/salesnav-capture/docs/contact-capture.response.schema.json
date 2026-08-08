@@ -37,14 +37,15 @@
         "notes_recorded",
         "campaign_filings_applied",
         "campaign_filings_pending",
-        "campaign_filings_failed"
+        "campaign_filings_failed",
+        "auto_resolved"
       ],
       "properties": {
         "submitted": { "type": "integer", "minimum": 0 },
         "created": {
           "type": "integer",
           "minimum": 0,
-          "description": "Permanent Contacts created by this submission. Missing identity or Company fields remain null and keep downstream Agents blocked until they are resolved."
+          "description": "Permanent Contacts created by this submission. Intake itself never creates one: this is non-zero only when in-request automatic company-domain resolution ran and promoted a capture (see auto_resolved). Otherwise a capture is stored as evidence and stays staged until promotion resolves its Company domain."
         },
         "refreshed_exact_match": { "type": "integer", "minimum": 0 },
         "exact_match_unchanged": { "type": "integer", "minimum": 0 },
@@ -56,7 +57,12 @@
         "notes_recorded": { "type": "integer", "minimum": 0 },
         "campaign_filings_applied": { "type": "integer", "minimum": 0 },
         "campaign_filings_pending": { "type": "integer", "minimum": 0 },
-        "campaign_filings_failed": { "type": "integer", "minimum": 0 }
+        "campaign_filings_failed": { "type": "integer", "minimum": 0 },
+        "auto_resolved": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Captures whose Company domain was resolved automatically inside this request and promoted to a permanent Contact. Always present; it is 0 unless FEATURES__CONTACT_CAPTURE_PROMOTION, FEATURES__AUTOMATIC_COMPANY_DOMAIN_RESOLUTION and FEATURES__SALESNAV_DOMAIN_ENRICHMENT are all enabled and LOGO_DEV_API_KEY is configured. The in-request pass is bounded; anything it does not finish is left for the agent worker."
+        }
       }
     },
     "results": {

@@ -95,6 +95,37 @@ test("describeSendError distinguishes transport failures", () => {
   assert.equal(handoff.describeSendError({ error: "empty_batch" }).canRetry, false);
 });
 
+test("transport failures describe the transport, not one deployment shape", () => {
+  // These two failures come from the connection, not from the target. The copy
+  // used to ask whether the backend was "running on the configured loopback
+  // port" — a guess dressed as a diagnosis, since the same abort is produced by
+  // a busy backend, a mistyped address, or a host the server refuses. Naming
+  // loopback also bakes today's only deployment shape into wording that will
+  // outlive it.
+  for (const code of ["timeout", "network_error"]) {
+    const d = handoff.describeSendError({ error: code });
+    assert.equal(d.code, code);
+    assert.equal(d.canRetry, true, `${code} must stay retryable`);
+    const copy = `${d.headline} ${d.detail}`;
+    assert.doesNotMatch(copy, /loopback/i, `${code} copy must not name loopback`);
+    assert.doesNotMatch(copy, /localhost|127\.0\.0\.1/i, `${code} copy must not name a local host`);
+    assert.doesNotMatch(copy, /\bport\b/i, `${code} copy must not name a port`);
+    assert.match(d.headline, /backend/i, `${code} must still say what did not answer`);
+    assert.ok(d.detail, `${code} should give the operator something to check`);
+  }
+});
+
+test("configuration failures stay specific about what is supported", () => {
+  // The mirror image of the test above. These are not transport failures: they
+  // are the extension refusing a target, and the operator can only act on them
+  // if the copy says what a valid target looks like. Genericising these would
+  // make them useless.
+  const origin = handoff.describeSendError({ error: "origin_not_allowed" });
+  assert.match(origin.headline, /127\.0\.0\.1|localhost/i);
+  assert.equal(origin.canRetry, false);
+  assert.match(handoff.describeSendError({ error: "permission_denied" }).headline, /permission/i);
+});
+
 test("describeSendError never surfaces the raw response body", () => {
   const d = handoff.describeSendError({
     ok: false,

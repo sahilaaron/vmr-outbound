@@ -86,10 +86,20 @@
   // Origins the extension is allowed to talk to for handoff. Loopback + the
   // configured backend base URL only. LinkedIn is a *read* surface, never a
   // POST target.
+  //
+  // These two hosts are exactly the ones `optional_host_permissions` declares in
+  // the manifest, and they are what the local-development contract documents
+  // (docs/DEVELOPMENT.md runs uvicorn on `--host 127.0.0.1`). An `http://[::1]`
+  // entry used to sit here as well: it passed this check, then produced the
+  // match pattern `http://[::1]/*`, which the manifest does not declare — so the
+  // permission could never be granted and every send failed `permission_denied`.
+  // A target that validates but can never work is worse than one that is refused
+  // immediately, so the IPv6 spelling is not accepted. Supporting it would mean
+  // declaring another optional host permission, which is a manifest/permission
+  // change and belongs with a deliberate release, not with this cleanup.
   const ALLOWED_BACKEND_ORIGIN_PATTERNS = [
     /^http:\/\/127\.0\.0\.1(:\d+)?$/,
     /^http:\/\/localhost(:\d+)?$/,
-    /^http:\/\/\[::1\](:\d+)?$/,
   ];
 
   // Backend routes. The contact-capture route is the one the normal workflow
