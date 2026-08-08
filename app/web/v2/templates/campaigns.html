@@ -51,7 +51,7 @@
               <a class="v2-btn small" href="/app/campaigns/{{ row.campaign.id }}/edit">Edit</a>
               {% if row.campaign.status.value != 'archived' %}
               <form method="post" action="/app/campaigns/{{ row.campaign.id }}/archive"
-                    onsubmit="return confirm('Archive {{ row.campaign.name }}? Execution turns off for good and this cannot be undone; contacts, drafts and history stay.');">
+                    data-archive-confirm="Archive {{ row.campaign.name }}? Execution turns off for good and this cannot be undone; contacts, drafts and history stay.">
                 <button class="v2-btn small danger" type="submit">Archive</button>
               </form>
               {% endif %}
@@ -76,7 +76,7 @@
           <a class="v2-btn small" href="/app/campaigns/{{ row.campaign.id }}/edit">Edit</a>
           {% if row.campaign.status.value != 'archived' %}
           <form method="post" action="/app/campaigns/{{ row.campaign.id }}/archive"
-                onsubmit="return confirm('Archive {{ row.campaign.name }}? Execution turns off for good and this cannot be undone; contacts, drafts and history stay.');">
+                data-archive-confirm="Archive {{ row.campaign.name }}? Execution turns off for good and this cannot be undone; contacts, drafts and history stay.">
             <button class="v2-btn small danger" type="submit">Archive</button>
           </form>
           {% endif %}
@@ -95,3 +95,4 @@
   </p>
 </div>
 {% endblock %}
+{% block scripts %}<script src="{{ url_for('static', path='campaigns.js') }}?v={{ campaigns_js_version }}" defer></script>{% endblock %}
