@@ -164,7 +164,7 @@
         <tr>
           <td>{{ (draft.campaign_name or "—") | neutralize }}</td>
           <td class="num">v{{ draft.version_number }}</td>
-          <td class="wrap-anywhere">{{ draft.subject }}</td>
+          <td class="wrap-anywhere">{{ draft.subject | neutralize }}</td>
           <td>{% if draft.approval_status %}<span class="badge {{ 'ok' if draft.approval_status == 'approved' else 'muted' }} plain">{{ draft.approval_status }}</span>{% else %}<span class="badge warn plain">awaiting decision</span>{% endif %}</td>
           <td class="dim">{{ draft.created_at | dt }}</td>
         </tr>

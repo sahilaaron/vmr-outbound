@@ -11,7 +11,7 @@
 
 <div class="filters">
   <form class="inline" method="get" action="/admin/companies">
-    <input type="search" name="q" placeholder="Search name or domain" size="30" value="{{ view.query or '' }}">
+    <input type="search" name="q" placeholder="Search name or domain" size="30" value="{{ (view.query | neutralize) or '' }}">
     <button class="btn" type="submit">Search</button>
     {% if view.query %}<a class="muted-note" href="/admin/companies">clear</a>{% endif %}
   </form>

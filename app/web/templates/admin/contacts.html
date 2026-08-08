@@ -11,7 +11,7 @@
 
 <div class="filters">
   <form class="inline" method="get" action="/admin/contacts">
-    <input type="search" name="q" placeholder="Search name, email, company, domain" size="34" value="{{ view.query or '' }}">
+    <input type="search" name="q" placeholder="Search name, email, company, domain" size="34" value="{{ (view.query | neutralize) or '' }}">
     <select name="campaign">
       <option value="">Any Campaign</option>
       {% for campaign_id, name in view.campaign_options %}

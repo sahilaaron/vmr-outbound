@@ -10,7 +10,7 @@
       <span class="badge {{ 'ok' if view.status == 'active' else 'muted' }} plain">{{ view.status }}</span>
       {% if not view.execution_enabled %}<span class="badge warn">execution paused</span>{% endif %}
     </h1>
-    {% if view.description %}<div class="sub">{{ view.description }}</div>{% endif %}
+    {% if view.description %}<div class="sub">{{ view.description | neutralize }}</div>{% endif %}
     <div class="sub">Created {{ view.created_at | dt }} · settings v{{ view.settings_version }}{% if view.allow_provisional_domains %} · provisional domains allowed for Research{% endif %}</div>
   </div>
   <div class="page-actions">

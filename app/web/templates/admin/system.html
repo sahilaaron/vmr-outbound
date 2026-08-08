@@ -58,7 +58,7 @@
   <div class="card-head"><h2>Raw Agent Job search</h2></div>
   <div class="card-body">
     <form class="inline" method="get" action="/admin/system">
-      <input type="search" name="job" placeholder="Full Agent Job UUID" size="42" value="{{ view.job_search_query or '' }}" class="mono">
+      <input type="search" name="job" placeholder="Full Agent Job UUID" size="42" value="{{ (view.job_search_query | neutralize) or '' }}" class="mono">
       <button class="btn" type="submit">Look up</button>
     </form>
     {% if view.job_search_error %}<div class="notice warn" style="margin-top: 10px;"><div>{{ view.job_search_error }}</div></div>{% endif %}

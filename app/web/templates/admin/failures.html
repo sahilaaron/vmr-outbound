@@ -11,17 +11,17 @@
 
 <div class="filters">
   <div class="chiprow">
-    <a class="chip {{ 'on' if not view.category_filter else '' }}" href="/admin/failures{% if view.campaign_filter %}?campaign={{ view.campaign_filter }}{% endif %}">All <span class="c">{{ view.counts_by_category.values() | sum }}</span></a>
+    <a class="chip {{ 'on' if not view.category_filter else '' }}" href="/admin/failures{% if view.campaign_filter %}?campaign={{ view.campaign_filter | neutralize }}{% endif %}">All <span class="c">{{ view.counts_by_category.values() | sum }}</span></a>
     {% for key, label in categories %}
       {% set count = view.counts_by_category.get(key, 0) %}
       {% if count %}
-      <a class="chip {{ 'on' if view.category_filter == key else '' }}" href="/admin/failures?category={{ key }}{% if view.campaign_filter %}&campaign={{ view.campaign_filter }}{% endif %}">{{ (label) | neutralize }} <span class="c">{{ count }}</span></a>
+      <a class="chip {{ 'on' if view.category_filter == key else '' }}" href="/admin/failures?category={{ key }}{% if view.campaign_filter %}&campaign={{ view.campaign_filter | neutralize }}{% endif %}">{{ (label) | neutralize }} <span class="c">{{ count }}</span></a>
       {% endif %}
     {% endfor %}
   </div>
   <div class="spacer"></div>
   <form class="inline" method="get" action="/admin/failures">
-    {% if view.category_filter %}<input type="hidden" name="category" value="{{ view.category_filter }}">{% endif %}
+    {% if view.category_filter %}<input type="hidden" name="category" value="{{ view.category_filter | neutralize }}">{% endif %}
     <label for="campaign-filter">Campaign</label>
     <select id="campaign-filter" name="campaign">
       <option value="">All</option>

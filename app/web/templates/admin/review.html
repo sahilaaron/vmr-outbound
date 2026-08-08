@@ -39,7 +39,7 @@
           <td class="primary"><a href="/admin/contacts/{{ row.contact_id }}">{{ row.contact_label | neutralize }}</a></td>
           <td><a href="/admin/campaigns/{{ row.campaign_id }}">{{ (row.campaign_name) | neutralize }}</a></td>
           <td class="num">v{{ row.version_number }}</td>
-          <td class="wrap-anywhere">{{ row.subject }}</td>
+          <td class="wrap-anywhere">{{ row.subject | neutralize }}</td>
           <td>{% if row.approval_status == "approved" %}<span class="badge ok">approved</span>{% elif row.approval_status %}<span class="badge muted plain">{{ row.approval_status }}</span>{% else %}<span class="badge warn plain">awaiting decision</span>{% endif %}</td>
           <td class="dim nowrap">{{ row.created_at | dt }}</td>
           <td>{% if row.campaign_contact_id %}<a class="btn small" href="/admin/campaigns/{{ row.campaign_id }}/contacts/{{ row.campaign_contact_id }}">Diagnose</a>{% endif %}</td>

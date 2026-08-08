@@ -110,8 +110,8 @@
 
   <main class="main">
     <div class="main-inner">
-      {% if flash_ok %}<div class="notice ok" role="status"><div>{{ flash_ok }}</div></div>{% endif %}
-      {% if flash_err %}<div class="notice err" role="alert"><div>{{ flash_err }}</div></div>{% endif %}
+      {% if flash_ok %}<div class="notice ok" role="status"><div>{{ flash_ok | neutralize }}</div></div>{% endif %}
+      {% if flash_err %}<div class="notice err" role="alert"><div>{{ flash_err | neutralize }}</div></div>{% endif %}
       {% block content %}{% endblock %}
     </div>
   </main>
