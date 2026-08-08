@@ -53,6 +53,7 @@ from app.services.captures import labels as labels_service
 from app.services.captures import promotion as promotion_service
 from app.services.suppressions import add_suppression
 from fastapi.testclient import TestClient
+from jsonschema import Draft202012Validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -759,6 +760,67 @@ def test_matched_profile_capture_records_a_versioned_qa_evaluation(
     evaluation = db_session.scalars(select(ContactQAEvaluation)).one()
     assert evaluation.policy_version
     assert evaluation.outcome is not None
+
+
+# --- Published response contract ----------------------------------------------
+#
+# The request schema is loaded and enforced by the service on every call, so it
+# cannot silently drift. The RESPONSE schema is published for consumers and is
+# never validated at runtime, so nothing stopped it going stale — and it did:
+# `auto_resolved` was added to the emitted counts without being declared, while
+# the schema pins `additionalProperties: false`. Anyone validating a live
+# response against the published contract would have been told the server was
+# wrong. These two tests close that gap from both directions.
+
+
+def test_published_response_schema_declares_every_emitted_count() -> None:
+    """The schema's counts and the service's ``_COUNT_KEYS`` must be one set.
+
+    ``counts`` is built with ``dict.fromkeys(_COUNT_KEYS, 0)``, so every key is
+    always present in every response. A key the schema omits is a response the
+    contract rejects; a key the schema requires but the service never emits is a
+    promise the server does not keep. Both are failures here.
+    """
+
+    schema = json.loads((CONTRACT_DIR / "contact-capture.response.schema.json").read_text("utf-8"))
+    counts = schema["properties"]["counts"]
+    emitted = set(cc._COUNT_KEYS)
+
+    assert counts["additionalProperties"] is False
+    assert set(counts["required"]) == emitted
+    assert set(counts["properties"]) == emitted
+
+
+def test_intake_response_validates_against_the_published_response_schema(
+    client: TestClient, enable_contact_capture: None, db_session: Session
+) -> None:
+    """A real 201 and its replayed 200 must both satisfy the published schema.
+
+    The payload deliberately carries a Campaign, labels and a note so the
+    optional branches of the contract — ``campaign_filing``, ``labels_applied``,
+    ``operator_workbench_url`` — are exercised rather than skipped.
+    """
+
+    validator = Draft202012Validator(
+        json.loads((CONTRACT_DIR / "contact-capture.response.schema.json").read_text("utf-8"))
+    )
+    campaign = Campaign(name="Response contract", status=CampaignStatus.DRAFT)
+    db_session.add(campaign)
+    db_session.flush()
+    payload = _fresh(PROFILE_SUBMISSION)
+    payload["campaign_id"] = str(campaign.id)
+
+    response = _post(client, payload)
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert sorted(validator.iter_errors(body), key=str) == []
+    assert "auto_resolved" in body["counts"]
+
+    replay = _post(client, payload)
+    assert replay.status_code == 200
+    replay_body = replay.json()
+    assert replay_body["already_received"] is True
+    assert sorted(validator.iter_errors(replay_body), key=str) == []
 
 
 # --- Companion read endpoints -------------------------------------------------
