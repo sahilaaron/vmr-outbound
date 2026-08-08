@@ -1776,7 +1776,7 @@ measured the defect instead of the product.
 | Lineage | `aafb6df` INS-001 (#187) · `e05feac` UI-013 (#196) · `f11b9fd` DAT-017A (#190) |
 | Working tree | clean (`git status --porcelain` empty) |
 | Server | `uvicorn app.main:app --port 8000` — **no `--reload`**, verified from the console output |
-| Readiness | `/ready` → `{"status":"ready","database":"ok"}` |
+| Readiness at the time of this historical run | `/ready` → `{"status":"ready","database":"ok"}`. This was the pre-hardening contract; current deployments must use authoritative `/readyz` and its nested `checks` body. |
 | Database | local Postgres, environment `local`, dry-run on. No credentials recorded. |
 | Extension | manifest **2.1.0**, reloaded from disk after the UI-013 merge |
 | Feature flags enabled for the run | `contact_capture_intake`, `contact_capture_promotion` (both were off at preflight and had to be turned on), plus the pre-existing `csv_import`, `salesnav_intake`, `linkedin_profile_intake`, `linkedin_profile_refresh`, `linkedin_company_intake`, `workbench`, `salesnav_domain_enrichment` |

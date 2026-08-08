@@ -13,11 +13,44 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
+from ipaddress import IPv6Address, ip_address
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.features import FeatureFlags
+
+
+def canonical_trusted_host(value: str) -> str:
+    """Return one port-free canonical Host allow-list entry.
+
+    DNS names are case-insensitive and a terminal root dot is semantically
+    insignificant. Bracketed IPv6 literals stay bracketed so they cannot be
+    confused with ``host:port`` syntax.
+    """
+
+    if value != value.strip():
+        raise ValueError("trusted hosts must not have leading or trailing whitespace")
+    raw = value.lower()
+    wildcard = raw.startswith("*.")
+    if wildcard:
+        raw = raw[2:]
+    if not raw or any(character in raw for character in ("\r", "\n", "/", " ", "\t")):
+        raise ValueError("trusted hosts must be bounded hostnames without spaces or paths")
+    if raw.startswith("[") and raw.endswith("]"):
+        try:
+            address = ip_address(raw[1:-1])
+        except ValueError as exc:
+            raise ValueError("trusted hosts contain an invalid bracketed IPv6 address") from exc
+        if not isinstance(address, IPv6Address) or wildcard:
+            raise ValueError("trusted hosts contain an invalid bracketed IPv6 address")
+        return f"[{address.compressed}]"
+    if ":" in raw:
+        raise ValueError("trusted hosts must not include ports or raw IPv6 addresses")
+    raw = raw.removesuffix(".")
+    if not raw or len(raw) > 253:
+        raise ValueError("trusted hosts must contain bounded non-empty hostnames")
+    return f"*.{raw}" if wildcard else raw
 
 
 def _env_file_for_environment() -> str | None:
@@ -55,6 +88,52 @@ class Settings(BaseSettings):
         description="Deployment environment label: local | ci | staging | production.",
     )
     debug: bool = False
+    release_id: str = Field(
+        default="unknown",
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._+\-]{0,127}$",
+        description=(
+            "Deployment-provided release identifier; never discovered from Git at request time."
+        ),
+    )
+
+    # Hosts accepted from the HTTP Host header. Local defaults intentionally
+    # name only loopback/test hosts; staging and production must provide their
+    # own explicit hostnames and may never use a wildcard.
+    trusted_hosts: tuple[str, ...] = Field(
+        default=("localhost", "127.0.0.1", "[::1]", "testserver"),
+        min_length=1,
+        description="Host header allow-list understood by Starlette TrustedHostMiddleware.",
+    )
+
+    @field_validator("trusted_hosts")
+    @classmethod
+    def _canonicalize_trusted_hosts(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(canonical_trusted_host(host) for host in value)
+
+    # Forwarded headers are ignored unless the immediate TCP peer belongs to
+    # one of these networks. Loopback is the safe local Nginx default; a remote
+    # proxy network must be supplied explicitly by deployment configuration.
+    trusted_proxy_cidrs: tuple[str, ...] = Field(
+        default=("127.0.0.1/32", "::1/128"),
+        description="Networks whose direct peers may supply X-Forwarded-* headers.",
+    )
+    # The app can reject declared oversized requests before reading the body.
+    # The reverse proxy remains responsible for complete enforcement, including
+    # requests without Content-Length and chunked transfer encoding.
+    max_request_bytes: int = Field(
+        default=25 * 1024 * 1024,
+        gt=0,
+        description="Application-wide ceiling for a declared HTTP request body.",
+    )
+    hsts_max_age_seconds: int = Field(
+        default=31_536_000,
+        ge=0,
+        description=(
+            "HSTS max-age emitted only when HTTPS is known directly or via a trusted proxy."
+        ),
+    )
 
     # --- Database ------------------------------------------------------------
     # Local dev default points at the documented local Postgres instance.
@@ -63,6 +142,20 @@ class Settings(BaseSettings):
     database_url: str = Field(
         default="postgresql+psycopg://dev@127.0.0.1:5433/vmr_dev",
         description="SQLAlchemy database URL. Supplied by the environment outside local dev.",
+    )
+    database_connect_timeout_seconds: int = Field(
+        default=5,
+        ge=1,
+        le=30,
+        description=(
+            "Application connection timeout and readiness connection-establishment backstop."
+        ),
+    )
+    readiness_timeout_seconds: float = Field(
+        default=2.0,
+        gt=0,
+        le=30,
+        description="End-to-end wall-clock budget for one readiness check.",
     )
 
     # --- Safety switches -----------------------------------------------------

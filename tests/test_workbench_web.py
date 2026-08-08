@@ -412,25 +412,31 @@ def test_workbench_enabled_locally_mounts_ui(client: TestClient) -> None:
     assert client.get("/", follow_redirects=False).status_code == 307
 
 
-def test_workbench_disabled_never_raises_regardless_of_env(
+def test_workbench_disabled_env_configuration_does_not_mount_ui(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("APP_ENV", "staging")
+    monkeypatch.setenv("DRY_RUN", "true")
+    monkeypatch.setenv("TRUSTED_HOSTS", '["staging.example.com"]')
+    monkeypatch.setenv("TRUSTED_PROXY_CIDRS", '["10.0.0.0/24"]')
+    monkeypatch.setenv(
+        "DATABASE_URL", "postgresql+psycopg://service:password@db.example.com/vmr_staging"
+    )
     monkeypatch.delenv("FEATURES__WORKBENCH", raising=False)
     get_settings.cache_clear()
     try:
-        app = create_app()  # no error: the guard only fires when the switch is on
+        app = create_app(readiness_probe=lambda: None)
 
         def _override() -> Iterator[Session]:
             yield db_session
 
         app.dependency_overrides[get_db] = _override
-        with TestClient(app) as staging_client:
+        with TestClient(app, base_url="https://staging.example.com") as staging_client:
             assert staging_client.get("/admin").status_code == 404
             assert staging_client.get("/", follow_redirects=False).status_code == 404
             assert staging_client.get("/local-tools").status_code == 404
-    finally:
         app.dependency_overrides.clear()
+    finally:
         get_settings.cache_clear()
 
 

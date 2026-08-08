@@ -8,20 +8,16 @@ from fastapi.testclient import TestClient
 client = TestClient(create_app())
 
 
-def test_health_reports_safe_defaults() -> None:
-    resp = client.get("/health")
+def test_healthz_is_minimal() -> None:
+    resp = client.get("/healthz")
     assert resp.status_code == 200
-    body = resp.json()
-    assert body["status"] == "ok"
-    # The shell ships with dry-run on and no features enabled.
-    assert body["dry_run"] is True
-    assert body["features_enabled"] == []
-    assert "version" in body
+    assert resp.json() == {"status": "ok"}
 
 
-def test_ready_checks_database() -> None:
-    resp = client.get("/ready")
+def test_readyz_checks_database() -> None:
+    resp = client.get("/readyz")
     assert resp.status_code == 200
-    body = resp.json()
-    assert body["status"] == "ready"
-    assert body["database"] == "ok"
+    assert resp.json() == {
+        "status": "ready",
+        "checks": {"configuration": "ok", "database": "ok"},
+    }

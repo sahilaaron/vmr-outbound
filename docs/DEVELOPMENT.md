@@ -84,10 +84,15 @@ alembic downgrade base && alembic upgrade head
 
 ```bash
 uvicorn app.main:app --reload --port 8000
-# Liveness:  curl http://127.0.0.1:8000/health
-# Readiness: curl http://127.0.0.1:8000/ready   (checks the database)
-# Or:        python scripts/smoke.py    (health + readiness + which features are on)
+# Liveness:  curl http://127.0.0.1:8000/healthz
+# Readiness: curl http://127.0.0.1:8000/readyz   (bounded database check)
+# Version:   curl http://127.0.0.1:8000/version
+# Or:        python scripts/smoke.py    (health + readiness)
 ```
+
+See [`PRODUCTION_HARDENING.md`](PRODUCTION_HARDENING.md) for the probe contracts,
+reverse-proxy trust boundary, request limits, startup refusal, and staging
+settings.
 
 To run the local operator workbench (server-rendered UI at `/`), enable its
 switches (they default off):
