@@ -16,6 +16,7 @@ from app.models.company import Company
 from app.models.contact import Contact
 from app.models.draft import DraftVersion
 from app.models.email_candidate import EmailCandidate
+from app.models.email_sequence import EmailSequence
 from app.models.enums import (
     AgentIdentifier,
     EmailPreciseStatus,
@@ -23,8 +24,10 @@ from app.models.enums import (
     InsightKind,
     InsightState,
     LinkedInIdentifierKind,
+    SequenceReviewState,
 )
 from app.models.linkedin_profile import LinkedInProfileSnapshot
+from app.models.personalization_policy import PersonalizationPolicyVersion
 from app.models.verification_job import AgentJob
 from app.services import identity_links
 from app.services.audit import record_audit_event
@@ -37,10 +40,15 @@ from app.services.insights import lineage as insights_lineage
 from app.services.insights.evidence import InsightError
 from app.services.personalization import generation as personalization_generation
 from app.services.personalization import policy as personalization_policy
+from app.services.personalization import sequence as sequence_generation
+from app.services.personalization.cadence import CadenceError, campaign_opted_in
+from app.services.personalization.sequence_validation import SequenceValidationError
 from app.services.resolution import gates as resolution_gates
 from app.services.resolution import store as resolution_store
 from app.services.seller import context as seller_context
 from app.services.seller.context import SellerContext
+from app.services.sequences import persistence as sequence_persistence
+from app.services.sequences import read as sequence_read
 from app.services.suppressions import evaluate_suppression
 from app.services.thinking import prompts
 from app.services.thinking.claude_cli import ClaudeCliThinker
@@ -1296,17 +1304,29 @@ class InsightsAgentAdapter:
 
 
 class PersonalizationAgentAdapter:
-    """Draft one email from stored evidence, and store it as an unapproved version.
+    """Write outreach copy from stored evidence, unapproved, for one Contact.
 
     Three things this Agent deliberately does not do. It does not approve
-    anything — a ``DraftVersion`` carries no authority and the separate
-    ``DraftApproval`` remains a human act. It does not personalize from anything
-    except context selected by the deterministic policy gate. Weak evidence is
-    omitted and may lead to a valid offering-led draft, so an unsourced prospect
-    claim cannot reach an email through this path. And it re-checks the
-    suppression ledger immediately before drafting, because an entry added while
-    the job waited in the queue must still stop it: writing to someone is what
-    suppression exists to prevent, and drafting is the first step of writing.
+    anything — neither a ``DraftVersion`` nor a sequence message carries any
+    authority, and the human decision stays a separate record. It does not
+    personalize from anything except context selected by the deterministic
+    policy gate. Weak evidence is omitted and may lead to a valid offering-led
+    result, so an unsourced prospect claim cannot reach an email through this
+    path. And it re-checks the suppression ledger immediately before drafting,
+    because an entry added while the job waited in the queue must still stop it:
+    writing to someone is what suppression exists to prevent, and drafting is
+    the first step of writing.
+
+    **One stage, two shapes.** Personalization remains exactly one Agent stage
+    with exactly one Agent Job. Seven follow-ups did not become seven stages or
+    seven jobs: a sequence is one generation unit that either succeeds whole or
+    fails whole, and modelling it as seven stages would have made "the
+    Personalization stage completed" a statement about nothing in particular.
+
+    Which shape runs is decided by two switches that must both be on — the
+    deployment ``email_sequences`` flag and the Campaign's own opt-in. With
+    either off, this adapter does precisely what it did before sequences
+    existed, down to the audit action and the output keys.
     """
 
     agent_id = AgentIdentifier.PERSONALIZATION
@@ -1328,6 +1348,8 @@ class PersonalizationAgentAdapter:
             )
         settings = get_settings()
         thinker = self._thinker_factory(settings)
+        if sequence_mode_enabled(settings, context.campaign):
+            return self._execute_sequence(context, policy=policy, thinker=thinker)
         try:
             generated = personalization_generation.generate(
                 session,
@@ -1421,6 +1443,139 @@ class PersonalizationAgentAdapter:
             result={"domain_outcome": "draft_created", **output},
             output_reference=output,
         )
+
+    def _execute_sequence(
+        self,
+        context: AgentExecutionContext,
+        *,
+        policy: PersonalizationPolicyVersion,
+        thinker: Thinker,
+    ) -> AgentExecutionResult:
+        """Produce one seven-message sequence, or fail without persisting one.
+
+        The digest is computed and checked **before** the model is called, so an
+        unchanged input costs nothing and a retry after a committed sequence
+        costs nothing either. Everything after the call is validated in full
+        before a single row is written, and the write is one flush — there is no
+        arrangement of failures that leaves six messages behind and reports a
+        complete stage.
+        """
+
+        session = context.session
+        try:
+            digest = sequence_generation.precompute_digest(
+                session, membership=context.membership, policy=policy
+            )
+        except CadenceError as exc:
+            raise AgentBlocked("sequence_cadence_invalid", str(exc)) from exc
+        except sequence_generation.SequenceGenerationError as exc:
+            raise AgentBlocked(exc.code, str(exc)) from exc
+
+        existing = sequence_persistence.existing_for_digest(
+            session, campaign_contact_id=context.membership.id, input_digest=digest
+        )
+        if existing is not None:
+            # Nothing about the inputs has changed since this sequence was
+            # written, so re-running the stage must not re-write it and must not
+            # spend. The stage still completes: the outcome it is responsible
+            # for exists.
+            return self._sequence_result(session, sequence=existing, reused=True)
+
+        try:
+            generated = sequence_generation.generate_sequence(
+                session,
+                membership=context.membership,
+                policy=policy,
+                thinker=thinker,
+                timeout_seconds=float(context.config.get("timeout_seconds", 420.0)),
+                purpose="email_sequence_generation",
+            )
+        except ThinkingError as exc:
+            raise _translate_thinking_error(exc) from exc
+        except SequenceValidationError as exc:
+            # Content that cannot be shown to a human is a terminal outcome, not
+            # a retryable one: running the same inputs again produces the same
+            # refusal, and the bounded findings say why.
+            raise AgentTerminalError(exc.code, str(exc)) from exc
+        except CadenceError as exc:
+            raise AgentBlocked("sequence_cadence_invalid", str(exc)) from exc
+        except sequence_generation.SequenceGenerationError as exc:
+            if exc.code in {"citation_not_supplied", "sequence_invalid_purpose"}:
+                raise AgentTerminalError(exc.code, str(exc)) from exc
+            raise AgentBlocked(exc.code, str(exc)) from exc
+
+        sequence = sequence_persistence.persist_sequence(
+            session,
+            membership=context.membership,
+            contact=context.contact,
+            generated=generated,
+            agent_job_id=context.job.id,
+            actor=context.worker_id,
+        )
+        return self._sequence_result(session, sequence=sequence, reused=False)
+
+    @staticmethod
+    def _sequence_result(
+        session: Session, *, sequence: EmailSequence, reused: bool
+    ) -> AgentExecutionResult:
+        rows = sequence_read.message_rows(session, sequence=sequence)
+        reviewed_by_human = any(row.human_reviewed for row in rows)
+        output = {
+            "sequence_id": str(sequence.id),
+            "sequence_key": str(sequence.sequence_key),
+            "sequence_version": sequence.sequence_version,
+            "message_count": len(rows),
+            "positions": [row.position for row in rows],
+            "initial_subject": rows[0].subject if rows else None,
+            "input_digest": sequence.input_digest,
+            "producer": sequence.producer,
+            "producer_version": sequence.producer_version,
+            "sequence_producer_version": sequence.sequence_producer_version,
+            "personalization_policy_version_id": (
+                str(sequence.personalization_policy_version_id)
+                if sequence.personalization_policy_version_id
+                else None
+            ),
+            "personalization_policy_version_number": (
+                sequence.personalization_policy_version_number
+            ),
+            "personalization_strategy_id": sequence.personalization_strategy_id,
+            "personalization_decision": sequence.personalization_decision,
+            "cadence_source": sequence.cadence_source,
+            "planned_span_days": sequence.planned_span_days,
+            "validation_status": sequence.validation_status.value,
+            "review_state": sequence.review_state.value,
+            # Said explicitly rather than left to be inferred from an absence.
+            #
+            # A generated sequence is approved by default, so this reports the
+            # derived state rather than a hardcoded ``False`` that stopped being
+            # true. ``reviewed_by_human`` is what keeps the two apart, and the
+            # two keys below are what stop either being read as sending
+            # authority: nothing was sent, no external draft exists, and an
+            # approval -- default or human -- changes neither.
+            "approved": sequence.review_state is SequenceReviewState.APPROVED,
+            "reviewed_by_human": reviewed_by_human,
+            "sent": False,
+            "external_drafts_created": 0,
+            "reused_existing_sequence": reused,
+        }
+        return AgentExecutionResult(
+            outcome_committed=True,
+            result={"domain_outcome": "sequence_created", **output},
+            output_reference=output,
+        )
+
+
+def sequence_mode_enabled(settings: Settings, campaign: Campaign) -> bool:
+    """Whether this Campaign Contact gets a sequence rather than a single draft.
+
+    Two switches, both required. The deployment flag decides whether the feature
+    exists at all; the Campaign opt-in decides whether *this* Campaign uses it.
+    Requiring both is what stops enabling the feature from silently changing
+    what every existing Campaign produces.
+    """
+
+    return settings.features.email_sequences and campaign_opted_in(campaign)
 
 
 #: The adapter that runs for each Agent, unless a caller passes its own.

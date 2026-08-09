@@ -46,6 +46,12 @@ _BACKFILL_SQL = str(_load_migration("c48b1f70a3d2_app_003_company_workspace.py")
 #: migration as later ones stack on top of it.
 _APP_003_PARENT = _load_migration("c48b1f70a3d2_app_003_company_workspace.py").down_revision
 
+#: The revision immediately below SEQ-001, for the same reason: a relative step
+#: would silently start testing whichever migration happens to be newest.
+_SEQ_001_PARENT = _load_migration(
+    "0926b59b7912_seq_001_seven_message_outreach_sequence.py"
+).down_revision
+
 #: The revision immediately below DAT-017A, for the same reason.
 _DAT_017A_PARENT = _load_migration(
     "d7a3f18c62b4_dat_017a_company_domain_resolution.py"
@@ -608,5 +614,158 @@ def test_kb_001_campaign_offerings_survive_an_archived_offering(
                 {"campaign": campaign_id},
             ).all()
         assert still_linked == [("Cement outlook", "ARCHIVED")]
+    finally:
+        engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# SEQ-001 — the seven-message sequence tables
+# ---------------------------------------------------------------------------
+
+
+def _seed_sequence(conn: Connection, *, with_review: bool) -> None:
+    """The smallest sequence a downgrade could destroy.
+
+    Built through raw SQL rather than the ORM because this runs against a
+    database at one exact migration revision, where the ORM's idea of the schema
+    may be ahead of what exists.
+    """
+
+    company_id = _seed_company(conn, name="Sequence Co", domain="seq.example")
+    contact_id = _seed_contact(conn, first="Seq", domain="seq.example")
+    campaign_id = uuid.uuid4()
+    conn.execute(
+        text("INSERT INTO campaigns (id, name, status) VALUES (:id, :n, 'DRAFT')"),
+        {"id": campaign_id, "n": f"Sequence campaign {campaign_id}"},
+    )
+    membership_id = uuid.uuid4()
+    conn.execute(
+        text(
+            "INSERT INTO campaign_contacts (id, campaign_id, contact_id, state) "
+            "VALUES (:id, :c, :ct, 'IMPORTED')"
+        ),
+        {"id": membership_id, "c": campaign_id, "ct": contact_id},
+    )
+    sequence_key = uuid.uuid4()
+    sequence_id = uuid.uuid4()
+    conn.execute(
+        text(
+            "INSERT INTO email_sequences (id, sequence_key, sequence_version, "
+            "campaign_contact_id, campaign_id, contact_id, company_id, input_digest, "
+            "sequence_producer_version, validation_policy_version, cadence_source, "
+            "message_count, generation_status, validation_status, review_state, stop_state) "
+            "VALUES (:id, :k, 1, :m, :c, :ct, :co, 'digest', 'builder/v1', 'validation/v1', "
+            "'default', 7, 'COMPLETE', 'PASSED', 'APPROVED', 'RUNNING')"
+        ),
+        {
+            "id": sequence_id,
+            "k": sequence_key,
+            "m": membership_id,
+            "c": campaign_id,
+            "ct": contact_id,
+            "co": company_id,
+        },
+    )
+    message_id = uuid.uuid4()
+    conn.execute(
+        text(
+            "INSERT INTO email_sequence_messages (id, sequence_key, campaign_contact_id, "
+            "position, message_type, purpose, delivery_state) "
+            "VALUES (:id, :k, :m, 1, 'INITIAL', 'INITIAL_OUTREACH', 'NOT_READY')"
+        ),
+        {"id": message_id, "k": sequence_key, "m": membership_id},
+    )
+    version_id = uuid.uuid4()
+    conn.execute(
+        text(
+            "INSERT INTO email_sequence_message_versions (id, message_id, sequence_id, "
+            "message_version, position, subject, body, recommended_delay_days, "
+            "recommended_elapsed_day, origin, generation_status, validation_status, "
+            "intelligence_accepted_count, intelligence_excluded_count) "
+            "VALUES (:id, :mid, :sid, 1, 1, 'A subject', 'A body worth keeping.', 0, 0, "
+            "'GENERATED', 'COMPLETE', 'PASSED', 0, 0)"
+        ),
+        {"id": version_id, "mid": message_id, "sid": sequence_id},
+    )
+    if with_review:
+        conn.execute(
+            text(
+                "INSERT INTO email_sequence_message_reviews (id, message_version_id, "
+                "message_id, decision, decided_by) "
+                "VALUES (:id, :v, :m, 'APPROVED', 'operator')"
+            ),
+            {"id": uuid.uuid4(), "v": version_id, "m": message_id},
+        )
+
+
+def test_seq_001_downgrade_succeeds_on_an_empty_schema(temp_database_url: str) -> None:
+    """No sequence has ever been generated: reverse without ceremony.
+
+    This is what keeps the full round-trip test meaningful — a guard that
+    refused unconditionally would make the migration untestable.
+    """
+
+    assert _alembic(["upgrade", "head"], temp_database_url).returncode == 0
+    reversed_cleanly = _alembic(["downgrade", _SEQ_001_PARENT], temp_database_url)
+    assert reversed_cleanly.returncode == 0, f"{reversed_cleanly.stdout}\n{reversed_cleanly.stderr}"
+    assert _alembic(["upgrade", "head"], temp_database_url).returncode == 0
+
+
+@pytest.mark.parametrize("with_review", [False, True])
+def test_seq_001_downgrade_refuses_while_sequence_data_exists(
+    temp_database_url: str, with_review: bool
+) -> None:
+    """Generated copy and human decisions are not re-derivable, so refuse.
+
+    Parametrised over the two cases that matter separately, and under default
+    approval they are no longer "before review" and "after review". A generated
+    sequence is approved and carries **no** review row at all, so
+    ``with_review=False`` is the ordinary case rather than a transient one, and
+    ``with_review=True`` is the sequence somebody actually ruled on. Both must
+    block; the second is the one that would destroy a record of a human
+    judgement, and the first still holds copy nothing can re-derive.
+
+    The seeded ``review_state`` is ``APPROVED`` for the same reason: seeding
+    ``NEEDS_REVIEW`` would be seeding a state generation no longer produces, and
+    a guard proven only against unreachable data proves less than it appears to.
+    """
+
+    assert _alembic(["upgrade", "head"], temp_database_url).returncode == 0
+
+    engine = create_engine(temp_database_url)
+    try:
+        with engine.begin() as conn:
+            _seed_sequence(conn, with_review=with_review)
+
+        blocked = _alembic(["downgrade", _SEQ_001_PARENT], temp_database_url)
+        output = blocked.stdout + blocked.stderr
+        assert blocked.returncode != 0, "the downgrade must refuse while sequence data exists"
+        assert "SEQ-001" in output
+        assert "generated sequence(s)" in output
+        assert "generated or edited message version(s)" in output
+        if with_review:
+            assert "recorded human review decision(s)" in output
+
+        # Bounded and non-leaking: the operator learns the scale of what would be
+        # lost, never a sample of the content or a schema internal.
+        assert "A body worth keeping." not in output
+        assert "A subject" not in output
+        assert "Traceback" not in output or "RuntimeError" in output
+        assert "psycopg" not in output
+        assert len(output) < 8_000
+
+        # Clearing the data deliberately releases the guard.
+        with engine.begin() as conn:
+            for table in (
+                "email_sequence_message_reviews",
+                "email_sequence_message_versions",
+                "email_sequences",
+                "email_sequence_messages",
+            ):
+                conn.execute(text(f"DELETE FROM {table}"))
+
+        cleared = _alembic(["downgrade", _SEQ_001_PARENT], temp_database_url)
+        assert cleared.returncode == 0, f"{cleared.stdout}\n{cleared.stderr}"
+        assert _alembic(["upgrade", "head"], temp_database_url).returncode == 0
     finally:
         engine.dispose()

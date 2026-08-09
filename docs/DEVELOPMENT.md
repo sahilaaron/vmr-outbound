@@ -137,6 +137,29 @@ python scripts/run_agent_worker.py --agent identity --agent company
 See `docs/PHASE_2_EXECUTION_MODEL.md` for queue leases, controls, retry
 semantics, and pipeline-state inspection.
 
+To run seven-message Personalization sequences locally, add the deployment
+switch and opt one Campaign in:
+
+```bash
+FEATURES__WORKBENCH=true FEATURES__AGENT_WORKBENCH=true \
+  FEATURES__EMAIL_SEQUENCES=true uvicorn app.main:app --reload --port 8000
+```
+
+The flag alone changes nothing. Each Campaign opts in separately through its
+`cadence_config`, so enabling the switch never silently changes what an existing
+Campaign produces:
+
+```json
+{"sequence": {"enabled": true, "elapsed_days": [0, 3, 7, 12, 18, 25, 35]}}
+```
+
+`elapsed_days` is optional; omit it for the default ladder. Sequences appear at
+the top of `/app/review` as one compact card per contact, and on the contact
+page under "The seven-message sequence". Generated messages are approved by
+default and review is optional, so the cards are there on arrival rather than
+waiting in a queue. Nothing is sent by confirming one — see
+`docs/EMAIL_SEQUENCE.md` for what exists and what is deliberately deferred.
+
 ## 6. Run the checks (same as CI)
 
 ```bash

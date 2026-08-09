@@ -37,9 +37,10 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.core.config import Settings, get_settings
-from app.models.campaign import CampaignContact
+from app.models.campaign import Campaign, CampaignContact
 from app.models.company import Company
 from app.models.contact import Contact
+from app.models.email_sequence import SEQUENCE_LENGTH, EmailSequenceMessageVersion
 from app.models.enums import (
     AgentControlStatus,
     AgentIdentifier,
@@ -47,6 +48,8 @@ from app.models.enums import (
     DossierSection,
     PipelineStageStatus,
     ResearchState,
+    SequenceGenerationStatus,
+    SequenceValidationStatus,
 )
 from app.models.pipeline import CampaignContactAgentState
 from app.models.suppression import Suppression
@@ -63,11 +66,14 @@ from app.services.companies import records as company_records
 from app.services.crm import detail as crm_detail
 from app.services.crm import records as crm_records
 from app.services.imports import apollo, campaign_import, display, staging
+from app.services.personalization.cadence import campaign_opted_in
 from app.services.resolution import service as resolution_service
 from app.services.seller import campaign_offerings as seller_campaign_offerings
 from app.services.seller import profile as seller_profile
 from app.services.seller import readiness as seller_readiness
 from app.services.seller import records as seller_records
+from app.services.sequences import read as sequence_read
+from app.services.sequences import review as sequence_review
 from app.services.verification import console as verification_console
 from app.services.workbench_agents import views as agent_views
 from app.web.v2 import context as shell
@@ -78,6 +84,16 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 _CAMPAIGNS_JS = Path(__file__).parent.parent / "static" / "campaigns.js"
 CAMPAIGNS_JS_VERSION = sha256(_CAMPAIGNS_JS.read_bytes()).hexdigest()[:12]
+
+# The same content-derived token, for the same reason, on the stylesheet every
+# customer page loads. Production Hardening serves `/static/*` with
+# `Cache-Control: public, max-age=3600`, so without a token a browser that
+# cached the stylesheet before a deploy renders the new markup against the old
+# rules for up to an hour. The sequence UI adds a table, a step selector and a
+# mail body to that stylesheet, which is exactly the kind of markup that is
+# unreadable unstyled rather than merely plain.
+_V2_CSS = Path(__file__).parent.parent / "static" / "v2.css"
+V2_CSS_VERSION = sha256(_V2_CSS.read_bytes()).hexdigest()[:12]
 
 PAGE_SIZE = 25
 #: How many planned rows the import preview renders. The preview's job is to make
@@ -192,13 +208,21 @@ SOON_SECTIONS: dict[str, dict[str, Any]] = {
     "sequences": {
         "title": "Sequences",
         "nav": "sequences",
+        # This page used to say the sequence engine did not exist. It does: the
+        # Personalization Agent writes all seven messages as one unit, and they
+        # are readable on Review and on the contact. What is still missing is
+        # everything *after* writing them -- sending, stop rules, anything in
+        # flight -- so the page now points at what exists and is honest about
+        # what does not.
         "lede": (
-            "A follow-up after a first message, and the rules for when to stop, will live "
-            "here. There is no first message yet, so there is no sequence."
+            "Seven-message sequences are written and readable today, on Review and on each "
+            "contact. What will live here is the rest of the story: when a sequence stops, "
+            "what is in flight, and what came back. None of that exists yet, because "
+            "nothing in this build sends."
         ),
         "tiles": [
-            ("Steps", "No sequence engine exists."),
-            ("In flight", "Nothing is in flight."),
+            ("Steps", "Seven messages per contact, written as one unit. Read them on Review."),
+            ("In flight", "Nothing is in flight: there is no sending path in this build."),
         ],
         "note": "",
     },
@@ -353,6 +377,7 @@ def _render(
         "operator_initials": initials,
         "capture_ready": "contact_capture_intake" in settings.features.enabled(),
         "campaigns_js_version": CAMPAIGNS_JS_VERSION,
+        "v2_css_version": V2_CSS_VERSION,
         "flash_ok": request.query_params.get("ok"),
         "flash_err": request.query_params.get("err"),
     }
@@ -427,6 +452,129 @@ def _reader(db: Session) -> workbench_agents.PhaseTwoWorkbenchReader:
 
 def _agent_workbench_on(settings: Settings) -> bool:
     return "agent_workbench" in settings.features.enabled()
+
+
+def _sequences_on(settings: Settings) -> bool:
+    """Whether sequence *generation* is available in this deployment.
+
+    Only the deployment half of the gate. It answers "can anything be
+    generated", never "should this page show anything" -- an existing sequence
+    stays readable after the switch is turned off, because concealing recorded
+    human decisions is not the same as disabling a feature.
+    """
+
+    return "email_sequences" in settings.features.enabled()
+
+
+#: Every way the sequence section can be in a state other than "here it is".
+#: Each one is rendered with its own wording; see ``_sequence.html::unavailable``.
+SEQUENCE_STATE_FEATURE_OFF = "feature_off"
+SEQUENCE_STATE_CAMPAIGN_OFF = "campaign_off"
+SEQUENCE_STATE_PENDING = "pending"
+SEQUENCE_STATE_FAILED = "failed"
+SEQUENCE_STATE_AVAILABLE = "available"
+
+
+@dataclass(frozen=True)
+class SequenceAvailability:
+    """Why the sequence section looks the way it does, for one membership.
+
+    This type exists because a boolean could not tell the truth. "No sequence"
+    covering feature-off, campaign-not-opted-in, nothing-generated-yet and
+    generation-refused is how an operator ends up waiting for something that is
+    switched off, and every one of those four needs different wording.
+
+    ``read_only`` is separate from ``state`` on purpose. A sequence that already
+    exists stays visible when the deployment switch is off or the Campaign has
+    opted out -- the work happened and the decisions are real -- but no new
+    decision may be recorded against it, because the operator has just been told
+    this configuration no longer produces sequences and a review action would
+    contradict that.
+    """
+
+    state: str
+    #: True when an existing sequence is shown but cannot be acted on.
+    read_only: bool = False
+    #: Set when the sequence is shown despite the configuration being off, so
+    #: the page can explain why it is still here.
+    notice: str | None = None
+
+    @property
+    def available(self) -> bool:
+        return self.state == SEQUENCE_STATE_AVAILABLE
+
+
+def _sequence_availability(
+    settings: Settings, *, campaign: Campaign | None, sequence: Any | None
+) -> SequenceAvailability:
+    """Resolve the exact state, given the two switches and what exists.
+
+    The order is deliberate. An existing sequence is disclosed first, because
+    hiding recorded work is the worst of the available answers; only when there
+    is nothing to show does the configuration decide the wording.
+    """
+
+    generation_on = _sequences_on(settings)
+    # ``campaign is None`` means the caller is not looking at one campaign -- the
+    # unfiltered Review queue, for instance. Opt-in is a per-campaign fact, so
+    # with no campaign in hand the honest answer is silence about it rather than
+    # a claim that some campaign has not opted in.
+    campaign_known = campaign is not None
+    opted_in = campaign is not None and campaign_opted_in(campaign)
+
+    if sequence is not None:
+        if not generation_on:
+            return SequenceAvailability(
+                state=SEQUENCE_STATE_AVAILABLE,
+                read_only=True,
+                notice=(
+                    "Seven-message sequences are switched off in this environment. This "
+                    "sequence and every decision recorded against it are kept and shown in "
+                    "full, but no new sequence will be written and no review action can be "
+                    "recorded while the switch is off."
+                ),
+            )
+        if campaign_known and not opted_in:
+            return SequenceAvailability(
+                state=SEQUENCE_STATE_AVAILABLE,
+                read_only=True,
+                notice=(
+                    "This campaign is no longer configured to generate sequences, so the "
+                    "Personalization Agent has gone back to writing a single draft for it. "
+                    "The sequence below was written while the campaign was opted in; it is "
+                    "kept and readable, and no new review action can be recorded against it."
+                ),
+            )
+        failed = (
+            sequence.generation_status is not SequenceGenerationStatus.COMPLETE
+            or sequence.validation_status is SequenceValidationStatus.FAILED
+        )
+        if failed:
+            return SequenceAvailability(state=SEQUENCE_STATE_FAILED)
+        return SequenceAvailability(state=SEQUENCE_STATE_AVAILABLE)
+
+    if not generation_on:
+        return SequenceAvailability(state=SEQUENCE_STATE_FEATURE_OFF)
+    if campaign_known and not opted_in:
+        return SequenceAvailability(state=SEQUENCE_STATE_CAMPAIGN_OFF)
+    return SequenceAvailability(state=SEQUENCE_STATE_PENDING)
+
+
+def _step_position(step: str | None) -> int:
+    """Turn a ``?step=`` parameter into a position, defaulting to the initial.
+
+    Out-of-range and unparseable values fall back to position 1 rather than
+    404ing. A mistyped step is a navigation slip, not a missing resource, and
+    the initial message is always the right thing to show instead.
+    """
+
+    if not step:
+        return 1
+    try:
+        value = int(step)
+    except ValueError:
+        return 1
+    return value if 1 <= value <= SEQUENCE_LENGTH else 1
 
 
 def _kb_on(settings: Settings) -> bool:
@@ -1646,6 +1794,9 @@ def review_page(
     campaign: str | None = None,
     view: str = draft_service.VIEW_AWAITING,
     draft: str | None = None,
+    sequence: str | None = None,
+    step: str | None = None,
+    sview: str | None = None,
 ) -> HTMLResponse:
     """Read a draft, and decide.
 
@@ -1671,6 +1822,86 @@ def review_page(
         )
 
     settings = get_settings()
+    # Sequences and legacy single drafts coexist in this queue on purpose. A
+    # Campaign that opted in has sequences; one that did not still has drafts;
+    # and a contact whose sequence predates the feature still has the draft it
+    # was given. Showing one list with two honest card shapes is truer than
+    # hiding either.
+    sequence_queue = None
+    sequence_card = None
+    sequence_detail = None
+    sequence_rows: tuple[sequence_read.MessageRow, ...] = ()
+    sequence_availability = SequenceAvailability(state=SEQUENCE_STATE_FEATURE_OFF)
+    # The queue is listed whenever any sequence exists, not only while the
+    # deployment switch is on. Turning generation off stops new sequences; it
+    # does not make recorded human decisions disappear from the page that
+    # recorded them.
+    # The sequence section carries its own view parameter. It used to inherit the
+    # single-draft queue's, whose filters mean different things -- so choosing one
+    # silently showed sequences it did not describe. A filter that shows something
+    # other than what it says is worse than one that is missing.
+    #
+    # The default is "all". Sequences are approved when they are generated, so a
+    # filter for work waiting on the operator would be permanently empty, and
+    # landing on it would show an empty page above seven readable messages.
+    _sequence_view_keys = {key for key, _label in sequence_read.VIEWS}
+    sequence_view = sview if sview in _sequence_view_keys else sequence_read.VIEW_ALL
+    sequence_queue = sequence_read.list_queue(
+        db,
+        campaign_id=campaign_id,
+        view=sequence_view,
+        limit=50,
+    )
+    # Visibility is decided by whether any sequence exists, not by whether the
+    # *current filter* happens to match one. Deciding it on the filter would hide
+    # the filter chips too, leaving an operator with an approved sequence and no
+    # way to navigate to it once the switch was off.
+    if not _sequences_on(settings) and not sequence_read.any_sequence_exists(
+        db, campaign_id=campaign_id
+    ):
+        sequence_queue = None
+    chosen_sequence = _uuid(sequence) if sequence else None
+    if sequence_queue is not None and chosen_sequence is not None:
+        # Resolved by id, not by scanning the filtered rows. Expanding a
+        # sequence must work whichever filter is active: a link to a specific
+        # sequence is a request to read that sequence, and narrowing the list
+        # is not an answer to it. The card still renders inside the queue, so a
+        # sequence outside the current filter is shown expanded above a list
+        # that does not include it -- which is the truthful arrangement.
+        sequence_card = sequence_read.card_for_sequence(db, chosen_sequence)
+    if sequence_card is not None:
+        record = sequence_read.get_sequence(db, sequence_card.sequence_id)
+        if record is not None:
+            sequence_rows = sequence_read.message_rows(db, sequence=record)
+            # One body, on request. Expanding a card must not become a
+            # reason to load seven of them.
+            sequence_detail = sequence_read.message_detail(
+                db, sequence=record, position=_step_position(step)
+            )
+            sequence_availability = _sequence_availability(
+                settings,
+                campaign=db.get(Campaign, record.campaign_id),
+                sequence=record,
+            )
+    if sequence_card is None:
+        sequence_availability = _sequence_availability(
+            settings,
+            campaign=db.get(Campaign, campaign_id) if campaign_id else None,
+            sequence=None,
+        )
+    # The queue itself carries the notice when the switch is off, because the
+    # per-card availability only resolves once a card is expanded and an
+    # operator needs to know why the list is read-only before opening anything.
+    sequence_queue_notice = (
+        (
+            "Seven-message sequences are switched off in this environment. Everything below "
+            "is kept and readable in full, including every decision already recorded, but no "
+            "new sequence will be written and no review action can be recorded while the "
+            "switch is off."
+        )
+        if not _sequences_on(settings) and sequence_queue is not None
+        else None
+    )
     execution = None
     if (
         selected is not None
@@ -1697,6 +1928,29 @@ def review_page(
             "campaigns": campaign_service.list_campaigns(db),
             "campaign_id": campaign_id,
             "agent_workbench_on": _agent_workbench_on(settings),
+            "sequences_on": _sequences_on(settings),
+            "sequence_generation_on": _sequences_on(settings),
+            "sequence_availability": sequence_availability,
+            # With the feature off and no sequence anywhere, the section is
+            # omitted rather than rendered as a permanent "switched off" banner
+            # on a page about single drafts. It reappears the moment either the
+            # feature is on or a sequence exists to disclose.
+            "sequence_section_visible": _sequences_on(settings) or sequence_queue is not None,
+            "sequence_view_has_rows": bool(sequence_queue and sequence_queue.rows),
+            "sequence_queue_notice": sequence_queue_notice,
+            "sequence_queue": sequence_queue,
+            "sequence_views": sequence_read.VIEWS,
+            "sequence_view": sequence_view,
+            "sequence_card": sequence_card,
+            "sequence_rows": sequence_rows,
+            "sequence_detail": sequence_detail,
+            "sequence_step": _step_position(step),
+            # A contact holding both a live sequence and a current legacy draft
+            # is a real state (the campaign opted out after generating). The
+            # page must say why both exist rather than showing two answers.
+            "sequence_and_draft_both_present": bool(
+                sequence_queue and sequence_queue.rows and queue.rows
+            ),
         },
     )
 
@@ -1890,6 +2144,350 @@ def review_discard(
 # ---------------------------------------------------------------------------
 
 
+#: Where a sequence action returns when the submitted target is not usable.
+SEQUENCE_FALLBACK = "/app/review"
+
+
+def _sequence_back(target: str) -> str:
+    """Constrain a submitted redirect target to this application.
+
+    The ``back`` field is operator-supplied and is echoed into a ``Location``
+    header, so it must not be able to point off-site. A value that is not a
+    plain in-app path is replaced outright rather than repaired: a half-fixed
+    redirect target is harder to reason about than a discarded one.
+
+    ``//host`` is rejected explicitly. It starts with a slash and looks local,
+    but a browser reads it as a protocol-relative absolute URL and leaves the
+    site.
+    """
+
+    candidate = (target or "").strip()
+    if not candidate.startswith("/app") or candidate.startswith("//"):
+        return SEQUENCE_FALLBACK
+    return candidate
+
+
+#: The largest form body a sequence write route will accept, in bytes. A message
+#: body is truncated to 20 000 characters and a subject to 300, so anything past
+#: this is not a message -- and by the time truncation runs, the whole request
+#: has already been buffered in memory.
+MAX_SEQUENCE_FORM_BYTES = 256 * 1024
+
+OVERSIZED_REFUSAL = (
+    "That submission was too large to be a sequence message, so nothing was changed. "
+    "A message body is limited to 20,000 characters."
+)
+
+
+def _oversized(request: Request) -> bool:
+    """Whether the declared body is too large to be a sequence edit.
+
+    Checked from ``Content-Length`` before the form is read, which is the only
+    point where refusing costs nothing. This does not close the hole completely
+    -- a chunked request declares no length, and Starlette buffers as it parses
+    -- so it is a bound on the ordinary case rather than a guarantee. The
+    complete fix is a body-size limit at the server or proxy layer. Production
+    Hardening now supplies one -- ``MAX_REQUEST_BYTES``, enforced in
+    ``app/core/http.py`` before a route is reached -- but at 25 MiB, which is a
+    ceiling for uploads rather than for a review note. This route-level bound
+    stays because the two answer different questions: PH stops a request that
+    could exhaust the process, this stops a message body that is not a message.
+    """
+
+    declared = request.headers.get("content-length")
+    if declared is None:
+        return False
+    try:
+        return int(declared) > MAX_SEQUENCE_FORM_BYTES
+    except ValueError:
+        return False
+
+
+def _same_origin(request: Request) -> bool:
+    """Whether this write plausibly came from this application's own pages.
+
+    The workbench has no sessions, no cookies and no sign-in, so a cross-site
+    POST carries no ambient authority and cannot authenticate as anybody. What it
+    *can* do, while an operator has the local server running, is drive the
+    sequence write routes blind from a page in another tab. Approving or
+    discarding was already reachable that way; the edit route widened it to
+    "write arbitrary text into a message body", and that widening is worth
+    closing on its own terms.
+
+    Two headers, in order of reliability. ``Sec-Fetch-Site`` is set by the
+    browser and cannot be forged by page script; ``same-origin`` and ``none``
+    (a typed URL or a bookmark) are accepted, anything else is refused. Failing
+    that, ``Origin`` is compared against the request's own host.
+
+    A request carrying neither header is allowed. That is deliberate, not an
+    oversight: ``curl``, the test client and any scripted local tool send
+    neither, and this check is a cross-site guard rather than an authentication
+    mechanism. Treating "no headers" as hostile would break every non-browser
+    caller while stopping no browser attack, because browsers always send them.
+
+    ``Origin: null`` is allowed for the same reason, and this is not a gap that
+    was tolerated -- it is one Production Hardening created. PH sets
+    ``Referrer-Policy: no-referrer`` on every response, and the Fetch Standard
+    says a document with that policy serialises its origin as ``null`` when it
+    sends a form POST. So every write from these very pages carries
+    ``Origin: null``. Modern browsers hide the consequence because
+    ``Sec-Fetch-Site`` is checked first and short-circuits; a browser that
+    implements ``Referrer-Policy`` but not ``Sec-Fetch-*``, or any proxy or
+    extension that strips ``Sec-Fetch-*`` while leaving ``Origin``, would have
+    had every approve, discard and edit silently refused with a message saying
+    the request came from another site.
+
+    Refusing ``null`` also buys nothing. A genuine cross-site POST from an
+    attacker's page carries *that page's* origin, which still fails the host
+    comparison below; the only requests ``null`` describes are ones whose origin
+    the browser declined to disclose, and this application's own pages are now
+    permanently among them.
+    """
+
+    site = request.headers.get("sec-fetch-site")
+    if site is not None:
+        return site in {"same-origin", "none"}
+    origin = request.headers.get("origin")
+    if origin is None or origin == "null":
+        return True
+    host = request.headers.get("host")
+    if host is None:  # pragma: no cover - Host is mandatory in HTTP/1.1
+        return False
+    return origin.rstrip("/").endswith(f"//{host}")
+
+
+CROSS_SITE_REFUSAL = (
+    "That request did not come from this application, so nothing was changed. "
+    "Sequence review actions can only be taken from the review pages themselves."
+)
+
+
+def _sequence_write_refusal(
+    db: Session, settings: Settings, *, sequence_id: uuid.UUID | None
+) -> str | None:
+    """Why this sequence cannot be acted on right now, or ``None``.
+
+    Read-only is enforced here rather than only in the template. A page can be
+    left open across a configuration change, and a form that has already been
+    rendered will happily post; the refusal has to live where the write happens.
+
+    The rule matches what the page says: a sequence stays fully readable when
+    the deployment switch is off or its Campaign has opted out, but no new
+    decision may be recorded against it. Recording one would contradict the
+    notice the operator was just shown, and would put a fresh human decision on
+    a configuration that no longer produces sequences.
+    """
+
+    if sequence_id is None:
+        return None
+    sequence = sequence_read.get_sequence(db, sequence_id)
+    if sequence is None:
+        return None
+    availability = _sequence_availability(
+        settings,
+        campaign=db.get(Campaign, sequence.campaign_id),
+        sequence=sequence,
+    )
+    if not availability.read_only:
+        return None
+    if not _sequences_on(settings):
+        return (
+            "Seven-message sequences are switched off in this environment, so no review "
+            "decision can be recorded. The sequence and its existing decisions are unchanged."
+        )
+    return (
+        "This campaign is no longer configured to generate sequences, so no new review "
+        "decision can be recorded against this one. Its existing decisions are unchanged."
+    )
+
+
+def _sequence_id_for_version(db: Session, version_id: uuid.UUID) -> uuid.UUID | None:
+    version = db.get(EmailSequenceMessageVersion, version_id)
+    return version.sequence_id if version is not None else None
+
+
+@router.post("/review/sequence/messages/{version_id}/approve")
+def sequence_message_approve(
+    version_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    reason: str = Form(""),
+    back: str = Form("/app/review"),
+) -> RedirectResponse:
+    """Approve one message. The other six are untouched."""
+
+    target = _sequence_back(back)
+    identifier = _uuid(version_id)
+    if identifier is None:
+        return _redirect(target, err="That is not a sequence message version id.")
+    if not _same_origin(request):
+        return _redirect(target, err=CROSS_SITE_REFUSAL)
+    if _oversized(request):
+        return _redirect(target, err=OVERSIZED_REFUSAL)
+    refusal = _sequence_write_refusal(
+        db, get_settings(), sequence_id=_sequence_id_for_version(db, identifier)
+    )
+    if refusal is not None:
+        return _redirect(target, err=refusal)
+    try:
+        sequence_review.approve_message(
+            db,
+            message_version_id=identifier,
+            actor=sequence_review.OPERATOR_ACTOR,
+            reason=reason or None,
+        )
+    except sequence_review.SequenceReviewError as exc:
+        return _redirect(target, err=str(exc))
+    db.commit()
+    return _redirect(
+        target,
+        ok=(
+            "Approved, and recorded against this exact message version. Nothing was sent "
+            "and no Gmail draft was created: there is no sending path in this build."
+        ),
+    )
+
+
+@router.post("/review/sequence/messages/{version_id}/discard")
+def sequence_message_discard(
+    version_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    reason: str = Form(""),
+    back: str = Form("/app/review"),
+) -> RedirectResponse:
+    """Discard one message without pretending the sequence is ready."""
+
+    target = _sequence_back(back)
+    identifier = _uuid(version_id)
+    if identifier is None:
+        return _redirect(target, err="That is not a sequence message version id.")
+    if not _same_origin(request):
+        return _redirect(target, err=CROSS_SITE_REFUSAL)
+    if _oversized(request):
+        return _redirect(target, err=OVERSIZED_REFUSAL)
+    refusal = _sequence_write_refusal(
+        db, get_settings(), sequence_id=_sequence_id_for_version(db, identifier)
+    )
+    if refusal is not None:
+        return _redirect(target, err=refusal)
+    try:
+        sequence_review.discard_message(
+            db,
+            message_version_id=identifier,
+            actor=sequence_review.OPERATOR_ACTOR,
+            reason=reason or None,
+        )
+    except sequence_review.SequenceReviewError as exc:
+        return _redirect(target, err=str(exc))
+    db.commit()
+    return _redirect(
+        target,
+        ok="Discarded. The sequence is not ready while one of its messages is discarded.",
+    )
+
+
+@router.post("/review/sequence/messages/{version_id}/edit")
+def sequence_message_edit(
+    version_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    subject: str = Form(""),
+    body: str = Form(""),
+    reason: str = Form(""),
+    back: str = Form("/app/review"),
+) -> RedirectResponse:
+    """Write a new version of one message, keeping the text it replaced."""
+
+    target = _sequence_back(back)
+    identifier = _uuid(version_id)
+    if identifier is None:
+        return _redirect(target, err="That is not a sequence message version id.")
+    if not _same_origin(request):
+        return _redirect(target, err=CROSS_SITE_REFUSAL)
+    if _oversized(request):
+        return _redirect(target, err=OVERSIZED_REFUSAL)
+    refusal = _sequence_write_refusal(
+        db, get_settings(), sequence_id=_sequence_id_for_version(db, identifier)
+    )
+    if refusal is not None:
+        return _redirect(target, err=refusal)
+    try:
+        sequence_review.edit_message(
+            db,
+            message_version_id=identifier,
+            subject=subject,
+            body=body,
+            actor=sequence_review.OPERATOR_ACTOR,
+            reason=reason or None,
+        )
+    except sequence_review.SequenceReviewError as exc:
+        return _redirect(target, err=str(exc))
+    db.commit()
+    return _redirect(
+        target,
+        ok=(
+            "Saved as a new version. The previous version is kept, any approval against it "
+            "is marked invalidated, and the other six messages are unchanged."
+        ),
+    )
+
+
+@router.post("/review/sequence/{sequence_id}/approve")
+def sequence_approve(
+    sequence_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    version_ids: str = Form(""),
+    reason: str = Form(""),
+    back: str = Form("/app/review"),
+) -> RedirectResponse:
+    """Approve every message in one operation, naming every exact version.
+
+    ``version_ids`` is what the page was showing. If it no longer matches what
+    is stored, nothing is approved -- a bulk approval that quietly covered a
+    version the operator never read would be exactly the ambiguity the sequence
+    review model exists to prevent.
+    """
+
+    target = _sequence_back(back)
+    identifier = _uuid(sequence_id)
+    if identifier is None:
+        return _redirect(target, err="That is not a sequence id.")
+    if not _same_origin(request):
+        return _redirect(target, err=CROSS_SITE_REFUSAL)
+    if _oversized(request):
+        return _redirect(target, err=OVERSIZED_REFUSAL)
+    refusal = _sequence_write_refusal(db, get_settings(), sequence_id=identifier)
+    if refusal is not None:
+        return _redirect(target, err=refusal)
+    parsed = tuple(
+        value
+        for value in (_uuid(item) for item in version_ids.split(",") if item.strip())
+        if value is not None
+    )
+    if not parsed:
+        return _redirect(target, err="No message versions were named, so nothing was approved.")
+    try:
+        sequence_review.approve_sequence(
+            db,
+            sequence_id=identifier,
+            expected_version_ids=parsed,
+            actor=sequence_review.OPERATOR_ACTOR,
+            reason=reason or None,
+        )
+    except sequence_review.SequenceReviewError as exc:
+        return _redirect(target, err=str(exc))
+    db.commit()
+    return _redirect(
+        target,
+        ok=(
+            "Approved all seven messages, each recorded against its exact version. Nothing "
+            "was sent and no Gmail draft was created."
+        ),
+    )
+
+
 @router.get("/contacts")
 def contacts_page(
     request: Request,
@@ -1985,6 +2583,7 @@ def contact_page(
     request: Request,
     db: Session = Depends(get_db),
     campaign: str | None = None,
+    step: str | None = None,
 ) -> HTMLResponse:
     """One person, and every Agent that touched them.
 
@@ -2024,6 +2623,31 @@ def contact_page(
             (row for row in page.rows if row.contact_id == identifier and row.is_current), None
         )
 
+    sequence_summary = None
+    sequence_rows: tuple[sequence_read.MessageRow, ...] = ()
+    sequence_detail = None
+    sequence_record = None
+    sequence_availability = SequenceAvailability(state=SEQUENCE_STATE_FEATURE_OFF)
+    if membership is not None:
+        # Looked up regardless of the switches: an existing sequence is shown
+        # and explained, never hidden.
+        sequence_record = sequence_read.sequence_for_membership(
+            db, campaign_contact_id=membership.id
+        )
+        sequence_availability = _sequence_availability(
+            settings,
+            campaign=db.get(Campaign, membership.campaign_id),
+            sequence=sequence_record,
+        )
+        if sequence_record is not None:
+            sequence_summary = sequence_read.summary(db, sequence=sequence_record)
+            # Seven rows without bodies; one body only when a row is expanded.
+            sequence_rows = sequence_read.message_rows(db, sequence=sequence_record)
+            if step is not None:
+                sequence_detail = sequence_read.message_detail(
+                    db, sequence=sequence_record, position=_step_position(step)
+                )
+
     return _render(
         request,
         db,
@@ -2038,6 +2662,15 @@ def contact_page(
             "membership": membership,
             "latest_draft": latest_draft,
             "agent_workbench_on": _agent_workbench_on(settings),
+            "sequences_on": _sequences_on(settings) or sequence_record is not None,
+            "sequence_section_visible": _sequences_on(settings) or sequence_record is not None,
+            "sequence_generation_on": _sequences_on(settings),
+            "sequence_availability": sequence_availability,
+            "sequence": sequence_record,
+            "sequence_summary": sequence_summary,
+            "sequence_rows": sequence_rows,
+            "sequence_detail": sequence_detail,
+            "sequence_step": _step_position(step) if step is not None else None,
         },
     )
 
