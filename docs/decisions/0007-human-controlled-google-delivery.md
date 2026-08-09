@@ -1,25 +1,40 @@
 # Decision 0007 — Human-controlled Google delivery
 
-Status: Approved product direction
+Status: Approved architectural direction; current sequencing superseded by Decision 0010
 
 Date: 2026-08-07; reconciled 2026-08-09
 
 ## Decision
 
-The current delivery cycle does not build an autonomous Sending Agent.
+VMR does not build an autonomous Sending Agent as the default delivery model.
 
-VMR remains the authoritative system of record and the human remains responsible for sending.
-
-The current cycle adds Google capabilities in two deliberately separate stages:
+If and when Google/Gmail capabilities are introduced, they remain two deliberately separate permission boundaries:
 
 1. **Google sign-in / Workspace identity** authenticates an internal person to VMR.
-2. **Gmail mailbox authorization** separately grants only the Gmail permissions required for operator-triggered draft management.
+2. **Gmail mailbox authorization** separately grants only the Gmail permissions required for operator-triggered mailbox actions.
 
 Google sign-in alone must never imply Gmail mailbox access.
 
-## Current-cycle Gmail slice
+## Current sequencing update
 
-The first Gmail capability is intentionally narrow:
+Decision 0010 changes the delivery order, not this architectural boundary.
+
+The immediate milestone is now the hosted manual-copy Beta:
+
+```text
+Chrome Extension capture
+→ authenticated hosted VMR
+→ Campaign / Contact / Agent stages
+→ seven-message sequence
+→ operator inspects / optionally edits / copies exact email text
+→ manual outreach outside VMR
+```
+
+Gmail mailbox authorization and Gmail draft creation are postponed until after the operator has personally used and accepted that workflow with real contacts.
+
+## Deferred Gmail slice
+
+When Gmail work resumes, the first intended capability remains narrow:
 
 ```text
 operator opens one exact current VMR sequence message/version
@@ -33,48 +48,25 @@ VMR does not auto-send.
 
 Repeated/retried draft creation must be idempotent and must not create duplicate drafts accidentally.
 
-## Intended current-cycle flow
-
-```text
-Campaign Contact
-→ Research
-→ Company Intelligence
-→ Insights
-→ Personalization sequence
-→ Beta 1 operator UI
-→ internal VMR authentication
-→ separate Gmail authorization
-→ operator-triggered individual Gmail draft
-→ human send from Gmail
-```
-
 ## Deferred
 
-The following are explicitly not required for this cycle:
+The following are explicitly not required for the hosted manual-copy Beta:
 
+- Gmail mailbox authorization;
+- Gmail draft creation;
 - automatic cadence scheduling;
 - automatic creation of later follow-up drafts;
 - sent-message observation;
 - reply/thread monitoring;
 - automatic suppression/stop transitions driven by Gmail state;
-- automatic sending.
-
-These belong to a later human-send Gmail state machine after the first on-demand draft path is accepted.
-
-## Google Sheets
-
-Google Sheets synchronization is no longer a committed current-cycle gate.
-
-The application is the primary operating surface. Sheets may be reconsidered later as a projection if real internal use demonstrates a reporting/collaboration need.
-
-If built, Sheets must never become authoritative for evidence, sequence state, Gmail state, approvals or delivery decisions.
+- automatic sending;
+- Google Sheets synchronization.
 
 ## Consequences
 
-- VMR remains authoritative for evidence, policy, generation versions, sequence/message/version identity and provider lineage.
-- Gmail is an external delivery destination, not a source-of-truth store.
-- internal user/session ownership becomes a prerequisite for Gmail mailbox ownership;
-- Gmail credentials/tokens remain server-side and encrypted;
+- VMR remains authoritative for evidence, policy, generation versions and sequence/message/version identity.
 - the Chrome extension authenticates only to VMR and never receives Google/Gmail tokens;
+- future Gmail credentials/tokens remain server-side and encrypted;
 - no provider action may fabricate sent/delivered state;
-- automatic Sending remains deferred.
+- automatic Sending remains deferred;
+- no Gmail implementation may delay the hosted manual-copy Beta defined in Decision 0010.
