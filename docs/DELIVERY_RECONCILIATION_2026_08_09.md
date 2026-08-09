@@ -2,7 +2,7 @@
 
 Status: Current coordination record
 Date: 2026-08-09
-Authoritative engineering baseline: `main` at `4dd09198940dc9eed8c1aa14de96a57e0d89ce28`
+Authoritative engineering baseline: `main` at `139f6e80d51b573d023bbd3eeb405c6aef268bfd`
 
 ## Merged product truth
 
@@ -12,7 +12,8 @@ The following slices are merged and must be treated as product truth, not in-fli
 - Production Hardening — PR #245;
 - Chrome Extension pre-auth preparation — PR #248;
 - seven-message Personalization sequence — PR #249;
-- Beta 1 operator UI — PR #250.
+- Beta 1 operator UI — PR #250;
+- post-Beta VPS staging foundation — PR #252.
 
 The merged Beta path is:
 
@@ -29,62 +30,69 @@ CSV/XLSX export was deliberately deferred. Sending and Gmail remain unavailable.
 
 ## Current delivery gate
 
-The immediate delivery gate is the VPS staging foundation.
+The VPS foundation is merged. The immediate objective is no longer to build more infrastructure in isolation; it is to make the merged Beta safely usable as a real hosted application.
 
-An existing local foundation branch/workstream is being reconciled onto exact post-Beta main. That reconciliation must not deploy or expose the application yet.
+The next sequence is:
 
-Required deployment properties include:
+```text
+prove VPS infrastructure on the real host
+→ authenticated hosted `/app` + `/admin`
+→ secure Chrome Extension remote capture
+→ real contact moves through Agent stages
+→ operator sees all seven messages
+→ optional edit/copy
+→ manual outreach
+```
 
-- real `APP_ENV=staging` configuration;
-- safe release-symlink/restart/rollback ordering;
-- `uvicorn --no-proxy-headers` with explicit application trusted-proxy handling;
-- deterministic shared writable upload/runtime paths;
-- `/healthz`, `/readyz`, `/version` wiring;
-- exact trusted host at deployment time;
-- explicit trusted loopback proxy CIDRs;
-- exact `RELEASE_ID`;
-- 25 MiB upload payload with larger global request ceiling and nginx headroom;
-- application-owned security headers;
-- default-deny remote application access before app authentication exists;
-- no public PostgreSQL exposure;
-- no weakening of Production Hardening's non-loopback staging DB-host guard;
-- reproducible dependency installation;
-- deterministic worker `HOME`/`PATH` suitable for later managed Claude CLI use.
-
-## Deployment-time values still required
-
-These values are intentionally not invented in repository code:
-
-1. staging DNS hostname;
-2. temporary private-access mechanism before application authentication (for example Basic Auth or another explicitly selected boundary);
-3. exact non-loopback local/private PostgreSQL host/address for the VPS topology.
+The initial VPS bring-up is an infrastructure smoke test only. It proves nginx, HTTPS, PostgreSQL, migrations, systemd services, health/readiness, release identity, logs, backup/rollback and reboot recovery. It is not operator UAT by itself.
 
 ## Security gate before real operator exposure
 
 Issue #247 remains a launch blocker for remote operator acceptance: application write routes must sit behind an authenticated application boundary before the VPS operator UI is exposed.
 
-The interim VPS/nginx configuration may keep the application private/default-denied, but that is not a substitute for the authenticated application model.
+The current Workbench safety rule makes `/app` and `/admin` local-only. That temporary localhost-era restriction must not simply be weakened. The successor rule should permit staging only when the authenticated internal-user/session boundary is valid, while preserving intentional local development behavior.
 
-The next application slice after private staging is proven is therefore internal identity/session authentication, followed by separate Gmail mailbox authorization.
+Anonymous remote application writes must be refused. Cookie-session writes require the appropriate CSRF boundary.
+
+## Chrome Extension gate before real-contact acceptance
+
+The merged extension is pre-auth preparation only. Real staging capture requires:
+
+- a stable extension distribution/ID decision;
+- VMR-specific authentication;
+- HTTPS remote capture;
+- Authorization-aware CORS and pinned extension origin;
+- deliberate replacement of the current local-only capture restriction.
+
+The extension authenticates only to VMR. It must never receive Google identity or Gmail mailbox tokens.
 
 ## Locked current-cycle definition of done
 
 ```text
 private HTTPS VMR staging
 → authenticated internal operator
-→ Campaign / Contact
+→ Chrome Extension captures a real prospect
+→ Contact appears in the intended Campaign
+→ Contact progresses through Agent stages
+→ Research / Company Intelligence / Insights / Personalization complete
 → seven-message Beta UI
-→ optional edit/copy
-→ separate Gmail authorization
-→ operator chooses one exact current message/version
-→ VMR creates or updates one Gmail draft
-→ operator confirms the correct draft in Gmail
-→ VMR retains exact durable lineage
+→ operator inspects each message
+→ optional immutable edit
+→ Copy Subject / Copy Body / Copy Full Email
+→ operator performs outreach manually outside VMR
 ```
 
-Automatic sending, cadence, sent/reply/thread monitoring and later automatic follow-up drafts are next-cycle work.
+Passing this workflow with real contacts is the current-cycle definition of done.
 
-Google Sheets remains deferred. Campaign spreadsheet export is also not a current launch requirement.
+**Gmail mailbox authorization and Gmail draft creation are postponed until after this hosted manual-copy Beta has been personally used and accepted.** Automatic sending, cadence, sent/reply/thread monitoring, Google Sheets and Campaign spreadsheet export are also not current launch requirements.
+
+## Deployment-time values still required
+
+These values are intentionally not invented in repository code:
+
+1. staging DNS hostname;
+2. temporary/private access mechanism during infrastructure bring-up;
+3. exact non-loopback local/private PostgreSQL host/address for the VPS topology.
 
 ## Repository convergence rule
 
