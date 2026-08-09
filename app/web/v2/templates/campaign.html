@@ -7,7 +7,7 @@
     <div class="v2-title-row">
       <div class="v2-title-main">
         <div class="v2-title-line">
-          <h1>{{ execution.name }}</h1>
+          <h1>{{ execution.name | neutralize }}</h1>
           {{ campaign_state(execution.status, execution.execution_enabled) }}
           {% if campaigns | length > 1 %}
           <details class="v2-menu">
@@ -15,7 +15,7 @@
             <div class="v2-menu-panel left">
               {% for other in campaigns %}
               <a class="v2-menu-item" href="/app/campaigns/{{ other.campaign.id }}">
-                <b>{{ other.campaign.name }}
+                <b>{{ other.campaign.name | neutralize }}
                   {%- if other.campaign.id == execution.campaign_id %} {{ tag('open now', 'brand', small=true) }}{% endif %}</b>
                 <span>{{ other.contact_count }} contacts · {{ other.campaign.status.value }}{% if not other.campaign.execution_enabled %} · execution off{% endif %}</span>
               </a>
@@ -206,7 +206,7 @@
           <div class="v2-rerun-rows">
             {% for candidate in rerun_candidates %}
             <div class="v2-rerun-row">
-              <a href="/app/contacts/{{ candidate.contact_id }}?campaign={{ execution.campaign_id }}">{{ candidate.contact_label }}</a>
+              <a href="/app/contacts/{{ candidate.contact_id }}?campaign={{ execution.campaign_id }}">{{ candidate.contact_label | neutralize }}</a>
               {{ tag(candidate.status.value, 'err', small=true) }}
               {# `nice` because some recorded details are machine vocabulary — a
                  suppression writes "email opt_out" — and this is a customer-facing
@@ -239,6 +239,7 @@
             <tr>
               <th>Contact</th>
               <th>Company</th>
+              <th>Sequence</th>
               <th>Where it stands</th>
               <th class="num">Changed</th>
               <th></th>
@@ -246,13 +247,24 @@
           </thead>
           <tbody>
             {% for row in execution.contacts %}
+            {% set seq = sequence_states.get(row.campaign_contact_id) %}
             <tr>
               <td>
-                <a href="/app/contacts/{{ row.contact_id }}?campaign={{ execution.campaign_id }}">{{ row.contact_label }}</a>
-                <div class="v2-sub">{{ row.email or 'no address yet' }}</div>
+                <a href="/app/contacts/{{ row.contact_id }}?campaign={{ execution.campaign_id }}">{{ row.contact_label | neutralize }}</a>
+                <div class="v2-sub">{{ (row.email | neutralize) or 'no address yet' }}</div>
               </td>
               <td>
-                <div>{{ row.company_label or '—' }}</div>
+                <div>{{ (row.company_label | neutralize) or '—' }}</div>
+              </td>
+              <td class="v2-nowrap">
+                {% if seq %}
+                <a class="v2-seq-state{{ ' is-complete' if seq.complete }}"
+                   href="/app/contacts/{{ row.contact_id }}?campaign={{ execution.campaign_id }}">{{ seq.label }}</a>
+                {% if seq.edited %}<div class="v2-sub">· {{ seq.edited }} edited</div>{% endif %}
+                {% if seq.discarded %}<div class="v2-sub">· {{ seq.discarded }} discarded</div>{% endif %}
+                {% else %}
+                <span class="v2-muted">{{ sequence_absent_label }}</span>
+                {% endif %}
               </td>
               <td class="v2-cell-wide">
                 <div class="v2-cell-state">
@@ -281,12 +293,14 @@
       </div>
       <div class="v2-cardlist">
         {% for row in execution.contacts %}
+        {% set seq = sequence_states.get(row.campaign_contact_id) %}
         <div class="v2-item">
           <div class="v2-item-top">
-            <a href="/app/contacts/{{ row.contact_id }}?campaign={{ execution.campaign_id }}">{{ row.contact_label }}</a>
+            <a href="/app/contacts/{{ row.contact_id }}?campaign={{ execution.campaign_id }}">{{ row.contact_label | neutralize }}</a>
             <span class="when">{{ row.updated_at | ago }}</span>
           </div>
-          <div class="v2-sub">{{ row.company_label or '—' }}</div>
+          <div class="v2-sub">{{ (row.company_label | neutralize) or '—' }}</div>
+          <div class="v2-sub">{{ seq.label if seq else sequence_absent_label }}{% if seq and seq.edited %} · {{ seq.edited }} edited{% endif %}</div>
           <div class="v2-cell-state v2-chipline">
             {{ dot(stage_tone(row.pipeline_status), row.pipeline_status.value == 'running') }}
             <b>{{ row.pipeline_status.value | nice }}</b>

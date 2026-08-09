@@ -1307,6 +1307,12 @@ def campaign_page(
     if selected is not None:
         rerun_candidates = agent_rerun.candidates(db, campaign_id=identifier, agent_id=selected)
 
+    # Sequence presence for the whole roster in one query, keyed by the
+    # membership id the roster row already carries. Looked up regardless of the
+    # feature switch, for the reason the Contact page does the same: a sequence
+    # that exists is shown and explained, never hidden because a flag moved.
+    sequence_states = sequence_read.roster_states(db, campaign_id=identifier)
+
     return _render(
         request,
         db,
@@ -1314,6 +1320,8 @@ def campaign_page(
         {
             "active_nav": "campaigns",
             "page_title": execution.name,
+            "sequence_states": sequence_states,
+            "sequence_absent_label": sequence_read.ROSTER_NO_SEQUENCE,
             "live_seconds": LIVE_REFRESH_SECONDS,
             "execution": execution,
             "tiles": tiles,
