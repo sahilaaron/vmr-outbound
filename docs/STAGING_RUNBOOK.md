@@ -1,43 +1,272 @@
 # VMR staging server runbook
 
-Infrastructure only. The application is NOT deployed.
+Infrastructure and deployment procedure for the staging VPS. **No release has
+been deployed yet.** This document describes what deployment does, what it
+refuses to do, and how to verify it — not a system already running.
 
-## Health and readiness (Phase 11)
+## What staging actually serves
 
-The application is expected to expose a liveness and a readiness endpoint on the
-loopback backend. Nginx proxies both, and deployment verification will call them.
+Say this before a deployment, not after: **staging serves no operator UI.**
 
-    backend base URL : http://127.0.0.1:8000     (APP_PORT in /etc/vmr/vmr.env)
-    through nginx    : http://<host>/<path>
+The whole server-rendered interface — `/app` (customer-facing) and `/admin`
+(Workbench) — mounts only when `FEATURES__WORKBENCH` is on, and `create_app()`
+refuses to start with that flag enabled outside `APP_ENV=local`. So a staging
+deployment publishes 39 documented API operations plus three probes, and nothing
+to click.
 
-**UNRESOLVED â€” must be confirmed before deployment.** Two different path pairs
-are in play and I have not invented a winner:
+That is the honest scope of a first deployment: it proves the *foundation* —
+server, accounts, sandboxing, proxy contract, migrations, health gating, backup,
+rollback, reboot survival — against real code. It does not put the product on a
+URL. That waits for authenticated remote access.
 
-| Source | Liveness | Readiness |
-|---|---|---|
-| `docs/DEVELOPMENT.md` (current repo) | `/health` | `/ready` |
-| Infrastructure brief | `/healthz` | `/readyz` |
+## Health, readiness and version
 
-The nginx site proxies **all four** so whichever the application actually ships
-will work. Once the health-endpoint work lands, delete the unused pair from
-`/etc/nginx/sites-available/vmr-staging.conf` and set `HEALTH_PATH` /
-`READY_PATH` in `/usr/local/sbin/vmr-deploy`.
+Three endpoints, deliberately small contracts:
 
-Expected semantics (to be confirmed against the implementation, not assumed):
+| Endpoint | Success | Failure | What it proves |
+|---|---|---|---|
+| `GET /healthz` | `200 {"status":"ok"}` | process/server failure | this web process can answer HTTP; no database or provider call |
+| `GET /readyz` | `200`, status `ready` | `503`, status `not_ready` | startup configuration passed and PostgreSQL answered one bounded `SELECT 1` |
+| `GET /version` | `200 {"version":"<RELEASE_ID>"}` | — | which commit is live |
 
-* **liveness** â€” process is up. Cheap, no dependencies. Used to decide whether to
-  restart the unit.
-* **readiness** â€” dependencies (database) are reachable. Used to decide whether a
-  release may be marked active.
+`/healthz` and `/readyz` are authoritative. `/health` and `/ready` still exist in
+the application as compatibility aliases returning the same hardened contracts,
+but the nginx site deliberately does **not** proxy them: publishing four paths
+for two contracts is an invitation to point a monitor at the deprecated pair.
 
-Deployment success criteria:
+`/readyz` makes **no worker claim**. Queue rows describe work, not whether a
+worker process is alive. `systemctl is-active vmr-worker` plus
+`journalctl -u vmr-worker` is the only honest worker check today.
 
-1. `systemctl is-active vmr-web` is `active`
-2. liveness returns HTTP 200 within 30s of restart
-3. readiness returns HTTP 200 within 60s of restart
-4. only then is the `/srv/vmr/app` symlink switched
+### The Host header is not optional
 
-If readiness fails, the release is NOT marked active and `vmr-rollback` is used.
+The application's Host allow-list applies to the probes too. A bare
+`curl http://127.0.0.1:8000/healthz` sends `Host: 127.0.0.1` and gets
+**400 Invalid host header**, which looks exactly like a broken deployment.
+
+Every probe must carry the staging hostname:
+
+```bash
+HOST=<the value of VMR_HEALTH_HOST in /etc/vmr/deploy.conf>
+
+curl -sS -H "Host: $HOST" http://127.0.0.1:8000/healthz
+curl -sS -H "Host: $HOST" http://127.0.0.1:8000/readyz
+curl -sS -H "Host: $HOST" http://127.0.0.1:8000/version
+
+# hardening headers present; HSTS correctly ABSENT over plain HTTP
+curl -sS -D - -o /dev/null -H "Host: $HOST" http://127.0.0.1:8000/healthz \
+  | grep -iE 'x-request-id|x-content-type-options|referrer-policy|x-frame-options|content-security-policy|cache-control|strict-transport'
+
+# the Host guard itself is live - expect 400
+curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8000/healthz
+```
+
+`scripts/smoke.py` accepts a base URL as its first argument, so
+`python scripts/smoke.py https://$HOST` works through nginx. Its *default*
+(`http://127.0.0.1:8000`) sends the wrong Host and returns 400 — do not use the
+default form as a deployment gate. `vmr-deploy` runs the gate itself.
+
+### Proving the proxy boundary is the application's
+
+HSTS is **not** the test — uvicorn would set the scheme itself if its proxy
+handling were left on, and the header would appear either way. The authoritative
+check is the `vmr.http` log line:
+
+```bash
+curl -sS https://$HOST/healthz >/dev/null
+journalctl -u vmr-web -n 1 --no-pager -o cat | python3 -m json.tool
+```
+
+* **Correct:** `"peer_ip": "127.0.0.1"`, `"trusted_proxy": true`, `"client_ip"`
+  the real caller — the application's own boundary did the work.
+* **Wrong:** `"peer_ip"` is the real caller and `"trusted_proxy": false` — uvicorn
+  rewrote the peer, `TRUSTED_PROXY_CIDRS` never matched, and the application's
+  conservative `X-Forwarded-For` chain walk never ran. Check that
+  `--no-proxy-headers` is still on the `ExecStart` line.
+
+## Deploying
+
+```bash
+vmr-deploy --sha <exact-approved-sha>              # dry run: prints the plan
+vmr-deploy --sha <exact-approved-sha> --execute    # does it
+vmr-deploy --list                                  # releases, newest first
+```
+
+Order, and why it is this order:
+
+1. preconditions — root, `/etc/vmr/vmr.env` present and `0640 root:vmr`,
+   `APP_ENV=staging` actually set, `/etc/vmr/deploy.conf` present, and
+   `VMR_HEALTH_HOST` genuinely present in `TRUSTED_HOSTS`
+2. export the exact commit from the bare mirror at `/srv/vmr/repo.git` into
+   `/srv/vmr/releases/<timestamp>-<short-sha>` — code only, no `.git`
+3. release venv; install the pinned closure from `constraints.txt`, then the
+   project `--no-deps`
+4. import-check the release — catches a dependency added to `pyproject.toml` but
+   not regenerated into `constraints.txt`
+5. `vmr-db-backup`
+6. `alembic upgrade head`
+7. write `RELEASE_ID` to `/srv/vmr/shared/runtime/release.env`
+8. **move `/srv/vmr/app` to the new release**
+9. restart `vmr-web`
+10. gate: `/healthz` within 30 s, `/readyz` within 60 s, and `/version` reporting
+    this SHA
+11. only then start `vmr-worker`
+
+**Step 8 before step 9 is the whole point.** Both units name `/srv/vmr/app`
+absolutely in `WorkingDirectory` and `ExecStart`, so the symlink is what *loads*
+a release. Restarting first would health-check the previous release and never
+load the new one — and on a first deployment, where `/srv/vmr/app` does not exist
+yet, the unit could not start at all.
+
+The safety property that ordering was reaching for — *a release is not kept
+unless it passes its gate* — is preserved by the failure path instead:
+
+* **gate fails, previous release exists** → repoint the previous release, restore
+  its `RELEASE_ID`, restart, re-verify, and put the worker back in the state it
+  was in before the run. Exit 4.
+* **gate fails, first deployment** → stop `vmr-web`, remove the symlink, leave the
+  failed release on disk for inspection. Exit 4.
+* **restoration itself fails** → exit 5, manual intervention.
+
+The schema is never downgraded in any of those paths.
+
+## Rolling back
+
+```bash
+vmr-rollback --list
+vmr-rollback --to <release-dir-name>              # dry run
+vmr-rollback --to <release-dir-name> --execute
+```
+
+Same sequence: repoint, rewrite `RELEASE_ID` so `/version` keeps telling the
+truth, restart web, gate, then the worker.
+
+### Rollback policy — read this
+
+Code rollback and database rollback are **not symmetrical**.
+
+* Code: repoint `/srv/vmr/app`, restart. Safe, reversible.
+* Schema: `alembic downgrade` runs destructive DDL. Dropped data does not come
+  back. Downgrade paths are rarely exercised and therefore rarely correct.
+
+Neither script contains any downgrade logic. A failed health check rolls back
+code and leaves the schema in place, because a well-formed migration is backward
+compatible with the previous release. If a migration is not backward compatible,
+code rollback will not save you — take a fresh backup and involve a human before
+deploying it at all.
+
+Always run `vmr-db-backup vmr_staging` before any migration. `vmr-deploy` does
+this itself, at step 5.
+
+## Database
+
+    sudo vmr-db-backup vmr_staging                       # timestamped custom-format dump
+    sudo vmr-db-restore --file <dump> --database <name>  # explicit target REQUIRED
+
+Backups: `/srv/vmr/shared/backups`, `2750 root:root`, dumps `0600`, each with a
+`.sha256` companion that restore verifies. Both scripts use peer authentication
+as the `postgres` system user, so no credential is stored in or read by them.
+
+**Retention is intentionally NOT automated.** Dumps accumulate. Review with
+`ls -lh /srv/vmr/shared/backups`. Add pruning only once a retention requirement
+is agreed — silently deleting staging backups is not a safe default.
+
+### Topology, and why loopback is refused
+
+Staging startup **refuses** a loopback or container-service database host:
+`127.0.0.1`, `::1`, `localhost`, a bare Unix socket, the legacy numeric spellings
+of loopback, and the names `postgres` / `db` / `database`. That guard is
+deliberate and must not be relaxed.
+
+The supported topology is PostgreSQL **on this VPS**, reachable on a
+**non-loopback private address**:
+
+* `postgresql.conf` — `listen_addresses` includes that private address
+* `pg_hba.conf` — scoped to that address and the `vmr_staging` role only
+* host firewall — TCP/5432 **denied** from the public Internet
+
+The guard exists to stop staging pointing at a developer machine or a container
+default. A dedicated, firewalled staging database on a private address satisfies
+both its letter and its intent. A hosts-file alias pointing back at `127.0.0.1`
+would satisfy neither and must not be used.
+
+The address depends on this host's interfaces and is deliberately not invented in
+the repository. It is a required deployment variable inside `DATABASE_URL`.
+
+## Request and upload sizing
+
+Three limits, ordered `upload < request < proxy` so each layer's error is the
+right error rather than an accident of which fired first:
+
+| Limit | Value | Bytes | Set in |
+|---|---|---|---|
+| `MAX_UPLOAD_BYTES` | 25 MiB | `26214400` | `/etc/vmr/vmr.env` |
+| `MAX_REQUEST_BYTES` | 26 MiB | `27262976` | `/etc/vmr/vmr.env` |
+| nginx `client_max_body_size` | 28m | `29360128` | the nginx site |
+
+The 1 MiB of headroom on `MAX_REQUEST_BYTES` is not decoration. A multipart
+upload declares the file **plus** its form framing — measured at 230–269 bytes
+for the import route. Setting the global request ceiling equal to the upload
+ceiling makes that framing tip a maximum-size upload over the global limit, so
+the caller gets the hardening middleware's generic
+`413 {"error":"request_too_large"}` instead of the application's own explanatory
+message, and the friendly message becomes unreachable over HTTP. Startup permits
+the equality; do not use it.
+
+nginx sitting **above** the application ceiling is also intentional: an oversized
+declared body then reaches the app and the caller gets its structured JSON 413
+rather than an nginx HTML error page, while nginx still backstops the one case
+the application provably cannot bound — a body with no `Content-Length`, or
+chunked transfer encoding.
+
+Note for completeness: the import route compares the request's *whole*
+`Content-Length` against `MAX_UPLOAD_BYTES`, so a file of exactly 26 214 400
+bytes is still refused — but now by the application's own friendly message rather
+than a generic 413. The effective file ceiling is 25 MiB minus a few hundred
+bytes.
+
+## Security headers
+
+The application owns every security header: `X-Content-Type-Options`,
+`Referrer-Policy`, `X-Frame-Options`, `Permissions-Policy`,
+`Content-Security-Policy`, `Cache-Control` and `Strict-Transport-Security`. Its
+middleware strips any same-named header before the response leaves the app, so
+there is exactly one owner.
+
+nginx `add_header` **appends**. Do not add a CSP, an HSTS header, or any other
+security header to the nginx site or its snippets — the result is two competing
+values, not twice the safety. `HSTS_MAX_AGE_SECONDS` in `/etc/vmr/vmr.env` is the
+supported control, including setting it to `0` during an HTTPS rollout.
+
+Verify after the TLS cutover:
+
+```bash
+curl -sS -D - -o /dev/null https://$HOST/healthz | grep -ci strict-transport-security   # expect 1
+```
+
+## The access boundary
+
+The application has no authentication. Its staging surface includes
+unauthenticated state-changing calls — the whole `/api` surface, and root-level
+`POST /campaigns` from the unprefixed router in `app/api/routes.py` — plus
+`/docs`, `/redoc` and `/openapi.json`.
+
+The nginx site therefore **default-denies**. Only `/.well-known/acme-challenge/`
+is public. Everything else, probes included, goes through an access snippet that
+ships as `deny all;`:
+
+* `/etc/nginx/snippets/vmr-access.conf` — the application surface
+* `/etc/nginx/snippets/vmr-probe-access.conf` — `/healthz`, `/readyz`, `/version`
+
+Relax the probe snippet only if remote infrastructure monitoring genuinely needs
+it; the deployment gate probes loopback on this host and does not need them
+published. Relax the application snippet to an operator IP allow-list, temporary
+HTTP Basic Auth over HTTPS, or both (`satisfy all`).
+
+Neither live snippet nor any htpasswd file is ever committed. This is a network
+boundary, not authentication — it buys time until authenticated remote access
+exists, and is retired deliberately in the same change that proves the
+replacement works.
 
 ## Inspecting logs
 
@@ -49,6 +278,9 @@ journald is authoritative for both services:
     journalctl -u vmr-web -p err          # errors only
     journalctl -u nginx --since today
 
+Both units set `PYTHONUNBUFFERED=1`, so `journalctl -f` keeps up during an
+incident instead of lagging behind Python's block buffering.
+
 Journal retention is bounded: 500M max, 1G kept free, 30-day retention
 (`/etc/systemd/journald.conf.d/10-vmr.conf`).
 
@@ -56,41 +288,24 @@ Application file logs, if the app writes any, go to `/var/log/vmr/` and are
 rotated daily, 14 generations, compressed, `0640 vmr:adm`
 (`/etc/logrotate.d/vmr`). Nginx VMR logs rotate via `/etc/logrotate.d/vmr-nginx`.
 
-## Database
-
-    sudo vmr-db-backup vmr_staging                       # timestamped custom-format dump
-    sudo vmr-db-restore --file <dump> --database <name>  # explicit target REQUIRED
-
-Backups: `/srv/vmr/shared/backups`, `0750 root:root`, dumps `0600`, each with a
-`.sha256` companion that restore verifies.
-
-**Retention is intentionally NOT automated.** Dumps accumulate. Review with
-`ls -lh /srv/vmr/shared/backups`. Add pruning only once a retention requirement
-is agreed â€” silently deleting staging backups is not a safe default.
-
-## Rollback policy â€” READ THIS
-
-Code rollback and database rollback are **not symmetrical**.
-
-* Code: repoint `/srv/vmr/app`, restart. Safe, reversible.
-* Schema: `alembic downgrade` runs destructive DDL. Dropped data does not come
-  back. Downgrade paths are rarely tested.
-
-`vmr-rollback` therefore touches **only** code and contains no database logic.
-A failed health check rolls back code and leaves the schema in place, because a
-well-formed migration is backward compatible with the previous release. If a
-migration is not backward compatible, code rollback will not save you â€” take a
-fresh backup and involve a human before deploying it at all.
-
-Always run `vmr-db-backup vmr_staging` immediately before any migration.
+The hardening middleware's request log is one compact JSON object per request on
+the `vmr.http` logger. It never logs query strings, bodies, uploaded
+spreadsheets, email or personalization text, cookies, authorization values,
+tokens, or full database URLs. It can still render a propagated exception message
+through the outer Starlette/Uvicorn loggers once a response has started — treat
+journald access as sensitive and keep `/var/log/vmr` at `2750 vmr:adm`.
 
 ## Service control
 
     systemctl status vmr-web vmr-worker
     systemctl restart vmr-web
-    systemctl enable --now vmr-web      # only after a real deployment exists
+    systemctl enable vmr-web vmr-worker      # reboot survival; after a healthy deploy
 
-Both units are currently **disabled and inactive** by design.
+Installation leaves both units **disabled and inactive**. `vmr-deploy` starts
+them; `systemctl enable` is a separate, deliberate step once a release has passed
+its gate. Until then a reboot correctly brings up nothing.
+
+After enabling, prove it: reboot, then re-run the probe block above unattended.
 
 ## Nginx
 
@@ -98,26 +313,43 @@ Both units are currently **disabled and inactive** by design.
     ln -s /etc/nginx/sites-available/vmr-staging.conf /etc/nginx/sites-enabled/
     systemctl reload nginx
 
-`vmr-staging.conf` is present but **not enabled**. Enabling it before the app is
-deployed publishes a 502. Note the default site currently owns the `_` catch-all.
+`nginx -t` **fails** unless all four companion files are installed:
+`conf.d/vmr-upgrade-map.conf`, `snippets/vmr-proxy.conf`,
+`snippets/vmr-access.conf`, `snippets/vmr-probe-access.conf`.
 
-## Request-size limit
+The site is present but **not enabled**. Enabling it before a release is deployed
+publishes a 502. Note that the distribution default site currently owns the `_`
+catch-all, so either set the real DNS name in `server_name` or remove the default
+site.
 
-`client_max_body_size 30m`, chosen against the application's
-`MAX_UPLOAD_BYTES = 25 MB` (`app/core/config.py`). Keep the two in step: raising
-the app limit without raising nginx produces a confusing 413 at the proxy.
+## Remaining prerequisites before the first deployment
 
-## Remaining prerequisites before deployment
-
-1. A real DNS hostname pointing at this VPS, then a TLS certificate.
-2. Confirmed health/readiness paths (see above).
-3. **A dependency lock file.** `pyproject.toml` declares version *ranges* and the
-   repository has no `uv.lock` / `poetry.lock` / `requirements.txt`. Deployments
-   are therefore not byte-reproducible today. Generate a constraints/lock file
-   and commit it before the first real deploy.
-4. A merged, production-ready application head (an exact approved SHA).
-5. Git remote access from the server, or an approved artefact transfer method.
-6. Completion of `/usr/local/sbin/vmr-deploy` (it refuses to run while
-   placeholders remain).
-7. Explicit decisions on Gmail / OAuth / Sheets / verification-provider
+1. **A staging DNS hostname**, then a TLS certificate. The same string must appear
+   in `TRUSTED_HOSTS`, nginx `server_name`, and `VMR_HEALTH_HOST` —
+   `vmr-deploy` refuses to run when they disagree.
+2. **A private non-loopback PostgreSQL address**, with `pg_hba` scoped to it and
+   TCP/5432 firewalled from the Internet.
+3. **`/etc/vmr/vmr.env`**, written by hand, `0640 root:vmr`, from
+   `deploy/vmr.env.example`. Values containing spaces must be quoted:
+   `vmr-deploy` sources this file to run Alembic, and systemd's `EnvironmentFile`
+   syntax is more permissive than the shell's.
+4. **`/etc/vmr/deploy.conf`** with a repository URL and the health Host.
+5. **Git read access from the server** — a read-only HTTPS credential helper or a
+   read-only deploy key.
+6. **An approved application commit** — an exact SHA, never a branch.
+7. **The operator source address** for `vmr-access.conf`, or an htpasswd file
+   created on the server.
+8. Explicit decisions on Gmail / OAuth / Sheets / verification-provider
    credentials. None are configured, and none should be until authorised.
+
+## What is deliberately not automated
+
+* **Backup retention.** Dumps accumulate until a retention requirement is agreed.
+* **`systemctl enable`.** Reboot survival is a deliberate act after a healthy
+  release, not a side effect of deployment.
+* **PostgreSQL setup and the firewall.** `vmr-provision` creates directories and
+  accounts; it does not touch the database or the firewall, because those need a
+  human looking at this specific host.
+* **Certificate issuance.** `certbot` is run by hand once DNS resolves.
+* **Anything that would create a credential.** No script here writes
+  `/etc/vmr/vmr.env`, an htpasswd file, or a database password.
