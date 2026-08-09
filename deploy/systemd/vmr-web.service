@@ -1,15 +1,16 @@
 # VMR Outbound Agent - web service.
 # Installs to /etc/systemd/system/vmr-web.service
 #
-# STATUS: SKELETON. Deliberately NOT enabled and NOT started: the application
-# is not deployed, so /srv/vmr/app does not exist yet.
+# STATUS: not enabled and not started by installation. `vmr-deploy` starts it;
+# `systemctl enable` is a separate, deliberate step once a release is healthy.
 #
-# PLACEHOLDERS to confirm at deployment time:
-#   * /srv/vmr/app          - symlink created by deployment -> releases/<sha>
-#   * .venv/bin/uvicorn     - created by the deploy script's venv step
-#   * ${APP_PORT}           - from /etc/vmr/vmr.env, must match the nginx upstream
-# The ExecStart command line matches the repository's documented invocation
-# (docs/DEVELOPMENT.md and run_vmr_app_v2.bat): uvicorn app.main:app.
+# Paths this unit assumes, all created by /usr/local/sbin/vmr-provision:
+#   /srv/vmr/app                     symlink -> releases/<release>, moved by vmr-deploy
+#   /srv/vmr/app/.venv/bin/uvicorn   created by vmr-deploy's venv step
+#   /srv/vmr/shared/{uploads,runtime/home,logs,backups}
+#   /var/log/vmr
+#
+# ${APP_PORT} comes from /etc/vmr/vmr.env and must match the nginx upstream.
 
 [Unit]
 Description=VMR Outbound Agent - web service
@@ -20,7 +21,12 @@ StartLimitIntervalSec=60s
 After=network-online.target postgresql.service
 Wants=network-online.target
 # Wants (not Requires): a PostgreSQL restart should not force-stop the web
-# service; the application handles reconnection.
+# service; the application handles reconnection, and /readyz reports the truth
+# meanwhile.
+#
+# NOTE: PostgreSQL runs on this host on a private, firewalled address (see the
+# DATABASE_URL topology note in vmr.env.example). If that ever moves off-box,
+# delete the postgresql.service ordering rather than leaving a no-op dependency.
 Wants=postgresql.service
 
 [Service]
@@ -28,8 +34,39 @@ Type=exec
 User=vmr
 Group=vmr
 WorkingDirectory=/srv/vmr/app
+
+# Order matters: later assignments win.
+#   1. the protected operator environment
+#   2. the per-release identity vmr-deploy writes (RELEASE_ID), optional so the
+#      unit still starts before a first deployment has ever run
+#   3. process-level invariants that must not depend on either file
 EnvironmentFile=/etc/vmr/vmr.env
-ExecStart=/srv/vmr/app/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port ${APP_PORT}
+EnvironmentFile=-/srv/vmr/shared/runtime/release.env
+# Deterministic PATH rather than whatever systemd's compiled-in default happens
+# to be on this distribution.
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# ProtectHome=true makes /home and /root inaccessible, so the service account's
+# passwd home would be an unreadable path. Point HOME at the sandbox's own
+# writable area instead of leaving libraries to fail on a path that is not there.
+Environment=HOME=/srv/vmr/shared/runtime/home
+# journald is the authoritative log. Without this, Python block-buffers stdout
+# when it is a pipe and `journalctl -f` lags behind reality during an incident.
+Environment=PYTHONUNBUFFERED=1
+
+# --no-proxy-headers is REQUIRED, not stylistic.
+#
+# uvicorn's ProxyHeadersMiddleware is ON by default and trusts 127.0.0.1, so it
+# rewrites scope["client"] and scope["scheme"] from X-Forwarded-* before the
+# application's own boundary runs. The application then sees the end client as
+# its immediate peer, TRUSTED_PROXY_CIDRS never matches, and the deliberately
+# conservative right-to-left X-Forwarded-For chain walk in app/core/http.py
+# becomes dead code. Disabling it here leaves exactly one component deciding
+# what to trust: the application allow-list.
+ExecStart=/srv/vmr/app/.venv/bin/uvicorn app.main:app \
+    --host 127.0.0.1 \
+    --port ${APP_PORT} \
+    --no-proxy-headers \
+    --no-server-header
 
 Restart=on-failure
 RestartSec=5s
@@ -54,6 +91,9 @@ RestrictSUIDSGID=true
 RestrictRealtime=true
 LockPersonality=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# Anything this service creates stays off-limits to other accounts. Staged
+# uploads and staged spreadsheets can carry contact data.
+UMask=0027
 
 [Install]
 WantedBy=multi-user.target
