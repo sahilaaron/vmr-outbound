@@ -2,19 +2,32 @@
 
 ## Current planning sources
 
-- [Next delivery model](NEXT_DELIVERY_MODEL.md) — approved build sequence after the Admin Workbench and Company Intelligence integration.
-- [Decision 0007: Human-controlled Google Workspace delivery](decisions/0007-human-controlled-google-delivery.md) — Gmail drafts and Google Sheets replace an autonomous Sending Agent for the next phase.
-- [Decision 0008: Sequences as a bounded domain, not seven drafts](decisions/0008-seven-message-sequence-domain.md) — why `DraftVersion` could not carry a sequence, and what replaced it.
-- [The seven-message outreach sequence](EMAIL_SEQUENCE.md) — the SEQ-001 domain, versioning, review, timing, rollout, and the future Gmail/Sheets design this build only prepares for.
+- [Delivery reconciliation — 2026-08-09](DELIVERY_RECONCILIATION_2026_08_09.md) — authoritative post-Beta coordination record and repository-convergence checkpoint.
+- [Next delivery model](NEXT_DELIVERY_MODEL.md) — current delivery order from post-Beta main through VPS, authentication, Gmail draft creation and real internal acceptance.
+- [Decision 0007: Human-controlled Google delivery](decisions/0007-human-controlled-google-delivery.md) — Google identity and Gmail mailbox authorization are separate; the current Gmail slice is one operator-triggered draft, never automatic sending.
+- [Decision 0008: Extension distribution and origin pinning](decisions/0008-extension-distribution-and-origin-pinning.md) — stable extension identity/distribution remains a prerequisite for production origin pinning.
+- [Decision 0009: Sequences as a bounded domain, not seven drafts](decisions/0009-seven-message-sequence-domain.md) — why legacy `DraftVersion` could not carry the seven-message sequence and the accepted approved-by-default review semantics.
+- [The seven-message outreach sequence](EMAIL_SEQUENCE.md) — detailed sequence domain, versioning, cadence and future provider integration contract.
 
-## Approved next build order
+## Current merged baseline
 
-1. Merge PR #241 after CI passes on its exact final head.
-2. ~~Build one initial personalized email plus six follow-ups as one versioned sequence.~~ Built (SEQ-001); default off behind a deployment flag plus a per-Campaign opt-in.
-3. Complete Campaign-bound Apollo XLSX/CSV import.
-4. Introduce internal users and Google Workspace OAuth.
-5. Add Gmail Draft Sync.
-6. Add Google Sheets synchronization.
-7. Establish an always-on Ubuntu deployment for multiple internal users.
+`main` at `4dd09198940dc9eed8c1aa14de96a57e0d89ce28` includes:
 
-Automatic sending remains deferred. Gmail is the human-controlled send surface for the next release.
+1. IMP-001 Campaign Contact File Import;
+2. Production Hardening;
+3. Chrome Extension pre-auth preparation;
+4. final seven-message Personalization sequence;
+5. Beta 1 operator UI.
+
+Sending remains unavailable.
+
+## Approved next delivery order
+
+1. Reconcile, review and merge the VPS staging foundation onto post-Beta main.
+2. Deploy a private HTTPS staging instance with default-deny application exposure until app authentication exists.
+3. Add the authenticated internal user/session boundary and Google sign-in; resolve anonymous remote-write blocker #247.
+4. Add separate Gmail mailbox authorization.
+5. Add one operator-triggered Gmail draft action bound to an exact current VMR message/version.
+6. Run real end-to-end internal acceptance.
+
+Automatic sending, automatic Gmail cadence, sent/reply/thread automation, Google Sheets synchronization and Campaign spreadsheet export are not current launch gates.
