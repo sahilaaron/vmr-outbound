@@ -2771,3 +2771,76 @@ progress.v2-progress::-moz-progress-bar {
 .v2-seq-readonly {
   margin-bottom: 12px;
 }
+
+/* --- Beta 1 operator UI ---------------------------------------------------
+
+   The Campaign roster's Sequence cell. A statement of what the row holds, so
+   it is styled as a fact and not as a call to action: no badge tone for
+   "partial", because partial is not a problem an operator has to clear. */
+.v2-seq-state {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.v2-seq-state.is-complete {
+  font-weight: 600;
+}
+
+/* One fully expanded message on the Contact page. Unlike the Review queue,
+   this page shows all seven bodies, because it is one contact and the operator
+   came to read, copy and edit them. */
+.v2-seq-full {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+}
+.v2-seq-full > .v2-seq-full-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 12px;
+  margin-bottom: 10px;
+}
+.v2-seq-full-step {
+  font-weight: 600;
+}
+
+/* The copy row. Buttons only -- no links -- so keyboard activation is the
+   browser's job rather than ours. */
+.v2-seq-copyrow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* One live region for the whole page. Success may fade; failure must not, and
+   must be visually distinct, because the only recovery from a failed copy is a
+   manual selection the operator has to make. */
+.v2-seq-copystatus {
+  margin-top: 10px;
+  min-height: 1.2em;
+  font-size: 0.9em;
+  color: var(--muted, inherit);
+}
+.v2-seq-copystatus.is-error {
+  color: var(--err, #b00020);
+  font-weight: 600;
+}
+
+/* The identity block a later Gmail draft feature reads. Small, monospaced and
+   collapsed by default: it is provenance, not content. */
+.v2-seq-ids {
+  margin-top: 10px;
+  font-size: 0.82em;
+}
+.v2-seq-ids dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 10px;
+  margin: 6px 0 0;
+}
+.v2-seq-ids dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}

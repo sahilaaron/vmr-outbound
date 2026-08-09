@@ -95,6 +95,21 @@ CAMPAIGNS_JS_VERSION = sha256(_CAMPAIGNS_JS.read_bytes()).hexdigest()[:12]
 _V2_CSS = Path(__file__).parent.parent / "static" / "v2.css"
 V2_CSS_VERSION = sha256(_V2_CSS.read_bytes()).hexdigest()[:12]
 
+# `live.js` was the one asset still loaded without a token, which made it the
+# one asset a deploy could not reliably replace. It is a small file, but it is
+# the auto-refresh, so a stale copy keeps polling a shape the server no longer
+# returns. Same derivation, so there is one rule for every versioned asset
+# rather than a rule and an exception.
+_LIVE_JS = Path(__file__).parent.parent / "static" / "live.js"
+LIVE_JS_VERSION = sha256(_LIVE_JS.read_bytes()).hexdigest()[:12]
+
+# The Beta 1 copy controls. External because the deployed CSP is
+# `script-src 'self'` with no nonce and no `unsafe-inline`, so an inline handler
+# would silently not run -- and a copy button that silently does nothing is
+# worse than no copy button.
+_SEQUENCE_JS = Path(__file__).parent.parent / "static" / "sequence.js"
+SEQUENCE_JS_VERSION = sha256(_SEQUENCE_JS.read_bytes()).hexdigest()[:12]
+
 PAGE_SIZE = 25
 #: How many planned rows the import preview renders. The preview's job is to make
 #: the file's *shape* legible, not to be a spreadsheet viewer; the counts above it
@@ -378,6 +393,8 @@ def _render(
         "capture_ready": "contact_capture_intake" in settings.features.enabled(),
         "campaigns_js_version": CAMPAIGNS_JS_VERSION,
         "v2_css_version": V2_CSS_VERSION,
+        "live_js_version": LIVE_JS_VERSION,
+        "sequence_js_version": SEQUENCE_JS_VERSION,
         "flash_ok": request.query_params.get("ok"),
         "flash_err": request.query_params.get("err"),
     }
@@ -394,13 +411,23 @@ def _redirect(url: str, *, ok: str | None = None, err: str | None = None) -> Red
     the operator back to the exact draft and filter they were on — so the separator
     has to be chosen rather than assumed. Appending a second ``?`` produced a URL
     where the flash became part of the previous parameter's value and never showed.
+
+    A fragment has to be split off for the same reason and put back last. The
+    Contact page returns to the exact message that was acted on, which makes its
+    target ``…?campaign=…#message-3``; appending the flash to the end of that
+    puts ``&ok=…`` *inside* the fragment, where it is never a query parameter
+    and never reaches ``request.query_params``. The operator would then be
+    returned to the right place and told nothing.
     """
 
     params = {key: value for key, value in (("ok", ok), ("err", err)) if value}
     if not params:
         return RedirectResponse(url, status_code=303)
-    separator = "&" if "?" in url else "?"
-    return RedirectResponse(f"{url}{separator}{urlencode(params)}", status_code=303)
+    base, marker, fragment = url.partition("#")
+    separator = "&" if "?" in base else "?"
+    return RedirectResponse(
+        f"{base}{separator}{urlencode(params)}{marker}{fragment}", status_code=303
+    )
 
 
 def _not_found(request: Request, db: Session, message: str) -> HTMLResponse:
@@ -864,7 +891,10 @@ def _activity_lines(events: Sequence[agent_views.ActivityView]) -> list[dict[str
     lines: list[dict[str, Any]] = []
     for event in events:
         agent = AGENT_SPECS[event.agent_id].display_name if event.agent_id else "Pipeline"
-        who = event.contact_label or "A contact"
+        # Neutralized here rather than in the template, because the template
+        # receives a *composed* sentence and can no longer tell which part of it
+        # came from a spreadsheet. This is the one imported value in the line.
+        who = display.safe_text(event.contact_label) or "A contact"
         verb = event.event_type.value.replace("_", " ")
         text_parts = [f"{who} — {verb}"]
         if event.to_status is not None:
@@ -1290,6 +1320,12 @@ def campaign_page(
     if selected is not None:
         rerun_candidates = agent_rerun.candidates(db, campaign_id=identifier, agent_id=selected)
 
+    # Sequence presence for the whole roster in one query, keyed by the
+    # membership id the roster row already carries. Looked up regardless of the
+    # feature switch, for the reason the Contact page does the same: a sequence
+    # that exists is shown and explained, never hidden because a flag moved.
+    sequence_states = sequence_read.roster_states(db, campaign_id=identifier)
+
     return _render(
         request,
         db,
@@ -1297,6 +1333,8 @@ def campaign_page(
         {
             "active_nav": "campaigns",
             "page_title": execution.name,
+            "sequence_states": sequence_states,
+            "sequence_absent_label": sequence_read.ROSTER_NO_SEQUENCE,
             "live_seconds": LIVE_REFRESH_SECONDS,
             "execution": execution,
             "tiles": tiles,
@@ -1411,7 +1449,8 @@ def campaign_agent_rerun(
         # Name the first few rather than a bare count: "3 were not re-run" sends the
         # operator hunting, and the reason is already in hand.
         shown = "; ".join(
-            f"{refusal.contact_label} — {refusal.reason}" for refusal in outcome.refusals[:3]
+            f"{display.safe_text(refusal.contact_label)} — {refusal.reason}"
+            for refusal in outcome.refusals[:3]
         )
         remaining = len(outcome.refusals) - 3
         if remaining > 0:
@@ -2583,7 +2622,6 @@ def contact_page(
     request: Request,
     db: Session = Depends(get_db),
     campaign: str | None = None,
-    step: str | None = None,
 ) -> HTMLResponse:
     """One person, and every Agent that touched them.
 
@@ -2625,7 +2663,7 @@ def contact_page(
 
     sequence_summary = None
     sequence_rows: tuple[sequence_read.MessageRow, ...] = ()
-    sequence_detail = None
+    sequence_details: tuple[sequence_read.MessageDetail, ...] = ()
     sequence_record = None
     sequence_availability = SequenceAvailability(state=SEQUENCE_STATE_FEATURE_OFF)
     if membership is not None:
@@ -2641,12 +2679,13 @@ def contact_page(
         )
         if sequence_record is not None:
             sequence_summary = sequence_read.summary(db, sequence=sequence_record)
-            # Seven rows without bodies; one body only when a row is expanded.
             sequence_rows = sequence_read.message_rows(db, sequence=sequence_record)
-            if step is not None:
-                sequence_detail = sequence_read.message_detail(
-                    db, sequence=sequence_record, position=_step_position(step)
-                )
+            # All seven bodies, in one query. This is the page an operator came
+            # to read, copy and edit the sequence on, so paging through it one
+            # message at a time cost six extra loads and bought nothing. The
+            # Review queue keeps the no-bodies rule, because it lists forty
+            # contacts rather than one.
+            sequence_details = sequence_read.message_details(db, sequence=sequence_record)
 
     return _render(
         request,
@@ -2669,8 +2708,7 @@ def contact_page(
             "sequence": sequence_record,
             "sequence_summary": sequence_summary,
             "sequence_rows": sequence_rows,
-            "sequence_detail": sequence_detail,
-            "sequence_step": _step_position(step) if step is not None else None,
+            "sequence_details": sequence_details,
         },
     )
 

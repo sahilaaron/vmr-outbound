@@ -779,10 +779,16 @@ def sequence_for_membership(
     ).first()
 
 
-def message_rows(session: Session, *, sequence: EmailSequence) -> tuple[MessageRow, ...]:
-    """All seven rows for the Contact-page table, in one query, without bodies."""
+def _current_versions_statement(sequence: EmailSequence) -> Select[Any]:
+    """Every live message/version/decision triple for one sequence.
 
-    records = session.execute(
+    Shared by the three readers below so "current" means exactly one thing --
+    ``superseded_at IS NULL`` -- in every one of them. When that predicate was
+    written out per function, a reader that forgot it would silently show an
+    edited-away version as current.
+    """
+
+    return (
         select(EmailSequenceMessage, EmailSequenceMessageVersion, EmailSequenceMessageReview)
         .join(
             EmailSequenceMessageVersion,
@@ -796,58 +802,15 @@ def message_rows(session: Session, *, sequence: EmailSequence) -> tuple[MessageR
             EmailSequenceMessage.sequence_key == sequence.sequence_key,
             EmailSequenceMessageVersion.superseded_at.is_(None),
         )
-        .order_by(EmailSequenceMessage.position)
-    ).all()
-    return tuple(
-        MessageRow(
-            message_id=message.id,
-            version_id=version.id,
-            position=message.position,
-            message_type=message.message_type,
-            purpose=message.purpose,
-            subject=version.subject,
-            message_version=version.message_version,
-            origin=version.origin,
-            validation_status=version.validation_status,
-            decision=review.decision if review is not None else None,
-            decided_at=review.decided_at if review is not None else None,
-            decided_by=review.decided_by if review is not None else None,
-            recommended_delay_days=version.recommended_delay_days,
-            recommended_elapsed_day=version.recommended_elapsed_day,
-            predecessor_message_id=message.predecessor_message_id,
-            source_version_id=version.source_version_id,
-            warning_count=len(version.warnings or []),
-        )
-        for message, version, review in records
     )
 
 
-def message_detail(
-    session: Session, *, sequence: EmailSequence, position: int
-) -> MessageDetail | None:
-    """One message, with its body. The only place a body is loaded for a page."""
-
-    record = session.execute(
-        select(EmailSequenceMessage, EmailSequenceMessageVersion, EmailSequenceMessageReview)
-        .join(
-            EmailSequenceMessageVersion,
-            EmailSequenceMessageVersion.message_id == EmailSequenceMessage.id,
-        )
-        .outerjoin(
-            EmailSequenceMessageReview,
-            EmailSequenceMessageReview.message_version_id == EmailSequenceMessageVersion.id,
-        )
-        .where(
-            EmailSequenceMessage.sequence_key == sequence.sequence_key,
-            EmailSequenceMessage.position == position,
-            EmailSequenceMessageVersion.superseded_at.is_(None),
-        )
-        .limit(1)
-    ).first()
-    if record is None:
-        return None
-    message, version, review = record
-    row = MessageRow(
+def _build_row(
+    message: EmailSequenceMessage,
+    version: EmailSequenceMessageVersion,
+    review: EmailSequenceMessageReview | None,
+) -> MessageRow:
+    return MessageRow(
         message_id=message.id,
         version_id=version.id,
         position=message.position,
@@ -866,8 +829,15 @@ def message_detail(
         source_version_id=version.source_version_id,
         warning_count=len(version.warnings or []),
     )
+
+
+def _build_detail(
+    message: EmailSequenceMessage,
+    version: EmailSequenceMessageVersion,
+    review: EmailSequenceMessageReview | None,
+) -> MessageDetail:
     return MessageDetail(
-        row=row,
+        row=_build_row(message, version, review),
         body=version.body,
         original_subject=version.original_subject,
         original_body=version.original_body,
@@ -884,6 +854,142 @@ def message_detail(
         created_by=version.created_by,
         created_at=version.created_at,
     )
+
+
+@dataclass(frozen=True)
+class SequenceRosterState:
+    """What the Campaign roster says about one membership's sequence.
+
+    Deliberately a statement of fact rather than a workflow state. "Partial" is
+    not a queue an operator has to clear; it is what the row currently holds.
+    """
+
+    campaign_contact_id: uuid.UUID
+    sequence_id: uuid.UUID
+    message_count: int
+    edited: int
+    discarded: int
+
+    @property
+    def step_total(self) -> int:
+        return SEQUENCE_LENGTH
+
+    @property
+    def complete(self) -> bool:
+        return self.message_count == SEQUENCE_LENGTH
+
+    @property
+    def label(self) -> str:
+        """The roster cell, in the vocabulary the brief fixed."""
+
+        if self.complete:
+            return f"{SEQUENCE_LENGTH} of {SEQUENCE_LENGTH}"
+        return f"Partial — {self.message_count} of {SEQUENCE_LENGTH}"
+
+
+#: What a roster row shows when no live sequence exists for the membership.
+ROSTER_NO_SEQUENCE = "No sequence yet"
+
+
+def roster_states(
+    session: Session, *, campaign_id: uuid.UUID
+) -> dict[uuid.UUID, SequenceRosterState]:
+    """Sequence presence for every membership in one campaign, in one query.
+
+    Keyed by ``campaign_contact_id`` because that is what the roster row already
+    carries, so the page needs no extra lookup to join them.
+
+    One statement for the whole roster, for the same reason the queue tallies
+    are one statement: a page of a hundred memberships must not cost a hundred
+    queries to say "7 of 7".
+    """
+
+    rows = session.execute(
+        select(
+            EmailSequence.campaign_contact_id,
+            EmailSequence.id,
+            func.count(EmailSequenceMessageVersion.id),
+            func.count(EmailSequenceMessageVersion.id).filter(
+                EmailSequenceMessageVersion.origin == SequenceMessageOrigin.HUMAN_EDITED
+            ),
+            func.count(EmailSequenceMessageReview.decision).filter(
+                EmailSequenceMessageReview.decision == SequenceReviewDecision.DISCARDED
+            ),
+        )
+        .join(
+            EmailSequenceMessage,
+            EmailSequenceMessage.sequence_key == EmailSequence.sequence_key,
+        )
+        .join(
+            EmailSequenceMessageVersion,
+            EmailSequenceMessageVersion.message_id == EmailSequenceMessage.id,
+        )
+        .outerjoin(
+            EmailSequenceMessageReview,
+            EmailSequenceMessageReview.message_version_id == EmailSequenceMessageVersion.id,
+        )
+        .where(
+            EmailSequence.campaign_id == campaign_id,
+            EmailSequence.superseded_at.is_(None),
+            EmailSequenceMessageVersion.superseded_at.is_(None),
+        )
+        .group_by(EmailSequence.campaign_contact_id, EmailSequence.id)
+    ).all()
+    return {
+        membership_id: SequenceRosterState(
+            campaign_contact_id=membership_id,
+            sequence_id=sequence_id,
+            message_count=int(total),
+            edited=int(edited),
+            discarded=int(discarded),
+        )
+        for membership_id, sequence_id, total, edited, discarded in rows
+    }
+
+
+def message_rows(session: Session, *, sequence: EmailSequence) -> tuple[MessageRow, ...]:
+    """All seven rows for the Contact-page table, in one query, without bodies."""
+
+    records = session.execute(
+        _current_versions_statement(sequence).order_by(EmailSequenceMessage.position)
+    ).all()
+    return tuple(_build_row(message, version, review) for message, version, review in records)
+
+
+def message_detail(
+    session: Session, *, sequence: EmailSequence, position: int
+) -> MessageDetail | None:
+    """One message, with its body. Used where a page expands exactly one."""
+
+    record = session.execute(
+        _current_versions_statement(sequence)
+        .where(EmailSequenceMessage.position == position)
+        .limit(1)
+    ).first()
+    if record is None:
+        return None
+    message, version, review = record
+    return _build_detail(message, version, review)
+
+
+def message_details(session: Session, *, sequence: EmailSequence) -> tuple[MessageDetail, ...]:
+    """All seven messages *with* their bodies, in one query.
+
+    The queue deliberately never does this -- forty cards would mean two hundred
+    and eighty bodies. The Contact page is the opposite case: exactly one
+    contact, whose seven messages an operator has come to read, copy and edit.
+    Loading them one position at a time behind a ``?step=`` link made the
+    operator page seven times to see one sequence, and made "copy the whole
+    thing" impossible.
+
+    One statement, ordered by position, so the cost is one query and seven
+    bodies rather than seven queries.
+    """
+
+    records = session.execute(
+        _current_versions_statement(sequence).order_by(EmailSequenceMessage.position)
+    ).all()
+    return tuple(_build_detail(message, version, review) for message, version, review in records)
 
 
 def summary(session: Session, *, sequence: EmailSequence) -> SequenceSummary:

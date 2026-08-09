@@ -101,7 +101,7 @@
     </div>
   </main>
 </div>
-{% if live_seconds %}<script src="{{ url_for('static', path='live.js') }}" defer></script>{% endif %}
+{% if live_seconds %}<script src="{{ url_for('static', path='live.js') }}?v={{ live_js_version }}" defer></script>{% endif %}
 {% block scripts %}{% endblock %}
 </body>
 </html>

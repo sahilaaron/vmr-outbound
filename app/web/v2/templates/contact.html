@@ -53,7 +53,7 @@
     {% for candidate, campaign in detail.memberships %}
     <a class="v2-chip sm {{ 'on' if membership and candidate.id == membership.id }}"
        href="/app/contacts/{{ detail.contact.id }}?campaign={{ candidate.campaign_id }}">
-      {{ campaign.name if campaign else 'campaign removed' }}
+      {{ (campaign.name | neutralize) if campaign else 'campaign removed' }}
     </a>
     {% endfor %}
   </div>
@@ -124,7 +124,12 @@
       <div class="v2-card" id="sequence">
         <div class="v2-card-head">
           <h2>The seven-message sequence</h2>
-          <span class="v2-note">Written as one unit. Reviewed one message at a time.</span>
+          <span class="v2-note">
+            Written as one unit. All seven are readable here; reviewing any of them is optional.
+          </span>
+          {# The way back to the campaign this membership belongs to. The roster
+             links here; this link closes the loop. #}
+          <a class="v2-btn sm ghost" href="/app/campaigns/{{ membership.campaign_id }}">Open the campaign</a>
         </div>
 
         {#
@@ -206,19 +211,17 @@
           </thead>
           <tbody>
             {% for row in sequence_rows %}
-            <tr class="{{ 'on' if sequence_step == row.position }}">
+            <tr>
               <th scope="row">{{ row.step_label }}</th>
               <td>{{ 'initial' if row.position == 1 else 'follow-up' }}</td>
               <td>{{ row.purpose_label }}</td>
               <td>{{ row.timing_label }}</td>
-              <td class="v2-seq-cell-subject">{{ row.subject | neutralize }}</td>
+              <td class="v2-seq-cell-subject">{{ row.subject }}</td>
               <td>{{ row.review_label }}</td>
               <td>{{ row.edit_label }}</td>
               <td class="m">v{{ row.message_version }}</td>
               <td>
-                <a class="v2-btn sm" href="/app/contacts/{{ detail.contact.id }}?campaign={{ membership.campaign_id }}&step={{ row.position }}#sequence">
-                  {{ 'Hide' if sequence_step == row.position else 'Open' }}
-                </a>
+                <a class="v2-btn sm" href="#message-{{ row.position }}">Read</a>
               </td>
             </tr>
             {% endfor %}
@@ -226,26 +229,33 @@
         </table>
         </div>
 
-        {% if sequence_detail %}
-        <div class="v2-card-body v2-seq-rowdetail">
-          {{ seq.message(sequence_detail, "/app/contacts/" ~ detail.contact.id ~ "?campaign=" ~ membership.campaign_id ~ "&step=" ~ sequence_step, read_only=sequence_availability.read_only) }}
-          {#
-            Exact identifiers live here, in secondary diagnostic detail, rather
-            than as labels on the table. An operator needs them when something is
-            wrong; a reader deciding on copy does not.
-          #}
-          <details class="v2-seq-ids">
-            <summary>Exact identifiers</summary>
-            <dl class="v2-dl">
-              <dt>Sequence</dt><dd class="m">{{ sequence_summary.sequence_id }} · key {{ sequence_summary.sequence_key }}</dd>
-              <dt>Message</dt><dd class="m">{{ sequence_detail.row.message_id }}</dd>
-              <dt>This version</dt><dd class="m">{{ sequence_detail.row.version_id }}</dd>
-              <dt>Predecessor</dt><dd class="m">{{ sequence_detail.row.predecessor_message_id or 'none — this is the initial message' }}</dd>
-              <dt>Edited from</dt><dd class="m">{{ sequence_detail.row.source_version_id or 'none — this version was generated, not edited' }}</dd>
-            </dl>
-          </details>
+        {#
+          All seven messages, in full, on one page. The Review queue shows one
+          body at a time because it lists forty contacts; this page is one
+          contact whose seven messages the operator came to read, copy and edit,
+          so paging through them behind `?step=` bought nothing and cost six
+          extra page loads.
+
+          One live region for the whole page, shared by every copy button, so
+          repeated copying does not queue seven announcements at a screen
+          reader.
+        #}
+        <div class="v2-card-body">
+          <p class="v2-note">
+            All seven messages, exactly as they stand. Nothing here is sent, scheduled
+            or drafted anywhere: there is no sending path in this build.
+          </p>
+          <div class="v2-seq-copystatus" id="seq-copy-status" role="status" aria-live="polite"></div>
+          {% for message_detail in sequence_details %}
+          {{ seq.full_message(
+               message_detail,
+               sequence_summary,
+               detail.contact.id,
+               membership.campaign_id,
+               "/app/contacts/" ~ detail.contact.id ~ "?campaign=" ~ membership.campaign_id ~ "#message-" ~ message_detail.row.position,
+               read_only=sequence_availability.read_only) }}
+          {% endfor %}
         </div>
-        {% endif %}
         {% endif %}
       </div>
       {% endif %}
@@ -415,3 +425,8 @@
   </div>
 </div>
 {% endblock %}
+
+{# External, versioned, and loaded only where the copy controls exist. The
+   deployed CSP is `script-src 'self'` with no nonce, so this is the only shape
+   a script on this page can take. #}
+{% block scripts %}<script src="{{ url_for('static', path='sequence.js') }}?v={{ sequence_js_version }}" defer></script>{% endblock %}
