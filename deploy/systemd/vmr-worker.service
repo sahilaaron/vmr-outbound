@@ -1,0 +1,81 @@
+# VMR Outbound Agent - Agent worker.
+# Installs to /etc/systemd/system/vmr-worker.service
+#
+# STATUS: not enabled and not started by installation. vmr-deploy starts it only
+# after the web release has passed its health and readiness gate, because a
+# worker that claims jobs against a release that cannot serve is doing durable
+# work on behalf of code nobody has verified.
+#
+# The argument form matches the repository's own launcher:
+#   python scripts/run_agent_worker.py --poll-seconds N --workers N
+#
+# NOTE: the worker performs outbound-sending-adjacent work. DRY_RUN=true is a
+# staging startup requirement, so nothing can be scheduled for real delivery, but
+# do not enable this unit until sending authorisation and feature flags are
+# explicitly settled.
+
+[Unit]
+Description=VMR Outbound Agent - Agent worker
+# Restart-loop guard. Only honoured in [Unit].
+StartLimitBurst=5
+StartLimitIntervalSec=120s
+After=network-online.target postgresql.service vmr-web.service
+Wants=network-online.target
+Wants=postgresql.service
+
+[Service]
+Type=exec
+User=vmr
+Group=vmr
+WorkingDirectory=/srv/vmr/app
+
+# Same three-layer ordering as vmr-web; see that unit for why.
+EnvironmentFile=/etc/vmr/vmr.env
+EnvironmentFile=-/srv/vmr/shared/runtime/release.env
+# Deterministic PATH. This is also the future Claude CLI contract: the CLI must
+# be resolvable by app/services/thinking/claude_cli.py, which calls
+# shutil.which(settings.claude_cli_path). Install it to /usr/local/bin, or set an
+# absolute CLAUDE_CLI_PATH in /etc/vmr/vmr.env. A user-scoped install under a
+# home directory is invisible to this unit by design (ProtectHome=true).
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Deterministic, writable HOME inside ReadWritePaths. ProtectHome=true keeps
+# /home and /root inaccessible; this is what lets a subprocess that needs to read
+# or write per-user state work without an interactive shell and without opening
+# up the real home directories. No credential is configured here, and none should
+# be until a model Agent is deliberately switched on.
+Environment=HOME=/srv/vmr/shared/runtime/home
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/srv/vmr/app/.venv/bin/python scripts/run_agent_worker.py \
+    --poll-seconds ${VMR_WORKER_POLL_SECONDS} \
+    --workers ${VMR_WORKER_CONCURRENCY}
+
+Restart=on-failure
+RestartSec=10s
+# Allow an in-flight Agent job to finish; research jobs have a 300s ceiling, so
+# a short stop timeout would kill useful work. 120s is a deliberate compromise
+# and matches the job lease duration.
+KillSignal=SIGTERM
+TimeoutStopSec=120s
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vmr-worker
+
+# --- Sandboxing. No credentials here; they come from EnvironmentFile. ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/vmr/shared /var/log/vmr
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

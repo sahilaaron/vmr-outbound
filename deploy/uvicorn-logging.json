@@ -1,0 +1,87 @@
+{
+  "_comment": [
+    "Logging configuration for the deployed web service, passed to uvicorn as",
+    "--log-config. It ships inside the release tree, so it is versioned with the",
+    "code it configures.",
+    "",
+    "WHY THIS FILE EXISTS.",
+    "The hardening middleware writes one compact JSON object per request to the",
+    "'vmr.http' logger, and writes sanitized exception events to it as well.",
+    "Nothing in the application configures logging - deliberately, because",
+    "logging configuration is a deployment concern - and uvicorn's built-in",
+    "config declares only the 'uvicorn', 'uvicorn.error' and 'uvicorn.access'",
+    "loggers, with no root entry. So under a plain `uvicorn app.main:app` the",
+    "root logger keeps its default WARNING level and has no handler: every",
+    "'vmr.http' INFO record is discarded before it reaches journald. The",
+    "observability contract documented in docs/PRODUCTION_HARDENING.md would be",
+    "silently absent on the server, and the absence looks exactly like a quiet",
+    "system.",
+    "",
+    "This config keeps uvicorn's own loggers exactly as uvicorn defines them and",
+    "adds one more: 'vmr' at INFO, on its own stdout handler, propagate false so",
+    "the records are not duplicated. The formatter is the bare message, because",
+    "the application already emits a complete JSON object - wrapping it in a",
+    "second layer of formatting would make it unparseable.",
+    "",
+    "journald receives it via StandardOutput=journal. Read it with:",
+    "  journalctl -u vmr-web -o cat | grep '\"event\":\"http_request\"'"
+  ],
+
+  "version": 1,
+  "disable_existing_loggers": false,
+
+  "formatters": {
+    "default": {
+      "()": "uvicorn.logging.DefaultFormatter",
+      "fmt": "%(levelprefix)s %(message)s",
+      "use_colors": false
+    },
+    "access": {
+      "()": "uvicorn.logging.AccessFormatter",
+      "fmt": "%(levelprefix)s %(client_addr)s - \"%(request_line)s\" %(status_code)s",
+      "use_colors": false
+    },
+    "raw": {
+      "format": "%(message)s"
+    }
+  },
+
+  "handlers": {
+    "default": {
+      "formatter": "default",
+      "class": "logging.StreamHandler",
+      "stream": "ext://sys.stderr"
+    },
+    "access": {
+      "formatter": "access",
+      "class": "logging.StreamHandler",
+      "stream": "ext://sys.stdout"
+    },
+    "vmr": {
+      "formatter": "raw",
+      "class": "logging.StreamHandler",
+      "stream": "ext://sys.stdout"
+    }
+  },
+
+  "loggers": {
+    "uvicorn": {
+      "handlers": ["default"],
+      "level": "INFO",
+      "propagate": false
+    },
+    "uvicorn.error": {
+      "level": "INFO"
+    },
+    "uvicorn.access": {
+      "handlers": ["access"],
+      "level": "INFO",
+      "propagate": false
+    },
+    "vmr": {
+      "handlers": ["vmr"],
+      "level": "INFO",
+      "propagate": false
+    }
+  }
+}

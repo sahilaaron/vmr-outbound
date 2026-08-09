@@ -1,0 +1,108 @@
+# VMR Outbound Agent - web service.
+# Installs to /etc/systemd/system/vmr-web.service
+#
+# STATUS: not enabled and not started by installation. `vmr-deploy` starts it;
+# `systemctl enable` is a separate, deliberate step once a release is healthy.
+#
+# Paths this unit assumes, all created by /usr/local/sbin/vmr-provision:
+#   /srv/vmr/app                     symlink -> releases/<release>, moved by vmr-deploy
+#   /srv/vmr/app/.venv/bin/uvicorn   created by vmr-deploy's venv step
+#   /srv/vmr/shared/{uploads,runtime/home,logs,backups}
+#   /var/log/vmr
+#
+# ${APP_PORT} comes from /etc/vmr/vmr.env and must match the nginx upstream.
+
+[Unit]
+Description=VMR Outbound Agent - web service
+# Restart-loop guard. These keys are only honoured in [Unit]; in [Service]
+# systemd silently ignores them and the guard is inert.
+StartLimitBurst=5
+StartLimitIntervalSec=60s
+After=network-online.target postgresql.service
+Wants=network-online.target
+# Wants (not Requires): a PostgreSQL restart should not force-stop the web
+# service; the application handles reconnection, and /readyz reports the truth
+# meanwhile.
+#
+# NOTE: PostgreSQL runs on this host on a private, firewalled address (see the
+# DATABASE_URL topology note in vmr.env.example). If that ever moves off-box,
+# delete the postgresql.service ordering rather than leaving a no-op dependency.
+Wants=postgresql.service
+
+[Service]
+Type=exec
+User=vmr
+Group=vmr
+WorkingDirectory=/srv/vmr/app
+
+# Order matters: later assignments win.
+#   1. the protected operator environment
+#   2. the per-release identity vmr-deploy writes (RELEASE_ID), optional so the
+#      unit still starts before a first deployment has ever run
+#   3. process-level invariants that must not depend on either file
+EnvironmentFile=/etc/vmr/vmr.env
+EnvironmentFile=-/srv/vmr/shared/runtime/release.env
+# Deterministic PATH rather than whatever systemd's compiled-in default happens
+# to be on this distribution.
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# ProtectHome=true makes /home and /root inaccessible, so the service account's
+# passwd home would be an unreadable path. Point HOME at the sandbox's own
+# writable area instead of leaving libraries to fail on a path that is not there.
+Environment=HOME=/srv/vmr/shared/runtime/home
+# journald is the authoritative log. Without this, Python block-buffers stdout
+# when it is a pipe and `journalctl -f` lags behind reality during an incident.
+Environment=PYTHONUNBUFFERED=1
+
+# --no-proxy-headers is REQUIRED, not stylistic.
+#
+# uvicorn's ProxyHeadersMiddleware is ON by default and trusts 127.0.0.1, so it
+# rewrites scope["client"] and scope["scheme"] from X-Forwarded-* before the
+# application's own boundary runs. The application then sees the end client as
+# its immediate peer, TRUSTED_PROXY_CIDRS never matches, and the deliberately
+# conservative right-to-left X-Forwarded-For chain walk in app/core/http.py
+# becomes dead code. Disabling it here leaves exactly one component deciding
+# what to trust: the application allow-list.
+#
+# --log-config is also required, and for a less obvious reason. The hardening
+# middleware writes its per-request JSON to the "vmr.http" logger; nothing in the
+# application configures logging, and uvicorn's built-in config declares no root
+# logger. Without this file the root logger keeps its default WARNING level and
+# has no handler, so every one of those records is discarded before it reaches
+# journald - and the missing observability looks exactly like a quiet system.
+# The file ships inside the release tree, so it is versioned with the code.
+ExecStart=/srv/vmr/app/.venv/bin/uvicorn app.main:app \
+    --host 127.0.0.1 \
+    --port ${APP_PORT} \
+    --no-proxy-headers \
+    --no-server-header \
+    --log-config /srv/vmr/app/deploy/uvicorn-logging.json
+
+Restart=on-failure
+RestartSec=5s
+# SIGINT is uvicorn's graceful-shutdown signal; allow in-flight requests to end.
+KillSignal=SIGINT
+TimeoutStopSec=30s
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vmr-web
+
+# --- Sandboxing. No credentials here; they come from EnvironmentFile. ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/vmr/shared /var/log/vmr
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# Anything this service creates stays off-limits to other accounts. Staged
+# uploads and staged spreadsheets can carry contact data.
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target
