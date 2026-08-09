@@ -403,19 +403,41 @@ def test_the_contact_page_renders_a_summary_and_seven_rows(
     assert "planned timing, not a schedule" in body
 
 
-def test_the_contact_page_table_carries_no_bodies_until_a_row_is_opened(
+def test_the_review_queue_carries_no_bodies_until_a_sequence_is_opened(
     db_session: Session, client: TestClient, scenario: tuple[Any, ...]
 ) -> None:
-    """Tests 91, 99."""
+    """Tests 91, 99 — now asserted where the rule still holds.
+
+    This rule was written for both surfaces and is still load-bearing for the
+    *queue*: a list of forty contacts that rendered seven bodies each would
+    transfer megabytes to show a page of cards.
+
+    Beta 1 deliberately changed the other half. The Contact page is one contact
+    whose seven messages an operator came to read, copy and edit, so it now
+    renders all seven -- see
+    ``test_the_contact_page_renders_every_body_without_paging`` below, which
+    replaces the assertion that used to live here.
+    """
+
+    sequence = build(db_session, scenario)
+    closed = client.get("/app/review").text
+    assert not any(text in closed for text in BODIES)
+
+    opened = client.get(f"/app/review?sequence={sequence.id}&step=4").text
+    shown = [text for text in BODIES if text in opened]
+    assert shown == [BODIES[3]]
+
+
+def test_the_contact_page_renders_every_body_without_paging(
+    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
+) -> None:
+    """The Beta 1 contract for this page, replacing the one-at-a-time rule."""
 
     _campaign, _company, contact, membership, _policy, _evidence = scenario
     build(db_session, scenario)
-    closed = client.get(f"/app/contacts/{contact.id}?campaign={membership.campaign_id}").text
-    assert not any(text in closed for text in BODIES)
-
-    opened = client.get(f"/app/contacts/{contact.id}?campaign={membership.campaign_id}&step=4").text
-    shown = [text for text in BODIES if text in opened]
-    assert shown == [BODIES[3]]
+    body = client.get(f"/app/contacts/{contact.id}?campaign={membership.campaign_id}").text
+    shown = [text for text in BODIES if text in body]
+    assert shown == list(BODIES), "every message must be readable without a second request"
 
 
 def test_row_expansion_shows_lineage_and_secondary_identifiers(
@@ -705,16 +727,29 @@ def test_a_sequence_expands_even_when_the_active_filter_excludes_it(
 def test_all_seven_bodies_are_readable_without_any_review(
     db_session: Session, client: TestClient, scenario: tuple[Any, ...]
 ) -> None:
-    """Requirement: all seven messages available, with no operator action first."""
+    """Requirement: all seven messages available, with no operator action first.
+
+    The requirement never changed; how it is satisfied did. It used to be met
+    one ``?step=`` request at a time, and this test walked those seven requests
+    asserting each showed its own message. Beta 1 renders all seven at once, so
+    the walk is now over the single page.
+
+    Each body appears twice by design -- once in the ``<pre>`` an operator reads
+    and copies, once prefilled into that message's edit form -- so this asserts
+    presence rather than a count, and asserts the readable copy separately.
+    """
 
     _campaign, _company, contact, membership, _policy, _evidence = scenario
     build(db_session, scenario)
+    assert db_session.scalar(select(func.count(EmailSequenceMessageReview.id))) == 0
+
+    body = client.get(f"/app/contacts/{contact.id}?campaign={membership.campaign_id}").text
     for position in range(1, SEQUENCE_LENGTH + 1):
-        body = client.get(
-            f"/app/contacts/{contact.id}?campaign={membership.campaign_id}&step={position}"
-        ).text
-        shown = [text for text in BODIES if text in body]
-        assert shown == [BODIES[position - 1]], f"step {position} showed {len(shown)} bodies"
+        assert BODIES[position - 1] in body, f"message {position} is not readable"
+    # Seven readable bodies, not seven edit boxes.
+    assert body.count('class="v2-mail-body" id="seq-body-') == SEQUENCE_LENGTH
+    # Readable without any operator action, and said to be so.
+    assert body.count("approved by default") >= SEQUENCE_LENGTH
 
 
 def test_the_contact_page_renders_all_seven_planned_timings(

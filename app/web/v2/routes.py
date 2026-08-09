@@ -891,7 +891,10 @@ def _activity_lines(events: Sequence[agent_views.ActivityView]) -> list[dict[str
     lines: list[dict[str, Any]] = []
     for event in events:
         agent = AGENT_SPECS[event.agent_id].display_name if event.agent_id else "Pipeline"
-        who = event.contact_label or "A contact"
+        # Neutralized here rather than in the template, because the template
+        # receives a *composed* sentence and can no longer tell which part of it
+        # came from a spreadsheet. This is the one imported value in the line.
+        who = display.safe_text(event.contact_label) or "A contact"
         verb = event.event_type.value.replace("_", " ")
         text_parts = [f"{who} — {verb}"]
         if event.to_status is not None:
@@ -1446,7 +1449,8 @@ def campaign_agent_rerun(
         # Name the first few rather than a bare count: "3 were not re-run" sends the
         # operator hunting, and the reason is already in hand.
         shown = "; ".join(
-            f"{refusal.contact_label} — {refusal.reason}" for refusal in outcome.refusals[:3]
+            f"{display.safe_text(refusal.contact_label)} — {refusal.reason}"
+            for refusal in outcome.refusals[:3]
         )
         remaining = len(outcome.refusals) - 3
         if remaining > 0:

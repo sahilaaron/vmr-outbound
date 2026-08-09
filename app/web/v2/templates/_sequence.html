@@ -376,6 +376,22 @@
   {% endif %}
 
   {#
+    What the message was written from. Kept on this page because "why does it
+    say that?" is a question an operator asks about a message they are about to
+    copy, and the answer is the evidence tier it was written from.
+  #}
+  <details class="v2-seq-basis-detail">
+    <summary>What this message was written from</summary>
+    <dl class="v2-dl">
+      <dt>Research</dt><dd>{{ detail.research_basis }}</dd>
+      <dt>Insights</dt><dd>{{ detail.insights_basis }}</dd>
+      <dt>Company Intelligence</dt><dd>{{ detail.intelligence_basis }}</dd>
+      {% if detail.strategy_id %}<dt>Strategy</dt><dd>{{ detail.strategy_id | replace('_', ' ') }}</dd>{% endif %}
+      <dt>Written</dt><dd>{{ detail.created_at | dt }}{% if detail.created_by %} · {{ detail.created_by }}{% endif %}</dd>
+    </dl>
+  </details>
+
+  {#
     The identifiers a later Gmail draft has to name. Present in the markup as
     `data-` attributes above and readable here, so neither a future feature nor
     an operator diagnosing one has to guess which exact version is on screen.
