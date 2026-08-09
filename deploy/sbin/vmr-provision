@@ -73,7 +73,12 @@ ensure_service_user() {
 # ensure_dir <path> <mode> <owner> <group>
 ensure_dir() {
   local path="$1" mode="$2" owner="$3" group="$4"
-  local want="$mode $owner:$group"
+  # `stat -c %a` drops a leading zero (0750 prints as 750) but keeps the setgid
+  # digit (2750 prints as 2750). Normalise the wanted mode the same way, or every
+  # run reports a change it then does not make - which is exactly the kind of
+  # false positive that teaches an operator to ignore the output.
+  local want
+  want="$(printf '%o' "$((8#$mode))") $owner:$group"
   local have=""
   if [ -d "$path" ]; then
     have="$(stat -c '%a %U:%G' "$path" 2>/dev/null || echo '? ?')"
@@ -104,9 +109,10 @@ ensure_service_user vmr
 echo
 
 echo "Directories:"
-# Deployment root. 2750 root:vmr - the service account may traverse and read,
-# never write.
-ensure_dir /srv/vmr                      2750 root root
+# Deployment root. root:vmr, 2750 - the service account is in the group, so it can
+# traverse and read; it is not the owner, so it can never write. Group root here
+# would deny traversal outright and the service could not reach /srv/vmr/app.
+ensure_dir /srv/vmr                      2750 root vmr
 # Releases: operator (vmrdeploy) writes, service account only reads.
 ensure_dir /srv/vmr/releases             2775 root vmrdeploy
 # Everything the running services may write lives under shared/, which is the

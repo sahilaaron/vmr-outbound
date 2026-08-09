@@ -38,7 +38,7 @@ The operational runbook is `docs/STAGING_RUNBOOK.md`.
 Created idempotently by `vmr-provision`, not by hand:
 
 ```
-/srv/vmr                  2750 root:root       deployment root
+/srv/vmr                  2750 root:vmr        deployment root
 ├── app -> releases/<release>                  symlink; moved by vmr-deploy
 ├── repo.git/                                  bare mirror; exact commits are exported from it
 ├── releases/             2775 root:vmrdeploy  operator writes, service account only reads
