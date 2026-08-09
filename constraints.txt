@@ -1,0 +1,105 @@
+# Pinned runtime dependency closure for VMR Outbound Agent deployments.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# pyproject.toml declares version *ranges*, which is right for development and
+# wrong for deployment: two deploys of the same Git SHA could install different
+# library versions and behave differently. `vmr-deploy` installs with
+#
+#     pip install --constraint constraints.txt .
+#
+# so the release directory gets exactly these versions.
+#
+# WHAT THIS IS NOT
+# ----------------
+# This is not a second package manager. The repository's canonical mechanism is
+# pip + pyproject.toml (setuptools backend); a pip constraints file is that
+# mechanism's own answer to reproducibility. Do not add uv/poetry/pipenv
+# alongside it.
+#
+# SCOPE
+# -----
+# Runtime closure only - generated from `pip install .` in a clean virtualenv,
+# deliberately WITHOUT the [dev] extra, because a staging release must not carry
+# pytest/ruff/mypy. CI keeps installing `.[dev]` unconstrained, which is what
+# makes CI able to notice an upstream break before a deployment inherits it.
+#
+# PLATFORM
+# --------
+# Generated on CPython 3.11 / Linux x86_64, which is the staging target.
+# `psycopg-binary` is a platform wheel; regenerate on the target platform if
+# that ever changes.
+#
+# REGENERATING
+#   python3.11 -m venv /tmp/lockvenv
+#   /tmp/lockvenv/bin/pip install --upgrade pip setuptools wheel
+#   /tmp/lockvenv/bin/pip install .
+#   /tmp/lockvenv/bin/pip freeze --exclude-editable | grep -iv '^vmr-outbound' | sort -f
+#
+# Regenerate deliberately and review the diff. An unexplained version jump in a
+# deployment constraints file is a supply-chain question, not a formality.
+
+alembic==1.19.1
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.14.2
+attrs==26.1.0
+babel==2.18.0
+beautifulsoup4==4.15.0
+certifi==2026.7.22
+cffi==2.1.1
+charset-normalizer==3.4.9
+click==8.4.2
+courlan==1.4.0
+cryptography==46.0.7
+dateparser==1.4.2
+et_xmlfile==2.0.0
+fastapi==0.141.1
+filelock==3.32.2
+greenlet==3.5.4
+h11==0.16.0
+htmldate==1.10.0
+httpcore==1.0.9
+httptools==0.8.0
+httpx==0.28.1
+idna==3.18
+Jinja2==3.1.6
+jsonschema-specifications==2025.9.1
+jsonschema==4.26.0
+jusText==3.0.2
+lxml==6.1.1
+lxml_html_clean==0.4.5
+Mako==1.4.1
+MarkupSafe==3.0.3
+openpyxl==3.1.5
+psycopg-binary==3.2.13
+psycopg==3.2.13
+pycparser==3.0
+pydantic-settings==2.15.0
+pydantic==2.13.4
+pydantic_core==2.46.4
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.2
+python-multipart==0.0.32
+pytz==2026.3.post1
+PyYAML==6.0.3
+referencing==0.37.0
+regex==2026.7.19
+requests-file==3.0.1
+requests==2.34.2
+rpds-py==2026.6.3
+six==1.17.0
+soupsieve==2.9.2
+SQLAlchemy==2.0.51
+starlette==1.6.0
+tld==0.13.2
+tldextract==5.3.2
+trafilatura==2.2.0
+typing-inspection==0.4.2
+typing_extensions==4.16.0
+tzlocal==5.4.4
+urllib3==2.7.0
+uvicorn==0.52.1
+uvloop==0.22.1
+watchfiles==1.2.0
+websockets==17.0.1
