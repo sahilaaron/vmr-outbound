@@ -239,8 +239,8 @@ jobs:
         env:
           SHARD: ${{ matrix.shard }}
         run: |
-          python scripts/ci_shards.py paths "$SHARD" > shard-paths.txt
-          mapfile -t paths < shard-paths.txt
+          python scripts/ci_shards.py paths "$SHARD" > "$RUNNER_TEMP/shard-paths.txt"
+          mapfile -t paths < "$RUNNER_TEMP/shard-paths.txt"
           if [ "${#paths[@]}" -eq 0 ]; then
             echo "::error::Shard '$SHARD' selected no test files."
             exit 1
