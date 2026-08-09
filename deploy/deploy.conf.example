@@ -1,0 +1,30 @@
+# Shape of /etc/vmr/deploy.conf - non-secret deployment settings.
+#
+# Installs to /etc/vmr/deploy.conf, 0644 root:root.
+#
+# ############################################################################
+# THIS FILE CARRIES NO CREDENTIAL AND MUST NEVER CARRY ONE.
+# It is separate from /etc/vmr/vmr.env for exactly that reason: vmr-deploy reads
+# this one freely and reads vmr.env one key at a time, without printing it.
+# ############################################################################
+#
+# Sourced by /usr/local/sbin/vmr-deploy as shell, so quote anything containing a
+# space or a metacharacter.
+
+# Where releases are fetched from. Use an HTTPS URL with a read-only credential
+# helper, or an SSH URL with a deploy key that has read-only access to the
+# repository. vmr-deploy maintains a bare mirror at /srv/vmr/repo.git and
+# exports exactly the requested commit from it - the server never checks out a
+# branch, so "deploy main" is not a thing that can happen by accident.
+VMR_REPO_URL=REPLACE_WITH_REPOSITORY_URL
+
+# The Host header vmr-deploy sends when probing the backend on loopback.
+#
+# It must be one of the entries in TRUSTED_HOSTS in /etc/vmr/vmr.env, and the
+# same name as nginx server_name. The application's Host allow-list applies to
+# /healthz and /readyz as well, so a probe without a recognised Host gets 400
+# rather than 200 - which looks exactly like a broken deployment.
+#
+# vmr-deploy cross-checks this against vmr.env and refuses to run when they
+# disagree, rather than letting the mismatch surface as a failed health gate.
+VMR_HEALTH_HOST=REPLACE_WITH_STAGING_DNS_NAME
