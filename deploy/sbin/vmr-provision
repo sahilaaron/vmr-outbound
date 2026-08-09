@@ -1,0 +1,167 @@
+#!/bin/bash
+# vmr-provision - create the VMR server layout, idempotently.
+#
+#   Usage: vmr-provision [--execute]
+#
+# Default mode is DRY RUN: it prints what it would change and changes nothing.
+#
+# This exists so the directory tree, its ownership and its permissions are a
+# reviewable artefact rather than a sequence of hand-typed mkdir/chown commands
+# that nobody can reproduce or audit. Running it twice must be indistinguishable
+# from running it once.
+#
+# It deliberately does NOT:
+#   * write /etc/vmr/vmr.env or any credential
+#   * install, configure, or start PostgreSQL
+#   * touch the firewall
+#   * install or enable nginx or the systemd units
+#   * deploy any application code
+#
+# Exit codes: 0 ok / 1 usage / 2 precondition failure
+set -uo pipefail
+
+EXECUTE=0
+CHANGES=0
+
+die() { echo "vmr-provision: ERROR: $2" >&2; exit "$1"; }
+note() { echo "  $*"; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --execute) EXECUTE=1; shift ;;
+    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    *) die 1 "unknown argument '$1'" ;;
+  esac
+done
+
+[ "$(id -u)" -eq 0 ] || die 2 "must be run as root"
+
+# --- Accounts ---------------------------------------------------------------
+# The split matters: `vmr` runs the application and can READ its code but never
+# WRITE it, so a compromised application cannot rewrite itself and persist.
+# `vmrdeploy` is the group that grants write access to releases/, and is
+# deliberately not the same group the service runs as.
+ensure_group() {
+  if getent group "$1" >/dev/null 2>&1; then
+    note "group $1 exists"
+  else
+    CHANGES=$((CHANGES + 1))
+    note "CREATE group $1"
+    [ "$EXECUTE" -eq 1 ] && { groupadd --system "$1" || die 2 "groupadd $1 failed"; }
+  fi
+}
+
+ensure_service_user() {
+  if getent passwd "$1" >/dev/null 2>&1; then
+    note "user $1 exists"
+  else
+    CHANGES=$((CHANGES + 1))
+    note "CREATE system user $1 (nologin, no home of its own)"
+    # HOME is set by the systemd units to /srv/vmr/shared/runtime/home, which is
+    # inside ReadWritePaths. The account deliberately owns no /home directory:
+    # ProtectHome=true would make one inaccessible anyway.
+    if [ "$EXECUTE" -eq 1 ]; then
+      useradd --system --gid "$1" --home-dir /srv/vmr/shared/runtime/home \
+              --no-create-home --shell /usr/sbin/nologin "$1" \
+        || die 2 "useradd $1 failed"
+      passwd --lock "$1" >/dev/null || die 2 "passwd --lock $1 failed"
+    fi
+  fi
+}
+
+# --- Directories ------------------------------------------------------------
+# ensure_dir <path> <mode> <owner> <group>
+ensure_dir() {
+  local path="$1" mode="$2" owner="$3" group="$4"
+  # `stat -c %a` drops a leading zero (0750 prints as 750) but keeps the setgid
+  # digit (2750 prints as 2750). Normalise the wanted mode the same way, or every
+  # run reports a change it then does not make - which is exactly the kind of
+  # false positive that teaches an operator to ignore the output.
+  local want
+  want="$(printf '%o' "$((8#$mode))") $owner:$group"
+  local have=""
+  if [ -d "$path" ]; then
+    have="$(stat -c '%a %U:%G' "$path" 2>/dev/null || echo '? ?')"
+    if [ "$have" = "$want" ]; then
+      note "ok      $path ($want)"
+      return 0
+    fi
+    CHANGES=$((CHANGES + 1))
+    note "ADJUST  $path  $have -> $want"
+  else
+    CHANGES=$((CHANGES + 1))
+    note "CREATE  $path ($want)"
+  fi
+  if [ "$EXECUTE" -eq 1 ]; then
+    mkdir -p "$path"                 || die 2 "mkdir $path failed"
+    chown "$owner:$group" "$path"    || die 2 "chown $path failed"
+    chmod "$mode" "$path"            || die 2 "chmod $path failed"
+  fi
+}
+
+echo "vmr-provision PLAN"
+echo
+
+echo "Accounts:"
+ensure_group vmr
+ensure_group vmrdeploy
+ensure_service_user vmr
+echo
+
+echo "Directories:"
+# Deployment root. root:vmr, 2750 - the service account is in the group, so it can
+# traverse and read; it is not the owner, so it can never write. Group root here
+# would deny traversal outright and the service could not reach /srv/vmr/app.
+ensure_dir /srv/vmr                      2750 root vmr
+# Releases: operator (vmrdeploy) writes, service account only reads.
+ensure_dir /srv/vmr/releases             2775 root vmrdeploy
+# Everything the running services may write lives under shared/, which is the
+# only path (besides /var/log/vmr) in the units' ReadWritePaths.
+ensure_dir /srv/vmr/shared               2750 vmr vmr
+# Staged uploads - STAGED_UPLOADS_DIR in /etc/vmr/vmr.env points here. The
+# application's relative default would land inside the read-only release
+# directory and fail on first write.
+ensure_dir /srv/vmr/shared/uploads       2770 vmr vmr
+# Deterministic HOME for both units, and where vmr-deploy writes release.env.
+ensure_dir /srv/vmr/shared/runtime       2770 vmr vmr
+ensure_dir /srv/vmr/shared/runtime/home  2700 vmr vmr
+ensure_dir /srv/vmr/shared/logs          2770 vmr vmr
+# Backups: root only. Dumps are written 0600 root:root, so a compromised
+# application cannot read the database it was denied direct access to.
+ensure_dir /srv/vmr/shared/backups       2750 root root
+# Configuration. vmr.env itself is written by hand, 0640 root:vmr, and is NOT
+# created here - this script never handles credentials.
+ensure_dir /etc/vmr                      0750 root vmr
+# File logs the application may write. journald stays authoritative for service
+# stdout/stderr.
+ensure_dir /var/log/vmr                  2750 vmr adm
+echo
+
+# --- Reporting --------------------------------------------------------------
+if [ -e /etc/vmr/vmr.env ]; then
+  MODE="$(stat -c '%a %U:%G' /etc/vmr/vmr.env)"
+  if [ "$MODE" = "640 root:vmr" ]; then
+    echo "Environment file: /etc/vmr/vmr.env present, $MODE - correct."
+  else
+    echo "Environment file: /etc/vmr/vmr.env present but $MODE (expected 640 root:vmr)."
+    echo "                  Fix by hand; this script does not touch it."
+  fi
+else
+  echo "Environment file: /etc/vmr/vmr.env is ABSENT."
+  echo "                  Create it from deploy/vmr.env.example, 0640 root:vmr."
+  echo "                  vmr-deploy refuses to run without it."
+fi
+echo
+
+if [ "$EXECUTE" -ne 1 ]; then
+  echo "DRY RUN only (no --execute given). $CHANGES change(s) would be made."
+  exit 0
+fi
+
+echo "vmr-provision: OK - $CHANGES change(s) applied."
+echo "Still to do by hand, deliberately not automated here:"
+echo "  * add the operator account to the vmr and vmrdeploy groups"
+echo "  * write /etc/vmr/vmr.env (0640 root:vmr) from deploy/vmr.env.example"
+echo "  * PostgreSQL: private non-loopback listen address, pg_hba scope, firewall"
+echo "  * install the nginx site, snippets and systemd units"
+exit 0

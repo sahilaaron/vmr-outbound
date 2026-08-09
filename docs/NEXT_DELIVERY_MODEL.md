@@ -4,7 +4,7 @@ Last updated: 2026-08-09
 
 ## Authoritative baseline
 
-The current merged application baseline is `main` at `4dd09198940dc9eed8c1aa14de96a57e0d89ce28` (PR #250).
+The current merged application baseline is `main` at `139f6e80d51b573d023bbd3eeb405c6aef268bfd` (PR #252).
 
 It includes:
 
@@ -12,30 +12,35 @@ It includes:
 - Production Hardening;
 - Chrome Extension pre-auth preparation;
 - the final seven-message Personalization sequence;
-- the Beta 1 operator UI.
+- the Beta 1 operator UI;
+- the post-Beta VPS staging foundation.
 
 Sending remains unavailable.
 
 ## Locked current-cycle outcome
 
-The current cycle is complete only when the first internal operator can perform this flow:
+The current cycle is complete only when the first internal operator can personally use the real hosted application with real contacts through this flow:
 
 ```text
-private HTTPS-hosted VMR application on the VPS
-→ authenticated internal operator
-→ open Campaign / Contact
-→ view all seven generated messages
-→ optionally edit or copy one exact message
-→ authorize Gmail separately
-→ create or update one selected exact VMR message/version as a Gmail draft
-→ open Gmail and see the correct draft
+Sales Navigator / source page
+→ VMR Chrome Extension capture over HTTPS
+→ authenticated VMR staging application
+→ Campaign / Contact
+→ contact progresses through Agent stages
+→ Research
+→ Company Intelligence
+→ Insights
+→ Personalization
+→ exactly seven generated messages
+→ operator inspects each message
+→ optional immutable edit
+→ Copy Subject / Copy Body / Copy Full Email
+→ operator performs outreach manually outside VMR
 ```
 
-Automatic sending, automatic Gmail cadence, sent/reply/thread monitoring and automatic creation of later follow-up drafts are next-cycle work.
+This hosted manual-copy Beta is the current definition of done.
 
-Google Sheets is deferred unless real operator use demonstrates a concrete reporting or collaboration need.
-
-Campaign CSV/XLSX export is also deferred from Beta 1; it is not a current launch gate.
+**Gmail draft integration is postponed until after the operator has personally used and accepted this exact workflow with real contacts.** Google Sheets and Campaign CSV/XLSX export are also not current launch gates.
 
 ## Current product contract
 
@@ -58,97 +63,94 @@ Imported identity/projection values retain formula-safety boundaries. Actual ema
 
 ## Immediate delivery order
 
-### 1. Reconcile and publish the VPS staging foundation
+### 1. Prove the merged VPS foundation on the real host
 
-Reconcile the existing VPS foundation onto exact post-Beta `main`.
+Deploy exact approved `main` to the VPS and prove infrastructure behavior:
 
-The deployment branch must preserve Production Hardening rather than bypass it. In particular:
+- PostgreSQL topology and migrations;
+- `/healthz`, `/readyz`, `/version`;
+- nginx configuration and HTTPS;
+- systemd web/worker services;
+- logging;
+- backup/restore path;
+- release switching and rollback;
+- reboot survival;
+- default-deny application exposure until authenticated operator access exists.
 
-- `APP_ENV=staging` must be real application configuration;
-- trusted hosts and trusted proxies must be explicit;
-- `/healthz`, `/readyz` and `/version` must reflect the deployed release;
-- request-size configuration must retain multipart headroom;
-- application-owned security headers must not be duplicated inconsistently in nginx;
-- release switching, restart and rollback ordering must validate the new release rather than the previous symlink target;
-- worker/runtime writable paths must be deterministic;
-- PostgreSQL must not be publicly exposed;
-- staging must not weaken the Production Hardening non-loopback database-host guard.
+This first deployment is an infrastructure smoke test only. It is not the operator UAT milestone.
 
-No live deployment occurs until the foundation candidate is reviewed and merged.
+### 2. Add authenticated hosted operator access
 
-### 2. Deploy a private HTTPS staging instance
+The merged Beta UI is already built, but `/app` and `/admin` are deliberately local-only today. Replace that temporary localhost-era restriction with a stronger hosted rule rather than simply weakening it.
 
-Deploy the accepted application and worker services to the VPS.
+Required behavior:
 
-Before application authentication exists, nginx must default-deny the operator application rather than exposing unauthenticated write routes publicly. ACME and intentionally selected probes may remain reachable as required by infrastructure.
+- local development remains intentionally easy;
+- staging may expose `/app` and `/admin` only under a valid authenticated internal-user/session boundary;
+- anonymous remote application writes are refused;
+- cookie-session writes have appropriate CSRF protection;
+- issue #247 or its successor is resolved before operator exposure;
+- Google/Workspace sign-in may authenticate the operator, but it must not imply Gmail mailbox access.
 
-Validate migrations, release identity, health/readiness, restart/reboot recovery, logs, backups and browser operation of the merged Beta 1 UI.
+The goal of this step is practical: the operator can open the private HTTPS staging URL, sign in, and use Campaigns, Contacts, Agent state and seven-message UI in a real browser.
 
-### 3. Add the authenticated internal application boundary
+### 3. Enable secure Chrome Extension remote capture
 
-Resolve the remote-write/authentication launch blocker before real operator exposure.
+Move the merged extension from pre-auth/local preparation to production-style staging capture.
 
-Introduce the minimum internal-user/session model required for the first operator and provide Sign in with Google / Google Workspace identity as appropriate.
+Required boundary:
 
-Google identity authenticates a person to VMR. It does not grant Gmail mailbox access.
+- stable extension distribution/ID decision;
+- VMR-specific bearer/session authentication;
+- HTTPS capture endpoint;
+- Authorization-aware CORS and pinned extension origin;
+- deliberate removal/replacement of the current local-only remote-capture gate;
+- no Google identity token or Gmail mailbox token in the extension.
 
-Anonymous remote application writes must be refused. Cookie-session writes require the appropriate CSRF boundary.
+The extension authenticates only to VMR.
 
-### 4. Add separate Gmail mailbox authorization
+### 4. Run real-contact end-to-end acceptance
 
-Gmail authorization is a distinct permission boundary from Google sign-in.
+The first operator must prove the actual browser workflow with real contacts:
 
-Requirements include:
-
-- explicit VMR user ↔ mailbox ownership;
-- least-privilege Gmail scope for draft management;
-- encrypted durable credential/token storage;
-- reconnect/disconnect behavior;
-- no Gmail token in the Chrome extension;
-- no automatic sending authority.
-
-### 5. Add the first Gmail slice — one operator-triggered draft
-
-From a selected current sequence message/version, the operator can create or update one Gmail draft on demand.
-
-Persist durable lineage between:
-
-- Campaign;
-- Campaign Contact;
-- logical sequence message;
-- exact current message version;
-- VMR user/mailbox;
-- Gmail draft/provider identifier.
-
-Retries must be idempotent and must not create duplicate drafts accidentally. A draft action must never fabricate sent/delivered state.
-
-### 6. Run real end-to-end internal acceptance
-
-The first operator must prove the actual browser flow on the private HTTPS staging instance:
-
-1. authenticate to VMR;
-2. open a Campaign and Contact;
-3. view all seven messages;
-4. verify copy controls with real clipboard behavior;
-5. optionally perform a basic edit and observe the new current version;
-6. authorize Gmail separately;
-7. create one selected exact message/version as a Gmail draft;
-8. open Gmail and confirm the correct draft;
-9. confirm VMR retained exact lineage and truthful state.
+1. authenticate to hosted VMR;
+2. capture a real prospect with the Chrome Extension;
+3. confirm the Contact lands in the intended Campaign;
+4. observe the Contact move through the Agent stages;
+5. inspect Research, Company Intelligence, Insights and Personalization outcomes as exposed by the product;
+6. open the Contact and see all seven messages;
+7. verify exact subject/body copy behavior in the real browser;
+8. optionally edit one message and confirm immutable N+1 versioning/current-version behavior;
+9. manually copy the selected outreach content and use it outside VMR;
+10. record any UAT defects found in real operation.
 
 Passing this flow is the current-cycle definition of done.
 
+### 5. Reassess Gmail only after hosted Beta acceptance
+
+Gmail draft integration remains architecturally valid but is explicitly postponed.
+
+Only after the hosted manual-copy workflow has been personally used with real contacts should the next delivery decision be made about:
+
+- separate Gmail mailbox authorization;
+- operator-triggered draft creation;
+- durable Gmail draft lineage/idempotency;
+- later thread/cadence/reply behavior.
+
+No Gmail work should delay the hosted Beta milestone above.
+
 ## Chrome Extension production integration
 
-The merged extension work is pre-auth preparation only. Production remote capture still requires a stable extension distribution/ID decision, VMR bearer authentication, an HTTPS production capture endpoint, Authorization-aware CORS/origin pinning and deliberate relaxation of the current local-only capture gate.
+The merged extension work is pre-auth preparation only. Production remote capture still requires a stable extension distribution/ID decision, VMR authentication, an HTTPS capture endpoint, Authorization-aware CORS/origin pinning and deliberate relaxation of the current local-only capture gate.
 
 The extension must authenticate only to VMR. It must never receive Google identity or Gmail mailbox tokens.
 
 ## Deferred work
 
+- Gmail mailbox authorization and Gmail draft synchronization until after hosted manual-copy Beta acceptance;
 - automatic sending;
 - automatic Gmail cadence/follow-up creation;
-- Gmail sent/reply/thread monitoring for automated follow-up logic;
+- Gmail sent/reply/thread monitoring;
 - Campaign CSV/XLSX snapshot export unless operator use justifies it;
 - Google Sheets live synchronization unless a concrete need survives internal use;
 - broad provider sending infrastructure;
@@ -165,7 +167,7 @@ The extension must authenticate only to VMR. It must never receive Google identi
 - edits preserve immutable version history;
 - approval is distinct from sendability/delivery state;
 - the application is authoritative for sequence/message/version state;
-- Google identity and Gmail authorization remain separate permission boundaries;
-- Gmail draft creation is human-invoked in this cycle and never auto-sends;
-- future provider integrations must be durable, auditable, retryable and idempotent;
+- remote operator access must be authenticated before `/app` or `/admin` are exposed in staging;
+- the Chrome extension authenticates to VMR only;
+- Gmail remains a separate future permission boundary;
 - no external provider action may fabricate verification, delivery or send status.

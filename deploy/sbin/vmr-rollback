@@ -1,0 +1,119 @@
+#!/bin/bash
+# vmr-rollback - repoint the active release symlink at a previous release.
+#
+# CODE ONLY. This script deliberately contains no database logic whatsoever.
+# It will never run `alembic downgrade`. See the long note in vmr-deploy for why
+# code rollback and schema rollback are not symmetrical operations.
+#
+#   Usage: vmr-rollback --to <release-dir-name> [--execute]
+#          vmr-rollback --list
+#
+# It performs the same sequence vmr-deploy uses, for the same reason: the units
+# name /srv/vmr/app absolutely, so the symlink is what LOADS a release.
+#
+#   repoint symlink -> rewrite RELEASE_ID -> restart web -> health gate
+#   -> restart worker only once web is healthy
+#
+# Exit codes: 0 ok / 1 usage / 2 precondition / 4 restored release is unhealthy
+set -uo pipefail
+
+RELEASES=/srv/vmr/releases
+APPLINK=/srv/vmr/app
+ENVFILE=/etc/vmr/vmr.env
+DEPLOYCONF=/etc/vmr/deploy.conf
+RELEASE_ENV=/srv/vmr/shared/runtime/release.env
+
+LIVENESS_TIMEOUT=30
+READINESS_TIMEOUT=60
+
+TARGET=""
+EXECUTE=0
+die() { echo "vmr-rollback: ERROR: $2" >&2; exit "$1"; }
+say() { echo "vmr-rollback: $*"; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --list) ls -1t "$RELEASES" 2>/dev/null || echo "(no releases)"; exit 0 ;;
+    --to) TARGET="${2:-}"; shift 2 ;;
+    --execute) EXECUTE=1; shift ;;
+    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+    *) die 1 "unknown argument '$1'" ;;
+  esac
+done
+
+[ "$(id -u)" -eq 0 ] || die 2 "must be run as root"
+[ -n "$TARGET" ] || die 1 "--to <release-dir-name> is required (see --list)"
+[ -d "$RELEASES/$TARGET" ] || die 2 "no such release: $RELEASES/$TARGET"
+[ -x "$RELEASES/$TARGET/.venv/bin/python" ] || die 2 "release has no usable venv: $TARGET"
+[ -f "$DEPLOYCONF" ] || die 2 "$DEPLOYCONF not found"
+[ -f "$ENVFILE" ] || die 2 "$ENVFILE not found"
+
+# shellcheck disable=SC1090
+. "$DEPLOYCONF"
+: "${VMR_HEALTH_HOST:?VMR_HEALTH_HOST must be set in $DEPLOYCONF}"
+APP_PORT="$(awk -F= '/^[[:space:]]*APP_PORT=/{gsub(/["'"'"' ]/,"",$2); print $2}' "$ENVFILE" | tail -1)"
+[ -n "$APP_PORT" ] || die 2 "APP_PORT is not set in $ENVFILE"
+
+WORKER_WAS_ACTIVE=0
+systemctl is-active --quiet vmr-worker && WORKER_WAS_ACTIVE=1
+
+CURRENT="$(readlink -f "$APPLINK" 2>/dev/null || echo '(none)')"
+if [ -r "$RELEASES/$TARGET/.release-sha" ]; then
+  TARGET_SHA="$(tr -d '[:space:]' < "$RELEASES/$TARGET/.release-sha")"
+else
+  TARGET_SHA="$(printf '%s' "$TARGET" | sed 's/^[0-9TZ]*-//')"
+fi
+
+cat <<PLAN
+vmr-rollback PLAN
+  current  : $CURRENT
+  target   : $RELEASES/$TARGET
+  RELEASE_ID will become : $TARGET_SHA
+  action   : repoint $APPLINK, restart vmr-web, gate on /healthz + /readyz,
+             then restart vmr-worker
+  probe    : http://127.0.0.1:$APP_PORT  Host: $VMR_HEALTH_HOST
+  worker   : $([ "$WORKER_WAS_ACTIVE" -eq 1 ] && echo active || echo inactive) before this run
+  DATABASE SCHEMA IS LEFT UNTOUCHED - this is intentional.
+PLAN
+
+if [ "$EXECUTE" -ne 1 ]; then echo; echo "DRY RUN only. Nothing changed."; exit 0; fi
+
+ln -sfn "$RELEASES/$TARGET" "$APPLINK" || die 2 "could not repoint symlink"
+
+# Keep GET /version truthful after a rollback: the release identity must follow
+# the code, not stay pinned to whatever was deployed last.
+umask 027
+printf 'RELEASE_ID=%s\n' "$TARGET_SHA" > "$RELEASE_ENV" || die 2 "could not write $RELEASE_ENV"
+chown root:vmr "$RELEASE_ENV" && chmod 0640 "$RELEASE_ENV"
+
+systemctl restart vmr-web || die 2 "vmr-web restart failed"
+
+probe() {
+  curl -sS -o /dev/null -w '%{http_code}' --max-time 5 \
+    -H "Host: $VMR_HEALTH_HOST" "http://127.0.0.1:$APP_PORT$1" 2>/dev/null || echo 000
+}
+wait_for() {
+  local path="$1" limit="$2" i=0
+  while [ "$i" -lt "$limit" ]; do
+    [ "$(probe "$path")" = "200" ] && return 0
+    i=$((i + 1)); sleep 1
+  done
+  return 1
+}
+
+wait_for /healthz "$LIVENESS_TIMEOUT" || die 4 "restored release failed /healthz - see journalctl -u vmr-web"
+say "/healthz 200"
+wait_for /readyz "$READINESS_TIMEOUT" || die 4 "restored release failed /readyz - see journalctl -u vmr-web"
+say "/readyz 200"
+
+if [ "$WORKER_WAS_ACTIVE" -eq 1 ]; then
+  systemctl restart vmr-worker || die 4 "vmr-worker restart failed (web is healthy)"
+  say "vmr-worker restarted"
+else
+  say "vmr-worker was not running before this rollback; left stopped"
+fi
+
+say "OK - now serving $RELEASES/$TARGET"
+echo "REMINDER: if the failure was caused by a migration, a human must decide"
+echo "          what to do about the schema. Do NOT reflexively downgrade."
+exit 0

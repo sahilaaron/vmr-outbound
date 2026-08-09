@@ -1,0 +1,77 @@
+#!/bin/bash
+# vmr-db-backup - PostgreSQL logical backup for VMR staging.
+#
+#   Usage: vmr-db-backup [DBNAME]        (default: vmr_staging)
+#
+# Uses peer authentication as the 'postgres' system user, so NO credential is
+# stored in, or read by, this script. Must be run as root.
+#
+# Format: pg_dump custom format (-Fc) - compressed, selective restore, and the
+# only format pg_restore can reorder safely.
+#
+# Exit codes:
+#   0 success
+#   1 usage error
+#   2 precondition failure (not root, missing tools, missing database)
+#   3 dump failed
+#   4 post-dump verification failed
+#
+# RETENTION: none is enforced. Backups accumulate in the directory below by
+# design - deleting staging backups automatically is a decision to be taken
+# deliberately, not a default. Review with:
+#     ls -lh /srv/vmr/shared/backups
+# A pruning policy should be added only once retention requirements are agreed.
+set -uo pipefail
+
+BACKUP_DIR=/srv/vmr/shared/backups
+DB="${1:-vmr_staging}"
+
+die() { echo "vmr-db-backup: ERROR: $2" >&2; exit "$1"; }
+
+[ "$(id -u)" -eq 0 ] || die 2 "must be run as root (uses peer auth as postgres)"
+command -v pg_dump >/dev/null 2>&1 || die 2 "pg_dump not found"
+[ -d "$BACKUP_DIR" ] || die 2 "backup directory $BACKUP_DIR does not exist"
+
+case "$DB" in
+  -h|--help) echo "Usage: vmr-db-backup [DBNAME]   (default vmr_staging)"; exit 0 ;;
+  -*) die 1 "unknown option '$DB'" ;;
+esac
+
+runuser -u postgres -- psql -tAc "SELECT 1 FROM pg_database WHERE datname='$DB';" 2>/dev/null | grep -q 1 \
+  || die 2 "database '$DB' does not exist"
+
+TS=$(date -u +%Y%m%dT%H%M%SZ)
+OUT="$BACKUP_DIR/${DB}_${TS}.dump"
+
+umask 077
+# root creates and owns the output file; pg_dump writes to stdout into it.
+# This is what lets the backup directory stay root-only - postgres never needs
+# to traverse /srv/vmr at all.
+if ! runuser -u postgres -- pg_dump --format=custom --compress=6 --no-owner --no-privileges \
+       "$DB" > "$OUT.tmp" 2>/tmp/vmr-db-backup.err; then
+  echo "vmr-db-backup: pg_dump failed:" >&2; cat /tmp/vmr-db-backup.err >&2
+  rm -f "$OUT.tmp"
+  exit 3
+fi
+
+mv -f "$OUT.tmp" "$OUT" || die 3 "could not finalise $OUT"
+chown root:root "$OUT"
+chmod 0600 "$OUT"
+
+# Verify the archive is readable and non-trivial before declaring success.
+if ! pg_restore --list "$OUT" >/dev/null 2>&1; then
+  die 4 "dump written but pg_restore --list cannot read it: $OUT"
+fi
+SIZE=$(stat -c %s "$OUT")
+[ "$SIZE" -gt 0 ] || die 4 "dump is zero bytes: $OUT"
+
+sha256sum "$OUT" | awk '{print $1}' > "$OUT.sha256"
+chown root:root "$OUT.sha256"
+chmod 0600 "$OUT.sha256"
+
+echo "vmr-db-backup: OK"
+echo "  database : $DB"
+echo "  file     : $OUT"
+echo "  size     : $SIZE bytes"
+echo "  sha256   : $(cat "$OUT.sha256")"
+exit 0

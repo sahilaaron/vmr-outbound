@@ -1,0 +1,358 @@
+#!/bin/bash
+# vmr-deploy - deploy one exact Git commit to the VMR staging server.
+#
+#   Usage: vmr-deploy --sha <git-sha> [--execute] [--no-worker]
+#          vmr-deploy --list
+#
+# Default mode is DRY RUN: it prints the plan and changes nothing.
+#
+# ORDER OF OPERATIONS - THIS IS THE PART THAT MATTERS
+#
+#   1. preconditions (root, env file, deploy.conf, host agreement, tools)
+#   2. export the exact commit into a new release directory
+#   3. build the release venv and install the PINNED dependency closure
+#   4. import-check the release before it is allowed to become live
+#   5. back up the database
+#   6. alembic upgrade head
+#   7. write release.env (RELEASE_ID = the deployed SHA)
+#   8. MOVE /srv/vmr/app to the new release
+#   9. restart vmr-web
+#  10. gate on /healthz, /readyz and /version reporting this SHA
+#  11. only then start/restart vmr-worker
+#  12. on any failure at 9-11: repoint the previous release, restart, re-verify,
+#      and restore the worker to the state it was in before this run
+#
+# Step 8 comes BEFORE step 9 on purpose. Both units name /srv/vmr/app absolutely
+# in WorkingDirectory and ExecStart, so the symlink is what LOADS a release, not
+# what marks one active. Restarting first would health-check the previous
+# release and then never load the new one - and on a first deployment, where
+# /srv/vmr/app does not exist yet, the unit could not start at all.
+#
+# The safety property the older ordering was reaching for is preserved by step
+# 12 instead: a release is not KEPT unless it passes its gate.
+#
+# ROLLBACK IS NOT SYMMETRICAL. READ THIS BEFORE CHANGING ANYTHING.
+#
+#   * Code rollback is safe and cheap: repoint the symlink and restart.
+#   * Database rollback is neither. `alembic downgrade` executes destructive DDL.
+#     A migration that dropped a column cannot restore its data by reversing the
+#     migration - the data is gone. Downgrade paths are also far less tested than
+#     upgrades, because they are almost never exercised.
+#
+#   THEREFORE this script NEVER runs `alembic downgrade`, not even on a failed
+#   deployment. It rolls the CODE back and leaves the SCHEMA where it is, then a
+#   human decides. That works because a correctly written migration is backward
+#   compatible with the immediately preceding release (add columns nullable,
+#   backfill separately, drop only in a later release). If a migration is NOT
+#   backward compatible, code rollback will not save you, and the deployment must
+#   not be attempted without a rehearsed recovery plan and a fresh backup.
+#
+# Exit codes:
+#   0 success (or a completed dry run)
+#   1 usage error
+#   2 precondition failure
+#   3 build/migrate failure (nothing was made live)
+#   4 health gate failed AND the previous release was restored
+#   5 health gate failed AND restoration also failed - MANUAL INTERVENTION NEEDED
+set -uo pipefail
+
+RELEASES=/srv/vmr/releases
+APPLINK=/srv/vmr/app
+ENVFILE=/etc/vmr/vmr.env
+DEPLOYCONF=/etc/vmr/deploy.conf
+RELEASE_ENV=/srv/vmr/shared/runtime/release.env
+MIRROR=/srv/vmr/repo.git
+
+LIVENESS_TIMEOUT=30
+READINESS_TIMEOUT=60
+
+SHA=""
+EXECUTE=0
+WITH_WORKER=1
+
+die() { echo "vmr-deploy: ERROR: $2" >&2; exit "$1"; }
+say() { echo "vmr-deploy: $*"; }
+step() { echo; echo "== $*"; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --sha)        SHA="${2:-}"; shift 2 ;;
+    --execute)    EXECUTE=1; shift ;;
+    --no-worker)  WITH_WORKER=0; shift ;;
+    --list)       ls -1t "$RELEASES" 2>/dev/null || echo "(no releases)"; exit 0 ;;
+    -h|--help)    sed -n '2,60p' "$0"; exit 0 ;;
+    *)            die 1 "unknown argument '$1'" ;;
+  esac
+done
+
+# --------------------------------------------------------------------------
+# 1. Preconditions
+# --------------------------------------------------------------------------
+[ "$(id -u)" -eq 0 ] || die 2 "must be run as root"
+
+[ -n "$SHA" ] || die 1 "--sha is required: deploy an exact approved commit, never a branch"
+case "$SHA" in *[!0-9a-fA-F]*) die 1 "--sha must be a hex Git SHA";; esac
+[ "${#SHA}" -ge 7 ] || die 1 "--sha too short"
+
+for tool in git curl systemctl python3 stat awk; do
+  command -v "$tool" >/dev/null 2>&1 || die 2 "$tool not found"
+done
+
+[ -f "$ENVFILE" ] || die 2 "$ENVFILE not found - create it from deploy/vmr.env.example"
+ENV_MODE="$(stat -c '%a %U:%G' "$ENVFILE")"
+[ "$ENV_MODE" = "640 root:vmr" ] || die 2 "$ENVFILE is $ENV_MODE, expected 640 root:vmr"
+
+[ -f "$DEPLOYCONF" ] || die 2 "$DEPLOYCONF not found - see deploy/deploy.conf.example"
+# deploy.conf carries no secret: a repository URL and the expected Host header.
+# shellcheck disable=SC1090
+. "$DEPLOYCONF"
+: "${VMR_REPO_URL:?VMR_REPO_URL must be set in $DEPLOYCONF}"
+: "${VMR_HEALTH_HOST:?VMR_HEALTH_HOST must be set in $DEPLOYCONF}"
+
+# APP_PORT and TRUSTED_HOSTS are read WITHOUT printing the file: it holds
+# DATABASE_URL. awk on one key at a time, never `cat`, never `set -x` here.
+APP_PORT="$(awk -F= '/^[[:space:]]*APP_PORT=/{gsub(/["'"'"' ]/,"",$2); print $2}' "$ENVFILE" | tail -1)"
+[ -n "$APP_PORT" ] || die 2 "APP_PORT is not set in $ENVFILE"
+case "$APP_PORT" in *[!0-9]*) die 2 "APP_PORT in $ENVFILE is not numeric";; esac
+
+# The application returns a blanket 400 "Invalid host header" for any Host it
+# does not recognise, and that failure reads like an application fault. Catch the
+# disagreement here instead, while it is still cheap.
+grep -q "^[[:space:]]*APP_ENV=staging" "$ENVFILE" \
+  || die 2 "$ENVFILE does not set APP_ENV=staging (the app does NOT read VMR_ENV)"
+grep -q "TRUSTED_HOSTS=.*${VMR_HEALTH_HOST}" "$ENVFILE" \
+  || die 2 "VMR_HEALTH_HOST='$VMR_HEALTH_HOST' does not appear in TRUSTED_HOSTS in $ENVFILE"
+
+PREVIOUS=""
+[ -L "$APPLINK" ] && PREVIOUS="$(readlink -f "$APPLINK" 2>/dev/null || true)"
+FIRST_DEPLOY=0
+[ -z "$PREVIOUS" ] && FIRST_DEPLOY=1
+
+# Remember what the worker was doing BEFORE this run, so a rollback can restore
+# it rather than guess.
+WORKER_WAS_ACTIVE=0
+systemctl is-active --quiet vmr-worker && WORKER_WAS_ACTIVE=1
+
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+SHORT="$(printf '%s' "$SHA" | cut -c1-12)"
+RELEASE="$RELEASES/${STAMP}-${SHORT}"
+
+cat <<PLAN
+vmr-deploy PLAN
+  commit            : $SHA
+  new release       : $RELEASE
+  previous release  : ${PREVIOUS:-(none - FIRST DEPLOYMENT)}
+  active symlink    : $APPLINK
+  environment       : $ENVFILE (640 root:vmr)
+  release identity  : $RELEASE_ENV  (RELEASE_ID=$SHA)
+  backend probe     : http://127.0.0.1:$APP_PORT  Host: $VMR_HEALTH_HOST
+  worker            : $([ "$WITH_WORKER" -eq 1 ] && echo "start after web is healthy" || echo "skipped (--no-worker)")
+  worker before run : $([ "$WORKER_WAS_ACTIVE" -eq 1 ] && echo active || echo inactive)
+  order             : export -> venv -> pinned deps -> import check -> backup
+                      -> migrate -> release.env -> SWITCH SYMLINK -> restart web
+                      -> health gate -> start worker
+  on gate failure   : repoint previous release, restart, re-verify, restore worker
+  schema rollback   : NEVER automatic
+PLAN
+
+if [ "$EXECUTE" -ne 1 ]; then
+  echo
+  echo "DRY RUN only (no --execute given). Nothing changed."
+  exit 0
+fi
+
+# --------------------------------------------------------------------------
+# 2. Export the exact commit
+# --------------------------------------------------------------------------
+step "2. Export $SHA"
+if [ ! -d "$MIRROR" ]; then
+  say "creating mirror $MIRROR"
+  git clone --mirror "$VMR_REPO_URL" "$MIRROR" >/dev/null 2>&1 \
+    || die 2 "could not clone $VMR_REPO_URL"
+else
+  git --git-dir="$MIRROR" remote update --prune >/dev/null 2>&1 \
+    || die 2 "could not update mirror $MIRROR"
+fi
+
+git --git-dir="$MIRROR" cat-file -e "${SHA}^{commit}" 2>/dev/null \
+  || die 2 "commit $SHA is not present in $MIRROR"
+
+mkdir -p "$RELEASE" || die 2 "could not create $RELEASE"
+git --git-dir="$MIRROR" archive --format=tar "$SHA" | tar -x -C "$RELEASE" \
+  || die 3 "could not export $SHA into $RELEASE"
+# The release tree is code only - no .git - so nothing on the server can rewrite
+# the deployed commit in place.
+# Record the exact commit inside the release. The directory name carries only a
+# 12-character prefix; a rollback needs the full value so GET /version keeps
+# answering with the same identity the deployment reported.
+printf '%s\n' "$SHA" > "$RELEASE/.release-sha" || die 3 "could not record the release SHA"
+chown -R root:vmrdeploy "$RELEASE" || die 3 "chown of $RELEASE failed"
+chmod -R go-w "$RELEASE"           || die 3 "chmod of $RELEASE failed"
+say "exported $(find "$RELEASE" -type f | wc -l) files"
+
+[ -f "$RELEASE/constraints.txt" ] \
+  || die 3 "$SHA has no constraints.txt - deployments must be reproducible"
+
+# --------------------------------------------------------------------------
+# 3. Release venv + PINNED dependencies
+# --------------------------------------------------------------------------
+step "3. Build the release virtualenv"
+python3 -m venv "$RELEASE/.venv" || die 3 "venv creation failed"
+"$RELEASE/.venv/bin/pip" install --quiet --upgrade pip >/dev/null \
+  || die 3 "pip self-upgrade failed"
+# The pinned closure is installed as a requirements file, so the release gets
+# exactly the reviewed versions. The project itself is then installed --no-deps,
+# which keeps the source tree authoritative for templates and static assets while
+# leaving the closure in sole charge of versions.
+"$RELEASE/.venv/bin/pip" install --quiet --requirement "$RELEASE/constraints.txt" \
+  || die 3 "pinned dependency install failed"
+(cd "$RELEASE" && "$RELEASE/.venv/bin/pip" install --quiet --no-deps --editable .) \
+  || die 3 "project install failed"
+
+# --------------------------------------------------------------------------
+# 4. Import check - before anything becomes live
+# --------------------------------------------------------------------------
+step "4. Import-check the release"
+# Catches a dependency added to pyproject.toml but missing from constraints.txt,
+# which would otherwise surface as a crash loop after the symlink had moved.
+# VMR_TEST_MODE keeps this from reading any .env and from touching a provider.
+(cd "$RELEASE" && VMR_TEST_MODE=1 "$RELEASE/.venv/bin/python" -c "import app.main") \
+  || die 3 "release cannot import app.main - constraints.txt is probably stale"
+say "import check passed"
+
+# --------------------------------------------------------------------------
+# 5-6. Backup, then migrate
+# --------------------------------------------------------------------------
+step "5. Back up the database"
+DB_NAME="$(awk -F/ '/^[[:space:]]*DATABASE_URL=/{n=split($0,p,"/"); print p[n]}' "$ENVFILE" \
+           | tr -d "'\"" | cut -d'?' -f1 | tail -1)"
+[ -n "$DB_NAME" ] || die 2 "could not determine the database name from $ENVFILE"
+vmr-db-backup "$DB_NAME" || die 3 "backup failed - refusing to migrate"
+
+step "6. alembic upgrade head"
+# The environment is sourced in a subshell so DATABASE_URL never reaches this
+# script's own environment, argv, or output. Values in $ENVFILE must be
+# shell-safe; deploy/vmr.env.example states that rule.
+(
+  set -a
+  # shellcheck disable=SC1090
+  . "$ENVFILE"
+  set +a
+  cd "$RELEASE" || exit 1
+  "$RELEASE/.venv/bin/python" -m alembic upgrade head
+) || die 3 "migration failed - the symlink has NOT been moved, nothing is live"
+say "schema is at head"
+
+# --------------------------------------------------------------------------
+# 7. Release identity
+# --------------------------------------------------------------------------
+step "7. Write $RELEASE_ENV"
+# Both units load this AFTER /etc/vmr/vmr.env, so the deployed SHA always wins
+# and GET /version answers "which code is live?" truthfully.
+umask 027
+printf 'RELEASE_ID=%s\n' "$SHA" > "$RELEASE_ENV" || die 3 "could not write $RELEASE_ENV"
+chown root:vmr "$RELEASE_ENV" || die 3 "could not chown $RELEASE_ENV"
+chmod 0640 "$RELEASE_ENV"     || die 3 "could not chmod $RELEASE_ENV"
+
+# --------------------------------------------------------------------------
+# 8. Switch the symlink - this is what loads the release
+# --------------------------------------------------------------------------
+step "8. Point $APPLINK at the new release"
+ln -sfn "$RELEASE" "$APPLINK" || die 3 "could not repoint $APPLINK"
+say "$APPLINK -> $(readlink -f "$APPLINK")"
+
+# --------------------------------------------------------------------------
+# 9-11. Restart, gate, then the worker
+# --------------------------------------------------------------------------
+probe() {
+  curl -sS -o /dev/null -w '%{http_code}' --max-time 5 \
+    -H "Host: $VMR_HEALTH_HOST" "http://127.0.0.1:$APP_PORT$1" 2>/dev/null || echo 000
+}
+
+probe_body() {
+  curl -sS --max-time 5 -H "Host: $VMR_HEALTH_HOST" \
+    "http://127.0.0.1:$APP_PORT$1" 2>/dev/null || true
+}
+
+wait_for() {
+  local path="$1" limit="$2" i=0
+  while [ "$i" -lt "$limit" ]; do
+    [ "$(probe "$path")" = "200" ] && return 0
+    i=$((i + 1))
+    sleep 1
+  done
+  return 1
+}
+
+gate() {
+  systemctl restart vmr-web || return 1
+  wait_for /healthz "$LIVENESS_TIMEOUT" || { echo "  /healthz did not reach 200 in ${LIVENESS_TIMEOUT}s" >&2; return 1; }
+  say "/healthz 200"
+  wait_for /readyz "$READINESS_TIMEOUT"  || { echo "  /readyz did not reach 200 in ${READINESS_TIMEOUT}s" >&2; return 1; }
+  say "/readyz 200"
+  return 0
+}
+
+step "9. Restart vmr-web and gate on health + readiness"
+GATE_OK=0
+if gate; then
+  # Auditability: the running process must report the commit we just deployed.
+  # A mismatch means release.env did not take, and /version would lie for the
+  # life of the release.
+  VERSION_BODY="$(probe_body /version)"
+  case "$VERSION_BODY" in
+    *"$SHA"*) say "/version reports $SHA"; GATE_OK=1 ;;
+    *) echo "  /version does not report the deployed SHA: $VERSION_BODY" >&2 ;;
+  esac
+fi
+
+if [ "$GATE_OK" -ne 1 ]; then
+  step "GATE FAILED - restoring"
+  if [ "$FIRST_DEPLOY" -eq 1 ]; then
+    say "first deployment: there is no previous release to restore"
+    systemctl stop vmr-web || true
+    rm -f "$APPLINK"
+    say "stopped vmr-web and removed $APPLINK; the failed release is left at"
+    say "$RELEASE for inspection. The schema was NOT downgraded."
+    exit 4
+  fi
+  say "repointing $APPLINK -> $PREVIOUS"
+  ln -sfn "$PREVIOUS" "$APPLINK" || die 5 "could not restore the previous symlink"
+  # The previous release ran under its own RELEASE_ID. Restore it from the
+  # directory name so /version keeps telling the truth after a rollback.
+  if [ -r "$PREVIOUS/.release-sha" ]; then
+    PREV_SHA="$(tr -d '[:space:]' < "$PREVIOUS/.release-sha")"
+  else
+    PREV_SHA="$(basename "$PREVIOUS" | sed 's/^[0-9TZ]*-//')"
+  fi
+  printf 'RELEASE_ID=%s\n' "$PREV_SHA" > "$RELEASE_ENV"
+  chown root:vmr "$RELEASE_ENV"; chmod 0640 "$RELEASE_ENV"
+  if gate; then
+    say "previous release restored and healthy"
+    if [ "$WORKER_WAS_ACTIVE" -eq 1 ]; then
+      systemctl restart vmr-worker && say "vmr-worker restored to active"
+    fi
+    echo
+    echo "The failed release is left at $RELEASE for inspection."
+    echo "The schema was NOT downgraded. If the failure was caused by a"
+    echo "migration, a human must decide what to do about it."
+    exit 4
+  fi
+  die 5 "previous release did NOT come back healthy - manual intervention needed"
+fi
+
+if [ "$WITH_WORKER" -eq 1 ]; then
+  step "11. Start vmr-worker"
+  systemctl restart vmr-worker || die 4 "vmr-worker failed to start (web is healthy)"
+  sleep 5
+  systemctl is-active --quiet vmr-worker \
+    || die 4 "vmr-worker did not stay active - see: journalctl -u vmr-worker -n 50"
+  say "vmr-worker active"
+else
+  say "worker skipped (--no-worker); previous worker state left untouched"
+fi
+
+echo
+say "OK - $SHA is live at $RELEASE"
+say "reboot survival still requires: systemctl enable vmr-web vmr-worker"
+exit 0
