@@ -95,6 +95,21 @@ CAMPAIGNS_JS_VERSION = sha256(_CAMPAIGNS_JS.read_bytes()).hexdigest()[:12]
 _V2_CSS = Path(__file__).parent.parent / "static" / "v2.css"
 V2_CSS_VERSION = sha256(_V2_CSS.read_bytes()).hexdigest()[:12]
 
+# `live.js` was the one asset still loaded without a token, which made it the
+# one asset a deploy could not reliably replace. It is a small file, but it is
+# the auto-refresh, so a stale copy keeps polling a shape the server no longer
+# returns. Same derivation, so there is one rule for every versioned asset
+# rather than a rule and an exception.
+_LIVE_JS = Path(__file__).parent.parent / "static" / "live.js"
+LIVE_JS_VERSION = sha256(_LIVE_JS.read_bytes()).hexdigest()[:12]
+
+# The Beta 1 copy controls. External because the deployed CSP is
+# `script-src 'self'` with no nonce and no `unsafe-inline`, so an inline handler
+# would silently not run -- and a copy button that silently does nothing is
+# worse than no copy button.
+_SEQUENCE_JS = Path(__file__).parent.parent / "static" / "sequence.js"
+SEQUENCE_JS_VERSION = sha256(_SEQUENCE_JS.read_bytes()).hexdigest()[:12]
+
 PAGE_SIZE = 25
 #: How many planned rows the import preview renders. The preview's job is to make
 #: the file's *shape* legible, not to be a spreadsheet viewer; the counts above it
@@ -378,6 +393,8 @@ def _render(
         "capture_ready": "contact_capture_intake" in settings.features.enabled(),
         "campaigns_js_version": CAMPAIGNS_JS_VERSION,
         "v2_css_version": V2_CSS_VERSION,
+        "live_js_version": LIVE_JS_VERSION,
+        "sequence_js_version": SEQUENCE_JS_VERSION,
         "flash_ok": request.query_params.get("ok"),
         "flash_err": request.query_params.get("err"),
     }
