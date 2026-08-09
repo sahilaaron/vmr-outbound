@@ -1,0 +1,62 @@
+# Access boundary for the VMR application surface.
+# Installs to /etc/nginx/snippets/vmr-access.conf
+#
+# Included by `location /` in the vmr-staging site. That location covers the
+# operator UI (when it exists), the entire /api surface, root-level
+# POST /campaigns, /docs, /redoc and /openapi.json - none of which the
+# application authenticates today.
+#
+# ############################################################################
+# THIS FILE SHIPS AS DENY-ALL AND CONTAINS NO CREDENTIALS.
+# It is an .example in the repository precisely so the live copy - which may
+# name operator IP addresses - is not committed. NEVER commit the live file, and
+# NEVER commit a htpasswd file.
+# ############################################################################
+#
+# This is a network boundary, not authentication. It buys time until
+# authenticated remote access is implemented; it does not substitute for it.
+
+deny all;
+
+# ---------------------------------------------------------------------------
+# OPTION A - IP allow-list. Preferred when the operator has a stable address.
+# Replace the deny above with:
+#
+# allow 203.0.113.7/32;      # operator - REPLACE
+# deny  all;
+#
+# Order matters: nginx evaluates allow/deny top-down and takes the first match.
+#
+# ---------------------------------------------------------------------------
+# OPTION B - temporary HTTP Basic Auth. Use when the operator address is not
+# stable. Meaningful only over HTTPS: Basic sends the password base64-encoded,
+# which is encoding, not encryption. Do not enable it on the port-80 server.
+#
+# auth_basic           "VMR staging";
+# auth_basic_user_file /etc/nginx/vmr-staging.htpasswd;
+#
+# Create that file ON THE SERVER, never in the repository:
+#   apt-get install -y apache2-utils
+#   htpasswd -c /etc/nginx/vmr-staging.htpasswd <operator>
+#   chown root:www-data /etc/nginx/vmr-staging.htpasswd
+#   chmod 0640          /etc/nginx/vmr-staging.htpasswd
+#
+# Then remove the `deny all;` above, or Basic Auth will never be reached.
+#
+# ---------------------------------------------------------------------------
+# OPTION C - both. An IP allow-list AND Basic Auth, with:
+#
+# satisfy all;
+# allow 203.0.113.7/32;
+# deny  all;
+# auth_basic           "VMR staging";
+# auth_basic_user_file /etc/nginx/vmr-staging.htpasswd;
+#
+# `satisfy all` requires both to pass. The nginx default is `satisfy any`, which
+# would let either one alone grant access - rarely what is wanted here.
+#
+# ---------------------------------------------------------------------------
+# RETIRING THIS FILE
+# When authenticated remote access ships, this snippet becomes redundant for the
+# authenticated surface. Retire it deliberately, in the same change that proves
+# the new boundary works - not as cleanup afterwards.

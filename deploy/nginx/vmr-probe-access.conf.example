@@ -1,0 +1,29 @@
+# Access boundary for the deployment probes: /healthz, /readyz, /version.
+# Installs to /etc/nginx/snippets/vmr-probe-access.conf
+#
+# ############################################################################
+# THIS FILE SHIPS AS DENY-ALL AND CONTAINS NO CREDENTIALS.
+# ############################################################################
+#
+# The probes are unauthenticated by design and their contracts are deliberately
+# small: /healthz answers only {"status":"ok"}; /readyz answers ready or
+# not_ready and never discloses a DSN, host, SQL, driver text or stack;
+# /version returns the deployed RELEASE_ID.
+#
+# They are still denied by default, because "small" is not "nothing":
+# /version publishes exactly which commit is running, which is a useful thing to
+# hand an attacker and a useless thing to hand the public.
+#
+# The deployment health gate does NOT need this relaxed. vmr-deploy probes
+# http://127.0.0.1:${APP_PORT} on this host, with an explicit Host header.
+#
+# Relax it only when remote infrastructure monitoring genuinely requires it, and
+# then scope it to the monitor:
+#
+# allow 198.51.100.0/24;   # monitoring - REPLACE
+# deny  all;
+#
+# If /version specifically should stay private while /healthz and /readyz are
+# published, give /version its own snippet rather than widening this one.
+
+deny all;
