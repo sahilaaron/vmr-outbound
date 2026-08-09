@@ -6,7 +6,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}{{ page_title | default("Workbench") }}{% endblock %} — VMR Outbound</title>
+  <title>{% block title %}{{ page_title | neutralize | default("Workbench", true) }}{% endblock %} — VMR Outbound</title>
   <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}">
 </head>
 {#

@@ -84,10 +84,15 @@ alembic downgrade base && alembic upgrade head
 
 ```bash
 uvicorn app.main:app --reload --port 8000
-# Liveness:  curl http://127.0.0.1:8000/health
-# Readiness: curl http://127.0.0.1:8000/ready   (checks the database)
-# Or:        python scripts/smoke.py    (health + readiness + which features are on)
+# Liveness:  curl http://127.0.0.1:8000/healthz
+# Readiness: curl http://127.0.0.1:8000/readyz   (bounded database check)
+# Version:   curl http://127.0.0.1:8000/version
+# Or:        python scripts/smoke.py    (health + readiness)
 ```
+
+See [`PRODUCTION_HARDENING.md`](PRODUCTION_HARDENING.md) for the probe contracts,
+reverse-proxy trust boundary, request limits, startup refusal, and staging
+settings.
 
 To run the local operator workbench (server-rendered UI at `/`), enable its
 switches (they default off):
@@ -131,6 +136,29 @@ python scripts/run_agent_worker.py --agent identity --agent company
 
 See `docs/PHASE_2_EXECUTION_MODEL.md` for queue leases, controls, retry
 semantics, and pipeline-state inspection.
+
+To run seven-message Personalization sequences locally, add the deployment
+switch and opt one Campaign in:
+
+```bash
+FEATURES__WORKBENCH=true FEATURES__AGENT_WORKBENCH=true \
+  FEATURES__EMAIL_SEQUENCES=true uvicorn app.main:app --reload --port 8000
+```
+
+The flag alone changes nothing. Each Campaign opts in separately through its
+`cadence_config`, so enabling the switch never silently changes what an existing
+Campaign produces:
+
+```json
+{"sequence": {"enabled": true, "elapsed_days": [0, 3, 7, 12, 18, 25, 35]}}
+```
+
+`elapsed_days` is optional; omit it for the default ladder. Sequences appear at
+the top of `/app/review` as one compact card per contact, and on the contact
+page under "The seven-message sequence". Generated messages are approved by
+default and review is optional, so the cards are there on arrival rather than
+waiting in a queue. Nothing is sent by confirming one — see
+`docs/EMAIL_SEQUENCE.md` for what exists and what is deliberately deferred.
 
 ## 6. Run the checks (same as CI)
 
@@ -279,6 +307,24 @@ set FEATURES__CONTACT_CAPTURE_PROMOTION=true
 set FEATURES__SALESNAV_DOMAIN_ENRICHMENT=true
 set LOGO_DEV_API_KEY=your-local-key
 ```
+
+That is the **operator-driven** flow: you resolve and promote by hand.
+
+To let the backend resolve and promote *without* an operator — inside the intake
+request, and in the agent worker — add the fourth switch:
+
+```bat
+set FEATURES__AUTOMATIC_COMPANY_DOMAIN_RESOLUTION=true
+```
+
+Automatic promotion needs all four together:
+`FEATURES__CONTACT_CAPTURE_PROMOTION`,
+`FEATURES__AUTOMATIC_COMPANY_DOMAIN_RESOLUTION`,
+`FEATURES__SALESNAV_DOMAIN_ENRICHMENT` and a configured `LOGO_DEV_API_KEY`. With
+any one of them missing the capture simply stays pending and the intake response
+reports `auto_resolved: 0` — nothing is guessed and no decision is recorded. See
+[CAPTURE_PROMOTION.md](./CAPTURE_PROMOTION.md) for the full table and the three
+routes a promotion can take.
 
 Then, in the workbench:
 

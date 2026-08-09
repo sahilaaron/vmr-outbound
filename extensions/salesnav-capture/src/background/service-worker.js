@@ -59,7 +59,34 @@ const {
 } = constants;
 
 const EXTENSION_VERSION = chrome.runtime.getManifest().version;
+
+// Client-side abort budgets. Each one is set from the budget the *backend*
+// already commits to for that route, so the client stops waiting after the
+// server has had its chance to answer — never before.
+//
+//   - Reads (labels, campaigns, save-vs-refresh lookup) and the company intake
+//     POST keep 15 s. The company route declares no server-side wall-clock
+//     budget at all (app/core/config.py has max_bytes for it but no
+//     `linkedin_company_intake_timeout_seconds`), and the reads are small
+//     advisory queries, so there is no contract that would justify waiting
+//     longer. Unchanged.
+//
+//   - The contact-capture POST gets 75 s. `contact_capture_intake_timeout_seconds`
+//     defaults to 60 s (app/core/config.py) and the service enforces it
+//     cooperatively plus via PostgreSQL `statement_timeout`, rolling the whole
+//     submission back and returning 504 on breach. A 15 s client abort was
+//     shorter than the server's own bounded path, so a slow-but-successful
+//     submission was reported to the operator as a timeout while the server
+//     went on to commit it. Waiting past the server's budget means the operator
+//     sees the server's real verdict — 201, or a truthful 504 — instead of a
+//     guess. The 15 s of headroom covers request/response transfer either side
+//     of that budget.
+//
+// Retrying is safe at any of these values: the reviewed draft and its
+// `client_submission_id` are preserved across a failure, and the backend
+// replays an identical resubmission rather than duplicating it.
 const SEND_TIMEOUT_MS = 15000;
+const CONTACT_CAPTURE_TIMEOUT_MS = 75000;
 
 async function migrateLegacyState() {
   try {
@@ -575,7 +602,7 @@ async function postSubmission(payload, explicitTarget) {
   }
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), CONTACT_CAPTURE_TIMEOUT_MS);
   try {
     const resp = await fetch(url, {
       method: "POST",
@@ -602,7 +629,11 @@ async function postSubmission(payload, explicitTarget) {
   } catch (e) {
     clearTimeout(timer);
     if (e && e.name === "AbortError") {
-      return { ok: false, error: "timeout", message: `No response within ${SEND_TIMEOUT_MS}ms.` };
+      return {
+        ok: false,
+        error: "timeout",
+        message: `No response within ${CONTACT_CAPTURE_TIMEOUT_MS}ms.`,
+      };
     }
     return { ok: false, error: "network_error", message: String(e && e.message) };
   }

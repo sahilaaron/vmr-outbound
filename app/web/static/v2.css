@@ -2572,3 +2572,275 @@ progress.v2-progress::-moz-progress-bar {
   text-align: right;
   text-wrap: pretty;
 }
+
+/* ---------------------------------------------------------------------------
+   Seven-message sequences (SEQ-001)
+
+   The layout problem this solves: a Review queue may hold dozens of contacts,
+   each with seven messages. Rendering seven full message cards per contact
+   would produce a page nobody can scan and a payload nobody should transfer,
+   so a sequence collapses to one card carrying the initial subject, a short
+   excerpt and its counts, and expands to exactly one message at a time.
+   --------------------------------------------------------------------------- */
+
+.v2-seq-head {
+  max-width: 720px;
+}
+.v2-seq-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 16px;
+}
+.v2-seq-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* The open card gets a left rule rather than a fill: the expanded content below
+   it is already a large visual block, and a second emphasis would compete. */
+.v2-seq-card.on {
+  border-left: 3px solid var(--brand-500, #4f46e5);
+}
+.v2-seq-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.v2-seq-who {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.v2-seq-name {
+  font-weight: 600;
+}
+.v2-seq-sub {
+  font-size: 12px;
+  color: var(--muted);
+}
+.v2-seq-flags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.v2-seq-subject {
+  font-weight: 550;
+  overflow-wrap: anywhere;
+}
+/* The excerpt is capped in SQL, so this is a visual bound rather than the only
+   one -- a long first line still cannot push the card out of shape. */
+.v2-seq-excerpt {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  text-wrap: pretty;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.v2-seq-tally,
+.v2-seq-basis {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.v2-seq-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.v2-seq-open {
+  border: 1px solid var(--line);
+  border-top: 0;
+  border-radius: 0 0 10px 10px;
+  padding: 14px 16px 18px;
+  background: var(--surface-2, var(--surface));
+}
+
+/* The message selector. Links, not buttons or tabs driven by script: the rest
+   of this application is server-rendered and keyboard-navigable, and a sequence
+   is not a good reason to make one page behave differently. */
+.v2-seq-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.v2-seq-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 12px;
+  text-decoration: none;
+  color: inherit;
+  white-space: nowrap;
+}
+.v2-seq-step:hover {
+  border-color: var(--line-strong, var(--line));
+}
+.v2-seq-step.on {
+  border-color: var(--brand-500, #4f46e5);
+  font-weight: 600;
+}
+.v2-seq-step:focus-visible {
+  outline: 2px solid var(--brand-500, #4f46e5);
+  outline-offset: 2px;
+}
+.v2-seq-step-label {
+  line-height: 1;
+}
+
+.v2-seq-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.v2-seq-warnings {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.v2-seq-edit,
+.v2-seq-original,
+.v2-seq-ids {
+  margin-top: 12px;
+  font-size: 12.5px;
+}
+.v2-seq-edit > summary,
+.v2-seq-original > summary,
+.v2-seq-ids > summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+.v2-seq-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  max-width: 720px;
+}
+.v2-seq-form textarea {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.v2-seq-bulk {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+/* Contact-page table. The subject column is the one that wants to run away, so
+   it is the only one given a cap. */
+.v2-seq-table .v2-seq-cell-subject {
+  max-width: 320px;
+  overflow-wrap: anywhere;
+}
+.v2-seq-table tbody tr.on {
+  background: var(--surface-2, transparent);
+}
+.v2-seq-rowdetail {
+  border-top: 1px solid var(--line);
+}
+
+/* A sequence that is kept and readable but can no longer be acted on, because
+   the deployment switch or the campaign opt-in was turned off after it was
+   written. Styled as a notice rather than an error: nothing is wrong, and the
+   work below it is real. */
+.v2-seq-readonly {
+  margin-bottom: 12px;
+}
+
+/* --- Beta 1 operator UI ---------------------------------------------------
+
+   The Campaign roster's Sequence cell. A statement of what the row holds, so
+   it is styled as a fact and not as a call to action: no badge tone for
+   "partial", because partial is not a problem an operator has to clear. */
+.v2-seq-state {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.v2-seq-state.is-complete {
+  font-weight: 600;
+}
+
+/* One fully expanded message on the Contact page. Unlike the Review queue,
+   this page shows all seven bodies, because it is one contact and the operator
+   came to read, copy and edit them. */
+.v2-seq-full {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+}
+.v2-seq-full > .v2-seq-full-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 12px;
+  margin-bottom: 10px;
+}
+.v2-seq-full-step {
+  font-weight: 600;
+}
+
+/* The copy row. Buttons only -- no links -- so keyboard activation is the
+   browser's job rather than ours. */
+.v2-seq-copyrow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* One live region for the whole page. Success may fade; failure must not, and
+   must be visually distinct, because the only recovery from a failed copy is a
+   manual selection the operator has to make. */
+.v2-seq-copystatus {
+  margin-top: 10px;
+  min-height: 1.2em;
+  font-size: 0.9em;
+  color: var(--muted, inherit);
+}
+.v2-seq-copystatus.is-error {
+  color: var(--err, #b00020);
+  font-weight: 600;
+}
+
+/* The identity block a later Gmail draft feature reads. Small, monospaced and
+   collapsed by default: it is provenance, not content. */
+.v2-seq-ids {
+  margin-top: 10px;
+  font-size: 0.82em;
+}
+.v2-seq-ids dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 10px;
+  margin: 6px 0 0;
+}
+.v2-seq-ids dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}

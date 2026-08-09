@@ -19,7 +19,7 @@
     <span class="badge muted plain">not started</span>
   {%- else -%}
     {%- set value = status.value if status.value is defined else status -%}
-    <span class="badge {{ tone_for_stage(value) }}">{{ value }}</span>
+    <span class="badge {{ tone_for_stage(value) }}">{{ (value) | neutralize }}</span>
   {%- endif -%}
 {%- endmacro %}
 
@@ -76,21 +76,54 @@
 {% macro crumbs(items) -%}
   <div class="crumbs">
     {%- for label, href in items -%}
-      {%- if href %}<a href="{{ href }}">{{ label }}</a>{% else %}<span>{{ label }}</span>{% endif -%}
+      {%- if href %}<a href="{{ href }}">{{ (label) | neutralize }}</a>{% else %}<span>{{ (label) | neutralize }}</span>{% endif -%}
       {%- if not loop.last %}<span class="sep">/</span>{% endif -%}
     {%- endfor -%}
   </div>
 {%- endmacro %}
 
+{# External systems' own keys for this record. Deliberately labelled as somebody
+   else's identifier: the same person may later arrive from Sales Navigator, the
+   extension or by hand, and none of those know an Apollo id. #}
+{% macro source_identifiers(rows) -%}
+{% if rows %}
+<div class="card">
+  <div class="card-head">
+    <h2>Source identifiers</h2>
+    <span class="hint">keys held by the systems this record was imported from — not canonical identity</span>
+  </div>
+  <div class="card-body tight">
+    <div class="table-wrap">
+    <table class="data">
+      <thead><tr><th>System</th><th>Kind</th><th>Value</th><th>Recorded by</th><th>First seen</th></tr></thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td>{{ row.system }}</td>
+          <td class="dim">{{ row.kind | replace("_", " ") }}</td>
+          <td class="mono wrap-anywhere">{{ row.value }}</td>
+          <td class="dim">{{ row.recorded_by or "—" }}</td>
+          <td class="dim nowrap">{{ row.created_at | dt }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    <div class="card-foot">Used to keep re-import idempotent and to match exactly. A vendor key never outranks this system's own identity resolution.</div>
+  </div>
+</div>
+{% endif %}
+{%- endmacro %}
+
 {% macro empty(title, detail=None) -%}
   <div class="empty">
-    <strong>{{ title }}</strong>
-    {% if detail %}{{ detail }}{% endif %}
+    <strong>{{ (title) | neutralize }}</strong>
+    {% if detail %}{{ (detail) | neutralize }}{% endif %}
   </div>
 {%- endmacro %}
 
 {% macro unavailable(title, detail) -%}
-  <div class="unavailable"><strong>{{ title }}</strong> — {{ detail }}</div>
+  <div class="unavailable"><strong>{{ (title) | neutralize }}</strong> — {{ (detail) | neutralize }}</div>
 {%- endmacro %}
 
 {% macro progress(percent) -%}
@@ -115,8 +148,8 @@
       <span class="when" title="{{ event.occurred_at | dt }}">{{ event.occurred_at | ago }}</span>
       <span>
         {{ event.summary if event.summary is defined and event.summary else event.event_type.value | replace("_", " ") }}
-        {% if event.contact_label %}<span class="dim">· {{ event.contact_label }}</span>{% endif %}
-        {% if event.campaign_name %}<span class="dim">· {{ event.campaign_name }}</span>{% endif %}
+        {% if event.contact_label %}<span class="dim">· {{ (event.contact_label) | neutralize }}</span>{% endif %}
+        {% if event.campaign_name %}<span class="dim">· {{ (event.campaign_name) | neutralize }}</span>{% endif %}
       </span>
     </li>
     {% endfor %}

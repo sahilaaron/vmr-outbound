@@ -135,5 +135,6 @@ The first live acceptance should use one Contact before increasing batch size.
 - [`docs/CURRENT_MVP.md`](docs/CURRENT_MVP.md) — current product and acceptance truth
 - [`docs/GOAL.md`](docs/GOAL.md) — authorized MVP outcome
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — current data and Agent architecture
+- [`docs/PRODUCTION_HARDENING.md`](docs/PRODUCTION_HARDENING.md) — HTTP, runtime and staging safety contracts
 - [`docs/PHASE_2_EXECUTION_MODEL.md`](docs/PHASE_2_EXECUTION_MODEL.md) — durable queue and pipeline contract
 - [`docs/PROJECT_TRACKING.md`](docs/PROJECT_TRACKING.md) — management tracking rules

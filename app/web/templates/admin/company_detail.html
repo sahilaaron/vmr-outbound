@@ -6,14 +6,14 @@
 
 <div class="page-head">
   <div>
-    <h1>{{ view.name }}
-      <span class="badge {{ 'ok' if view.research_state in ('completed', 'completed_with_warnings') else ('err' if view.research_state == 'failed' else 'muted') }} plain">research: {{ view.research_state | replace("_", " ") }}</span>
+    <h1>{{ view.name | neutralize }}
+      <span class="badge {{ 'ok' if view.research_state in ('completed', 'completed_with_warnings') else ('err' if view.research_state == 'failed' else 'muted') }} plain">research: {{ (view.research_state | replace("_", " ")) | neutralize }}</span>
     </h1>
     <div class="sub">
-      {% if view.domain %}<span class="mono">{{ view.domain }}</span>{% else %}No canonical domain{% endif %}
-      {% if view.domain_state %} · domain {{ view.domain_state }}{% endif %}
-      {% if view.industry %} · {{ view.industry }}{% endif %}
-      {% if view.country %} · {{ view.country }}{% endif %}
+      {% if view.domain %}<span class="mono">{{ (view.domain) | neutralize }}</span>{% else %}No canonical domain{% endif %}
+      {% if view.domain_state %} · domain {{ (view.domain_state) | neutralize }}{% endif %}
+      {% if view.industry %} · {{ (view.industry) | neutralize }}{% endif %}
+      {% if view.country %} · {{ (view.country) | neutralize }}{% endif %}
     </div>
   </div>
   <div class="page-actions">
@@ -34,10 +34,10 @@
     <div class="card-head"><h2>Identity</h2></div>
     <div class="card-body">
       <div class="kv">
-        <dt>Canonical domain</dt><dd class="mono">{{ view.domain or "—" }}</dd>
-        <dt>Domain state</dt><dd>{% if view.domain_state %}<span class="badge {{ 'ok' if view.domain_state == 'confirmed' else 'warn' }} plain">{{ view.domain_state }}</span>{% else %}<span class="dim">not from automatic resolution</span>{% endif %}</dd>
-        <dt>LinkedIn</dt><dd class="wrap-anywhere">{% if view.linkedin_company_url %}<a href="{{ view.linkedin_company_url }}" rel="noopener noreferrer">{{ view.linkedin_company_url }}</a>{% else %}—{% endif %}</dd>
-        <dt>Size</dt><dd>{{ view.company_size or "—" }}</dd>
+        <dt>Canonical domain</dt><dd class="mono">{{ (view.domain or "—") | neutralize }}</dd>
+        <dt>Domain state</dt><dd>{% if view.domain_state %}<span class="badge {{ 'ok' if view.domain_state == 'confirmed' else 'warn' }} plain">{{ (view.domain_state) | neutralize }}</span>{% else %}<span class="dim">not from automatic resolution</span>{% endif %}</dd>
+        <dt>LinkedIn</dt><dd class="wrap-anywhere">{% if view.linkedin_company_url %}<a href="{{ (view.linkedin_company_url) | neutralize }}" rel="noopener noreferrer">{{ (view.linkedin_company_url) | neutralize }}</a>{% else %}—{% endif %}</dd>
+        <dt>Size</dt><dd>{{ (view.company_size or "—") | neutralize }}</dd>
         <dt>Last researched</dt><dd>{{ view.last_researched_at | dt }}</dd>
         <dt>Created</dt><dd>{{ view.created_at | dt }}</dd>
         <dt>Company ID</dt><dd class="mono">{{ view.company_id }}</dd>
@@ -114,7 +114,7 @@
         <tr>
           <td>{% if job.campaign_id and job.campaign_contact_id %}<a href="/admin/campaigns/{{ job.campaign_id }}/contacts/{{ job.campaign_contact_id }}" class="mono">{{ job.job_id | string | truncate(8, True, "") }}…</a>{% else %}<a class="mono" href="/admin/jobs/{{ job.job_id }}">{{ job.job_id | string | truncate(8, True, "") }}…</a>{% endif %}</td>
           <td>{{ wb.job_badge(job.status) }}</td>
-          <td class="dim">{{ job.campaign_name or "—" }}</td>
+          <td class="dim">{{ (job.campaign_name or "—") | neutralize }}</td>
           <td>
             {% if job.fallback_attempted is none %}<span class="badge muted plain">lineage unavailable</span>
             {% elif job.fallback_attempted %}<span class="badge {{ 'ok' if job.fallback_status == 'succeeded' else 'warn' }} plain">fallback {{ job.fallback_status or "attempted" }}</span>
@@ -135,7 +135,7 @@
 
 <div class="card">
   <div class="card-head"><h2>Linked Contacts</h2>
-    <span class="hint">{% if view.campaign_names %}campaigns: {{ view.campaign_names | join(", ") }}{% endif %}</span></div>
+    <span class="hint">{% if view.campaign_names %}campaigns: {{ (view.campaign_names | join(", ")) | neutralize }}{% endif %}</span></div>
   <div class="card-body tight">
     {% if view.linked_contacts %}
     <div class="table-wrap">
@@ -144,12 +144,12 @@
       <tbody>
         {% for row in view.linked_contacts %}
         <tr>
-          <td class="primary"><a href="/admin/contacts/{{ row.contact_id }}">{{ row.name }}</a>{% if row.suppressed %} <span class="badge err plain">suppressed</span>{% endif %}</td>
-          <td class="dim">{{ row.title or "—" }}</td>
-          <td class="dim">{{ row.email or "—" }}</td>
+          <td class="primary"><a href="/admin/contacts/{{ row.contact_id }}">{{ (row.name) | neutralize }}</a>{% if row.suppressed %} <span class="badge err plain">suppressed</span>{% endif %}</td>
+          <td class="dim">{{ (row.title or "—") | neutralize }}</td>
+          <td class="dim">{{ (row.email or "—") | neutralize }}</td>
           <td>
             {% for membership in row.memberships[:3] %}
-            <a href="/admin/campaigns/{{ membership.campaign_id }}/contacts/{{ membership.campaign_contact_id }}">{{ membership.campaign_name }}</a>{{ "," if not loop.last }}
+            <a href="/admin/campaigns/{{ membership.campaign_id }}/contacts/{{ membership.campaign_contact_id }}">{{ (membership.campaign_name) | neutralize }}</a>{{ "," if not loop.last }}
             {% else %}<span class="dim">none</span>{% endfor %}
           </td>
         </tr>
@@ -162,5 +162,7 @@
     {% endif %}
   </div>
 </div>
+
+{{ wb.source_identifiers(source_identifiers) }}
 
 {% endblock %}

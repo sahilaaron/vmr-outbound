@@ -1,28 +1,29 @@
 {% extends "base.html" %}
 {% from "_ui.html" import tag, dot, unbuilt, empty, email_state, research_state %}
+{% import "_sequence.html" as seq %}
 {% block content %}
 <div class="v2-page detail">
 
   <div class="v2-crumbs">
-    <a href="/app/contacts">Contacts</a><span class="sep">/</span>{{ detail.full_name }}
+    <a href="/app/contacts">Contacts</a><span class="sep">/</span>{{ detail.full_name | neutralize }}
   </div>
 
   <div class="v2-title-row v2-mt-sm">
     <div class="v2-avatar-lg">{{ detail.full_name | initials }}</div>
     <div class="v2-title-main">
-      <h1 class="v2-h1">{{ detail.full_name }}</h1>
+      <h1 class="v2-h1">{{ detail.full_name | neutralize }}</h1>
       <div class="v2-note">
-        {{ detail.contact.title or 'no title captured' }}
+        {{ (detail.contact.title | neutralize) or 'no title captured' }}
         {%- if detail.company and detail.company.company %} ·
-          <a href="/app/companies/{{ detail.company.company.id }}">{{ detail.company.company.name }}</a>
-        {%- elif detail.contact.company_name %} · {{ detail.contact.company_name }}{% endif %}
-        {%- if detail.contact.location %} · {{ detail.contact.location }}{% endif %}
+          <a href="/app/companies/{{ detail.company.company.id }}">{{ detail.company.company.name | neutralize }}</a>
+        {%- elif detail.contact.company_name %} · {{ detail.contact.company_name | neutralize }}{% endif %}
+        {%- if detail.contact.location %} · {{ detail.contact.location | neutralize }}{% endif %}
       </div>
       <div class="v2-chipline">
         {% if detail.contact.email %}
           {% set status = detail.states.email_status %}
           <span class="v2-fact {{ 'ok' if status and status.visual.value == 'successful' else ('warn' if status and status.visual.value == 'warning' else 'err' if status and status.visual.value == 'failure' else '') }}">
-            <span class="m">{{ detail.contact.email }}</span> · {{ status.label if status else 'no verification on record' }}
+            <span class="m">{{ detail.contact.email | neutralize }}</span> · {{ status.label if status else 'no verification on record' }}
           </span>
         {% else %}
           <span class="v2-fact err">No address has been built for this person yet</span>
@@ -52,7 +53,7 @@
     {% for candidate, campaign in detail.memberships %}
     <a class="v2-chip sm {{ 'on' if membership and candidate.id == membership.id }}"
        href="/app/contacts/{{ detail.contact.id }}?campaign={{ candidate.campaign_id }}">
-      {{ campaign.name if campaign else 'campaign removed' }}
+      {{ (campaign.name | neutralize) if campaign else 'campaign removed' }}
     </a>
     {% endfor %}
   </div>
@@ -119,6 +120,146 @@
       </div>
       {% endif %}
 
+      {% if membership and sequence_section_visible %}
+      <div class="v2-card" id="sequence">
+        <div class="v2-card-head">
+          <h2>The seven-message sequence</h2>
+          <span class="v2-note">
+            Written as one unit. All seven are readable here; reviewing any of them is optional.
+          </span>
+          {# The way back to the campaign this membership belongs to. The roster
+             links here; this link closes the loop. #}
+          <a class="v2-btn sm ghost" href="/app/campaigns/{{ membership.campaign_id }}">Open the campaign</a>
+        </div>
+
+        {#
+          A refused generation is shown as a refusal, not as a table of the
+          partial state that produced it. The row-level detail lives in the
+          Admin Workbench, which is where a validation finding belongs.
+        #}
+        {% if not sequence_summary or sequence_availability.state == 'failed' %}
+        <div class="v2-card-body">{{ seq.unavailable(sequence_availability.state) }}</div>
+        {% else %}
+        {{ seq.read_only_notice(sequence_availability) }}
+        {# The summary above the table, so the shape of the sequence is legible
+           before any row is opened. #}
+        <div class="v2-card-body">
+          <div class="v2-chipline">
+            {{ tag(seq.state_label(sequence_summary.review_state.value), seq.state_tone(sequence_summary.review_state.value), small=true) }}
+            <span class="v2-fact">sequence v{{ sequence_summary.sequence_version }}</span>
+            <span class="v2-fact">{{ sequence_summary.message_count }} of 7 written</span>
+            <span class="v2-fact ok" title="Generated messages are approved by default; so is anything you approved yourself.">{{ sequence_summary.approved }} approved</span>
+            {% if sequence_summary.human_approved %}<span class="v2-fact ok">{{ sequence_summary.human_approved }} approved by you</span>{% endif %}
+            {% if sequence_summary.unreviewed %}<span class="v2-fact" title="Approved by default. Nothing is waiting on a review.">{{ sequence_summary.unreviewed }} unreviewed</span>{% endif %}
+            {% if sequence_summary.edited %}<span class="v2-fact warn">{{ sequence_summary.edited }} edited</span>{% endif %}
+            {% if sequence_summary.discarded %}<span class="v2-fact err">{{ sequence_summary.discarded }} discarded</span>{% endif %}
+            {% if sequence_summary.warning_count %}<span class="v2-fact warn">{{ sequence_summary.warning_count }} warning(s)</span>{% endif %}
+          </div>
+          <dl class="v2-dl v2-mt-sm">
+            <dt>Generated</dt><dd>{{ sequence_summary.created_at | dt }}</dd>
+            <dt>Generation</dt><dd>{{ sequence_summary.generation_status }}</dd>
+            <dt>Validation</dt><dd>{{ sequence_summary.validation_status.value | replace('_', ' ') }}</dd>
+            <dt>Planned span</dt>
+            <dd>
+              {% if sequence_summary.planned_span_days is not none %}
+                {{ sequence_summary.planned_span_days }} days ({{ sequence_summary.cadence_source }} cadence)
+                <span class="v2-muted">— planned timing, not a schedule. Nothing here sends anything.</span>
+              {% else %}not recorded{% endif %}
+            </dd>
+            <dt>Reviewed</dt>
+            <dd>
+              {% if sequence_summary.reviewed_by_human %}
+                yes — last decision {{ sequence_summary.last_human_decision_at | dt }}
+              {% else %}
+                not by anyone
+                <span class="v2-muted">— review is optional, and these messages are approved without it</span>
+              {% endif %}
+            </dd>
+            <dt>Next actionable</dt>
+            <dd>
+              {% if sequence_summary.current_actionable_position %}
+                message {{ sequence_summary.current_actionable_position }}
+                <span class="v2-muted">— for a future delivery workflow that does not exist yet. Approved is not sendable, and nothing reads this to decide whether to send.</span>
+              {% else %}nothing is actionable: the chain stops at a discarded message{% endif %}
+            </dd>
+            <dt>Mode</dt>
+            <dd>
+              {% if sequence_availability.read_only %}
+                seven-message sequence, kept read-only —
+                {% if not sequence_generation_on %}the feature is switched off in this environment{% else %}this campaign is no longer set up to generate sequences{% endif %}
+              {% else %}
+                seven-message sequence, enabled for this campaign
+              {% endif %}
+            </dd>
+          </dl>
+        </div>
+
+        <div class="v2-table-wrap v2-seq-table">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Step</th>
+              <th scope="col">Type</th>
+              <th scope="col">Purpose</th>
+              <th scope="col">Planned timing</th>
+              <th scope="col">Subject</th>
+              <th scope="col">Review</th>
+              <th scope="col">Edit state</th>
+              <th scope="col">Version</th>
+              <th scope="col">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in sequence_rows %}
+            <tr>
+              <th scope="row">{{ row.step_label }}</th>
+              <td>{{ 'initial' if row.position == 1 else 'follow-up' }}</td>
+              <td>{{ row.purpose_label }}</td>
+              <td>{{ row.timing_label }}</td>
+              <td class="v2-seq-cell-subject">{{ row.subject }}</td>
+              <td>{{ row.review_label }}</td>
+              <td>{{ row.edit_label }}</td>
+              <td class="m">v{{ row.message_version }}</td>
+              <td>
+                <a class="v2-btn sm" href="#message-{{ row.position }}">Read</a>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        </div>
+
+        {#
+          All seven messages, in full, on one page. The Review queue shows one
+          body at a time because it lists forty contacts; this page is one
+          contact whose seven messages the operator came to read, copy and edit,
+          so paging through them behind `?step=` bought nothing and cost six
+          extra page loads.
+
+          One live region for the whole page, shared by every copy button, so
+          repeated copying does not queue seven announcements at a screen
+          reader.
+        #}
+        <div class="v2-card-body">
+          <p class="v2-note">
+            All seven messages, exactly as they stand. Nothing here is sent, scheduled
+            or drafted anywhere: there is no sending path in this build.
+          </p>
+          <div class="v2-seq-copystatus" id="seq-copy-status" role="status" aria-live="polite"></div>
+          {% for message_detail in sequence_details %}
+          {{ seq.full_message(
+               message_detail,
+               sequence_summary,
+               detail.contact.id,
+               membership.campaign_id,
+               "/app/contacts/" ~ detail.contact.id ~ "?campaign=" ~ membership.campaign_id ~ "#message-" ~ message_detail.row.position,
+               read_only=sequence_availability.read_only) }}
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+      {% endif %}
+
       {% if detail.employment %}
       <div class="v2-card">
         <div class="v2-card-head">
@@ -128,8 +269,8 @@
         {% for role in detail.employment %}
         <div class="v2-row">
           <div class="v2-sidelist-top">
-            <b>{{ role.job_title or 'no title read' }}</b>
-            <span class="v2-muted">{{ role.company_name or 'no company read' }}</span>
+            <b>{{ (role.job_title | neutralize) or 'no title read' }}</b>
+            <span class="v2-muted">{{ (role.company_name | neutralize) or 'no company read' }}</span>
             {% if role.is_current %}{{ tag('current', 'ok', small=true) }}{% endif %}
             {% if not role.dates_reliable %}{{ tag('dates unreliable', 'warn', small=true) }}{% endif %}
           </div>
@@ -157,7 +298,7 @@
               {% for field in detail.field_provenance %}
               <tr>
                 <td class="m v2-nowrap">{{ field.field_name | nice }}</td>
-                <td>{{ field.value or '—' }}</td>
+                <td>{{ (field.value | neutralize) or '—' }}</td>
                 <td class="v2-note">{{ field.source_name or 'not recorded' }}{% if field.is_manual_override %} · your override{% endif %}</td>
                 <td class="m v2-nowrap">{{ field.observed_at | dt }}</td>
                 <td class="v2-note">{{ field.decision_reason or '—' }}<div class="v2-sub mono">{{ field.policy_version }}</div></td>
@@ -284,3 +425,8 @@
   </div>
 </div>
 {% endblock %}
+
+{# External, versioned, and loaded only where the copy controls exist. The
+   deployed CSP is `script-src 'self'` with no nonce, so this is the only shape
+   a script on this page can take. #}
+{% block scripts %}<script src="{{ url_for('static', path='sequence.js') }}?v={{ sequence_js_version }}" defer></script>{% endblock %}

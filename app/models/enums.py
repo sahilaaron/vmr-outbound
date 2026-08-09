@@ -286,6 +286,59 @@ class ImportSourceFormat(enum.StrEnum):
     SALES_NAVIGATOR = "sales_navigator"
 
 
+class ImportedEmailSlot(enum.StrEnum):
+    """Which address of an imported row one evidence record describes (IMP-001).
+
+    A vendor export routinely carries more than one address per person, and they
+    are not interchangeable: the primary is the one the operator is asking us to
+    use, and the others are alternatives nobody has chosen. Keeping them in one
+    table separated by slot — rather than promoting a secondary into the primary
+    column when the primary looks worse — is what makes "we did not guess which
+    address to use" a property of the schema instead of a promise in a docstring.
+    """
+
+    PRIMARY = "primary"
+    SECONDARY = "secondary"
+    TERTIARY = "tertiary"
+
+
+class ImportedEmailStageOutcome(enum.StrEnum):
+    """What the Email stage did with an operator-supplied imported address.
+
+    Deliberately a separate vocabulary from anything the Email Agent's discovery
+    path produces. ``imported_email_accepted`` says exactly one thing: an address
+    that arrived in a file was taken as the campaign's address for this person.
+    It is not a claim that the mailbox exists, that a provider verified it, or
+    that it is deliverable — no candidate was generated, no pattern was applied,
+    and no provider was called, so none of those claims could be true.
+
+    ``imported_email_rejected`` covers a supplied address the import refused:
+    malformed syntax, or a suppressed identity. The row keeps the raw value as
+    evidence; the address never becomes the campaign's address.
+    """
+
+    IMPORTED_EMAIL_ACCEPTED = "imported_email_accepted"
+    IMPORTED_EMAIL_REJECTED = "imported_email_rejected"
+
+
+class ImportedVerificationOutcome(enum.StrEnum):
+    """What the Verification stage did for an imported address (IMP-001).
+
+    ``verification_bypassed_imported_email`` is a truthful *absence*: no
+    MillionVerifier call, no ZeroBounce call, no provider of any kind, and
+    therefore no evidence about the mailbox. It exists as its own durable value
+    precisely so that a bypassed Contact can never be read as a verified one —
+    :class:`EmailVerificationResult` remains reserved for answers a provider
+    actually gave about an exact address, and no import ever writes one.
+
+    ``verification_not_performed`` is the state of a slot that never reached the
+    stage at all (a rejected primary, or a retained secondary/tertiary).
+    """
+
+    VERIFICATION_BYPASSED_IMPORTED_EMAIL = "verification_bypassed_imported_email"
+    VERIFICATION_NOT_PERFORMED = "verification_not_performed"
+
+
 class EnrichmentLookupStatus(enum.StrEnum):
     """State of a company-domain lookup against logo.dev (DAT-010).
 
@@ -1278,3 +1331,172 @@ class IntelligencePresenceKind(enum.StrEnum):
     PROSPECTIVE = "prospective"
     FORMER = "former"
     UNKNOWN = "unknown"
+
+
+class SequenceMessageType(enum.StrEnum):
+    """Whether a sequence message opens the conversation or continues it.
+
+    The distinction is structural rather than cosmetic. Position 1 is the only
+    message that may be written as a first touch; every other position is
+    written knowing an earlier message already exists, and is therefore subject
+    to the follow-up rules that forbid claiming the recipient engaged with it.
+    """
+
+    INITIAL = "initial"
+    FOLLOW_UP = "follow_up"
+
+
+class SequenceMessagePurpose(enum.StrEnum):
+    """What one position in the sequence is *for*.
+
+    These are purposes, not templates. They tell the generator which angle a
+    position owns so that seven messages do not become six rewrites of the
+    first, and they give deterministic validation something to check: a
+    sequence in which two positions claim the same purpose has not been planned
+    as a sequence.
+
+    The Campaign offering, the CTA, the active Personalization policy, the
+    evidence actually available and the selected strategy all remain
+    authoritative over the purpose. A purpose that the evidence cannot support
+    yields a deliberately briefer message, never an invented angle.
+    """
+
+    #: Position 1 — the primary personalized outreach.
+    INITIAL_OUTREACH = "initial_outreach"
+    #: Position 2 — a concise reminder that adds no new demand.
+    CONCISE_REMINDER = "concise_reminder"
+    #: Position 3 — a different evidence, market or company angle.
+    NEW_ANGLE = "new_angle"
+    #: Position 4 — relevance to the contact's likely function, where supported.
+    ROLE_RELEVANCE = "role_relevance"
+    #: Position 5 — approved proof, outcome or value.
+    PROOF_OR_OUTCOME = "proof_or_outcome"
+    #: Position 6 — a low-friction resource, preview or example.
+    LOW_FRICTION_RESOURCE = "low_friction_resource"
+    #: Position 7 — a respectful close, with no guilt and no invented urgency.
+    CLOSE_THE_LOOP = "close_the_loop"
+
+
+class SequenceGenerationStatus(enum.StrEnum):
+    """How far generation got, for one message or for the sequence as a whole.
+
+    ``COMPLETE`` is the only value that may coexist with a sequence offered for
+    review. A sequence is never persisted in ``PARTIAL``: the value exists so
+    that a reader who encounters one knows the writer failed mid-flight rather
+    than assuming the row is trustworthy.
+    """
+
+    COMPLETE = "complete"
+    PARTIAL = "partial"
+    FAILED = "failed"
+
+
+class SequenceValidationStatus(enum.StrEnum):
+    """Whether deterministic validation cleared the content.
+
+    ``PASSED_WITH_WARNINGS`` is a real outcome, not a softened failure: a
+    warning is something a human should read before approving, and a hard
+    failure is something no human is offered at all.
+    """
+
+    PASSED = "passed"
+    PASSED_WITH_WARNINGS = "passed_with_warnings"
+    FAILED = "failed"
+
+
+class SequenceMessageOrigin(enum.StrEnum):
+    """Where one immutable message version's text came from."""
+
+    GENERATED = "generated"
+    HUMAN_EDITED = "human_edited"
+    REGENERATED = "regenerated"
+
+
+class SequenceReviewDecision(enum.StrEnum):
+    """A human decision recorded against one exact immutable message version.
+
+    ``INVALIDATED`` is written when an edit supersedes the version a decision
+    referred to. The decision is not deleted, because it happened; it stops
+    applying, because the text it applied to is no longer the current text.
+    """
+
+    APPROVED = "approved"
+    DISCARDED = "discarded"
+    INVALIDATED = "invalidated"
+
+
+class SequenceReviewState(enum.StrEnum):
+    """The aggregate review state derived from seven exact message states.
+
+    Derived, never asserted. Every value here is a function of the seven
+    current message versions and the decisions recorded against those exact
+    versions, so there is no way for the aggregate to claim an approval that no
+    message carries.
+    """
+
+    GENERATED = "generated"
+    NEEDS_REVIEW = "needs_review"
+    PARTIALLY_REVIEWED = "partially_reviewed"
+    PARTIALLY_APPROVED = "partially_approved"
+    APPROVED = "approved"
+    CONTAINS_EDITS = "contains_edits"
+    CONTAINS_DISCARDED = "contains_discarded"
+    BLOCKED = "blocked"
+    FAILED = "failed"
+    SUPERSEDED = "superseded"
+
+
+class SequenceDeliveryState(enum.StrEnum):
+    """Future delivery eligibility, kept strictly separate from review state.
+
+    None of these states is operational in this build. They exist as domain
+    vocabulary so that a later Gmail synchronization service can be added
+    without reopening the review model, and so that "approved" can never quietly
+    come to mean "ready to draft" or "sent".
+
+    Every sequence message in this build is ``NOT_READY``. Nothing advances it,
+    because nothing in this build creates an external draft, detects a send, or
+    contacts a provider.
+    """
+
+    NOT_READY = "not_ready"
+    WAITING_FOR_PREDECESSOR = "waiting_for_predecessor"
+    WAITING_FOR_DUE_DATE = "waiting_for_due_date"
+    ELIGIBLE_FOR_DRAFT = "eligible_for_draft"
+    EXTERNAL_DRAFT_CREATED = "external_draft_created"
+    WAITING_FOR_MANUAL_SEND = "waiting_for_manual_send"
+    SENT_DETECTED = "sent_detected"
+    HELD = "held"
+    STOPPED = "stopped"
+    SYNC_FAILED = "sync_failed"
+
+
+class SequenceStopState(enum.StrEnum):
+    """Whether anything blocks the remainder of a sequence.
+
+    ``RUNNING`` here means only "nothing has stopped it". It is not a claim that
+    any message is being delivered, because no delivery exists.
+    """
+
+    RUNNING = "running"
+    STOPPED = "stopped"
+
+
+class SequenceStopReason(enum.StrEnum):
+    """Why the remainder of a sequence must not become actionable.
+
+    Recorded as domain state only. No detector writes these in this build --
+    reply detection, mailbox connectivity and synchronization health all belong
+    to the deferred Gmail adapter. The vocabulary exists now so that adding the
+    detector later does not require changing what a stop *means*.
+    """
+
+    RECIPIENT_REPLY_DETECTED = "recipient_reply_detected"
+    OPERATOR_HOLD = "operator_hold"
+    OPERATOR_CANCELLED = "operator_cancelled"
+    MAILBOX_DISCONNECTED = "mailbox_disconnected"
+    CONTACT_SUPPRESSED = "contact_suppressed"
+    CAMPAIGN_PAUSED = "campaign_paused"
+    CAMPAIGN_ARCHIVED = "campaign_archived"
+    CONTACT_REMOVED_FROM_CAMPAIGN = "contact_removed_from_campaign"
+    SYNCHRONIZATION_FAILURE = "synchronization_failure"

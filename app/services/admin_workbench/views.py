@@ -187,6 +187,25 @@ class StageFunnelStep:
     completed_through: int  # contacts whose latest completed stage is >= this one
     failed_here: int
     blocked_here: int
+    #: Of :attr:`completed_through`, how many got past this stage WITHOUT the
+    #: stage's own work being done — today only the Verification stage, where an
+    #: imported address completes as ``verification_bypassed_imported_email``
+    #: and no provider is ever called (IMP-001).
+    #:
+    #: Carried separately rather than folded in, because "passed" on the
+    #: Verification stage is read as "a provider answered about this mailbox",
+    #: and a bypass is the one case where that is false.
+    bypassed_through: int = 0
+
+    @property
+    def provider_passed(self) -> int:
+        """Contacts past this stage on the strength of the stage's own work."""
+
+        return max(0, self.completed_through - self.bypassed_through)
+
+    @property
+    def has_bypassed(self) -> bool:
+        return self.bypassed_through > 0
 
 
 @dataclass(frozen=True)
@@ -318,12 +337,92 @@ class StageDiagnosisView:
 
 
 @dataclass(frozen=True)
+class SequenceMessageDiagnosisRow:
+    """One sequence message, as an operator diagnosing a generation sees it."""
+
+    position: int
+    message_id: uuid.UUID
+    version_id: uuid.UUID
+    message_version: int
+    purpose: str
+    message_type: str
+    origin: str
+    generation_status: str
+    validation_status: str
+    review_state: str
+    predecessor_message_id: uuid.UUID | None
+    planned_day: int
+    planned_delay_days: int
+    delivery_state: str
+    warnings: tuple[str, ...]
+    cited_evidence_ids: tuple[str, ...]
+    intelligence_accepted: int
+    intelligence_excluded: int
+    decided_by: str | None
+    decided_at: datetime | None
+
+
+@dataclass(frozen=True)
+class SequenceDiagnosisView:
+    """One sequence version, with everything needed to explain what it did.
+
+    Assembled from committed rows only. Nothing here is recomputed from the
+    model's raw output, and the model's raw output is not carried at all --
+    unbounded producer text is exactly what an operator diagnosis must not
+    become a channel for.
+    """
+
+    sequence_id: uuid.UUID
+    sequence_key: uuid.UUID
+    sequence_version: int
+    agent_job_id: uuid.UUID | None
+    input_digest: str
+    producer: str | None
+    producer_version: str | None
+    sequence_producer_version: str
+    validation_policy_version: str
+    policy_version_number: int | None
+    strategy_id: str | None
+    generation_status: str
+    validation_status: str
+    review_state: str
+    cadence_source: str
+    planned_span_days: int | None
+    current_actionable_position: int | None
+    stop_state: str
+    stop_reason: str | None
+    created_at: datetime
+    created_by: str | None
+    superseded_at: datetime | None
+    messages: tuple[SequenceMessageDiagnosisRow, ...]
+    validation_findings: tuple[dict[str, Any], ...]
+    research_lineage: dict[str, Any]
+    insights_lineage: dict[str, Any]
+    intelligence_lineage: dict[str, Any]
+    context_decision: dict[str, Any]
+
+    @property
+    def complete(self) -> bool:
+        return len(self.messages) == 7
+
+    @property
+    def is_current(self) -> bool:
+        return self.superseded_at is None
+
+
+@dataclass(frozen=True)
 class ContactDiagnosisView:
     """The Campaign -> Contact -> Agent/Stage -> Job -> attempt path, assembled."""
 
     execution: ContactExecutionView
     stages: tuple[StageDiagnosisView, ...]
     research_lineage_available: bool
+    #: Newest first, bounded. Empty for a contact that never had a sequence --
+    #: which is most of them, and must not be presented as a failure.
+    sequences: tuple[SequenceDiagnosisView, ...] = ()
+    #: Whether sequence generation is available in this deployment at all, so
+    #: the page can tell "switched off" apart from "nothing generated".
+    sequences_enabled: bool = False
 
     @property
     def campaign_contact_id(self) -> uuid.UUID:
@@ -501,6 +600,19 @@ class EmailStateRow:
     source: str
     verification_result: str | None
     verified_at: datetime | None
+    #: True when a contact file supplied this address and the import recorded
+    #: that no verification provider was called for it (IMP-001).
+    #:
+    #: Needed because this row is rendered inside a card headed "Email addresses
+    #: & verification", with a Verification column and a Checked column. Without
+    #: it, an imported address sat there sourced "canonical" and badged
+    #: "unverified", which reads as an address awaiting a check rather than one
+    #: that will never have one.
+    imported: bool = False
+
+    @property
+    def source_label(self) -> str:
+        return "imported (vendor-supplied)" if self.imported else self.source
 
 
 @dataclass(frozen=True)

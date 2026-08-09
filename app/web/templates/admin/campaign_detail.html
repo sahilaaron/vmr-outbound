@@ -6,11 +6,11 @@
 
 <div class="page-head">
   <div>
-    <h1>{{ view.name }}
+    <h1>{{ (view.name) | neutralize }}
       <span class="badge {{ 'ok' if view.status == 'active' else 'muted' }} plain">{{ view.status }}</span>
       {% if not view.execution_enabled %}<span class="badge warn">execution paused</span>{% endif %}
     </h1>
-    {% if view.description %}<div class="sub">{{ view.description }}</div>{% endif %}
+    {% if view.description %}<div class="sub">{{ view.description | neutralize }}</div>{% endif %}
     <div class="sub">Created {{ view.created_at | dt }} · settings v{{ view.settings_version }}{% if view.allow_provisional_domains %} · provisional domains allowed for Research{% endif %}</div>
   </div>
   <div class="page-actions">
@@ -41,10 +41,16 @@
     <div class="funnel">
       {% for step in view.funnel %}
       <a class="funnel-step {{ 'off' if not step.control.accepting_work or not step.implemented else '' }} {{ 'bad' if step.failed_here or step.blocked_here else '' }}"
-         href="/admin/campaigns/{{ view.campaign_id }}?stage={{ step.agent_id.value }}" title="{{ step.display_name }}">
-        <div class="fs-name">{{ step.display_name | replace(" Agent", "") }}</div>
+         href="/admin/campaigns/{{ view.campaign_id }}?stage={{ step.agent_id.value }}" title="{{ (step.display_name) | neutralize }}">
+        <div class="fs-name">{{ (step.display_name | replace(" Agent", "")) | neutralize }}</div>
         <div class="fs-n">{{ step.at_stage }}</div>
-        <div class="fs-d">{{ step.completed_through }} passed</div>
+        <div class="fs-d">{{ step.provider_passed }} passed</div>
+        {% if step.has_bypassed %}
+        {# An imported address completes Verification without a provider being #}
+        {# called. Counting it as "passed" would make the number mean two      #}
+        {# different things at once. #}
+        <div class="fs-d bypassed">{{ step.bypassed_through }} bypassed (imported, no provider called)</div>
+        {% endif %}
         <div class="fs-flags">
           {% if not step.implemented %}<span class="badge muted plain">unbuilt</span>
           {% elif not step.control.accepting_work %}<span class="badge warn plain">{{ step.control.status.value }}</span>{% endif %}
@@ -87,15 +93,15 @@
         {% for row in view.contacts %}
         <tr class="{{ 'attention' if row.needs_attention else '' }}">
           <td class="primary">
-            <a href="/admin/campaigns/{{ view.campaign_id }}/contacts/{{ row.campaign_contact_id }}">{{ row.contact_label }}</a>
+            <a href="/admin/campaigns/{{ view.campaign_id }}/contacts/{{ row.campaign_contact_id }}">{{ row.contact_label | neutralize }}</a>
             {% if row.suppressed %}<span class="badge err plain">suppressed</span>{% endif %}
           </td>
-          <td>{{ row.company_label or "—" }}</td>
-          <td>{{ row.current_stage_name or "—" }}</td>
+          <td>{{ (row.company_label or "—") | neutralize }}</td>
+          <td>{{ (row.current_stage_name or "—") | neutralize }}</td>
           <td>{{ wb.stage_badge(row.pipeline_status) }}</td>
           <td>{{ wb.eligibility_badge(row.eligibility) }}</td>
-          <td class="dim wrap-anywhere">{{ row.blocking_detail or "—" }}</td>
-          <td class="dim">{{ row.review_state or "—" }}</td>
+          <td class="dim wrap-anywhere">{{ (row.blocking_detail or "—") | neutralize }}</td>
+          <td class="dim">{{ (row.review_state or "—") | neutralize }}</td>
           <td class="dim nowrap">{{ row.updated_at | ago }}</td>
           <td><a class="btn small" href="/admin/campaigns/{{ view.campaign_id }}/contacts/{{ row.campaign_contact_id }}">Diagnose</a></td>
         </tr>
@@ -111,6 +117,43 @@
   </div>
 </div>
 
+{# Absent for a Campaign nobody imported a file into, which is most of them. #}
+{% if import_batches %}
+<div class="card">
+  <div class="card-head">
+    <h2>File imports</h2>
+    <span class="hint">contacts added to this Campaign from an uploaded contact export</span>
+  </div>
+  <div class="card-body tight">
+    <div class="table-wrap">
+    <table class="data">
+      <thead><tr>
+        <th>File</th><th>Schema</th><th class="num">Rows</th><th class="num">Imported</th>
+        <th class="num">Already here</th><th class="num">Held</th><th class="num">Refused</th><th>Confirmed</th>
+      </tr></thead>
+      <tbody>
+        {% for item in import_batches %}
+        <tr class="{{ 'attention' if item.needs_attention else '' }}">
+          <td class="primary"><a href="{{ item.href }}">{{ (item.display_name) | neutralize }}</a></td>
+          <td class="dim">{{ (item.schema_label) | neutralize }}</td>
+          <td class="num">{{ item.total_rows }}</td>
+          <td class="num">{{ item.accepted_rows }}</td>
+          <td class="num">{{ item.already_in_campaign_rows }}</td>
+          <td class="num">{{ item.ambiguous_rows }}</td>
+          <td class="num">{{ item.rejected_rows }}</td>
+          <td class="dim nowrap">{{ item.confirmed_at | dt }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    <div class="card-foot">
+      Imported addresses are used as supplied. No candidate address is generated for them and no verification provider is called.
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <div class="grid cols-2">
   <div class="card">
     <div class="card-head"><h2>Recent failures</h2><a class="hint" href="/admin/failures?campaign={{ view.campaign_id }}">full inbox →</a></div>
@@ -122,9 +165,9 @@
         <tbody>
           {% for item in view.recent_failures %}
           <tr>
-            <td><span class="badge {{ 'err' if item.severity == 'critical' else 'warn' }}">{{ item.category_label }}</span></td>
-            <td class="primary"><a href="{{ item.diagnosis_href }}">{{ item.contact_label or item.agent_name or "Job" }}</a>{% if item.agent_name and item.contact_label %} <span class="dim">· {{ item.agent_name }}</span>{% endif %}</td>
-            <td class="dim wrap-anywhere">{{ item.reason | truncate(90) }}</td>
+            <td><span class="badge {{ 'err' if item.severity == 'critical' else 'warn' }}">{{ (item.category_label) | neutralize }}</span></td>
+            <td class="primary"><a href="{{ item.diagnosis_href }}">{{ (item.contact_label or item.agent_name or "Job") | neutralize }}</a>{% if item.agent_name and item.contact_label %} <span class="dim">· {{ (item.agent_name) | neutralize }}</span>{% endif %}</td>
+            <td class="dim wrap-anywhere">{{ (item.reason | truncate(90)) | neutralize }}</td>
             <td class="dim nowrap">{{ item.latest_at | ago }}</td>
           </tr>
           {% endfor %}

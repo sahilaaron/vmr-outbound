@@ -939,7 +939,7 @@
         "danger",
         unreachable ? "Connection lost" : "Capture failed",
         unreachable
-          ? "VM Prospector didn't answer. Nothing was saved, and what you reviewed is still here."
+          ? "The backend didn't answer. Nothing was saved, and what you reviewed is still here."
           : "Nothing was saved. What you reviewed is still here."
       )
     );

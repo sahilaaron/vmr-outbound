@@ -17,5 +17,11 @@
     <strong>The campaign is unaffected.</strong> Whatever the Agents have committed is still
     committed; only the screen that reads it is unavailable.
   </div>
+  {# Importing contacts reads none of the Agent monitor, so it stays reachable
+     here. Hiding it would have made the import unreachable in exactly the
+     environments where a campaign is being filled for the first time. #}
+  <p class="v2-mt">
+    <a class="v2-btn" href="/app/campaigns/{{ overview.campaign.id }}/imports">Import contacts</a>
+  </p>
 </div>
 {% endblock %}

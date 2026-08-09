@@ -38,6 +38,11 @@ from app.models.contact import Contact
 from app.models.draft import DraftApproval, DraftVersion
 from app.models.email_candidate import EmailCandidate
 from app.models.email_evidence import ExactEmailVerification
+from app.models.email_sequence import (
+    EmailSequenceMessage,
+    EmailSequenceMessageReview,
+    EmailSequenceMessageVersion,
+)
 from app.models.email_verification_studio import (
     EmailPatternPolicyVersion,
     VerificationWaterfallPolicyVersion,
@@ -46,9 +51,12 @@ from app.models.enums import (
     AgentIdentifier,
     AgentJobStatus,
     CampaignContactEligibility,
+    ImportedEmailSlot,
+    ImportedEmailStageOutcome,
     IntelligenceJobStatus,
     PipelineStageStatus,
 )
+from app.models.imported_email import ImportedContactEmail
 from app.models.pipeline import CampaignContactAgentState
 from app.models.suppression import Suppression
 from app.models.usage_ledger import UsageLedgerEntry
@@ -62,6 +70,8 @@ from app.services.company_intelligence.handoff import RESEARCH_HANDOFF_ACTOR
 from app.services.personalization import policy as personalization_policy
 from app.services.research.fallback import FALLBACK_WORKER_NAME
 from app.services.research.workers.website import WORKER_NAME as WEBSITE_WORKER_NAME
+from app.services.sequences import read as sequence_read
+from app.services.sequences.lineage import bounded_lineage
 from app.services.verification import studio as verification_studio
 from app.services.verification.provider_registry import PROVIDERS
 from app.services.workbench_agents.reader import PhaseTwoWorkbenchReader
@@ -73,6 +83,7 @@ from app.services.workbench_agents.views import (
     QueueCounts,
 )
 
+from .import_lineage import ImportLineageReader
 from .views import (
     AdminCompanyView,
     AdminContactView,
@@ -106,6 +117,8 @@ from .views import (
     ProviderUsageWindow,
     ReviewIndexView,
     ReviewRow,
+    SequenceDiagnosisView,
+    SequenceMessageDiagnosisRow,
     StageDetailView,
     StageDiagnosisView,
     StageFunnelStep,
@@ -285,6 +298,10 @@ class AdminWorkbenchReader:
         self._session = session
         self._settings = settings
         self._phase2 = PhaseTwoWorkbenchReader(session)
+        #: Campaign-bound file-import lineage (IMP-001). A separate reader over
+        #: the import services' own public helpers, so the Workbench explains an
+        #: import without reimplementing one.
+        self.imports = ImportLineageReader(session)
 
     # -- shared helpers ------------------------------------------------------
 
@@ -655,6 +672,35 @@ class AdminWorkbenchReader:
         ).all():
             stage_state_counts.setdefault(agent_value, {})[status_value.value] = int(count)
 
+        # How many of this Campaign's contacts reached the far side of
+        # Verification without a provider being asked. One statement, and only
+        # the Verification row uses it — see StageFunnelStep.bypassed_through.
+        verification_position = AGENT_SPECS[AgentIdentifier.VERIFICATION].position
+        bypassed_through_verification = int(
+            self._session.scalar(
+                select(func.count(func.distinct(CampaignContact.id)))
+                .join(
+                    ImportedContactEmail,
+                    ImportedContactEmail.contact_id == CampaignContact.contact_id,
+                )
+                .where(
+                    CampaignContact.campaign_id == campaign_id,
+                    ImportedContactEmail.campaign_id == campaign_id,
+                    ImportedContactEmail.slot == ImportedEmailSlot.PRIMARY,
+                    ImportedContactEmail.email_stage_outcome
+                    == ImportedEmailStageOutcome.IMPORTED_EMAIL_ACCEPTED,
+                    CampaignContact.latest_completed_stage.in_(
+                        [
+                            agent
+                            for agent, spec in AGENT_SPECS.items()
+                            if spec.position >= verification_position
+                        ]
+                    ),
+                )
+            )
+            or 0
+        )
+
         controls = {control.agent_id: control for control in execution.controls}
         funnel: list[StageFunnelStep] = []
         for agent_id in PIPELINE_ORDER:
@@ -675,6 +721,11 @@ class AdminWorkbenchReader:
                     ),
                     failed_here=states.get(PipelineStageStatus.FAILED.value, 0),
                     blocked_here=states.get(PipelineStageStatus.BLOCKED.value, 0),
+                    bypassed_through=(
+                        bypassed_through_verification
+                        if agent_id is AgentIdentifier.VERIFICATION
+                        else 0
+                    ),
                 )
             )
 
@@ -803,7 +854,143 @@ class AdminWorkbenchReader:
             research_lineage_available=any(
                 job.agent_id is AgentIdentifier.RESEARCH for job in execution.jobs
             ),
+            sequences=self._sequence_diagnoses(campaign_contact_id),
+            sequences_enabled=self._settings.features.email_sequences,
         )
+
+    def _sequence_diagnoses(
+        self, campaign_contact_id: uuid.UUID
+    ) -> tuple[SequenceDiagnosisView, ...]:
+        """Every recent sequence version for this membership, newest first.
+
+        Four statements in total, regardless of how many times an operator has
+        regenerated. It used to be three *per version* inside a loop, so a
+        contact regenerated ten times cost thirty queries and every further
+        regeneration added three more. The fix is the pattern this codebase
+        already uses in ``sequences.read._tallies``: fetch everything for the
+        bounded history set with one ``IN`` each, then group in Python.
+
+        Bounded twice over: ``history`` caps how many versions are read, and each
+        version's validation findings and lineage are capped where they are
+        rendered.
+        """
+
+        history = sequence_read.history(self._session, campaign_contact_id=campaign_contact_id)
+        if not history:
+            return ()
+
+        sequence_ids = [sequence.id for sequence in history]
+        sequence_keys = list({sequence.sequence_key for sequence in history})
+
+        # 1 — the logical messages for every sequence key on the page.
+        messages_by_key: dict[uuid.UUID, list[EmailSequenceMessage]] = {}
+        for message in self._session.scalars(
+            select(EmailSequenceMessage)
+            .where(EmailSequenceMessage.sequence_key.in_(sequence_keys))
+            .order_by(EmailSequenceMessage.position)
+        ).all():
+            messages_by_key.setdefault(message.sequence_key, []).append(message)
+
+        # 2 — every version belonging to any sequence on the page, superseded
+        # ones included: a superseded sequence version's own messages are
+        # superseded too, and the diagnosis is about what each version held.
+        versions_by_sequence: dict[uuid.UUID, dict[int, EmailSequenceMessageVersion]] = {}
+        version_ids: list[uuid.UUID] = []
+        for version in self._session.scalars(
+            select(EmailSequenceMessageVersion)
+            .where(EmailSequenceMessageVersion.sequence_id.in_(sequence_ids))
+            .order_by(EmailSequenceMessageVersion.message_version)
+        ).all():
+            versions_by_sequence.setdefault(version.sequence_id, {})[version.position] = version
+            version_ids.append(version.id)
+
+        # 3 — the decisions recorded against those exact versions.
+        reviews_by_version: dict[uuid.UUID, EmailSequenceMessageReview] = {}
+        if version_ids:
+            reviews_by_version = {
+                review.message_version_id: review
+                for review in self._session.scalars(
+                    select(EmailSequenceMessageReview).where(
+                        EmailSequenceMessageReview.message_version_id.in_(version_ids)
+                    )
+                ).all()
+            }
+
+        out: list[SequenceDiagnosisView] = []
+        for sequence in history:
+            messages = messages_by_key.get(sequence.sequence_key, [])
+            versions = versions_by_sequence.get(sequence.id, {})
+            findings_raw = sequence.validation_findings or {}
+            findings = findings_raw.get("findings") if isinstance(findings_raw, dict) else None
+            rows: list[SequenceMessageDiagnosisRow] = []
+            for message in messages:
+                held = versions.get(message.position)
+                if held is None:
+                    # This sequence version wrote nothing at this position. Said
+                    # plainly rather than filled in from a neighbouring version.
+                    continue
+                review = reviews_by_version.get(held.id)
+                rows.append(
+                    SequenceMessageDiagnosisRow(
+                        position=message.position,
+                        message_id=message.id,
+                        version_id=held.id,
+                        message_version=held.message_version,
+                        purpose=message.purpose.value,
+                        message_type=message.message_type.value,
+                        origin=held.origin.value,
+                        generation_status=held.generation_status.value,
+                        validation_status=held.validation_status.value,
+                        review_state=(
+                            review.decision.value if review is not None else "waiting for you"
+                        ),
+                        predecessor_message_id=message.predecessor_message_id,
+                        planned_day=held.recommended_elapsed_day,
+                        planned_delay_days=held.recommended_delay_days,
+                        delivery_state=message.delivery_state.value,
+                        warnings=tuple(held.warnings or []),
+                        cited_evidence_ids=tuple(held.evidence_insight_ids or []),
+                        intelligence_accepted=held.intelligence_accepted_count,
+                        intelligence_excluded=held.intelligence_excluded_count,
+                        decided_by=review.decided_by if review is not None else None,
+                        decided_at=review.decided_at if review is not None else None,
+                    )
+                )
+            out.append(
+                SequenceDiagnosisView(
+                    sequence_id=sequence.id,
+                    sequence_key=sequence.sequence_key,
+                    sequence_version=sequence.sequence_version,
+                    agent_job_id=sequence.agent_job_id,
+                    input_digest=sequence.input_digest,
+                    producer=sequence.producer,
+                    producer_version=sequence.producer_version,
+                    sequence_producer_version=sequence.sequence_producer_version,
+                    validation_policy_version=sequence.validation_policy_version,
+                    policy_version_number=sequence.personalization_policy_version_number,
+                    strategy_id=sequence.personalization_strategy_id,
+                    generation_status=sequence.generation_status.value,
+                    validation_status=sequence.validation_status.value,
+                    review_state=sequence.review_state.value,
+                    cadence_source=sequence.cadence_source,
+                    planned_span_days=sequence.planned_span_days,
+                    current_actionable_position=sequence.current_actionable_position,
+                    stop_state=sequence.stop_state.value,
+                    stop_reason=sequence.stop_reason.value if sequence.stop_reason else None,
+                    created_at=sequence.created_at,
+                    created_by=sequence.created_by,
+                    superseded_at=sequence.superseded_at,
+                    messages=tuple(rows),
+                    validation_findings=tuple(
+                        item for item in (findings or []) if isinstance(item, dict)
+                    ),
+                    research_lineage=bounded_lineage(sequence.research_lineage),
+                    insights_lineage=bounded_lineage(sequence.insights_lineage),
+                    intelligence_lineage=bounded_lineage(sequence.intelligence_lineage),
+                    context_decision=bounded_lineage(sequence.personalization_decision),
+                )
+            )
+        return tuple(out)
 
     def research_lineage(self, campaign_contact_id: uuid.UUID) -> Any:
         """The durable Research report (deterministic + fallback lineage)."""
@@ -1464,6 +1651,25 @@ class AdminWorkbenchReader:
             ).all():
                 verifications.setdefault(verification.email, verification)
 
+        # Which of these addresses a contact file supplied. One statement, so the
+        # card can distinguish "no provider has answered yet" from "no provider
+        # was ever asked" without a query per row.
+        imported_addresses: set[str] = set()
+        if addresses:
+            imported_addresses = {
+                value
+                for value in self._session.scalars(
+                    select(ImportedContactEmail.normalized_email).where(
+                        ImportedContactEmail.contact_id == contact.id,
+                        ImportedContactEmail.normalized_email.in_(addresses),
+                        ImportedContactEmail.slot == ImportedEmailSlot.PRIMARY,
+                        ImportedContactEmail.email_stage_outcome
+                        == ImportedEmailStageOutcome.IMPORTED_EMAIL_ACCEPTED,
+                    )
+                ).all()
+                if value
+            }
+
         def _email_row(address: str, source: str) -> EmailStateRow:
             verification = verifications.get(address)
             return EmailStateRow(
@@ -1471,6 +1677,7 @@ class AdminWorkbenchReader:
                 source=source,
                 verification_result=verification.result.value if verification else None,
                 verified_at=verification.checked_at if verification else None,
+                imported=verification is None and address in imported_addresses,
             )
 
         emails: list[EmailStateRow] = []
