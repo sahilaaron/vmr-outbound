@@ -1,10 +1,16 @@
-"""Conformance tests for the two centralised CSRF wiring points.
+"""Conformance tests for the centralised authentication wiring points.
 
-The enforcement is declared in exactly two places — a dependency on each router
-and a Jinja extension on each environment — so these tests assert the *coverage*
-of those two declarations rather than re-checking 111 forms by hand. That is the
-whole point of the design: if someone adds a router or a template later, one of
-these fails.
+Two of them are CSRF: a dependency on each router and a Jinja extension on each
+environment. These tests assert the *coverage* of those two declarations rather
+than re-checking 111 forms by hand. That is the whole point of the design: if
+someone adds a router or a template later, one of these fails.
+
+The third is anonymity. `app/core/auth/policy.py` names the exact paths an
+anonymous caller may reach, and the tests at the end of this module assert that
+list against the live router table. The independent hostile review (M-3) found
+that the previous `/auth/*` prefix rule made the opposite invariant true —
+anything ever mounted under it would have been public, silently — so the set is
+pinned here rather than trusted.
 """
 
 from __future__ import annotations
@@ -174,3 +180,108 @@ def _rendered_field() -> str:
         return str(csrf_field())
     finally:
         reset_current_csrf_token(token)
+
+
+# ---------------------------------------------------------------------------
+# Anonymity conformance (review finding M-3)
+# ---------------------------------------------------------------------------
+
+# The exact set of application paths an anonymous caller may reach. Changing
+# this list is a security decision, which is the reason it is written out here
+# in a test rather than derived from the thing it is supposed to check.
+EXPECTED_ANONYMOUS_PATHS = {
+    # Deployment probes.
+    "/healthz",
+    "/health",
+    "/readyz",
+    "/ready",
+    "/version",
+    # The sign-in surface.
+    "/auth/login",
+    "/auth/google/start",
+    "/auth/callback",
+    "/auth/logout",
+    "/auth/signed-out",
+}
+
+
+def test_the_policy_names_exactly_the_intended_anonymous_paths() -> None:
+    from app.core.auth.policy import anonymous_application_paths
+
+    assert anonymous_application_paths() == EXPECTED_ANONYMOUS_PATHS
+
+
+def test_every_auth_router_route_is_named_in_the_anonymous_set() -> None:
+    """A route added to the sign-in router must be an explicit decision.
+
+    The sign-in surface is the one router whose routes are anonymous. Adding a
+    sixth route to it without adding the path to `policy._ANONYMOUS_AUTH_ROUTES`
+    now fails here instead of shipping a route nobody can reach.
+    """
+
+    from app.core.auth.policy import is_anonymous_path
+    from app.web import auth_routes
+
+    paths = {getattr(route, "path", None) for route in auth_routes.router.routes}
+    paths.discard(None)
+    assert paths, "the auth router has no routes — the walk is broken, not the app"
+    for path in sorted(paths):
+        assert is_anonymous_path(str(path)), (
+            f"{path} is served anonymously but is not in the policy"
+        )
+
+
+def test_no_other_router_mounts_under_an_anonymous_path() -> None:
+    """The inverse, and the one M-3 was actually about.
+
+    `app.include_router(x, prefix="/auth")` used to make `x` publicly reachable
+    with every gate green. Anonymity is granted by exact path now, so that can
+    no longer happen silently — and this test says so out loud, so the next
+    person to try it gets a failure that explains itself.
+    """
+
+    from app.core.auth.policy import is_anonymous_path
+
+    leaked: list[str] = []
+    for name, router in _application_routers().items():
+        if name == "app.web.auth_routes":
+            continue
+        for route in router.routes:
+            path = str(getattr(route, "path", "") or "")
+            prefix = str(getattr(router, "prefix", "") or "")
+            full = f"{prefix}{path}"
+            if full and is_anonymous_path(full):
+                leaked.append(f"{name}:{full}")
+    assert leaked == []
+
+
+def test_the_static_mount_is_the_only_prefix_exception() -> None:
+    """`/static/` is a mount, not a route prefix, and bare `/static` is not anonymous."""
+
+    from app.core.auth.policy import is_anonymous_path
+
+    assert is_anonymous_path("/static/app.css")
+    assert is_anonymous_path("/static/nested/mark.svg")
+    # Bare `/static` would be answered with a 307 to `/static/`, which tells an
+    # anonymous caller the mount exists.
+    assert not is_anonymous_path("/static")
+    # A path that merely starts with the same characters is not the mount.
+    assert not is_anonymous_path("/staticky")
+    # Traversal out of the mount lands on the protected form.
+    assert not is_anonymous_path("/static/../admin")
+
+
+def test_no_anonymous_prefix_survives_for_a_future_route() -> None:
+    """The regression M-3 asks for: unmounted paths under `/auth` are protected."""
+
+    from app.core.auth.policy import is_anonymous_path
+
+    for path in (
+        "/auth",
+        "/auth/",
+        "/auth/x",
+        "/auth/x/y",
+        "/auth/..;/app",
+        "/auth/anything-added-next-month",
+    ):
+        assert not is_anonymous_path(path), path

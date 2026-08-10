@@ -70,6 +70,34 @@ class SessionDecodeError(Exception):
     """
 
 
+def constant_time_equal(left: str, right: str) -> bool:
+    """Constant-time comparison that *refuses* rather than raising.
+
+    ``hmac.compare_digest`` raises ``TypeError`` the moment either ``str``
+    argument contains a non-ASCII character. Every value compared on this
+    boundary — a session signature, a CSRF token, an audience claim — arrives as
+    attacker-controlled text: header and cookie values reach ASGI as
+    latin-1-decoded strings, so a single non-ASCII byte on the wire would
+    otherwise turn a designed refusal into an unhandled 500 on a security path.
+
+    Comparing the encoded bytes fixes that without changing what is accepted:
+
+    * the comparison stays constant-time, because ``compare_digest`` is;
+    * nothing is normalised, folded or transcoded into another representation,
+      so an attacker-supplied token can never be turned into a valid one — a
+      malformed value simply becomes an ordinary mismatch;
+    * ``surrogatepass`` is used so that no input a Python ``str`` can hold, not
+      even a lone surrogate from a decoded body, can make the encode step raise.
+
+    The one asymmetry worth naming: byte length is not hidden, and never was.
+    ``compare_digest`` short-circuits on unequal lengths by design.
+    """
+
+    return hmac.compare_digest(
+        left.encode("utf-8", "surrogatepass"), right.encode("utf-8", "surrogatepass")
+    )
+
+
 def _b64encode(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
@@ -167,7 +195,12 @@ class SessionCodec:
 
     @staticmethod
     def _sign(key: bytes, payload: str) -> str:
-        signed_material = f"{_TOKEN_VERSION}.{payload}".encode("ascii")
+        # `surrogatepass` rather than `ascii`: `_decode` already refuses a
+        # non-ASCII token outright, but this function must not be the thing that
+        # raises if a future caller ever reaches it with one. Signing bytes that
+        # cannot be produced by any legitimately minted token simply yields a
+        # signature that matches nothing.
+        signed_material = f"{_TOKEN_VERSION}.{payload}".encode("utf-8", "surrogatepass")
         return _b64encode(hmac.new(key, signed_material, hashlib.sha256).digest())
 
     def _encode(self, key: bytes, payload: dict[str, Any]) -> str:
@@ -178,6 +211,13 @@ class SessionCodec:
     def _decode(self, key: bytes, token: str | None) -> dict[str, Any]:
         if not token or len(token) > MAX_TOKEN_CHARS:
             raise SessionDecodeError("token is absent or oversized")
+        if not token.isascii():
+            # Every token this codec mints is `v1.<base64url>.<base64url>`, which
+            # is ASCII by construction. A non-ASCII byte therefore proves the
+            # value was never minted here, and refusing it up front — as a
+            # refusal, never an exception — keeps the rest of this function
+            # working on the only shape it was written for.
+            raise SessionDecodeError("token contains characters no minted token can hold")
         parts = token.split(".")
         if len(parts) != 3:
             raise SessionDecodeError("token is not a three-part signed envelope")
@@ -186,8 +226,9 @@ class SessionCodec:
             raise SessionDecodeError("token version is not supported")
         expected = self._sign(key, payload)
         # Constant-time: a timing oracle on the signature would let an attacker
-        # forge one byte at a time.
-        if not hmac.compare_digest(expected, signature):
+        # forge one byte at a time. `constant_time_equal` also keeps a malformed
+        # presented signature a mismatch rather than a raised exception.
+        if not constant_time_equal(expected, signature):
             raise SessionDecodeError("token signature does not verify")
         try:
             decoded = json.loads(_b64decode(payload))
@@ -233,7 +274,7 @@ class SessionCodec:
     def csrf_token_matches(self, session_id: str, presented: str | None) -> bool:
         if not presented or len(presented) > MAX_TOKEN_CHARS:
             return False
-        return hmac.compare_digest(self.csrf_token(session_id), presented)
+        return constant_time_equal(self.csrf_token(session_id), presented)
 
     # --- sign-in transaction ------------------------------------------------
 

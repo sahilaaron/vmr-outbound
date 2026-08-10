@@ -12,11 +12,11 @@ The live Google implementation is in ``app/core/auth/google.py``.
 
 from __future__ import annotations
 
-import hmac
 from dataclasses import dataclass
 from typing import Protocol
 
 from app.core.auth.config import normalize_operator_email
+from app.core.auth.session import constant_time_equal
 
 
 class IdentityAssertionError(Exception):
@@ -131,6 +131,11 @@ def validate_identity_claims(
 
 
 def _constant_equal(left: str, right: str) -> bool:
-    """Constant-time string comparison for values an attacker may probe."""
+    """Constant-time string comparison for values an attacker may probe.
 
-    return hmac.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
+    One shared implementation (``session.constant_time_equal``) so that every
+    comparison on this boundary has the same failure behaviour: a malformed
+    value is a mismatch, never an exception.
+    """
+
+    return constant_time_equal(left, right)

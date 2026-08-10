@@ -225,6 +225,12 @@ def split_jwt(token: str) -> tuple[str, str, str]:
 
     if not token or len(token) > MAX_JWT_CHARS:
         raise IdentityAssertionError("identity assertion is absent or oversized")
+    if not token.isascii():
+        # A compact-serialisation JWT is base64url in all three segments and is
+        # therefore ASCII by definition. Refusing here, as a refusal rather than
+        # the `UnicodeEncodeError` the signature step used to raise, keeps a
+        # malformed assertion on the same path as every other malformed one.
+        raise IdentityAssertionError("identity assertion is not a compact JWT")
     parts = token.split(".")
     if len(parts) != 3 or not all(parts):
         raise IdentityAssertionError("identity assertion is not a compact JWT")
@@ -265,7 +271,11 @@ def verify_signature(*, signing_input: str, signature: str, key: rsa.RSAPublicKe
     try:
         key.verify(
             _b64url_decode(signature),
-            signing_input.encode("ascii"),
+            # `surrogatepass` rather than `ascii`: `split_jwt` already refuses a
+            # non-ASCII assertion, and this function must not be the thing that
+            # raises if it is ever called directly with one. Verifying bytes no
+            # Google-minted token can contain simply fails the signature.
+            signing_input.encode("utf-8", "surrogatepass"),
             padding.PKCS1v15(),
             hashes.SHA256(),
         )

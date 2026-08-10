@@ -30,6 +30,17 @@ Development (``local`` / ``development`` / ``test`` / ``ci``)
 Everything is accumulated and reported at once: an operator setting this up for
 the first time should learn about all four missing values in one restart, not
 four.
+
+One dependency worth stating rather than leaving implicit
+---------------------------------------------------------
+An ``APP_ENV`` this module does not recognise — ``prod``, ``stage``, ``beta``, a
+typo — is treated as development here, which on its own would mean a typo in one
+environment variable silently disables the entire boundary. It does not, because
+``create_app`` calls ``validate_runtime_settings`` immediately after this
+function and that check refuses any environment name outside the six known ones.
+The safety of *this* module therefore depends on that call site ordering. Do not
+reorder them, and do not call ``validate_hosted_auth_settings`` on its own and
+conclude from a clean return that a configuration is safe.
 """
 
 from __future__ import annotations

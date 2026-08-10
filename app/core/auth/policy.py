@@ -11,6 +11,17 @@ same path cannot be used to slip past the boundary. Normalisation only ever
 makes a path *more* protected: ``/healthz/../app`` normalises to ``/app`` and is
 refused, while a decorated spelling of an anonymous path that no router actually
 serves can at worst reach a 404.
+
+Anonymity is granted by **exact path**, not by prefix, with exactly one
+exception: the ``/static/`` mount. A prefix rule grants anonymity to routes that
+do not exist yet, which is the opposite of default-deny — and it also leaks,
+because an unmounted path under an anonymous prefix answers 404 while every
+other unknown path answers 401. Both are fixed here and both are pinned by
+tests.
+
+The method makes no difference to this decision. ``OPTIONS`` is a *safe* method
+(see ``SAFE_METHODS``) but it is not an *anonymous* one: an anonymous ``OPTIONS``
+on a protected or unmounted path is refused exactly like an anonymous ``GET``.
 """
 
 from __future__ import annotations
@@ -29,20 +40,59 @@ _ANONYMOUS_EXACT_PATHS: frozenset[str] = frozenset(
     }
 )
 
-# The sign-in surface itself, and the stylesheet/mark the sign-in page needs.
-# `/static` carries no operator data — it is the compiled CSS, one SVG mark and
-# two progressive-enhancement scripts, all of which are already public in every
-# operator's browser cache.
-_ANONYMOUS_PATH_PREFIXES: tuple[str, ...] = (
-    "/auth/",
-    "/static/",
+# The sign-in surface itself, enumerated exactly. These are the five routes on
+# `app/web/auth_routes.py:router`, written out one by one rather than matched by
+# a `/auth/` prefix.
+#
+# The prefix form was a latent hole rather than a live one: nothing protected was
+# ever mounted under `/auth/`, but the invariant it encoded was "anything ever
+# mounted here is anonymous, forever, silently", and a future
+# `app.include_router(x, prefix="/auth")` would have been publicly reachable with
+# every gate green. It also made the boundary leak: an unmounted `/auth/x`
+# answered 404 while every other unknown path answered 401, so an anonymous
+# caller could tell the two apart. Both properties are pinned by the conformance
+# test in `tests/test_hosted_auth_templates.py`, which fails if a route is added
+# to the auth router without a decision being recorded here.
+_ANONYMOUS_AUTH_ROUTES: frozenset[str] = frozenset(
+    {
+        "/auth/login",
+        "/auth/google/start",
+        "/auth/callback",
+        "/auth/logout",
+        "/auth/signed-out",
+    }
 )
 
-# Methods that never change state. OPTIONS is included deliberately: a CORS
-# preflight is issued by the browser *without* credentials by specification, so
-# requiring a session on it would break every future authenticated cross-origin
-# client at the preflight, before it ever gets to present a credential. The
-# preflight handlers in `app/api/routes.py` return CORS headers and no body.
+# The one intentional mount exception, and deliberately *not* a general prefix
+# rule. `/static/...` is served by a `StaticFiles` mount over a fixed directory —
+# compiled CSS, one SVG mark and two progressive-enhancement scripts, all of
+# which are already public in every operator's browser cache. Application routers
+# are never mounted here, which is what makes an exception for a mount different
+# in kind from an exception for a path prefix.
+#
+# Bare `/static` is *not* anonymous: it is not an asset, and Starlette answers it
+# with a 307 to `/static/`, which would tell an anonymous caller the mount exists.
+_ANONYMOUS_STATIC_MOUNT_PREFIX = "/static/"
+
+# Methods that never change state, and therefore the methods the cross-site
+# backstop does not apply to.
+#
+# This set says nothing about anonymity. Every method, `OPTIONS` included, needs
+# an approved operator session on a protected path — see the module docstring
+# above and `docs/HOSTED_AUTH.md`. An earlier revision of this comment claimed
+# `OPTIONS` was answered anonymously so that a future cross-origin client's
+# credential-less CORS preflight would succeed; the middleware never implemented
+# it, and the claim is removed rather than implemented, because nothing today
+# needs it. The `@router.options` handlers in `app/api/routes.py` exist for the
+# capture extension, which is itself refused once hosted authentication is on
+# (its `POST` intake becomes a 401 like any other anonymous caller). A preflight
+# exemption without extension authentication to pair it with would open an
+# anonymous surface for a client that still could not complete a request.
+#
+# When extension authentication is designed, the preflight exemption it needs is
+# a narrow, enumerated list of intake paths answering with CORS headers, no body
+# and no authentication implication — designed and tested with that work, not
+# promised ahead of it. Recorded in `docs/POST_LAUNCH_BACKLOG.md`.
 SAFE_METHODS: frozenset[str] = frozenset({"GET", "HEAD", "OPTIONS"})
 
 # The subset of safe methods for which an unauthenticated *browser* navigation
@@ -72,16 +122,27 @@ def normalize_request_path(raw: str) -> str:
     return "/" + "/".join(segments)
 
 
+def anonymous_application_paths() -> frozenset[str]:
+    """Every exact path an anonymous caller may reach, static mount excluded.
+
+    Exposed so the conformance test can assert this set against the live router
+    table rather than against a second hand-written copy of it.
+    """
+
+    return _ANONYMOUS_EXACT_PATHS | _ANONYMOUS_AUTH_ROUTES
+
+
 def is_anonymous_path(path: str) -> bool:
     """Whether ``path`` may be served without an authenticated operator."""
 
     normalized = normalize_request_path(path)
-    if normalized in _ANONYMOUS_EXACT_PATHS:
+    if normalized in _ANONYMOUS_EXACT_PATHS or normalized in _ANONYMOUS_AUTH_ROUTES:
         return True
-    return any(
-        normalized == prefix.rstrip("/") or normalized.startswith(prefix)
-        for prefix in _ANONYMOUS_PATH_PREFIXES
-    )
+    # Normalisation has already resolved `..` and `.`, so `/static/../admin`
+    # arrives here as `/admin` and does not match. A path that merely *starts*
+    # with the string `/static` — `/staticky` — does not match either, because
+    # the trailing slash is part of the prefix.
+    return normalized.startswith(_ANONYMOUS_STATIC_MOUNT_PREFIX)
 
 
 def is_safe_method(method: str) -> bool:
@@ -106,6 +167,14 @@ def safe_next_path(raw: str | None, *, fallback: str) -> str:
     if "\\" in raw or "://" in raw:
         return fallback
     if any(character in raw for character in ("\r", "\n", "\t")):
+        return fallback
+    lowered = raw.lower()
+    if "%2f" in lowered or "%5c" in lowered:
+        # An encoded separator. `/%2f%2fevil.example` stays same-origin in every
+        # browser that resolves it, so this is hardening rather than a fix — but
+        # no operator destination in this application needs an encoded slash or
+        # backslash, and a value that survives one more decoding step than it was
+        # checked against is exactly how a redirect filter is eventually escaped.
         return fallback
     if is_anonymous_path(raw):
         # Bouncing back to the sign-in page after signing in is a loop, and a

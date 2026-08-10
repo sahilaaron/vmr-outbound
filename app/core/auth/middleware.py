@@ -110,14 +110,44 @@ def _headers(scope: Scope, name: bytes) -> list[str]:
 
 
 def _cookie(scope: Scope, name: str) -> str | None:
+    """The single unambiguous value of one cookie, or ``None``.
+
+    Two ambiguities are refused rather than resolved, because resolving either
+    means letting somebody else choose which credential this boundary reads:
+
+    * **More than one ``Cookie`` header.** A request-smuggling shape that must
+      not be reassembled here. (An HTTP/2 client that legitimately splits
+      cookies therefore appears anonymous; the nginx to uvicorn hop is HTTP/1.1
+      and recombines, so no deployed client is affected. Recorded as L-8.)
+    * **More than one morsel with the same name.** ``SimpleCookie`` silently
+      keeps the *last* of a duplicate name, so an attacker able to set a
+      domain-scoped cookie from a sibling host could otherwise decide which of
+      two session cookies is honoured — choosing the valid one is a nuisance,
+      but "first wins" or "last wins" is a decision no attacker should get to
+      make on an authentication boundary.
+    """
+
     values = _headers(scope, b"cookie")
     if len(values) != 1:
         # Zero cookies is the normal anonymous case; more than one Cookie header
         # is a request-smuggling shape that must not be reassembled here.
         return None
+    header = values[0]
+
+    # Count occurrences of this *name* before parsing, because parsing collapses
+    # them. A quoted value containing `; <name>=` would over-count and be
+    # refused, which is the safe direction.
+    occurrences = 0
+    for chunk in header.split(";"):
+        candidate, separator, _ = chunk.partition("=")
+        if separator and candidate.strip() == name:
+            occurrences += 1
+    if occurrences != 1:
+        return None
+
     jar: SimpleCookie = SimpleCookie()
     try:
-        jar.load(values[0])
+        jar.load(header)
     except Exception:  # pragma: no cover - SimpleCookie is lenient by design
         return None
     morsel = jar.get(name)
@@ -136,29 +166,46 @@ def _request_origin(scope: Scope) -> str | None:
 
 
 def _is_cross_site(scope: Scope, settings: AuthSettings) -> bool:
-    """A positive cross-site signal on an unsafe request.
+    """Whether *any* supplied signal says this unsafe request is not same-site.
 
-    Only a *positive* signal refuses here. Absent headers fall through to the
+    Every relevant signal is evaluated and any one of them can refuse. That is
+    the whole rule, and it is deliberately not a priority order: an earlier
+    signal saying "same-origin" must never be able to neutralise a later one
+    saying "evil.example". Two positive signals that disagree are themselves a
+    reason to refuse, so the safe direction is to OR the refusals rather than
+    consult the first header that happens to be present.
+
+    Only a *positive* signal refuses. Absent headers fall through to the
     per-session token check, which fails closed on its own — that is what keeps
     a non-browser client (a script holding a valid token) working while a real
     browser, which always sends ``Origin`` on a cross-site form post, is stopped
     at this layer before the body is read.
+
+    Duplicated headers are ambiguity, and ambiguity refuses. A front end or
+    proxy that emits ``Origin`` twice would otherwise silently disable this
+    entire layer, because "not exactly one" used to read as "absent".
     """
 
     fetch_site = _headers(scope, b"sec-fetch-site")
-    if len(fetch_site) == 1:
-        return fetch_site[0].strip().lower() not in {"same-origin", "none"}
+    if len(fetch_site) > 1:
+        return True
+    if len(fetch_site) == 1 and fetch_site[0].strip().lower() not in {"same-origin", "none"}:
+        return True
 
     origins = _headers(scope, b"origin")
-    if len(origins) != 1:
-        return False
-    presented = origins[0].strip().lower()
-    if presented in {"", "null"}:
-        # An opaque origin is not this site. A sandboxed frame or a document
-        # loaded from a `data:` URL both produce it, and neither should write.
+    if len(origins) > 1:
         return True
-    accepted = {value for value in (_request_origin(scope), settings.public_base_url) if value}
-    return presented not in accepted
+    if len(origins) == 1:
+        presented = origins[0].strip().lower()
+        if presented in {"", "null"}:
+            # An opaque origin is not this site. A sandboxed frame or a document
+            # loaded from a `data:` URL both produce it, and neither should write.
+            return True
+        accepted = {value for value in (_request_origin(scope), settings.public_base_url) if value}
+        if presented not in accepted:
+            return True
+
+    return False
 
 
 class OperatorAuthenticationMiddleware:

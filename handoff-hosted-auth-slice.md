@@ -47,11 +47,24 @@ nginx
 ```
 
 **Default-deny.** Anonymous callers may reach exactly: `/healthz`, `/health`,
-`/readyz`, `/ready`, `/version`, `/auth/*`, `/static/*`, and `OPTIONS` on any
-path. Everything else requires an approved operator — including `/docs`,
-`/redoc`, `/openapi.json` and paths that do not exist. Because the decision runs
-before routing, an anonymous caller cannot distinguish a 404 from a protected
-route, and an alternate spelling of a path cannot dodge a prefix match.
+`/readyz`, `/ready`, `/version`, the five enumerated sign-in routes
+(`/auth/login`, `/auth/google/start`, `/auth/callback`, `/auth/logout`,
+`/auth/signed-out`) and assets under the `/static/` mount. Everything else
+requires an approved operator — including `/docs`, `/redoc`, `/openapi.json`,
+bare `/auth`, bare `/static` and paths that do not exist. `OPTIONS` is **not**
+anonymous: it is refused like any other method. Because the decision runs before
+routing, an anonymous caller cannot distinguish a 404 from a protected route,
+and an alternate spelling of a path cannot dodge the match.
+
+> **Corrected 2026-08-10 (post-review).** This paragraph originally claimed
+> `/auth/*` and `/static/*` were anonymous *prefixes* and that `OPTIONS` was
+> answered anonymously on any path. The independent hostile review found that
+> the `OPTIONS` claim was never implemented (the measured behaviour was, and
+> remains, `401`), and that the prefix form let an unmounted `/auth/x` answer
+> `404` while every other unknown path answered `401` — a route-enumeration
+> difference the same section claimed was impossible. Findings M-2 and M-3. The
+> code, `policy.py`, `docs/HOSTED_AUTH.md` and this paragraph now agree, and
+> both properties are pinned by tests.
 
 **Identity.** Google authorization-code flow with PKCE, identity scopes only
 (`openid email profile`). Full verification, every item mandatory:
@@ -240,7 +253,7 @@ sign-in silently carried mailbox authority.
 | Anonymous read of `/app`, `/admin`, any API, `/docs`, `/redoc`, `/openapi.json` | 401 (or a sign-in redirect for a browser navigation) |
 | Anonymous `POST /api/campaigns`, `POST /campaigns`, and 10 other writes across all six routers | 401 |
 | A write answered with a redirect a client might read as success | Never — writes get 401/403, never 3xx |
-| Route enumeration by 404-vs-401 | Impossible anonymously; the decision precedes routing |
+| Route enumeration by 404-vs-401 | Impossible anonymously; the decision precedes routing, and no anonymous *prefix* exists for an unmounted path to answer 404 under (corrected post-review — see M-3) |
 | Path-form bypass: `//admin`, `/admin/`, `/healthz/../admin`, `/static/../admin`, `/auth/../admin` | Normalised to the protected form and refused |
 | Open redirect via `?next=`: `https://evil`, `//evil`, `/\evil`, CRLF injection | Falls back to `/app` |
 | Valid, fully verified Google identity that is not approved | 403 with a page naming no other operator |
@@ -273,9 +286,15 @@ sign-in silently carried mailbox authority.
    It falls through to the token check, which fails closed. No browser omits
    `Origin` on a cross-site form post, so this affects scripted clients only —
    and they still need a valid per-session token.
-3. **`OPTIONS` is answered anonymously.** A preflight is credential-less by
-   specification; requiring a session would break the future extension client at
-   the preflight. Preflight responses carry CORS headers and no body.
+3. **~~`OPTIONS` is answered anonymously.~~ Withdrawn 2026-08-10 (M-2).** This
+   was never implemented — an anonymous `OPTIONS` has always been refused with
+   `401` — and it is not being implemented, because nothing needs it yet. The
+   capture extension is refused by hosted authentication regardless of the
+   preflight, so exempting the preflight alone would open an anonymous surface
+   for a client that still could not complete a request. The narrow, enumerated
+   preflight exemption a future authenticated cross-origin client will need is
+   recorded in `docs/POST_LAUNCH_BACKLOG.md` and belongs with extension
+   authentication, not ahead of it.
 4. **The CSRF token is stable for a session's lifetime.** Combined with response
    compression at the proxy this is theoretically BREACH-adjacent. The
    application sets `Cache-Control: no-store` on every non-static response and

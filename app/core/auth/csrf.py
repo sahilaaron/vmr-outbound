@@ -26,7 +26,6 @@ is a no-op, so local behaviour is byte-identical to before this slice.
 
 from __future__ import annotations
 
-import hmac
 from typing import Any
 
 from fastapi import Request
@@ -34,6 +33,7 @@ from jinja2 import Environment
 from markupsafe import Markup
 
 from app.core.auth.context import current_csrf_token, signed_in_operator_email
+from app.core.auth.session import MAX_TOKEN_CHARS, constant_time_equal
 from app.core.auth.templating import install_csrf_form_extension
 
 CSRF_FIELD_NAME = "_csrf"
@@ -117,7 +117,14 @@ async def require_csrf(request: Request) -> None:
         raise CsrfError("this request has no CSRF token to check against")
 
     presented = await _presented_token(request)
-    if not presented or not hmac.compare_digest(expected, presented):
+    # Every failure below is one outcome — `CsrfError`, which the application's
+    # handler turns into a 403. In particular a *malformed* token is a refusal
+    # and not an exception: the presented value is attacker-controlled text and
+    # a security control that raises is a control that returns 500 instead of
+    # doing its job.
+    if not presented or len(presented) > MAX_TOKEN_CHARS:
+        raise CsrfError("the CSRF token is missing or does not match this session")
+    if not constant_time_equal(expected, presented):
         raise CsrfError("the CSRF token is missing or does not match this session")
 
 

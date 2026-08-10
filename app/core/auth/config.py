@@ -17,8 +17,6 @@ much larger blast radius than this Beta needs.
 
 from __future__ import annotations
 
-import unicodedata
-
 from pydantic import BaseModel, Field, field_validator
 
 # The identity scopes and nothing else. `openid` and `email` are what the
@@ -38,12 +36,22 @@ def normalize_operator_email(value: str) -> str:
 
     Comparison rules are chosen to be *safe*, not clever:
 
-    * Unicode is NFKC-normalised first, so a visually identical address written
-      with compatibility characters cannot slip past a byte comparison.
-    * The address is lower-cased. Google issues addresses lower-cased already,
-      and the local part being technically case-sensitive in the RFC is not a
-      distinction any real mailbox honours — treating ``A@x`` and ``a@x`` as
-      different would create an allow-list that silently fails to match.
+    * **The address must be ASCII.** Anything else is unusable, full stop. This
+      is the one rule that decides the others, and it replaces the NFKC
+      normalisation this function used to apply. NFKC is a *widening* transform:
+      it folds ``ｏperator@vmr.example`` (fullwidth ``o``) and
+      ``ＯＰＥＲＡＴＯＲ@ＶＭＲ.ＥＸＡＭＰＬＥ`` onto ``operator@vmr.example``, and so
+      created allow-list matches that nobody configured. A normalisation step
+      must never be able to turn an address that is *not* on the list into one
+      that is. Refusing non-ASCII is strictly narrower than folding it, and it
+      costs nothing here: Google issues ASCII ``email`` claims, and the
+      configured allow-list is written by hand from those.
+    * The address is lower-cased, which for an ASCII-only value is a plain
+      per-character mapping with no locale or compatibility behaviour. Google
+      issues addresses lower-cased already, and the local part being technically
+      case-sensitive in the RFC is not a distinction any real mailbox honours —
+      treating ``A@x`` and ``a@x`` as different would create an allow-list that
+      silently fails to match.
     * Surrounding whitespace is stripped; interior whitespace makes the value
       unusable rather than being squeezed out.
     * Exactly one ``@`` with a non-empty local part and domain is required.
@@ -52,12 +60,20 @@ def normalize_operator_email(value: str) -> str:
     stripping. Those are provider-specific delivery conveniences; folding them
     here would make ``a.b@x`` match an allow-list entry of ``ab@x``, which is a
     widening of access that nobody configured.
+
+    The same rule runs on both sides of the comparison — a configured allow-list
+    entry is normalised through this function at load time and a non-ASCII one
+    makes the process refuse to start — so a lookalike cannot be smuggled in
+    from either direction.
     """
 
     if not value:
         return ""
-    candidate = unicodedata.normalize("NFKC", value).strip().lower()
-    if not candidate or any(character.isspace() for character in candidate):
+    candidate = value.strip()
+    if not candidate or not candidate.isascii():
+        return ""
+    candidate = candidate.lower()
+    if any(character.isspace() for character in candidate):
         return ""
     local, separator, domain = candidate.partition("@")
     if not separator or not local or not domain or "@" in domain:
@@ -172,6 +188,11 @@ class AuthSettings(BaseModel):
         start, not when they are denied at the door and cannot tell whether the
         allow-list or the identity provider is at fault. The exception message
         never contains the offending value, because settings errors are logged.
+
+        A non-ASCII entry — a fullwidth or Cyrillic lookalike pasted from a
+        document — is one of the unusable shapes, so a deployment configured
+        with one refuses to start rather than booting with an allow-list entry
+        that no Google identity can ever match.
         """
 
         normalized: list[str] = []
@@ -179,7 +200,8 @@ class AuthSettings(BaseModel):
             candidate = normalize_operator_email(entry)
             if not candidate:
                 raise ValueError(
-                    "AUTH__ALLOWED_OPERATOR_EMAILS must contain only well-formed email addresses"
+                    "AUTH__ALLOWED_OPERATOR_EMAILS must contain only well-formed "
+                    "ASCII email addresses"
                 )
             if candidate not in normalized:
                 normalized.append(candidate)
@@ -190,7 +212,13 @@ class AuthSettings(BaseModel):
     def _normalize_domain(cls, value: str | None) -> str | None:
         if value is None:
             return None
-        candidate = unicodedata.normalize("NFKC", value).strip().lower().lstrip("@")
+        # ASCII-only for the same reason as `normalize_operator_email`: a
+        # compatibility fold on the domain gate would let a lookalike domain
+        # satisfy a gate that was configured for a different one.
+        candidate = value.strip()
+        if not candidate.isascii():
+            raise ValueError("AUTH__ALLOWED_GOOGLE_DOMAIN must be a bare ASCII domain name")
+        candidate = candidate.lower().lstrip("@")
         if not candidate or any(character.isspace() for character in candidate) or "@" in candidate:
             raise ValueError("AUTH__ALLOWED_GOOGLE_DOMAIN must be a bare domain name")
         return candidate

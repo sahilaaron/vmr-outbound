@@ -33,13 +33,29 @@ is protected the moment it is mounted; nobody has to remember to guard it.
 | Path | Why |
 |---|---|
 | `/healthz`, `/health`, `/readyz`, `/ready`, `/version` | The deploy gate has to reach these before any human signs in. nginx restricts them separately at the network edge. |
-| `/auth/*` | The sign-in surface itself. It is the only way in, so it cannot be behind the thing it is the way into. |
-| `/static/*` | Compiled CSS, one SVG mark and two progressive-enhancement scripts. No operator data. |
+| `/auth/login`, `/auth/google/start`, `/auth/callback`, `/auth/logout`, `/auth/signed-out` | The sign-in surface itself. It is the only way in, so it cannot be behind the thing it is the way into. |
+| `/static/<asset>` | The `StaticFiles` mount: compiled CSS, one SVG mark and two progressive-enhancement scripts. No operator data. |
 
-`OPTIONS` is answered anonymously on any path. A CORS preflight is issued by the
-browser *without* credentials by specification, so requiring a session on it
-would break a future authenticated cross-origin client at the preflight, before
-it could present anything. Preflight responses carry CORS headers and no body.
+The five `/auth` paths are enumerated exactly, and `/static/` is the one mount
+exception. Neither is a prefix rule. A prefix would grant anonymity to routes
+that do not exist yet — `app.include_router(x, prefix="/auth")` would become
+publicly reachable with every gate green — and it would also leak, because an
+unmounted path under an anonymous prefix answers `404` while every other unknown
+path answers `401`. Bare `/auth` and bare `/static` are protected like any other
+non-asset path. `tests/test_hosted_auth_templates.py` fails if the anonymous set
+and the live router table ever disagree.
+
+**`OPTIONS` is not anonymous.** An anonymous `OPTIONS` is refused with `401` on
+every protected and unmounted path, exactly like an anonymous `GET`. `OPTIONS`
+is a *safe* method — the cross-site backstop does not apply to it — but safe is
+not the same as anonymous. The `@router.options` handlers in `app/api/routes.py`
+exist for the capture extension's CORS preflight; the extension is itself
+refused once hosted authentication is on, because its `POST` intake becomes a
+`401` like any other anonymous caller. Exempting the preflight alone would open
+an anonymous surface for a client that still could not complete a request, so it
+is not exempted. The narrow preflight exemption a future authenticated
+cross-origin client needs is recorded in `docs/POST_LAUNCH_BACKLOG.md` and will
+be designed and tested together with extension authentication.
 
 ### Refusal shapes
 

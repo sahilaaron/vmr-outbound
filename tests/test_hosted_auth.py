@@ -485,6 +485,33 @@ def test_the_anonymous_allow_list_is_exactly_what_it_claims(path: str) -> None:
     assert is_anonymous_path(path) is True
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/auth",
+        "/auth/",
+        "/auth/x",
+        "/auth/x/y",
+        "/auth/future-route",
+        "/auth/..;/app",
+        "/static",
+        "/authx",
+        "/staticky",
+    ],
+)
+def test_an_unmounted_path_under_a_former_anonymous_prefix_is_protected(path: str) -> None:
+    """M-3: anonymity is granted by exact path, so a prefix cannot leak one.
+
+    `/auth/*` and `/static/*` used to be anonymous *prefixes*, which meant two
+    things at once: anything ever mounted under them would be public without
+    anyone deciding it, and an unmounted path under them answered 404 while every
+    other unknown path answered 401 — a route-enumeration difference the slice's
+    own handoff claimed was impossible.
+    """
+
+    assert is_anonymous_path(path) is False
+
+
 def test_an_alternate_spelling_cannot_reach_a_protected_route(
     staging_client: TestClient,
 ) -> None:
@@ -513,10 +540,37 @@ def test_the_post_sign_in_destination_cannot_leave_the_site(candidate: str | Non
     assert safe_next_path(candidate, fallback="/app") == "/app"
 
 
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        "/%2f%2fevil.example",
+        "/%2F%2Fevil.example",
+        "/app%2f..%2f..%2fadmin",
+        "/%5c%5cevil.example",
+        "/%5C%5Cevil.example",
+    ],
+)
+def test_an_encoded_separator_is_not_a_destination(candidate: str) -> None:
+    """Hardening, not a live defect — and worth saying which.
+
+    `/%2f%2fevil.example` stays same-origin in every browser that resolves it,
+    so the reviewer's `next` probes never actually left the site. But it *did*
+    survive the filter and reach the rendered page, and a value that survives one
+    more decoding step than it was checked against is how a redirect filter is
+    eventually escaped. No operator destination in this application contains an
+    encoded slash or backslash, so refusing one costs nothing.
+    """
+
+    assert safe_next_path(candidate, fallback="/app") == "/app"
+
+
 def test_a_legitimate_destination_survives() -> None:
     assert safe_next_path("/app/campaigns?state=open", fallback="/app") == (
         "/app/campaigns?state=open"
     )
+    # Ordinary percent-encoding in a query value is untouched; only an encoded
+    # path *separator* is refused.
+    assert safe_next_path("/app/contacts?q=a%20b", fallback="/app") == "/app/contacts?q=a%20b"
 
 
 # ---------------------------------------------------------------------------
@@ -1189,6 +1243,90 @@ def test_an_optional_workspace_domain_is_an_extra_gate_not_a_replacement() -> No
 def test_a_malformed_allow_list_entry_refuses_at_load_time() -> None:
     with pytest.raises(ValueError):
         AuthSettings(allowed_operator_emails=("not an email",))
+
+
+# ---------------------------------------------------------------------------
+# L-6 — normalisation must never widen authorisation
+# ---------------------------------------------------------------------------
+#
+# This function used to NFKC-normalise. NFKC is a *widening* transform: it folds
+# compatibility characters onto their ASCII counterparts, so a fullwidth spelling
+# of an approved address normalised onto that address and was approved. The
+# review reproduced it. The contract now is ASCII-in-or-nothing, applied to both
+# sides of the comparison.
+
+
+def _allow_listed() -> AuthSettings:
+    return AuthSettings(
+        enabled=True,
+        session_secret=SESSION_SECRET,
+        allowed_operator_emails=("operator@vmr.example",),
+    )
+
+
+# Written as escapes on purpose. A lookalike pasted as a literal is exactly the
+# thing an editor, a diff viewer or a copy-paste silently flattens back to ASCII,
+# and a flattened literal turns this into a test asserting that the *approved*
+# address is refused - which is wrong, and wrong in a direction that still looks
+# plausible. The reviewer's own suite lost two cases that way.
+@pytest.mark.parametrize(
+    ("presented", "why"),
+    [
+        ("\uff4fperator@vmr.example", "fullwidth o in the local part"),
+        ("\uff2f\uff30\uff25\uff32\uff21\uff34\uff2f\uff32@vmr.example", "fullwidth local part"),
+        ("operator@\uff36\uff2d\uff32.example", "fullwidth domain"),
+        ("operator@vmr.exampl\u0435", "cyrillic e"),
+        ("\u043eperator@vmr.example", "cyrillic o"),
+        ("operator@vmr.example\u200b", "zero-width space"),
+        ("operator\u00a0@vmr.example", "non-breaking space"),
+        ("operator@vmr.example\ufeff", "byte-order mark"),
+    ],
+)
+def test_a_non_ascii_lookalike_is_never_folded_into_an_approval(presented: str, why: str) -> None:
+    settings = _allow_listed()
+    assert normalize_operator_email(presented) == "", why
+    assert settings.is_approved(presented) is False, why
+
+
+@pytest.mark.parametrize(
+    "presented",
+    [
+        "operator@vmr.example",
+        "OPERATOR@VMR.EXAMPLE",
+        "Operator@Vmr.Example",
+        "  operator@vmr.example  ",
+        "\toperator@vmr.example\n",
+    ],
+)
+def test_ascii_case_and_surrounding_whitespace_still_match(presented: str) -> None:
+    """Anti-vacuity, and the documented behaviour the ASCII rule must preserve.
+
+    Google issues lower-cased ASCII addresses; treating `A@x` and `a@x` as
+    different would produce an allow-list that silently fails to match. Interior
+    whitespace remains unusable — it is stripped only from the ends.
+    """
+
+    assert _allow_listed().is_approved(presented) is True
+
+
+def test_a_non_ascii_allow_list_entry_refuses_at_load_time() -> None:
+    """The other side of the comparison, refused where an operator will see it.
+
+    A lookalike address pasted into `/etc/vmr/vmr.env` from a document can never
+    be matched by a Google identity, so the process refuses to start rather than
+    booting with an entry that looks configured and approves nobody.
+    """
+
+    for entry in ("ｏperator@vmr.example", "operator@vmr.examplе"):
+        with pytest.raises(ValueError):
+            AuthSettings(enabled=True, allowed_operator_emails=(entry,))
+
+
+def test_a_non_ascii_workspace_domain_refuses_at_load_time() -> None:
+    """The optional domain gate folds the same way and is closed the same way."""
+
+    with pytest.raises(ValueError):
+        AuthSettings(enabled=True, allowed_google_domain="ＶＭＲ.example")
 
 
 def test_secrets_never_reach_a_dump() -> None:
