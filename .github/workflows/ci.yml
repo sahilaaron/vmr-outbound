@@ -83,7 +83,7 @@ jobs:
         ports:
           - 5433:5432
         options: >-
-          --health-cmd "pg_isready -U dev"
+          --health-cmd "pg_isready -U dev -d vmr_dev"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -106,6 +106,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
+
+      - name: Make the disposable database cheap to write to
+        # The round trip creates and drops ~90 tables and ~341 indexes twice.
+        # See scripts/ci_pg_tuning.py for what is traded away and why it costs
+        # nothing here.
+        run: python scripts/ci_pg_tuning.py
 
       - name: Alembic migrations apply cleanly
         run: alembic upgrade head
@@ -140,7 +146,7 @@ jobs:
         ports:
           - 5433:5432
         options: >-
-          --health-cmd "pg_isready -U dev"
+          --health-cmd "pg_isready -U dev -d vmr_dev"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -176,7 +182,14 @@ jobs:
   tests:
     name: tests (${{ matrix.shard }})
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 20 was too tight, but the fix for that was rebalancing, not this number.
+    # Run #324 showed a shard finishing its tests in 19:08 and then being killed
+    # by a limit that also has to cover runner start, Postgres start, checkout,
+    # Python setup and dependency install. After the campaign-import split the
+    # largest shard is budgeted at well under 10 minutes of pytest, so 25 is a
+    # roughly 3x margin: still short enough to catch a hang, long enough that a
+    # slow hosted runner is not a red build.
+    timeout-minutes: 25
 
     strategy:
       # One shard failing must not hide the others. The serial job stopped at
@@ -188,7 +201,9 @@ jobs:
           - company-intelligence
           - company-firmographics
           - agents-research
-          - campaign-import
+          - campaign-import-review
+          - campaign-import-pipeline
+          - campaign-import-parsing
           - web-ui-workbench
           - email-verification-sequence
           - migrations-runtime
@@ -204,7 +219,7 @@ jobs:
         ports:
           - 5433:5432
         options: >-
-          --health-cmd "pg_isready -U dev"
+          --health-cmd "pg_isready -U dev -d vmr_dev"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -229,6 +244,15 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
+
+      - name: Make the disposable database cheap to write to
+        # The dominant cost of a shard is not the assertions, it is the
+        # after-every-test TRUNCATE sweep over ~90 tables and ~341 indexes.
+        # Measured at 329 ms per test with PostgreSQL's durability defaults and
+        # 107 ms without them — a 3.1x reduction that removes no coverage. See
+        # scripts/ci_pg_tuning.py for exactly what is traded away and why a
+        # container GitHub deletes at the end of the job can afford it.
+        run: python scripts/ci_pg_tuning.py
 
       - name: Pytest (${{ matrix.shard }})
         # The shard name goes through the environment rather than being
