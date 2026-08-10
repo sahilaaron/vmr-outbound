@@ -139,17 +139,54 @@ SHARDS: tuple[Shard, ...] = (
         ),
         exact=("tests/test_seller_knowledge.py",),
     ),
+    # Campaign import is split three ways. It was one shard until run #324, where
+    # it passed 532 tests in 19:08 and was then killed by the job timeout — the
+    # tests were fine, the shard was too big for a hosted runner's variance. The
+    # three groups below are balanced on *both* measured duration and test count,
+    # because on a hosted runner a large part of the cost is per-test fixture
+    # work rather than per-assertion work, and balancing only one of the two
+    # leaves the split hostage to which term dominates.
     Shard(
-        name="campaign-import",
+        name="campaign-import-review",
         description=(
-            "Campaign-bound contact file import end to end: parsing, mapping, "
-            "resolution, review, idempotency, and the handoff into a sequence."
+            "The second-review pass over an import, plus the operator-facing "
+            "import surfaces: the admin workbench view, the import web pages, "
+            "idempotent re-import, and campaign basics."
         ),
         prefixes=(
-            "tests/test_campaign_import",
-            "tests/test_campaign_pipeline_web",
+            "tests/test_campaign_import_admin_workbench",
+            "tests/test_campaign_import_idempotency",
+            "tests/test_campaign_import_second_review",
+            "tests/test_campaign_import_web",
             "tests/test_campaigns",
+        ),
+    ),
+    Shard(
+        name="campaign-import-pipeline",
+        description=(
+            "The review-fix pass, contact and company resolution during import, "
+            "the import pipeline itself and its web surface, and the handoff "
+            "from a finished import into an outreach sequence."
+        ),
+        prefixes=(
+            "tests/test_campaign_import_pipeline",
+            "tests/test_campaign_import_resolution",
+            "tests/test_campaign_import_review_fixes",
+            "tests/test_campaign_pipeline_web",
             "tests/test_import_to_sequence",
+        ),
+    ),
+    Shard(
+        name="campaign-import-parsing",
+        description=(
+            "The final-review pass, and everything that turns a file into rows: "
+            "parsing, column mapping, validation, staging, spreadsheet preview "
+            "and xlsx import, and the imported-email column."
+        ),
+        prefixes=(
+            "tests/test_campaign_import_email",
+            "tests/test_campaign_import_final_review",
+            "tests/test_campaign_import_parsing",
             "tests/test_imports",
             "tests/test_mapping",
             "tests/test_parsing",
