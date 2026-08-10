@@ -386,19 +386,44 @@ def test_upload_above_limit_is_rejected_before_staging(
     assert not staged_dir.exists() or not any(staged_dir.iterdir())
 
 
-# --- Workbench local-only startup guard ------------------------------------------
+# --- Workbench hosted startup contract --------------------------------------------
+#
+# The rule this section used to assert was "FEATURES__WORKBENCH is only permitted
+# when APP_ENV=local". That has been replaced: staging may now serve the workbench,
+# but only behind a complete hosted-authentication boundary. What survives
+# unchanged is the refusal itself — an unauthenticated workbench outside local
+# development still refuses to start. The full contract, including every
+# individual missing value, is covered in `tests/test_hosted_auth.py`.
 
 
-def test_workbench_enabled_outside_local_refuses_startup(
+def test_workbench_enabled_outside_local_without_auth_refuses_startup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from app.core.auth.startup import HostedAuthConfigurationError
+
+    monkeypatch.setenv("FEATURES__WORKBENCH", "true")
+    monkeypatch.setenv("APP_ENV", "staging")
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(HostedAuthConfigurationError, match="AUTH__ENABLED"):
+            create_app()
+    finally:
+        get_settings.cache_clear()
+
+
+def test_the_old_exception_name_still_catches_the_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`WorkbenchConfigurationError` is kept as an alias, so an external caller
+    that catches the old name is not silently broken by the rename."""
+
     from app.main import WorkbenchConfigurationError
 
     monkeypatch.setenv("FEATURES__WORKBENCH", "true")
     monkeypatch.setenv("APP_ENV", "staging")
     get_settings.cache_clear()
     try:
-        with pytest.raises(WorkbenchConfigurationError, match="APP_ENV"):
+        with pytest.raises(WorkbenchConfigurationError):
             create_app()
     finally:
         get_settings.cache_clear()
@@ -415,6 +440,22 @@ def test_workbench_enabled_locally_mounts_ui(client: TestClient) -> None:
 def test_workbench_disabled_env_configuration_does_not_mount_ui(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Staging with the workbench off still mounts no UI.
+
+    The `AUTH__*` block is new and not incidental: staging now refuses to start
+    without a complete hosted-authentication boundary *whether or not* the
+    workbench is on, because the state-changing API routes mount in every
+    environment.
+
+    The assertions changed from 404 to 401 for a deliberate reason: the
+    authentication boundary runs *before* routing, so an anonymous caller cannot
+    tell an unmounted path from a protected one. That non-enumeration is the
+    point. The complementary proof — that an *authenticated* operator gets a
+    genuine 404 when the switch is off, so the UI really is absent rather than
+    merely hidden — lives in
+    `tests/test_hosted_auth.py::test_with_the_workbench_off_the_ui_is_absent_not_merely_hidden`.
+    """
+
     monkeypatch.setenv("APP_ENV", "staging")
     monkeypatch.setenv("DRY_RUN", "true")
     monkeypatch.setenv("TRUSTED_HOSTS", '["staging.example.com"]')
@@ -422,6 +463,12 @@ def test_workbench_disabled_env_configuration_does_not_mount_ui(
     monkeypatch.setenv(
         "DATABASE_URL", "postgresql+psycopg://service:password@db.example.com/vmr_staging"
     )
+    monkeypatch.setenv("AUTH__ENABLED", "true")
+    monkeypatch.setenv("AUTH__SESSION_SECRET", "staging-session-secret-at-least-32-chars")
+    monkeypatch.setenv("AUTH__ALLOWED_OPERATOR_EMAILS", '["operator@example.com"]')
+    monkeypatch.setenv("AUTH__GOOGLE_CLIENT_ID", "client-id")
+    monkeypatch.setenv("AUTH__GOOGLE_CLIENT_SECRET", "client-secret")
+    monkeypatch.setenv("AUTH__PUBLIC_BASE_URL", "https://staging.example.com")
     monkeypatch.delenv("FEATURES__WORKBENCH", raising=False)
     get_settings.cache_clear()
     try:
@@ -432,9 +479,9 @@ def test_workbench_disabled_env_configuration_does_not_mount_ui(
 
         app.dependency_overrides[get_db] = _override
         with TestClient(app, base_url="https://staging.example.com") as staging_client:
-            assert staging_client.get("/admin").status_code == 404
-            assert staging_client.get("/", follow_redirects=False).status_code == 404
-            assert staging_client.get("/local-tools").status_code == 404
+            assert staging_client.get("/admin").status_code == 401
+            assert staging_client.get("/", follow_redirects=False).status_code == 401
+            assert staging_client.get("/local-tools").status_code == 401
         app.dependency_overrides.clear()
     finally:
         get_settings.cache_clear()

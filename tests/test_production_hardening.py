@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 import pytest
+from app.core.auth.config import AuthSettings
 from app.core.config import Settings
 from app.core.features import FeatureFlags
 from app.core.http import RequestContext, _host_from_scope, current_request_id, valid_request_id
@@ -644,6 +645,16 @@ def test_request_context_ignores_malformed_forwarding() -> None:
 
 
 def _production_settings(**overrides: object) -> Settings:
+    """A production configuration that is safe by the *whole* startup contract.
+
+    The `auth` block is new and is not decoration: `create_app()` now refuses to
+    start any hosted environment without a complete hosted-authentication
+    boundary, so a fixture that omitted it would fail on the auth contract before
+    reaching the runtime rule each test below is actually about. Every assertion
+    in this section is unchanged; they now run against a configuration that is
+    also authenticated, which is what a real deployment would be.
+    """
+
     values: dict[str, object] = {
         "_env_file": None,
         "app_env": "production",
@@ -651,6 +662,14 @@ def _production_settings(**overrides: object) -> Settings:
         "trusted_hosts": ("outbound.example.com",),
         "trusted_proxy_cidrs": ("10.20.0.0/24",),
         "dry_run": True,
+        "auth": AuthSettings(
+            enabled=True,
+            session_secret="production-session-secret-at-least-32-chars",
+            google_client_id="production-client-id",
+            google_client_secret="production-client-secret",
+            allowed_operator_emails=("operator@example.com",),
+            public_base_url="https://outbound.example.com",
+        ),
     }
     values.update(overrides)
     return Settings(**values)  # type: ignore[arg-type]

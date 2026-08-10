@@ -246,6 +246,14 @@ class ProductionHTTPMiddleware:
         state["request_id"] = request_id
         token: Token[str | None] = _request_id_context.set(request_id)
         context = RequestContext(scope, self.trusted_proxy_cidrs)
+        # Publish the already-resolved proxy verdict so nothing downstream has
+        # to re-parse X-Forwarded-* headers. Anything that did would have to
+        # re-implement the trusted-peer rule below, and a second implementation
+        # of that rule is exactly how a proxy-header trust bug gets introduced.
+        # These are the values HSTS emission is decided from, so a reader gets
+        # the same answer the hardening boundary acted on, not a guess.
+        state["forwarded_scheme"] = context.scheme
+        state["trusted_proxy"] = context.trusted_proxy
         status_code = 500
         response_started = False
 

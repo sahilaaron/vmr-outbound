@@ -80,10 +80,21 @@
               <b>Sending accounts</b>
               <span>Not connected — sending is not built yet</span>
             </a>
-            <a class="v2-menu-item last" href="/">
+            <a class="v2-menu-item{% if not signed_in_operator_email() %} last{% endif %}" href="/">
               <b>Operator Workbench</b>
               <span>The admin surface: imports, queues, raw records</span>
             </a>
+            {# Only rendered on a hosted deployment. Local development has no
+               session to end, so the control would do nothing. The CSRF field is
+               inserted into this form automatically at template-compile time. #}
+            {% if signed_in_operator_email() %}
+            <form class="v2-menu-item last" method="post" action="/auth/logout">
+              <button type="submit" class="v2-menu-signout">
+                <b>Sign out</b>
+                <span>{{ signed_in_operator_email() }}</span>
+              </button>
+            </form>
+            {% endif %}
           </div>
         </details>
       </div>

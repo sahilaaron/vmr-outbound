@@ -39,6 +39,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.core.auth.csrf import register_csrf, require_csrf
 from app.core.config import get_settings
 from app.models.campaign import Campaign, CampaignContact
 from app.models.enums import (
@@ -59,7 +60,12 @@ from app.services.agents.registry import AGENT_SPECS, PIPELINE_ORDER
 from app.services.imports import display
 from app.services.seller.common import OPERATOR_ACTOR
 
-router = APIRouter()
+# Every state-changing route on this router is refused unless the request
+# carries the CSRF token bound to the caller's session. The check is declared
+# once, here, rather than on ~100 individual handlers: a route added later is
+# covered the moment it is registered. It is inert for safe methods and inert
+# entirely when hosted authentication is disabled (local development).
+router = APIRouter(dependencies=[Depends(require_csrf)])
 
 _TEMPLATES_DIR = "app/web/templates"
 templates = Jinja2Templates(directory=_TEMPLATES_DIR)
@@ -111,6 +117,7 @@ def _pretty_json(value: object) -> str:
 
 
 display.register_neutralize(templates.env)
+register_csrf(templates.env)
 templates.env.filters["dt"] = _fmt_dt
 templates.env.filters["ago"] = _fmt_ago
 templates.env.filters["duration"] = _fmt_duration

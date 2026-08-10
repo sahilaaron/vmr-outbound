@@ -18,6 +18,7 @@ from ipaddress import IPv6Address, ip_address
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.auth.config import AuthSettings
 from app.core.features import FeatureFlags
 
 
@@ -472,6 +473,11 @@ class Settings(BaseSettings):
     )
 
     features: FeatureFlags = Field(default_factory=FeatureFlags)
+
+    # Hosted-operator authentication (env prefix ``AUTH__``). Defaults to off so
+    # local development is unchanged; the startup contract in
+    # ``app/core/auth/startup.py`` makes it mandatory for any hosted environment.
+    auth: AuthSettings = Field(default_factory=AuthSettings)
 
     @property
     def is_production(self) -> bool:

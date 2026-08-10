@@ -1044,19 +1044,26 @@ def test_a_lookup_without_a_provider_key_runs_nothing_and_says_so(
     assert record is None or record.lookup_status is EnrichmentLookupStatus.NOT_STARTED
 
 
-def test_the_workbench_refuses_a_non_local_environment(
+def test_the_workbench_refuses_a_non_local_environment_without_auth(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The workbench (and therefore promotion) cannot serve a non-local env."""
+    """The workbench (and therefore promotion) cannot serve an unauthenticated
+    non-local environment.
 
-    from app.main import WorkbenchConfigurationError
+    Promotion additionally stays local-only on its own account: it is one of the
+    `_LOCAL_ONLY_FEATURES` that `validate_runtime_settings` refuses outside local
+    development, so enabling it in staging is refused even once hosted
+    authentication is fully configured.
+    """
+
+    from app.core.auth.startup import HostedAuthConfigurationError
 
     monkeypatch.setenv("FEATURES__WORKBENCH", "true")
     monkeypatch.setenv("FEATURES__CONTACT_CAPTURE_PROMOTION", "true")
     monkeypatch.setenv("APP_ENV", "staging")
     get_settings.cache_clear()
     try:
-        with pytest.raises(WorkbenchConfigurationError):
+        with pytest.raises(HostedAuthConfigurationError):
             create_app()
     finally:
         get_settings.cache_clear()

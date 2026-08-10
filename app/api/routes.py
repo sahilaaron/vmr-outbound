@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.core.auth.csrf import require_csrf
 from app.core.config import get_settings
 from app.models.enums import CampaignStatus
 from app.services.campaigns import CampaignError, create_campaign
@@ -42,7 +43,12 @@ from app.services.imports.salesnav_intake import (
 )
 from app.services.profiles import refresh as profile_refresh
 
-router = APIRouter()
+# Every state-changing route on this router is refused unless the request
+# carries the CSRF token bound to the caller's session. The check is declared
+# once, here, rather than on ~100 individual handlers: a route added later is
+# covered the moment it is registered. It is inert for safe methods and inert
+# entirely when hosted authentication is disabled (local development).
+router = APIRouter(dependencies=[Depends(require_csrf)])
 
 # --- Sales Navigator capture intake (DAT-009) --------------------------------
 

@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.core.auth.csrf import require_csrf
 from app.core.config import get_settings
 from app.models.agent import AgentControl
 from app.models.campaign import Campaign, CampaignContact
@@ -37,7 +38,12 @@ from app.services.agents import controls, jobs
 from app.services.agents.orchestrator import reconcile_agent_control
 from app.services.agents.registry import AGENT_SPECS
 
-router = APIRouter(prefix="/api", tags=["phase-2"])
+# Every state-changing route on this router is refused unless the request
+# carries the CSRF token bound to the caller's session. The check is declared
+# once, here, rather than on ~100 individual handlers: a route added later is
+# covered the moment it is registered. It is inert for safe methods and inert
+# entirely when hosted authentication is disabled (local development).
+router = APIRouter(prefix="/api", tags=["phase-2"], dependencies=[Depends(require_csrf)])
 DbSession = Annotated[Session, Depends(get_db)]
 PageLimit = Annotated[int, Query(ge=1, le=500)]
 PageOffset = Annotated[int, Query(ge=0)]

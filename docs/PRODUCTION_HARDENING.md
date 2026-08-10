@@ -172,8 +172,16 @@ relationship, Host entries, and trusted-proxy network syntax. `local`,
   maintenance database URL, including legacy numeric spellings of loopback such
   as `127.1`, octal, integer, and hexadecimal IPv4;
 - local-only intake/promotion features;
-- the unauthenticated Workbench outside `APP_ENV=local` (the pre-existing hard
-  guard remains).
+- an incomplete hosted-authentication boundary. `validate_hosted_auth_settings`
+  runs first in `create_app()` and refuses staging or production without
+  `AUTH__ENABLED`, without a session secret of at least 32 characters, with an
+  empty approved-operator list, without a complete Google identity client,
+  without an HTTPS `AUTH__PUBLIC_BASE_URL`, or with `AUTH__COOKIE_SECURE=false`.
+  It also refuses `FEATURES__WORKBENCH` in production outright. This replaced
+  the older "unauthenticated Workbench outside `APP_ENV=local`" guard, which
+  covered the UI but not the 25 state-changing API routes that mount in every
+  environment. `WorkbenchConfigurationError` remains as an alias of
+  `HostedAuthConfigurationError`. See `docs/HOSTED_AUTH.md`.
 
 Messages name the unsafe setting but never echo its value. Web and worker
 services are expected to use the same validated environment file. Because the

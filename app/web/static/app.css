@@ -817,3 +817,27 @@ summary.small:hover {
 .rail-exit:hover {
   text-decoration: underline;
 }
+
+/* --- Hosted sign-out control (rail foot) ---------------------------------
+   Only rendered on a hosted deployment; local development keeps the original
+   environment line and never sees these rules. Styled as quiet text rather
+   than a button, because signing out is not an action anyone should hit by
+   accident from a navigation rail. */
+.rail-operator {
+  display: block;
+  margin-bottom: 4px;
+  overflow-wrap: anywhere;
+}
+.rail-signout {
+  display: inline;
+}
+.rail-signout button {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.rail-signout button:hover { text-decoration: none; }

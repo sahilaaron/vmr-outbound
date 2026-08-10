@@ -107,3 +107,22 @@ force in — see [`CAMPAIGN_FILE_IMPORT.md`](CAMPAIGN_FILE_IMPORT.md).
 | Re-running the imported-email path after an operator edits an address | The Email stage reads the imported record only while it still matches the Contact's current address. A deliberate operator change therefore falls back to ordinary discovery, which is correct but silent; an explicit re-import or refresh action is the follow-up. |
 | Per-user import ownership | The application is single-operator: an import is scoped to a Campaign, not a person, and the page says so. Real ownership arrives with the user-account system, not before it. |
 | CSV export of row errors | The batch page shows every row's outcome. An export needs the formula-neutralization path exercised end to end (`neutralize_formula` exists and is tested) and a decision about who may download PII; neither was needed to run the first import. |
+
+## Deferred by the hosted-operator authentication slice
+
+The boundary itself is in [`HOSTED_AUTH.md`](HOSTED_AUTH.md) and
+[`decisions/0011-hosted-operator-authentication.md`](decisions/0011-hosted-operator-authentication.md).
+Each idea below is real. None was needed to let an approved operator reach `/app`
+and `/admin` on the staging hostname, which is the whole of the authorised slice.
+
+| Idea | Why deferred |
+| --- | --- |
+| **Per-operator write attribution** | The strongest follow-up, and the one this slice makes possible for the first time. Every write still records the constant `OPERATOR_ACTOR`, even though a verified identity is now on every request. Doing it properly means deciding what happens to the existing rows, whether the actor is the email or a stable subject id, and how the Agent worker (which has no session) attributes its own writes — three decisions with no forcing need before the first campaign. |
+| Roles separating `/admin` from `/app` | Both surfaces have identical access semantics today and the same people use both. One role gets added the day a real distinction exists, and not to anticipate one. |
+| A database-backed session store with server-side revocation | Revocation is already immediate via the allow-list re-check, and the stateless cookie keeps authentication independent of the database. Revisit only if a *stolen* cookie surviving to its 12-hour expiry becomes an actual concern — e.g. more operators, or a shared machine. |
+| An operator-management screen | The allow-list is two or three addresses in `/etc/vmr/vmr.env`. A screen to edit it would be a new write surface, a new permission question and a new audit requirement, to replace a one-line edit and a restart. |
+| Sliding session renewal / "remember me" | Deliberately absent: an absolute non-renewable lifetime is what stops a session being kept alive indefinitely. Add only with a real complaint about the 12-hour window. |
+| ID-token signature verification via PyJWT or Authlib | Verification is implemented directly against `cryptography`, which is already a pinned dependency. Swapping in a vendor library touches `app/core/auth/jwks.py` only, and is worth doing if the maintainer prefers a third-party-audited implementation over a reviewed local one. |
+| Rate-limiting the sign-in and callback routes | Sign-in is bounded by Google, the transaction cookie is single-use and short-lived, and the JWKS client already rate-limits its own refreshes. A general request limiter belongs with the reverse proxy, not the application. |
+| Retiring the now-redundant `_same_origin()` / `_origin_allowed()` checks | Both survive as harmless additional defence behind the real boundary. Removing them is a cleanup with no security value, and touching 4 sequence-write routes and the intake guards to do it is churn the launch does not need. |
+| Structured authentication audit events | The access log already records every refusal with a request id, and the application has no sign-in event stream to write to. A real audit trail belongs with per-operator attribution above. |
