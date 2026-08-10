@@ -1,5 +1,15 @@
 name: CI
 
+# The gate is unchanged in what it checks; only in how the work is arranged.
+# One serial job used to run lint -> format -> mypy -> migrations -> the whole
+# pytest suite, and with ~3000 tests the last step alone pushed a run past
+# twenty minutes. The same checks now run as independent jobs on separate
+# runners, so feedback arrives in roughly the time of the slowest one.
+#
+# Nothing is skipped and nothing is sampled. `scripts/ci_shards.py` owns the
+# split, and the `test-accounting` job proves on every run that the union of the
+# shards is exactly the suite a bare `python -m pytest` would run.
+
 on:
   push:
     branches:
@@ -12,9 +22,56 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# The workflow only ever reads the repository. Stated explicitly so a later job
+# cannot inherit a wider default token.
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+
 jobs:
-  checks:
+  # ---------------------------------------------------------------------------
+  # Static analysis. No database: nothing here opens a connection, so the
+  # Postgres service would only add startup time.
+  # ---------------------------------------------------------------------------
+  static-analysis:
+    name: static analysis (ruff, format, mypy)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Ruff lint
+        run: ruff check .
+
+      - name: Ruff format check
+        run: ruff format --check .
+
+      - name: Mypy
+        run: python -m mypy app
+
+  # ---------------------------------------------------------------------------
+  # Migrations. Runs the full round trip exactly once, on its own database,
+  # rather than once per test job — the test suite builds its schema with
+  # `create_all` and does not depend on Alembic having run.
+  # ---------------------------------------------------------------------------
+  migrations:
+    name: migrations (upgrade, check, round trip)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     services:
       postgres:
@@ -41,21 +98,14 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
-
-      - name: Ruff lint
-        run: ruff check .
-
-      - name: Ruff format check
-        run: ruff format --check .
-
-      - name: Mypy
-        run: python -m mypy app
 
       - name: Alembic migrations apply cleanly
         run: alembic upgrade head
@@ -69,5 +119,172 @@ jobs:
           alembic downgrade base
           alembic upgrade head
 
-      - name: Pytest
-        run: python -m pytest
+  # ---------------------------------------------------------------------------
+  # Test accounting. The safety net for sharding: proves that the union of the
+  # shards is exactly the suite, that nothing is collected twice, and that the
+  # matrix below has not drifted from the shard definition. Cheap (collection
+  # only, no test bodies run) and it fails the build if the answer is no.
+  # ---------------------------------------------------------------------------
+  test-accounting:
+    name: test accounting (every test belongs to exactly one shard)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: dev
+          POSTGRES_PASSWORD: dev
+          POSTGRES_DB: vmr_dev
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U dev"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql+psycopg://dev:dev@127.0.0.1:5433/vmr_dev
+      PYTHONPATH: ${{ github.workspace }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Every collected test belongs to exactly one shard
+        run: python scripts/ci_shards.py verify
+
+  # ---------------------------------------------------------------------------
+  # The suite, split by subject. Each shard is a separate runner with its own
+  # throwaway Postgres, so no shard can see another's data or depend on another
+  # having run. Shard membership is defined in scripts/ci_shards.py, never here:
+  # this matrix only names the shards, and test-accounting fails if the two
+  # disagree.
+  # ---------------------------------------------------------------------------
+  tests:
+    name: tests (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    strategy:
+      # One shard failing must not hide the others. The serial job stopped at
+      # the first failure; seeing every failing area in one run is strictly
+      # more information per push.
+      fail-fast: false
+      matrix:
+        shard:
+          - company-intelligence
+          - company-firmographics
+          - agents-research
+          - campaign-import
+          - web-ui-workbench
+          - email-verification-sequence
+          - migrations-runtime
+          - capture-identity-core
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: dev
+          POSTGRES_PASSWORD: dev
+          POSTGRES_DB: vmr_dev
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U dev"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # Identical to the old single job. The root conftest borrows only this
+      # server's coordinates and always substitutes its own `vmr_test` database,
+      # which it creates — so each runner initialises its database from nothing.
+      DATABASE_URL: postgresql+psycopg://dev:dev@127.0.0.1:5433/vmr_dev
+      PYTHONPATH: ${{ github.workspace }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Pytest (${{ matrix.shard }})
+        # The shard name goes through the environment rather than being
+        # interpolated into the script, and the path list is materialised in its
+        # own command so a failure to produce it aborts the step. An empty list
+        # would otherwise degrade into a bare `python -m pytest`, which runs the
+        # whole suite and looks like a pass.
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          python scripts/ci_shards.py paths "$SHARD" > "$RUNNER_TEMP/shard-paths.txt"
+          mapfile -t paths < "$RUNNER_TEMP/shard-paths.txt"
+          if [ "${#paths[@]}" -eq 0 ]; then
+            echo "::error::Shard '$SHARD' selected no test files."
+            exit 1
+          fi
+          # Printed so a failure can be reproduced locally by copying one line
+          # out of the log.
+          printf 'Reproduce locally:\n  python -m pytest %s\n\n' "${paths[*]}"
+          python -m pytest "${paths[@]}"
+
+  # ---------------------------------------------------------------------------
+  # A single required status for branch protection: green only when every job
+  # above is green. Without it, protecting the branch would mean listing eight
+  # shard names by hand and re-editing them whenever a shard is added.
+  # ---------------------------------------------------------------------------
+  ci:
+    name: CI
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: always()
+    needs:
+      - static-analysis
+      - migrations
+      - test-accounting
+      - tests
+
+    steps:
+      - name: Fail unless every job succeeded
+        env:
+          STATIC_ANALYSIS: ${{ needs.static-analysis.result }}
+          MIGRATIONS: ${{ needs.migrations.result }}
+          TEST_ACCOUNTING: ${{ needs.test-accounting.result }}
+          # A matrix job reports one combined result: `success` only when every
+          # shard succeeded, so `fail-fast: false` does not weaken this gate.
+          TESTS: ${{ needs.tests.result }}
+        run: |
+          echo "static-analysis : $STATIC_ANALYSIS"
+          echo "migrations      : $MIGRATIONS"
+          echo "test-accounting : $TEST_ACCOUNTING"
+          echo "tests           : $TESTS"
+          failed=0
+          for result in "$STATIC_ANALYSIS" "$MIGRATIONS" "$TEST_ACCOUNTING" "$TESTS"; do
+            if [ "$result" != "success" ]; then failed=1; fi
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::At least one CI job did not succeed."
+            exit 1
+          fi
