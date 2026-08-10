@@ -3,7 +3,10 @@
 **Issue:** #247 — Production integration: secure campaign write endpoints before VPS exposure
 **Branch:** `feat/hosted-operator-auth`
 **Exact base:** `cb8510a73c872f67514dc0557708c30a20dc64d2`
-**Exact final head:** `<FINAL_HEAD>`
+**Code commit (the entire slice):** `f796542b875fe633c50f5f097f7190475cd86455`
+**Exact final head:** the branch tip, which is one further commit adding only this
+document. Its SHA and the bundle SHA-256 are stated in the delivery message rather
+than here, because a file cannot contain the hash of the commit that introduces it.
 **Migration head:** unchanged — **no schema change in this slice**
 **Not pushed. Not deployed. `main` untouched. No merge, rebase, squash or history rewrite.**
 
@@ -296,7 +299,46 @@ customer tenancy, billing, broad RBAC, remote extension capture.
 
 ## 8. Test results
 
-`<TEST_RESULTS>`
+````
+Full pytest suite (4 shards, each against its own PostgreSQL 16 database):
+
+  shard 0   773 passed   0 failed   11m08s
+  shard 1   737 passed   0 failed   10m26s
+  shard 2   993 passed   0 failed   13m59s
+  shard 3   761 passed   0 failed   13m39s
+  ------------------------------------------
+  TOTAL    3264 passed   0 failed
+
+  Of which 304 are new (tests/test_hosted_auth.py 273, tests/test_hosted_auth_templates.py 31).
+  Sharding is a local wall-clock measure only; the file set is the complete
+  tests/ directory with no exclusions. CI runs its own 8-shard split.
+
+ruff check .            All checks passed!
+ruff format --check .   494 files already formatted
+python -m mypy app      Success: no issues found in 252 source files
+
+alembic heads           0926b59b7912 (head)      <- single head, unchanged from base
+alembic upgrade head    applied cleanly
+alembic check           No new upgrade operations detected.
+alembic downgrade base && alembic upgrade head   round trip OK
+
+git diff --check        no whitespace errors
+
+Extension node suite    not run: no file under extensions/ was changed
+                        (`git diff --stat cb8510a -- extensions/` is empty)
+```
+
+Suites named in the request, all inside the totals above and all green:
+
+| Suite | Result |
+|---|---|
+| `tests/test_hosted_auth.py`, `tests/test_hosted_auth_templates.py` (new) | 304 passed |
+| `tests/test_v2_customer_ui.py` (customer UI) | passed |
+| `tests/test_workbench_web.py`, `tests/test_admin_workbench_web.py` | passed |
+| `tests/test_phase2_api.py`, `tests/test_api.py`, `tests/test_campaigns.py` | passed |
+| `tests/test_contact_capture_intake.py`, `tests/test_salesnav_intake.py`, `tests/test_linkedin_*_intake.py` | passed |
+| `tests/test_production_hardening.py` | 61 passed |
+| `tests/test_migrations.py` | passed |`
 
 Non-vacuousness was checked by mutation, not assumed:
 
@@ -318,10 +360,19 @@ Non-vacuousness was checked by mutation, not assumed:
 ## 10. Bundle
 
 ```
-File:    <BUNDLE_NAME>
-SHA-256: <BUNDLE_SHA>
-Base:    cb8510a73c872f67514dc0557708c30a20dc64d2
-Head:    <FINAL_HEAD>
+File:    vmr-outbound-hosted-auth-slice.bundle
+Base:    cb8510a73c872f67514dc0557708c30a20dc64d2   (required ref; incremental bundle)
+Head:    refs/heads/feat/hosted-operator-auth
+```
+
+The branch-tip SHA and the bundle SHA-256 are in the delivery message. They are
+deliberately not written here: this document is inside the commit they identify,
+so any value printed here would be stale the moment it was committed. To confirm
+the pair yourself:
+
+```
+git bundle verify vmr-outbound-hosted-auth-slice.bundle
+certutil -hashfile vmr-outbound-hosted-auth-slice.bundle SHA256
 ```
 
 `git bundle verify` and `git merge-base` output are in §11 of the delivery
@@ -331,4 +382,4 @@ message.
 
 ## Verdict
 
-`<VERDICT>`
+`**HOSTED AUTH SLICE READY FOR INDEPENDENT REVIEW**`
