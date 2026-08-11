@@ -64,6 +64,7 @@ const CANDIDATE_TARGETS = [
   "https://[::1]:8000",
   "http://192.168.0.10:8000",
   "https://vmr.example.com",
+  ...constants.HOSTED_BACKEND_ORIGINS,
 ];
 
 function validatorAccepts(urlStr) {
@@ -122,10 +123,88 @@ test("the documented local development targets still work", () => {
   assert.equal(validatorAccepts(constants.DEFAULT_PREFERENCES.mockReceiverUrl), true);
 });
 
-test("remote targets are still refused by the origin validator", () => {
+test("remote targets other than the named deployments are still refused", () => {
   for (const target of ["https://vmr.example.com", "http://192.168.0.10:8000"]) {
     assert.equal(validatorAccepts(target), false, `${target} must not be an accepted target`);
   }
+});
+
+// --- hosted deployments -------------------------------------------------------
+//
+// A hosted target is where reviewed personal data goes over the Internet, under
+// a bearer credential. Three things therefore have to agree, and each of them
+// has failed silently in this file's history for the loopback pair: the origin
+// validator, the permission-pattern helper, and the manifest.
+
+test("every named hosted deployment is HTTPS, accepted, and declared", () => {
+  const declared = new Set(manifest.optional_host_permissions || []);
+  assert.ok(
+    constants.HOSTED_BACKEND_ORIGINS.length > 0,
+    "at least one hosted deployment must be named, or hosted capture cannot work at all"
+  );
+  for (const origin of constants.HOSTED_BACKEND_ORIGINS) {
+    assert.ok(origin.startsWith("https://"), `${origin} must be HTTPS: it carries a credential`);
+    assert.equal(validatorAccepts(origin), true, `${origin} must pass the origin validator`);
+    assert.equal(
+      perms.isHostedUrl(origin + "/api/intake/contact-captures"),
+      true,
+      `${origin} must be recognised as hosted, or its requests carry no credential`
+    );
+    const pattern = perms.originPatternForUrl(origin + "/api/intake/contact-captures");
+    assert.ok(declared.has(pattern), `${pattern} is not declared in optional_host_permissions`);
+  }
+});
+
+test("the hosted host set and the hosted origin list name the same deployments", () => {
+  const fromOrigins = new Set(constants.HOSTED_BACKEND_ORIGINS.map((o) => new URL(o).hostname));
+  assert.deepEqual(
+    [...perms.HOSTED_HOSTS].sort(),
+    [...fromOrigins].sort(),
+    "a host in one list and not the other is either a target with no credential or a " +
+      "credential with no target"
+  );
+});
+
+test("a plaintext spelling of a hosted deployment is refused", () => {
+  for (const host of perms.HOSTED_HOSTS) {
+    const target = `http://${host}`;
+    assert.equal(validatorAccepts(target), false, `${target} must not be an accepted target`);
+    assert.equal(perms.isHostedUrl(target + "/api"), false);
+    assert.equal(perms.originPatternForUrl(target + "/api"), null);
+  }
+});
+
+test("loopback is not treated as hosted, so a local send carries no credential", () => {
+  for (const target of ["http://127.0.0.1:8000", "http://localhost:8787"]) {
+    assert.equal(perms.isHostedUrl(target + "/api"), false, `${target} must stay local`);
+  }
+});
+
+// --- the credential format the backend actually verifies ----------------------
+
+test("the credential pattern matches the scheme the backend parses", () => {
+  const backend = fs.readFileSync(
+    path.join(REPO_ROOT, "app", "core", "auth", "extension.py"),
+    "utf8"
+  );
+  const scheme = /CREDENTIAL_SCHEME\s*=\s*"([^"]+)"/.exec(backend);
+  assert.ok(scheme, "the backend must declare a credential scheme");
+  assert.equal(
+    constants.CREDENTIAL_SCHEME,
+    scheme[1],
+    "the extension and the backend must agree on the credential scheme, or every " +
+      "well-formed credential is refused as malformed by one of them"
+  );
+  const minChars = /MIN_SECRET_CHARS\s*=\s*(\d+)/.exec(backend);
+  assert.ok(minChars, "the backend must declare a minimum secret length");
+  const shortSecret = `${scheme[1]}.beta-laptop.${"a".repeat(Number(minChars[1]) - 1)}`;
+  assert.equal(
+    constants.CREDENTIAL_PATTERN.test(shortSecret),
+    false,
+    "the extension must not accept a secret the backend will refuse for being too short"
+  );
+  const goodSecret = `${scheme[1]}.beta-laptop.${"a".repeat(Number(minChars[1]))}`;
+  assert.equal(constants.CREDENTIAL_PATTERN.test(goodSecret), true);
 });
 
 // --- client abort budget vs. the server's own budget -------------------------

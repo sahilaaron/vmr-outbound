@@ -83,24 +83,61 @@
     recentLabels: [],
   };
 
-  // Origins the extension is allowed to talk to for handoff. Loopback + the
-  // configured backend base URL only. LinkedIn is a *read* surface, never a
-  // POST target.
+  // The hosted VMR deployments this extension may send to, named exactly. There
+  // is no pattern, no wildcard and no operator-typed hostname here on purpose:
+  // a send target is where reviewed personal data goes, and "whatever the
+  // operator pasted" is not a boundary. Adding a deployment is a deliberate
+  // release that also declares the matching optional host permission in the
+  // manifest — `test/config-parity.test.js` fails if the two drift.
   //
-  // These two hosts are exactly the ones `optional_host_permissions` declares in
-  // the manifest, and they are what the local-development contract documents
-  // (docs/DEVELOPMENT.md runs uvicorn on `--host 127.0.0.1`). An `http://[::1]`
-  // entry used to sit here as well: it passed this check, then produced the
-  // match pattern `http://[::1]/*`, which the manifest does not declare — so the
-  // permission could never be granted and every send failed `permission_denied`.
-  // A target that validates but can never work is worse than one that is refused
-  // immediately, so the IPv6 spelling is not accepted. Supporting it would mean
-  // declaring another optional host permission, which is a manifest/permission
-  // change and belongs with a deliberate release, not with this cleanup.
+  // HTTPS only. A hosted capture carries a bearer credential, and a credential
+  // over plaintext is a credential given away.
+  const HOSTED_BACKEND_ORIGINS = ["https://srv1885453.hstgr.cloud"];
+
+  // Origins the extension is allowed to talk to for handoff: loopback for local
+  // development, plus the named hosted deployments above. LinkedIn is a *read*
+  // surface, never a POST target.
+  //
+  // The two loopback hosts are exactly the ones `optional_host_permissions`
+  // declares in the manifest, and they are what the local-development contract
+  // documents (docs/DEVELOPMENT.md runs uvicorn on `--host 127.0.0.1`). An
+  // `http://[::1]` entry used to sit here as well: it passed this check, then
+  // produced the match pattern `http://[::1]/*`, which the manifest does not
+  // declare — so the permission could never be granted and every send failed
+  // `permission_denied`. A target that validates but can never work is worse
+  // than one that is refused immediately, so the IPv6 spelling is not accepted.
   const ALLOWED_BACKEND_ORIGIN_PATTERNS = [
     /^http:\/\/127\.0\.0\.1(:\d+)?$/,
     /^http:\/\/localhost(:\d+)?$/,
+    /^https:\/\/srv1885453\.hstgr\.cloud$/,
   ];
+
+  // ---- Hosted capture credential (Beta) --------------------------------------
+  //
+  // A hosted VMR deployment is on the Internet, so the intake it exposes is
+  // authenticated. The credential is a VMR-application bearer secret issued per
+  // install: it is NOT the operator's hosted sign-in cookie, NOT a Google token,
+  // and NOT a Gmail grant. It authorises one thing — submitting captures on the
+  // enumerated intake contract — and it is revocable server-side by key id.
+  //
+  // Presented as `Authorization: Bearer vmrx1.<key_id>.<secret>`.
+  const CREDENTIAL_SCHEME = "vmrx1";
+  // Shape check only, so an obviously-wrong paste is refused at the field rather
+  // than becoming a mystery 401 three screens later. The backend is the only
+  // authority on whether a credential is real.
+  const CREDENTIAL_PATTERN = /^vmrx1\.[a-z0-9][a-z0-9._-]{0,62}\.[A-Za-z0-9_-]{32,}$/;
+
+  // Where the credential lives: `chrome.storage.session`, not `local`.
+  //
+  // `session` is in-memory for the browser session, is never written to disk,
+  // and defaults to TRUSTED_CONTEXTS — so no content script running on a
+  // LinkedIn page can read it even if that page is hostile. The cost is real and
+  // deliberate: the operator re-enters the credential after a Chrome restart.
+  // For an internal Beta credential that is the right trade, and the settings
+  // screen says so plainly rather than letting it look like a bug.
+  const CREDENTIAL_STORAGE = {
+    CAPTURE_CREDENTIAL: "vmr_capture_credential",
+  };
 
   // Backend routes. The contact-capture route is the one the normal workflow
   // uses; the rest are the legacy campaign-era intakes.
@@ -235,8 +272,12 @@
     STORAGE,
     PROFILE_STORAGE,
     CONTACT_STORAGE,
+    CREDENTIAL_STORAGE,
+    CREDENTIAL_SCHEME,
+    CREDENTIAL_PATTERN,
     DEFAULT_PREFERENCES,
     ALLOWED_BACKEND_ORIGIN_PATTERNS,
+    HOSTED_BACKEND_ORIGINS,
     CONTACT_CAPTURE_PATH,
     CONTACT_LABELS_PATH,
     CAMPAIGNS_PATH,

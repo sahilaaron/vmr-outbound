@@ -1310,10 +1310,12 @@ def test_the_refusal_response_varies_on_the_inputs_it_depends_on(
 def test_a_chrome_extension_origin_gets_no_session_access(
     staging_client: TestClient,
 ) -> None:
-    """The extension's future credential is a bearer token, not this cookie.
+    """The extension's credential is a bearer token, never this cookie.
 
-    Nothing in this slice issues one, so an extension-origin request is refused
-    exactly like any other anonymous caller.
+    This deployment configures no ``EXTENSION_AUTH__*`` at all, so an
+    extension-origin request is refused exactly like any other anonymous caller.
+    The boundary that *does* admit one, and everything it refuses, lives in
+    ``tests/test_extension_capture_auth.py``.
     """
 
     response = staging_client.post(
@@ -1324,11 +1326,25 @@ def test_a_chrome_extension_origin_gets_no_session_access(
     assert response.status_code == 401
 
 
-def test_no_bearer_credential_is_accepted_yet(staging_client: TestClient) -> None:
-    response = staging_client.get(
-        "/api/campaigns", headers={"authorization": "Bearer anything-at-all"}
-    )
-    assert response.status_code == 401
+def test_no_bearer_credential_is_accepted_without_one_being_configured(
+    staging_client: TestClient,
+) -> None:
+    """Extension capture authentication defaults to off, and off means off.
+
+    A deployment that has not deliberately enabled and configured it accepts no
+    bearer credential on any path — including the enumerated capture contract,
+    which is otherwise the only place one is ever read.
+    """
+
+    for path in ("/api/campaigns", "/api/contact-labels", "/api/contacts/lookup"):
+        response = staging_client.get(
+            path,
+            headers={
+                "authorization": "Bearer vmrx1.beta-laptop.anything-at-all-long-enough-to-parse",
+                "origin": "chrome-extension://abcdefghijklmnopabcdefghijklmnop",
+            },
+        )
+        assert response.status_code == 401, path
 
 
 # ---------------------------------------------------------------------------

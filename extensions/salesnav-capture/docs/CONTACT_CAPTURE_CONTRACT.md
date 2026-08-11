@@ -48,9 +48,46 @@ GET {backend_base_url}/api/campaigns
 the panel can label its primary action *Save Contact* or *Refresh Contact*
 without pulling any contact field into the browser.
 
-Local only: gated behind `FEATURES__CONTACT_CAPTURE_INTAKE` (default off),
-refused unless `APP_ENV=local`, and restricted to the extension origin or a
-loopback origin.
+Gated behind `FEATURES__CONTACT_CAPTURE_INTAKE`, which is off by default. Two
+deployment shapes are supported, and they differ only in what authorises the
+request — the wire contract above is identical in both.
+
+### Local development
+
+Unchanged. No authentication, no credential header. Restricted to a loopback
+origin or any `chrome-extension://` origin, and refused unless `APP_ENV=local`.
+
+### Hosted
+
+The four requests above are the **only** thing a hosted deployment authorises
+for the extension. Each one must carry a VMR capture credential:
+
+```
+Authorization: Bearer vmrx1.<key_id>.<secret>
+```
+
+This is a VMR application credential issued per install. It is not the hosted
+sign-in cookie, not a Google token, and not a Gmail grant, and an operator's
+browser session does **not** authorise a capture in its place. It is revocable
+server-side by `key_id`.
+
+The capture `POST` must also come from an approved `chrome-extension://` origin;
+the three reads must not come from an unapproved one. A credential presented
+against any other path or method in the application authorises nothing.
+
+Failures are distinguishable and actionable:
+
+| Status | Meaning | What the operator does |
+| --- | --- | --- |
+| `401` | no usable credential — absent, malformed, wrong, or revoked | re-paste it in Settings, or ask for a new one |
+| `403` | credential read, but this install is not approved | send the extension ID from Settings to be added |
+
+The extension refuses to send a hosted request with no credential at all, so
+nothing leaves the browser in that case. See `docs/HOSTED_AUTH.md` §7a in the
+backend repository for issuing, approving and revoking.
+
+Company evidence (`/api/intake/linkedin-company/stage`) is **not** in the hosted
+contract and stays local-backend only.
 
 ## Request shape
 

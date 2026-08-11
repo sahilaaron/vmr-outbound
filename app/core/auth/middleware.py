@@ -37,6 +37,13 @@ from app.core.auth.context import (
     set_current_csrf_token,
     set_current_operator,
 )
+from app.core.auth.extension import (
+    EXTENSION_CREDENTIAL_LABEL,
+    EXTENSION_KEY_ID_STATE_KEY,
+    ExtensionAuthSettings,
+    authenticate_capture_request,
+    capture_preflight_headers,
+)
 from app.core.auth.policy import (
     REDIRECTABLE_METHODS,
     is_anonymous_path,
@@ -240,9 +247,20 @@ def _is_cross_site(scope: Scope, settings: AuthSettings) -> bool:
 class OperatorAuthenticationMiddleware:
     """Refuse every request that is not an approved internal VMR operator."""
 
-    def __init__(self, app: ASGIApp, *, settings: AuthSettings) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        settings: AuthSettings,
+        extension_settings: ExtensionAuthSettings | None = None,
+    ) -> None:
         self.app = app
         self.settings = settings
+        # The extension boundary is a second, much narrower credential and is
+        # deliberately its own object rather than a field on `AuthSettings`: the
+        # two are configured separately, revoked separately, and must never be
+        # able to satisfy each other.
+        self.extension_settings = extension_settings or ExtensionAuthSettings()
         self.codec = (
             SessionCodec(settings.session_secret or "")
             if settings.enabled and settings.has_session_secret()
@@ -267,22 +285,70 @@ class OperatorAuthenticationMiddleware:
         state["auth_enforced"] = True
         now = int(time.time())
         session, revoked = self._resolve_session(scope, now=now)
+        method = str(scope.get("method", "GET")).upper()
+        path = str(scope.get("path", "/"))
 
-        state["auth_credential"] = "cookie" if session is not None else None
+        # The extension capture credential. Consulted only for the enumerated
+        # capture contract (see `app/core/auth/extension.py`), so this call
+        # returns `None` for every other path in the application and no amount of
+        # a valid credential can widen that.
+        extension_key = authenticate_capture_request(
+            scope, self.extension_settings, path=path, method=method
+        )
+
+        # One credential decides one request, and an explicitly presented bearer
+        # outranks an ambient cookie. That ordering is what makes the acceptance
+        # rule true in both directions: a session cookie alone never becomes an
+        # extension request (no credential verified, so no key id is recorded),
+        # and a verified capture credential is treated as the extension rather
+        # than as whichever operator happened to be signed in to the same
+        # browser. An extension is not an operator, so it gets no operator email
+        # and no CSRF token — a bearer credential is not attached automatically
+        # by a browser and therefore is not forgeable cross-site.
+        if extension_key is not None:
+            session = None
+        state[EXTENSION_KEY_ID_STATE_KEY] = extension_key
+        state["auth_credential"] = (
+            EXTENSION_CREDENTIAL_LABEL
+            if extension_key is not None
+            else ("cookie" if session is not None else None)
+        )
         state["operator_email"] = session.email if session is not None else None
         state["csrf_token"] = self.codec.csrf_token(session.session_id) if session else None
 
         operator_token = set_current_operator(session)
         csrf_token: Token[str | None] = set_current_csrf_token(state["csrf_token"])
         try:
-            method = str(scope.get("method", "GET")).upper()
-            path = str(scope.get("path", "/"))
+            if session is None and extension_key is None:
+                # The one preflight exemption this application grants, and only
+                # for the enumerated capture contract from an approved extension
+                # origin. It answers with CORS headers, no body, and no
+                # authentication implication: the request that follows still has
+                # to present a credential.
+                preflight = (
+                    capture_preflight_headers(scope, self.extension_settings, path=path)
+                    if method == "OPTIONS"
+                    else None
+                )
+                if preflight is not None:
+                    await self._respond_preflight(scope, send, headers=preflight)
+                    return
+                if not is_anonymous_path(path):
+                    await self._refuse_anonymous(scope, send, method=method, revoked=revoked)
+                    return
 
-            if session is None and not is_anonymous_path(path):
-                await self._refuse_anonymous(scope, send, method=method, revoked=revoked)
-                return
-
-            if not is_safe_method(method) and _is_cross_site(scope, self.settings):
+            if (
+                extension_key is None
+                and not is_safe_method(method)
+                and _is_cross_site(scope, self.settings)
+            ):
+                # Skipped for an authenticated extension write on purpose. This
+                # backstop exists to stop a *browser* replaying an ambient cookie
+                # from another site, and it reads `Origin` against this site's own
+                # origin — which a legitimate `chrome-extension://` capture can
+                # never match. The equivalent protection for the extension is
+                # stronger and already applied above: the credential is bound to
+                # an explicitly approved extension origin.
                 await self._respond(
                     scope,
                     send,
@@ -360,6 +426,27 @@ class OperatorAuthenticationMiddleware:
             message="An approved VMR operator session is required.",
             set_cookie=clear,
         )
+
+    async def _respond_preflight(
+        self, scope: Scope, send: Send, *, headers: dict[str, str]
+    ) -> None:
+        """204, no body, and only the CORS headers the contract allows.
+
+        Written here rather than delegated to a route so the exemption cannot be
+        widened by a handler: this response never carries
+        ``Access-Control-Allow-Credentials``, never reflects an unapproved
+        origin, and never depends on a route existing.
+        """
+
+        raw_headers: list[tuple[bytes, bytes]] = [
+            (b"content-length", b"0"),
+        ]
+        raw_headers.extend(
+            (name.lower().encode("ascii"), value.encode("latin-1"))
+            for name, value in headers.items()
+        )
+        await send({"type": "http.response.start", "status": 204, "headers": raw_headers})
+        await send({"type": "http.response.body", "body": b""})
 
     async def _respond(
         self,

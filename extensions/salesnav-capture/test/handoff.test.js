@@ -122,6 +122,10 @@ test("configuration failures stay specific about what is supported", () => {
   // make them useless.
   const origin = handoff.describeSendError({ error: "origin_not_allowed" });
   assert.match(origin.headline, /127\.0\.0\.1|localhost/i);
+  // Hosted capture added a second class of valid target. The copy must name it
+  // too, or an operator who typed a hosted URL is told only about loopback and
+  // concludes hosted is unsupported.
+  assert.match(origin.headline, /VMR deployment/i);
   assert.equal(origin.canRetry, false);
   assert.match(handoff.describeSendError({ error: "permission_denied" }).headline, /permission/i);
 });
@@ -143,4 +147,30 @@ test("describeSendError falls back safely for an unknown rejection", () => {
   const d = handoff.describeSendError({ ok: false, error: "receiver_rejected", status: 500, body: null });
   assert.match(d.headline, /HTTP 500/);
   assert.equal(d.code, "receiver_rejected");
+});
+
+// --- hosted workbench links ---------------------------------------------------
+
+test("a hosted deployment's own workbench link is openable", () => {
+  // The link to the saved Contact is the point of the outcome card. A hosted
+  // capture that returned no openable link would look like a backend bug.
+  const perms = require("../src/common/permissions.js");
+  for (const host of perms.HOSTED_HOSTS) {
+    assert.equal(handoff.isOpenableWorkbenchUrl(`https://${host}/contacts/abc`), true);
+    assert.equal(handoff.isOpenableWorkbenchUrl(`https://${host}/contact-captures/abc`), true);
+    // Still only the known workbench paths, and still HTTPS only.
+    assert.equal(handoff.isOpenableWorkbenchUrl(`https://${host}/anything-else`), false);
+    assert.equal(handoff.isOpenableWorkbenchUrl(`http://${host}/contacts/abc`), false);
+  }
+});
+
+test("an unknown remote host is still refused as a workbench link", () => {
+  for (const url of [
+    "https://evil.example/contacts/abc",
+    "https://srv1885453.hstgr.cloud.evil.example/contacts/abc",
+    "javascript:alert(1)",
+    "https://192.168.0.10/contacts/abc",
+  ]) {
+    assert.equal(handoff.isOpenableWorkbenchUrl(url), false, url);
+  }
 });

@@ -19,6 +19,7 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.auth.config import AuthSettings
+from app.core.auth.extension import ExtensionAuthSettings
 from app.core.features import FeatureFlags
 
 
@@ -478,6 +479,13 @@ class Settings(BaseSettings):
     # local development is unchanged; the startup contract in
     # ``app/core/auth/startup.py`` makes it mandatory for any hosted environment.
     auth: AuthSettings = Field(default_factory=AuthSettings)
+
+    # The Chrome capture extension's own credential (env prefix
+    # ``EXTENSION_AUTH__``). Separate from ``auth`` on purpose: that block is the
+    # human operator's browser session and the Google identity client behind it,
+    # and neither may ever stand in for the other. Defaults to off, so an
+    # environment that says nothing about extension capture has none.
+    extension_auth: ExtensionAuthSettings = Field(default_factory=ExtensionAuthSettings)
 
     @property
     def is_production(self) -> bool:

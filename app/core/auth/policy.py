@@ -79,20 +79,20 @@ _ANONYMOUS_STATIC_MOUNT_PREFIX = "/static/"
 #
 # This set says nothing about anonymity. Every method, `OPTIONS` included, needs
 # an approved operator session on a protected path — see the module docstring
-# above and `docs/HOSTED_AUTH.md`. An earlier revision of this comment claimed
-# `OPTIONS` was answered anonymously so that a future cross-origin client's
-# credential-less CORS preflight would succeed; the middleware never implemented
-# it, and the claim is removed rather than implemented, because nothing today
-# needs it. The `@router.options` handlers in `app/api/routes.py` exist for the
-# capture extension, which is itself refused once hosted authentication is on
-# (its `POST` intake becomes a 401 like any other anonymous caller). A preflight
-# exemption without extension authentication to pair it with would open an
-# anonymous surface for a client that still could not complete a request.
+# above and `docs/HOSTED_AUTH.md`.
 #
-# When extension authentication is designed, the preflight exemption it needs is
-# a narrow, enumerated list of intake paths answering with CORS headers, no body
-# and no authentication implication — designed and tested with that work, not
-# promised ahead of it. Recorded in `docs/POST_LAUNCH_BACKLOG.md`.
+# There is now exactly one exception, and it is deliberately not expressed here.
+# Extension capture authentication (`app/core/auth/extension.py`) brought the
+# credential-less preflight this comment used to defer: the middleware answers
+# `OPTIONS` with CORS headers, no body and no authentication implication, but
+# only for the enumerated capture contract and only from an approved
+# `chrome-extension://` origin. It is not a *path* exemption and so does not
+# belong in `_ANONYMOUS_EXACT_PATHS`: the enumerated paths stay protected for
+# every other method and for every other origin, and the preflight answer grants
+# nothing — the request that follows still has to present a credential.
+#
+# The `@router.options` handlers in `app/api/routes.py` remain for local
+# development, where this middleware is inert.
 SAFE_METHODS: frozenset[str] = frozenset({"GET", "HEAD", "OPTIONS"})
 
 # The subset of safe methods for which an unauthenticated *browser* navigation

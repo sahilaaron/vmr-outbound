@@ -24,9 +24,35 @@ const BACKGROUND = path.join(__dirname, "..", "src", "background");
 function createWorker(options) {
   const o = options || {};
   const store = Object.assign({}, o.storage);
+  // `chrome.storage.session` is a separate area with separate contents. Faking
+  // it as an alias of `local` would hide the property the credential design
+  // depends on: the credential is never written to the area that persists to
+  // disk. `sessionStorage: null` models a browser without the API at all.
+  const sessionStore =
+    o.sessionStorage === null ? null : Object.assign({}, o.sessionStorage);
   const tabs = o.tabs || [];
   const tabMessages = [];
   const injected = [];
+
+  function area(backing) {
+    return {
+      get: (keys) => {
+        const out = {};
+        const list = Array.isArray(keys) ? keys : keys == null ? Object.keys(backing) : [keys];
+        for (const k of list) if (k in backing) out[k] = backing[k];
+        return Promise.resolve(out);
+      },
+      set: (obj) => {
+        Object.assign(backing, obj);
+        return Promise.resolve();
+      },
+      remove: (keys) => {
+        for (const k of Array.isArray(keys) ? keys : [keys]) delete backing[k];
+        return Promise.resolve();
+      },
+      setAccessLevel: () => Promise.resolve(),
+    };
+  }
 
   const listeners = { message: [], installed: [], startup: [] };
 
@@ -45,24 +71,10 @@ function createWorker(options) {
       onMessage: addListener("message"),
       sendMessage: () => Promise.resolve(undefined),
     },
-    storage: {
-      local: {
-        get: (keys) => {
-          const out = {};
-          const list = Array.isArray(keys) ? keys : keys == null ? Object.keys(store) : [keys];
-          for (const k of list) if (k in store) out[k] = store[k];
-          return Promise.resolve(out);
-        },
-        set: (obj) => {
-          Object.assign(store, obj);
-          return Promise.resolve();
-        },
-        remove: (keys) => {
-          for (const k of Array.isArray(keys) ? keys : [keys]) delete store[k];
-          return Promise.resolve();
-        },
-      },
-    },
+    storage: Object.assign(
+      { local: area(store) },
+      sessionStore === null ? {} : { session: area(sessionStore) }
+    ),
     tabs: {
       query: () => Promise.resolve(tabs.slice()),
       sendMessage: (tabId, message) => {
@@ -139,7 +151,7 @@ function createWorker(options) {
     });
   }
 
-  return { chrome, dispatch, store, tabMessages, injected, sandbox };
+  return { chrome, dispatch, store, sessionStore, tabMessages, injected, sandbox };
 }
 
 const SALES_TAB = {

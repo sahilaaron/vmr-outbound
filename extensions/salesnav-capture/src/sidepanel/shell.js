@@ -185,6 +185,10 @@
     connected: { tone: "ok", text: "Connected" },
     unreachable: { tone: "bad", text: "Not connected" },
     not_allowed: { tone: "warn", text: "Not allowed yet" },
+    // A hosted backend that answered, and is waiting for a credential. Distinct
+    // from "Not connected" on purpose: the server is fine, and telling the
+    // operator otherwise sends them to check something that is not broken.
+    credential_required: { tone: "warn", text: "Credential needed" },
   };
 
   let connectionState = "unknown";

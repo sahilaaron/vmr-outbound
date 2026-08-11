@@ -556,3 +556,96 @@ test("a denied loopback permission is not reported as an unreachable backend", a
   await p.flush();
   assert.equal(p.$("conn-text").textContent, "Not allowed yet");
 });
+
+// --- the hosted capture credential -------------------------------------------
+//
+// The credential is the one secret this panel ever handles, so what is asserted
+// here is mostly what must NOT be on screen. A value that can be read back out
+// of the DOM is a value in every screenshot, every screen share, and every
+// saved page.
+
+const CREDENTIAL = "vmrx1.beta-laptop.3fVQx8Zk2nLp7Rw6TyUiOaSdFgHjKlZxCvBnM4qWeRt";
+
+async function settingsPanel(extra) {
+  const p = await panelOn(SURFACES.SALESNAV_SEARCH, extra);
+  await p.flush();
+  await p.click("settings-toggle");
+  await p.flush();
+  return p;
+}
+
+test("settings states whether a credential is held, and never shows it", async () => {
+  const p = await settingsPanel({
+    GET_CREDENTIAL_STATE: { ok: true, hasCredential: true, storageAvailable: true },
+  });
+  assert.equal(p.$("credential-state").textContent, "Set for this session");
+  assert.equal(
+    p.document.body.innerHTML.includes(CREDENTIAL),
+    false,
+    "nothing may render the credential"
+  );
+  // The field is a password input and starts empty: a held credential is never
+  // restored into it, so there is nothing to reveal or copy back out.
+  assert.equal(p.$("capture-credential").type, "password");
+  assert.equal(p.$("capture-credential").value, "");
+});
+
+test("an unset credential says so rather than looking configured", async () => {
+  const p = await settingsPanel({
+    GET_CREDENTIAL_STATE: { ok: true, hasCredential: false, storageAvailable: true },
+  });
+  assert.equal(p.$("credential-state").textContent, "Not set");
+});
+
+test("setting a credential hands it over once and clears the field", async () => {
+  const p = await settingsPanel({
+    GET_CREDENTIAL_STATE: { ok: true, hasCredential: false, storageAvailable: true },
+    SET_CAPTURE_CREDENTIAL: { ok: true, hasCredential: true, storageAvailable: true },
+    PROBE_BACKEND: { ok: true, state: "connected" },
+  });
+  p.$("capture-credential").value = CREDENTIAL;
+  await p.click("credential-save");
+  await p.flush();
+
+  const set = p.sent.filter((m) => m.type === "SET_CAPTURE_CREDENTIAL");
+  assert.equal(set.length, 1);
+  assert.equal(set[0].credential, CREDENTIAL);
+  assert.equal(p.$("capture-credential").value, "", "the field must not keep the secret");
+  assert.equal(p.$("credential-state").textContent, "Set for this session");
+  assert.equal(p.document.body.innerHTML.includes(CREDENTIAL), false);
+});
+
+test("a refused paste is still cleared, and says what was wrong", async () => {
+  const p = await settingsPanel({
+    GET_CREDENTIAL_STATE: { ok: true, hasCredential: false, storageAvailable: true },
+    SET_CAPTURE_CREDENTIAL: { ok: false, error: "credential_malformed" },
+  });
+  p.$("capture-credential").value = "not-a-credential";
+  await p.click("credential-save");
+  await p.flush();
+
+  // A rejected paste is still a secret in a DOM node until it is cleared.
+  assert.equal(p.$("capture-credential").value, "");
+  assert.equal(p.$("credential-state").textContent, "Not set");
+  assert.match(p.$("credential-feedback").textContent, /vmrx1/);
+});
+
+test("clearing the credential reports it gone", async () => {
+  const p = await settingsPanel({
+    GET_CREDENTIAL_STATE: { ok: true, hasCredential: true, storageAvailable: true },
+    CLEAR_CAPTURE_CREDENTIAL: { ok: true, hasCredential: false },
+  });
+  await p.click("credential-clear");
+  await p.flush();
+  assert.equal(p.$("credential-state").textContent, "Not set");
+  assert.match(p.$("credential-feedback").textContent, /cleared/i);
+});
+
+test("a hosted backend awaiting a credential is not shown as unreachable", async () => {
+  const p = await panelOn(SURFACES.SALESNAV_SEARCH, {
+    PROBE_BACKEND: { ok: false, state: "credential_required" },
+  });
+  await p.flush();
+  await p.flush();
+  assert.equal(p.connection(), "Credential needed");
+});

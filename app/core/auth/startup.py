@@ -61,6 +61,64 @@ class HostedAuthConfigurationError(RuntimeError):
     """
 
 
+def _extension_auth_issues(settings: Settings, *, environment: str, hosted: bool) -> list[str]:
+    """Refuse every half-configured shape of the extension capture boundary.
+
+    The failure this prevents is the quiet one. A capture credential that is
+    enabled but has no issued credential, or no approved origin, produces a
+    deployment that starts cleanly, serves every operator screen, and refuses
+    every capture — with nothing to tell the operator whether the credential is
+    wrong, the origin is wrong, or the boundary was never configured at all.
+
+    Production is refused outright rather than inheriting the staging rule. It
+    has no operator surface (``FEATURES__WORKBENCH`` is already refused there),
+    and capture is an operator activity, so a capture credential in production
+    would be a credential with nowhere to send its work and no screen to review
+    it on. The production access policy is a decision, not a default.
+    """
+
+    extension = settings.extension_auth
+    issues: list[str] = []
+
+    if not extension.enabled:
+        # Configuration present but switched off is fine and is how a credential
+        # is staged before it is turned on. Nothing is accepted while it is off.
+        return issues
+
+    if environment == "production":
+        issues.append(
+            "EXTENSION_AUTH__ENABLED may not be true in production: capture is an "
+            "operator activity and the production operator-access policy is not defined yet"
+        )
+
+    if not extension.credentials:
+        issues.append(
+            "EXTENSION_AUTH__CREDENTIALS must list at least one issued credential when "
+            "extension capture authentication is enabled: an empty list means nobody, and "
+            "starting with one would refuse every capture while looking healthy"
+        )
+    if not extension.allowed_origins:
+        issues.append(
+            "EXTENSION_AUTH__ALLOWED_ORIGINS must name at least one approved "
+            "chrome-extension:// origin: a credential with no approved origin can never "
+            "complete a capture"
+        )
+    if hosted and not settings.auth.enabled:
+        issues.append(
+            "EXTENSION_AUTH__ENABLED requires AUTH__ENABLED in staging and production: the "
+            "capture credential authorises one narrow intake contract and is not a "
+            "substitute for the operator session protecting everything else"
+        )
+    if not settings.features.contact_capture_intake:
+        issues.append(
+            "FEATURES__CONTACT_CAPTURE_INTAKE must be true when extension capture "
+            "authentication is enabled: the intake route does not exist otherwise, so every "
+            "authenticated capture would answer 404"
+        )
+
+    return issues
+
+
 def validate_hosted_auth_settings(settings: Settings) -> None:
     """Refuse any configuration that would expose operator surfaces anonymously."""
 
@@ -114,6 +172,8 @@ def validate_hosted_auth_settings(settings: Settings) -> None:
                 "AUTH__COOKIE_SECURE may not be false in staging or production: the session "
                 "cookie would be sent over plaintext HTTP"
             )
+
+    issues.extend(_extension_auth_issues(settings, environment=environment, hosted=hosted))
 
     if issues:
         detail = "\n".join(f"- {issue}" for issue in issues)

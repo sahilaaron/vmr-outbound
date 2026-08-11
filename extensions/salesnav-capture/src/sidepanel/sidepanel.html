@@ -298,8 +298,38 @@
             </select>
           </div>
           <div class="field">
-            <label class="field-label" for="backend-url">Local backend base URL</label>
+            <label class="field-label" for="backend-url">VMR backend base URL</label>
             <input id="backend-url" class="input" type="text" placeholder="http://127.0.0.1:8000" />
+          </div>
+          <div class="field">
+            <label class="field-label" for="capture-credential">
+              Hosted capture credential
+            </label>
+            <input
+              id="capture-credential"
+              class="input"
+              type="password"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="vmrx1.…"
+            />
+            <div class="badge-row">
+              <span class="v" id="credential-state">Not set</span>
+              <button id="credential-save" class="btn btn-sm" type="button">Set</button>
+              <button id="credential-clear" class="btn btn-sm" type="button">Clear</button>
+            </div>
+            <p id="credential-feedback" class="p tiny muted" aria-live="polite">
+              Needed only for a hosted VMR backend. Held in memory for this browser session
+              only — Chrome clears it on restart, so it is entered again next time.
+            </p>
+          </div>
+          <div class="field">
+            <span class="field-label">This extension's ID</span>
+            <p class="p tiny mono" id="extension-id">unknown</p>
+            <p class="p tiny muted">
+              Hosted VMR accepts captures only from approved extension IDs. Send this one to
+              whoever configures the deployment.
+            </p>
           </div>
           <div class="field">
             <label class="field-label" for="mock-url">Mock receiver URL</label>
@@ -320,8 +350,9 @@
             </div>
           </div>
           <p class="p tiny muted">
-            Only loopback origins are permitted. No credentials, cookies, or tokens are ever stored
-            or sent. Nothing is transmitted without pressing Save.
+            Only loopback origins and approved VMR deployments are permitted. No LinkedIn
+            credential, cookie, or session is ever read or stored. Nothing is transmitted
+            without pressing Save.
           </p>
         </section>
 

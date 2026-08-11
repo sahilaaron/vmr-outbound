@@ -1326,6 +1326,59 @@
     $("send-target").value = prefs.sendTarget || "mock";
   }
 
+  // ---- hosted capture credential -------------------------------------------
+  //
+  // Write-only from this side. The worker will report whether a credential is
+  // held but never what it is, so there is nothing here to render, restore into
+  // the field, or leak into a screenshot. The input is cleared the moment the
+  // value has been handed over.
+
+  /** Paint the credential status line from the worker's answer. */
+  function showCredentialState(state) {
+    const line = $("credential-state");
+    if (!line) return;
+    if (state && state.storageAvailable === false) {
+      line.textContent = "Unavailable in this browser";
+      return;
+    }
+    line.textContent = state && state.hasCredential ? "Set for this session" : "Not set";
+  }
+
+  function setCredentialFeedback(message) {
+    const node = $("credential-feedback");
+    if (node) node.textContent = message;
+  }
+
+  async function refreshCredentialState() {
+    const r = await send({ type: "GET_CREDENTIAL_STATE" });
+    showCredentialState(r);
+  }
+
+  async function saveCredential() {
+    const field = $("capture-credential");
+    const value = field.value;
+    const r = await send({ type: "SET_CAPTURE_CREDENTIAL", credential: value });
+    // Cleared on every path, including the refusal: a rejected paste is still a
+    // secret and has no business sitting in a DOM node.
+    field.value = "";
+    if (r && r.ok) {
+      showCredentialState(r);
+      setCredentialFeedback("Credential set for this browser session.");
+      await probeConnection();
+      return;
+    }
+    showCredentialState({ hasCredential: false });
+    const described = self.SNCapture.handoff.describeSendError({ error: r && r.error });
+    setCredentialFeedback(`${described.headline} ${described.detail}`.trim());
+  }
+
+  async function clearCapturedCredential() {
+    const r = await send({ type: "CLEAR_CAPTURE_CREDENTIAL" });
+    $("capture-credential").value = "";
+    showCredentialState(r);
+    setCredentialFeedback("Credential cleared.");
+  }
+
   async function saveSettings() {
     const patch = {
       backendBaseUrl: $("backend-url").value.trim(),
@@ -1349,6 +1402,11 @@
       (chrome.runtime.getManifest && chrome.runtime.getManifest().version) || "unknown";
     $("settings-version").textContent = version;
     $("settings-connection").textContent = $("conn-text").textContent;
+    // The install's own id, so an operator can hand it over for the hosted
+    // approved-origin list without hunting through chrome://extensions.
+    const idNode = $("extension-id");
+    if (idNode) idNode.textContent = (chrome.runtime && chrome.runtime.id) || "unknown";
+    void refreshCredentialState();
     showView("settings");
     // Re-check on open rather than mirroring a possibly stale badge. This is the
     // one screen whose whole purpose is the connection.
@@ -1443,6 +1501,8 @@
     $("export-csv").addEventListener("click", () => doExport("csv"));
     $("save-btn").addEventListener("click", doSave);
     $("save-settings").addEventListener("click", saveSettings);
+    $("credential-save").addEventListener("click", saveCredential);
+    $("credential-clear").addEventListener("click", clearCapturedCredential);
     $("settings-close").addEventListener("click", closeSettings);
     $("settings-toggle").addEventListener("click", () => {
       if (shell.getView() === "settings") closeSettings();
