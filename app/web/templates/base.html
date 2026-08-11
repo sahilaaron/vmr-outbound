@@ -137,7 +137,17 @@
         <span class="db-dot {{ 'db-ok' if database_ok else 'db-bad' }}" aria-hidden="true"></span>
         {{ app_env | upper }} · {{ "DB connected" if database_ok else "DB unavailable" }}
       </span>
+      {# On a hosted deployment the environment line is replaced by who you are
+         signed in as and how to stop being signed in. Locally there is no
+         session, so the original line stands unchanged. #}
+      {% if signed_in_operator_email() %}
+      <span class="rail-operator">{{ signed_in_operator_email() }}</span>
+      <form method="post" action="/auth/logout" class="rail-signout">
+        <button type="submit">Sign out</button>
+      </form>
+      {% else %}
       Local development environment.<br>No live sending; dry-run is on.
+      {% endif %}
     </div>
   </nav>
 

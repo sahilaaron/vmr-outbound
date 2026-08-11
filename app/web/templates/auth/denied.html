@@ -1,0 +1,41 @@
+{#
+  The refusal page.
+
+  It never states whether an address is on the approved list, how long the list
+  is, who is on it, or what the deployment is called, and it renders no
+  application data. The one thing it does echo is the address the visitor just
+  signed in with — which they already know — because without it the commonest
+  real cause (signed in with the wrong Google account) is invisible.
+#}
+{% extends "base.html" %}
+{% block title %}Access denied{% endblock %}
+{% block content %}
+  <h1>You do not have access</h1>
+
+  {% if reason == "not_approved" %}
+    <div class="notice err" role="alert">
+      This Google account is not approved for VMR Outbound.
+    </div>
+    {% if email %}
+      <p class="tight">You signed in as:</p>
+      <p class="identity">{{ email }}</p>
+    {% endif %}
+    <p>
+      If you have more than one Google account, sign in again and choose your
+      VMR work account. Otherwise ask the VMR administrator to add you.
+    </p>
+  {% elif reason == "expired_request" %}
+    <div class="notice err" role="alert">
+      That sign-in request expired or was already used.
+    </div>
+    <p>Start again from the sign-in page.</p>
+  {% elif reason == "sign_in_cancelled" %}
+    <div class="notice err" role="alert">Sign-in was not completed.</div>
+    <p>You can try again.</p>
+  {% else %}
+    <div class="notice err" role="alert">That sign-in could not be verified.</div>
+    <p>Start again from the sign-in page.</p>
+  {% endif %}
+
+  <a class="button secondary" href="/auth/login">Back to sign in</a>
+{% endblock %}

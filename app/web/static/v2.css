@@ -2844,3 +2844,21 @@ progress.v2-progress::-moz-progress-bar {
   margin: 0;
   overflow-wrap: anywhere;
 }
+
+/* --- Hosted sign-out control (account menu) ------------------------------
+   Matches `.v2-menu-item` exactly: the account menu is a list of links and the
+   sign-out control has to be a form post, so the button is reset to inherit
+   the item's own presentation rather than looking like a stray button. */
+.v2-menu-signout {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.v2-menu-signout b { display: block; }
+.v2-menu-signout span { display: block; }

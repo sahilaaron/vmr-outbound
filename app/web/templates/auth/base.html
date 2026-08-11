@@ -1,0 +1,142 @@
+{#
+  The sign-in shell.
+
+  Deliberately self-contained: the styles are inline rather than a link to
+  `/static/app.css`, because this page must render identically whether or not
+  the workbench feature switch mounted the static files, and because it is the
+  one page an operator sees when something else is wrong. It carries no
+  navigation, no application data and no script.
+
+  The numbers below are transcribed from the VMR design system already expressed
+  in `app/web/static/v2.css` — indigo #464da9 primary, teal #44b4bf accent, cool
+  slate neutrals, 12px card radius — so the sign-in screen belongs to the same
+  application as everything behind it. Fonts fall back to the system stack
+  rather than fetching Google Fonts: an unauthenticated page should not make a
+  third-party request.
+#}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>{% block title %}Sign in{% endblock %} — VMR Outbound</title>
+  <style>
+    :root {
+      --indigo-500: #464da9;
+      --indigo-600: #3a408f;
+      --indigo-700: #2f3372;
+      --teal-500: #44b4bf;
+      --n-0: #ffffff;
+      --n-50: #f7f8fb;
+      --n-100: #eef0f5;
+      --n-200: #dfe3ec;
+      --n-500: #6c7693;
+      --n-600: #4d5670;
+      --n-700: #394157;
+      --ink: #0f1320;
+      --err-600: #b4232b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: linear-gradient(160deg, #f7f8fb 0%, #eef0f9 100%);
+      color: var(--ink);
+      font-family: "Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                   "Helvetica Neue", Arial, sans-serif;
+      font-size: 15px;
+      line-height: 1.55;
+    }
+    .card {
+      width: 100%;
+      max-width: 420px;
+      background: var(--n-0);
+      border: 1px solid var(--n-200);
+      border-radius: 12px;
+      box-shadow: 0 18px 40px -24px rgba(24, 27, 59, 0.45);
+      padding: 32px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 28px;
+    }
+    .brand-mark {
+      width: 32px; height: 32px;
+      border-radius: 8px;
+      background: var(--indigo-500);
+      color: #fff;
+      display: grid; place-items: center;
+      font-weight: 800; font-size: 13px; letter-spacing: 0.5px;
+    }
+    .brand-text { font-weight: 700; letter-spacing: -0.01em; }
+    .brand-text span { color: var(--n-500); font-weight: 500; }
+    h1 { font-size: 20px; line-height: 1.3; margin: 0 0 8px; letter-spacing: -0.01em; }
+    p { margin: 0 0 16px; color: var(--n-600); }
+    p.tight { margin-bottom: 8px; }
+    .button {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      width: 100%;
+      padding: 12px 16px;
+      border: 0;
+      border-radius: 8px;
+      background: var(--indigo-500);
+      color: #fff;
+      font: inherit;
+      font-weight: 600;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .button:hover { background: var(--indigo-600); }
+    .button:focus-visible { outline: 3px solid var(--teal-500); outline-offset: 2px; }
+    .button.secondary {
+      background: var(--n-0);
+      color: var(--indigo-600);
+      border: 1px solid var(--n-200);
+    }
+    .button.secondary:hover { background: var(--n-50); }
+    .note {
+      margin-top: 24px;
+      padding-top: 16px;
+      border-top: 1px solid var(--n-100);
+      font-size: 13px;
+      color: var(--n-500);
+    }
+    .notice {
+      border-radius: 8px;
+      padding: 12px 14px;
+      margin-bottom: 20px;
+      font-size: 14px;
+    }
+    .notice.err {
+      background: #fdf0f0;
+      border: 1px solid #f3cdcd;
+      color: var(--err-600);
+    }
+    .identity {
+      font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 13px;
+      word-break: break-all;
+      color: var(--n-700);
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">VM</span>
+      <span class="brand-text">Outbound <span>· internal</span></span>
+    </div>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

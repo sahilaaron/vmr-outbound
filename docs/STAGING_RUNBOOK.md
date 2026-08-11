@@ -6,18 +6,36 @@ refuses to do, and how to verify it — not a system already running.
 
 ## What staging actually serves
 
-Say this before a deployment, not after: **staging serves no operator UI.**
+**Staging now requires hosted-operator authentication, and may serve the operator
+UI behind it.**
 
-The whole server-rendered interface — `/app` (customer-facing) and `/admin`
-(Workbench) — mounts only when `FEATURES__WORKBENCH` is on, and `create_app()`
-refuses to start with that flag enabled outside `APP_ENV=local`. So a staging
-deployment publishes 39 documented API operations plus three probes, and nothing
-to click.
+This replaced the earlier rule. Previously the whole server-rendered interface —
+`/app` (customer-facing) and `/admin` (Workbench) — mounted only when
+`FEATURES__WORKBENCH` was on, and `create_app()` refused to start with that flag
+enabled outside `APP_ENV=local`, so a staging deployment published 39 API
+operations plus three probes and nothing to click.
 
-That is the honest scope of a first deployment: it proves the *foundation* —
-server, accounts, sandboxing, proxy contract, migrations, health gating, backup,
-rollback, reboot survival — against real code. It does not put the product on a
-URL. That waits for authenticated remote access.
+The contract today, in full, is:
+
+* `AUTH__ENABLED=true` is **mandatory** in staging — not because the workbench is
+  on, but because the application is reachable from the Internet at all.
+  Everything except the health probes, `/auth/*` and `/static/*` requires an
+  approved operator session, including every campaign write endpoint and the
+  OpenAPI schema.
+* `FEATURES__WORKBENCH=true` is now *permitted* in staging, and only behind a
+  complete `AUTH__*` boundary. `create_app()` refuses every partial combination.
+* The local-only intake and promotion switches are still refused in staging by
+  `validate_runtime_settings` and must stay unset.
+
+> **This changes deployment ordering.** A staging box whose `/etc/vmr/vmr.env`
+> has no `AUTH__*` block **will refuse to start** on the first release that
+> contains this boundary. Update the environment file in the same maintenance
+> window as the release, not after it. See `docs/HOSTED_AUTH.md` for the full
+> key list and the Google Cloud Console values.
+
+The foundation scope of the first deployment is unchanged and still what a deploy
+proves: server, accounts, sandboxing, proxy contract, migrations, health gating,
+backup, rollback, reboot survival — against real code.
 
 ## Health, readiness and version
 

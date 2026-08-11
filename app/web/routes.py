@@ -27,6 +27,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.core.auth.csrf import register_csrf, require_csrf
 from app.core.config import Settings, get_settings
 from app.models.campaign import Campaign, CampaignContact
 from app.models.contact import Contact
@@ -119,12 +120,18 @@ from app.services.verification.provider import VerificationProvider
 from app.services.verification.provider_registry import PROVIDERS
 from app.services.workbench_agents import views as workbench_views
 
-router = APIRouter(include_in_schema=False)
+# Every state-changing route on this router is refused unless the request
+# carries the CSRF token bound to the caller's session. The check is declared
+# once, here, rather than on ~100 individual handlers: a route added later is
+# covered the moment it is registered. It is inert for safe methods and inert
+# entirely when hosted authentication is disabled (local development).
+router = APIRouter(include_in_schema=False, dependencies=[Depends(require_csrf)])
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 # The shared spreadsheet-neutralization boundary, so every environment that
 # can render imported text has it under the same name.
 display.register_neutralize(templates.env)
+register_csrf(templates.env)
 
 #: Seconds between auto-refreshes on the Agent monitor pages.
 #:

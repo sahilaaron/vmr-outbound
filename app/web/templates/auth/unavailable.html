@@ -1,0 +1,15 @@
+{#
+  Reached only if authentication is enabled but its Google configuration is
+  incomplete. The startup contract refuses to boot in that state, so this page
+  exists so a misconfiguration seen during setup is a sentence rather than a
+  stack trace. It names no configuration key and no value.
+#}
+{% extends "base.html" %}
+{% block title %}Sign-in unavailable{% endblock %}
+{% block content %}
+  <h1>Sign-in is unavailable</h1>
+  <div class="notice err" role="alert">
+    This deployment is not configured for sign-in yet.
+  </div>
+  <p>Contact the VMR administrator.</p>
+{% endblock %}
