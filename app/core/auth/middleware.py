@@ -184,12 +184,16 @@ def _is_cross_site(scope: Scope, settings: AuthSettings) -> bool:
     Duplicated headers are ambiguity, and ambiguity refuses. A front end or
     proxy that emits ``Origin`` twice would otherwise silently disable this
     entire layer, because "not exactly one" used to read as "absent".
+
+    The one signal that is *not* read literally is an opaque ``Origin``; see the
+    comment on that branch. Everything else is taken exactly as presented.
     """
 
     fetch_site = _headers(scope, b"sec-fetch-site")
     if len(fetch_site) > 1:
         return True
-    if len(fetch_site) == 1 and fetch_site[0].strip().lower() not in {"same-origin", "none"}:
+    site = fetch_site[0].strip().lower() if len(fetch_site) == 1 else None
+    if site is not None and site not in {"same-origin", "none"}:
         return True
 
     origins = _headers(scope, b"origin")
@@ -198,9 +202,34 @@ def _is_cross_site(scope: Scope, settings: AuthSettings) -> bool:
     if len(origins) == 1:
         presented = origins[0].strip().lower()
         if presented in {"", "null"}:
-            # An opaque origin is not this site. A sandboxed frame or a document
-            # loaded from a `data:` URL both produce it, and neither should write.
-            return True
+            # An opaque origin. A sandboxed frame and a document loaded from a
+            # `data:` URL both produce one, and neither should write.
+            #
+            # It is *also* what an ordinary same-origin form post looks like on
+            # this deployment, which is why refusing it outright refused every
+            # write in the hosted UI, sign-out included (#264). The application
+            # sends `Referrer-Policy: no-referrer` from its hardening boundary,
+            # and the Fetch standard serialises `Origin` as `null` on every
+            # non-GET/HEAD, non-CORS request made under that policy — a genuine
+            # same-origin post included. The header is therefore not evidence of
+            # anything on its own here, in either direction.
+            #
+            # `Sec-Fetch-Site` is what separates the two cases, and it is the
+            # signal an attacker cannot supply: it is a forbidden header name,
+            # so no page script may set, clear or alter it, and the browser
+            # computes it from the request's real initiator rather than from the
+            # referrer policy. A cross-site post consequently arrives as
+            # `cross-site` or `same-site` and was already refused above; a
+            # sandboxed frame's opaque origin is same-origin with nothing, so it
+            # is refused there too. `none` (a typed URL or a bookmark) does not
+            # clear an opaque origin either — only a positive `same-origin`
+            # does, which is exactly and only the shape a real click produces.
+            #
+            # A non-browser client can of course write both headers itself, but
+            # that client has always been layer 2's problem: every
+            # cookie-authenticated write still has to present the per-session
+            # CSRF token, which fails closed on its own.
+            return site != "same-origin"
         accepted = {value for value in (_request_origin(scope), settings.public_base_url) if value}
         if presented not in accepted:
             return True

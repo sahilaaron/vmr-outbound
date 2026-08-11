@@ -442,6 +442,59 @@ def test_duplicate_fetch_metadata_headers_are_refused() -> None:
 
 
 # ---------------------------------------------------------------------------
+# #264 — an opaque Origin is disambiguated, and only by fetch metadata
+# ---------------------------------------------------------------------------
+
+# `Referrer-Policy: no-referrer` makes the browser serialise `Origin` as `null`
+# on every same-origin write, so `null` alongside `Sec-Fetch-Site: same-origin`
+# is the ordinary shape and is accepted. Ambiguity in the signal that does the
+# disambiguating must still fail closed, and only this module can put a
+# duplicated header on the wire.
+
+
+def test_a_duplicated_fetch_site_cannot_clear_an_opaque_origin() -> None:
+    """The #264 relaxation must not have created a way to smuggle one through.
+
+    An attacker who can get a second `Sec-Fetch-Site` onto the request would
+    otherwise only have to make one of the two say `same-origin` to have an
+    opaque origin waved through. Duplication is ambiguity and ambiguity refuses,
+    before the origin is even looked at.
+    """
+
+    for pair in ([b"same-origin", b"cross-site"], [b"cross-site", b"same-origin"]):
+        result = _signed_in_write(
+            extra=[(b"origin", b"null"), *((b"sec-fetch-site", value) for value in pair)],
+            token=_csrf().encode("ascii"),
+        )
+        assert result["error"] is None
+        assert result["status"] == 403, (pair, result["status"])
+        assert b"cross_site_request_refused" in result["body"]
+
+
+def test_a_duplicated_opaque_origin_is_still_refused() -> None:
+    """`len(origins) != 1` stays ambiguity, whatever the fetch metadata says."""
+
+    result = _signed_in_write(
+        extra=[(b"origin", b"null"), (b"origin", b"null"), (b"sec-fetch-site", b"same-origin")],
+        token=_csrf().encode("ascii"),
+    )
+    assert result["error"] is None
+    assert result["status"] == 403, result["status"]
+    assert b"cross_site_request_refused" in result["body"]
+
+
+def test_the_real_browser_write_shape_is_accepted() -> None:
+    """Anti-vacuity for the two above: the shape a genuine click sends still passes."""
+
+    result = _signed_in_write(
+        extra=[(b"origin", b"null"), (b"sec-fetch-site", b"same-origin")],
+        token=_csrf().encode("ascii"),
+    )
+    assert result["error"] is None
+    assert result["status"] != 403, result["status"]
+
+
+# ---------------------------------------------------------------------------
 # L-7 — ambiguous session cookie fails closed
 # ---------------------------------------------------------------------------
 

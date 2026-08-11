@@ -1112,6 +1112,148 @@ def test_a_same_origin_write_is_allowed(
     assert response.status_code == 201
 
 
+# ---------------------------------------------------------------------------
+# I2. The shape a real browser actually sends (#264)
+# ---------------------------------------------------------------------------
+
+# `Origin: <site>` above is the tidy shape, and it is not the shape this
+# deployment receives. The hardening boundary sends `Referrer-Policy:
+# no-referrer`, and under that policy the Fetch standard serialises `Origin` as
+# `null` on every non-GET/HEAD, non-CORS request — a genuine same-origin form
+# post included. Layer 1 read that `null` as an opaque origin and refused every
+# write the hosted UI made, which is what operators hit on the sign-out button.
+#
+# The tests in this section are written with the browser's shape rather than the
+# tidy one, because a suite that only ever sends the tidy one cannot see this
+# class of defect: every cross-site test in the section above passed throughout.
+REAL_BROWSER_FORM_POST = {
+    "origin": "null",
+    "sec-fetch-site": "same-origin",
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-dest": "document",
+    "sec-fetch-user": "?1",
+}
+
+
+def test_the_response_really_carries_the_policy_that_opaques_the_origin(
+    staging_client: TestClient, provider: RecordingIdentityProvider
+) -> None:
+    """The premise of `REAL_BROWSER_FORM_POST`, asserted instead of assumed.
+
+    `Origin: null` is not an arbitrary hostile value in these tests; it is the
+    consequence of a header this application chooses to send. If that policy is
+    ever relaxed the browser resumes sending a real origin, and the shape below
+    stops describing reality — so it must be re-derived from the new policy
+    rather than left quietly passing.
+    """
+
+    _sign_in(staging_client, provider)
+    assert staging_client.get("/app").headers["referrer-policy"] == "no-referrer"
+
+
+def test_clicking_sign_out_in_a_real_browser_succeeds(
+    staging_client: TestClient, provider: RecordingIdentityProvider
+) -> None:
+    """#264 end to end: the live sign-out click, in the shape the browser sends."""
+
+    _sign_in(staging_client, provider)
+    assert staging_client.get("/app").status_code == 200
+
+    response = staging_client.post(
+        "/auth/logout",
+        data={"_csrf": _read_csrf(staging_client)},
+        headers=REAL_BROWSER_FORM_POST,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/auth/signed-out"
+    cleared = [
+        value
+        for value in response.headers.get_list("set-cookie")
+        if value.startswith(f"{SESSION_COOKIE_NAME}=") and "Max-Age=0" in value
+    ]
+    assert cleared, response.headers.get_list("set-cookie")
+    assert SESSION_COOKIE_NAME not in staging_client.cookies
+    assert staging_client.get("/app").status_code == 401
+
+
+def test_an_ordinary_write_survives_the_opaque_origin_too(
+    staging_client: TestClient, provider: RecordingIdentityProvider
+) -> None:
+    """Sign-out was the click that surfaced #264, not the extent of it.
+
+    The same opaque origin accompanies every write the hosted UI makes, so a
+    repair that rescued only `/auth/logout` would have left the rest of the
+    application refusing its own forms.
+    """
+
+    _sign_in(staging_client, provider)
+    response = staging_client.post(
+        "/api/campaigns",
+        json={"name": "Opaque origin"},
+        headers={"X-CSRF-Token": _read_csrf(staging_client), **REAL_BROWSER_FORM_POST},
+    )
+    assert response.status_code == 201
+
+
+@pytest.mark.parametrize(
+    "fetch_site",
+    [
+        pytest.param(None, id="no-fetch-metadata"),
+        pytest.param("none", id="typed-url-or-bookmark"),
+        pytest.param("same-site", id="sibling-host"),
+        pytest.param("cross-site", id="another-site"),
+    ],
+)
+def test_an_opaque_origin_without_a_positive_same_origin_signal_is_still_refused(
+    staging_client: TestClient,
+    provider: RecordingIdentityProvider,
+    fetch_site: str | None,
+) -> None:
+    """Only a positive `same-origin` clears an opaque origin. Nothing weaker does.
+
+    This is the boundary the repair must not move. `Sec-Fetch-Site` is a
+    forbidden header name, so no page script may set, clear or alter it and a
+    real cross-site post cannot arrive wearing `same-origin`; these four cases
+    are every other shape an opaque origin can reach the boundary in, and each
+    is still refused before the token is consulted. A non-browser client that
+    forges both headers remains layer 2's problem, which fails closed on its own.
+    """
+
+    _sign_in(staging_client, provider)
+    headers = {"X-CSRF-Token": _read_csrf(staging_client), "origin": "null"}
+    if fetch_site is not None:
+        headers["sec-fetch-site"] = fetch_site
+
+    response = staging_client.post("/api/campaigns", json={"name": "Opaque"}, headers=headers)
+
+    assert response.status_code == 403
+    assert response.json()["error"] == "cross_site_request_refused"
+
+
+def test_a_hostile_origin_is_still_refused_alongside_same_origin_metadata(
+    staging_client: TestClient, provider: RecordingIdentityProvider
+) -> None:
+    """The named origin is still read literally; only the opaque one is not.
+
+    Relaxing `null` must not have relaxed `https://evil.example`, which arrives
+    with exactly the same fetch metadata a genuine click carries.
+    """
+
+    _sign_in(staging_client, provider)
+    response = staging_client.post(
+        "/api/campaigns",
+        json={"name": "Hostile"},
+        headers={
+            "X-CSRF-Token": _read_csrf(staging_client),
+            **REAL_BROWSER_FORM_POST,
+            "origin": "https://evil.example",
+        },
+    )
+    assert response.status_code == 403
+    assert response.json()["error"] == "cross_site_request_refused"
+
+
 @pytest.mark.parametrize("method", ["get", "head", "options"])
 def test_safe_methods_never_require_a_token(
     staging_client: TestClient, provider: RecordingIdentityProvider, method: str

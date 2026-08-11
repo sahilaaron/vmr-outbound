@@ -148,6 +148,17 @@ application's own pages. `Sec-Fetch-Site` masks this in current browsers, so the
 failure only appears where that header is absent or stripped. See
 `_same_origin` in `app/web/v2/routes.py`.
 
+It has now cost twice, so it is worth stating as a rule rather than an anecdote:
+**every origin comparison in this repository must decide what `null` means, and
+the masking above is not available to a checker that does not short-circuit.**
+`_is_cross_site` in `app/core/auth/middleware.py` evaluates every signal and
+OR-s the refusals on purpose (so a forged `same-origin` cannot neutralise a
+hostile `Origin`), which means it reaches the `null` branch on ordinary traffic
+that `_same_origin` never does. Reading `null` as hostile there refused every
+write in the hosted UI, and #264 found it on the sign-out button. Both call
+sites now accept an opaque origin; the authentication boundary accepts it only
+alongside a positive `Sec-Fetch-Site: same-origin`.
+
 The main CSP keeps scripts same-origin. It temporarily permits inline styles
 because existing server-rendered templates use many `style=` attributes. That is
 the exact blocker to removing `'unsafe-inline'` from `style-src`. FastAPI's local
