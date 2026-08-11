@@ -22,7 +22,8 @@ from app.core.features import FeatureFlags
 from app.core.http import RequestContext, _host_from_scope, current_request_id, valid_request_id
 from app.core.runtime import RuntimeConfigurationError
 from app.main import create_app
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
+from fastapi.responses import HTMLResponse
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from sqlalchemy.engine import make_url
@@ -642,6 +643,143 @@ def test_request_context_ignores_malformed_forwarding() -> None:
     context = RequestContext(scope, ("10.0.0.0/8",))  # type: ignore[arg-type]
     assert str(context.client) == "10.1.1.1"
     assert context.scheme == "http"
+
+
+# --- Forwarded scheme reaching downstream URL construction --------------------
+#
+# uvicorn runs with --no-proxy-headers, so nothing rewrites scope["scheme"]
+# before the hardening boundary. Starlette builds request.url, request.base_url,
+# every redirect and every url_for(...) from that value, so a scheme left at
+# "http" behind TLS termination produced absolute http:// asset URLs on pages
+# served over HTTPS, which browsers refuse as mixed active content.
+
+
+def _scheme_probe_app(
+    *,
+    trusted_proxy_cidrs: tuple[str, ...] = ("10.0.0.0/8",),
+    workbench: bool = True,
+) -> object:
+    """The real application, plus one route that reports what routing saw."""
+
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None,
+        trusted_proxy_cidrs=trusted_proxy_cidrs,
+        features=FeatureFlags(workbench=workbench),
+    )
+    app = create_app(settings, readiness_probe=_ready)  # type: ignore[arg-type]
+
+    @app.get("/__scheme_probe", include_in_schema=False)
+    def scheme_probe(request: Request) -> dict[str, str]:
+        return {
+            "scope_scheme": str(request.scope["scheme"]),
+            "url": str(request.url),
+            "base_url": str(request.base_url),
+            "static_url": str(request.url_for("static", path="app.css")),
+        }
+
+    return app
+
+
+def test_trusted_proxy_scheme_reaches_downstream_request_handling() -> None:
+    """The decided scheme must be visible to routing, not only to the log line."""
+
+    client = TestClient(
+        _scheme_probe_app(),  # type: ignore[arg-type]
+        base_url="http://testserver",
+        client=("10.2.3.4", 50000),
+    )
+    body = client.get("/__scheme_probe", headers={"X-Forwarded-Proto": "https"}).json()
+
+    assert body["scope_scheme"] == "https"
+    assert body["url"] == "https://testserver/__scheme_probe"
+    assert body["base_url"] == "https://testserver/"
+
+
+def test_trusted_proxy_scheme_makes_url_for_emit_https_absolute_urls() -> None:
+    """url_for is where the defect surfaced: absolute URLs carry the scheme."""
+
+    client = TestClient(
+        _scheme_probe_app(),  # type: ignore[arg-type]
+        base_url="http://testserver",
+        client=("10.2.3.4", 50000),
+    )
+    body = client.get("/__scheme_probe", headers={"X-Forwarded-Proto": "https"}).json()
+
+    assert body["static_url"] == "https://testserver/static/app.css"
+    assert not body["static_url"].startswith("http://")
+
+
+def test_untrusted_peer_cannot_move_the_request_scheme() -> None:
+    """A spoofed X-Forwarded-Proto from a direct caller changes nothing."""
+
+    client = TestClient(
+        _scheme_probe_app(trusted_proxy_cidrs=("10.0.0.0/8",)),  # type: ignore[arg-type]
+        base_url="http://testserver",
+        client=("203.0.113.9", 50000),
+    )
+    body = client.get("/__scheme_probe", headers={"X-Forwarded-Proto": "https"}).json()
+
+    assert body["scope_scheme"] == "http"
+    assert body["url"] == "http://testserver/__scheme_probe"
+    assert body["static_url"] == "http://testserver/static/app.css"
+
+
+def test_trusted_proxy_forwarding_plain_http_leaves_the_scheme_http() -> None:
+    """A trusted proxy is trusted in both directions, not only upwards."""
+
+    client = TestClient(
+        _scheme_probe_app(),  # type: ignore[arg-type]
+        base_url="http://testserver",
+        client=("10.2.3.4", 50000),
+    )
+    body = client.get("/__scheme_probe", headers={"X-Forwarded-Proto": "http"}).json()
+
+    assert body["scope_scheme"] == "http"
+    assert body["static_url"] == "http://testserver/static/app.css"
+
+
+def test_trusted_proxy_with_malformed_forwarded_proto_leaves_the_scheme_alone() -> None:
+    """An unusable value falls back to the original scheme, never to a guess."""
+
+    client = TestClient(
+        _scheme_probe_app(),  # type: ignore[arg-type]
+        base_url="http://testserver",
+        client=("10.2.3.4", 50000),
+    )
+    body = client.get("/__scheme_probe", headers={"X-Forwarded-Proto": "ftp"}).json()
+
+    assert body["scope_scheme"] == "http"
+
+
+def test_a_real_template_emits_https_asset_urls_behind_tls_termination() -> None:
+    """Pin the exact shipped failure to a real template, not a synthetic one.
+
+    `app/web/templates/base.html` is the shell every Workbench page extends, and
+    its stylesheet link is the tag Chrome refused. Rendering the real file
+    through the real Jinja environment is what makes this regression impossible
+    to reintroduce by changing the middleware alone.
+    """
+
+    from app.web.routes import templates
+
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None,
+        trusted_proxy_cidrs=("10.0.0.0/8",),
+        features=FeatureFlags(workbench=True),
+    )
+    app = create_app(settings, readiness_probe=_ready)  # type: ignore[arg-type]
+
+    @app.get("/__render_probe", include_in_schema=False)
+    def render_probe(request: Request) -> HTMLResponse:
+        return templates.TemplateResponse(request=request, name="base.html", context={})
+
+    client = TestClient(app, base_url="http://testserver", client=("10.2.3.4", 50000))
+    html = client.get("/__render_probe", headers={"X-Forwarded-Proto": "https"}).text
+
+    assert '<link rel="stylesheet" href="https://testserver/static/app.css">' in html
+    # The failure mode was an absolute http:// asset URL on an https page. No
+    # asset reference may carry it, whatever else the shell renders.
+    assert "http://testserver/static/" not in html
 
 
 def _production_settings(**overrides: object) -> Settings:

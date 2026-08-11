@@ -254,6 +254,27 @@ class ProductionHTTPMiddleware:
         # the same answer the hardening boundary acted on, not a guess.
         state["forwarded_scheme"] = context.scheme
         state["trusted_proxy"] = context.trusted_proxy
+        # Publish that verdict into the ASGI scope as well, not only into state.
+        #
+        # Starlette builds `request.url`, `request.base_url`, every redirect it
+        # generates and every `url_for(...)` from `scope["scheme"]`. Behind TLS
+        # terminated at nginx that value is still "http" -- uvicorn runs with
+        # --no-proxy-headers on purpose, so nothing before this point rewrites
+        # it -- and the result was absolute `http://host/static/app.css` URLs
+        # embedded in pages served over HTTPS. A browser refuses those as mixed
+        # active content without ever sending the request, which is why the
+        # operator UI rendered unstyled while `GET /static/app.css` over HTTPS
+        # was answering 200 the whole time.
+        #
+        # Only a validated trusted peer may move this. `context.scheme` is the
+        # forwarded value exclusively when `trusted_proxy` is true and is the
+        # original scope value otherwise, so a spoofed `X-Forwarded-Proto` from
+        # an untrusted caller cannot reach this assignment with a value of its
+        # own choosing. The trust rule stays in one place: this boundary already
+        # decided it, and downstream code keeps reading the decision rather than
+        # re-deriving it.
+        if context.trusted_proxy:
+            scope["scheme"] = context.scheme
         status_code = 500
         response_started = False
 
