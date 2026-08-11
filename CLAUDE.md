@@ -17,6 +17,9 @@ human-approved 100-contact pilot campaign — not a platform.
    another thread is building concurrently or a branch is stacked. It is the
    single definition of the gate sequence; the documents above defer to it
    there.
+7. `docs/PROPORTIONAL_VALIDATION.md` — required proportionality rules for fixes,
+   reviews, testing, CI, and deployment. Read it before choosing how much
+   validation a defect or successor patch needs.
 
 When instructions conflict: Sahil's latest explicit instruction > GOAL >
 AGENTS > CLAUDE > PROJECT_TRACKING > PARALLEL_INTEGRATION > existing
@@ -61,6 +64,12 @@ represents an unpushed local commit as present on GitHub.
 
 - Smallest complete vertical slice authorized by `docs/GOAL.md`; no
   opportunistic scope, refactors, or abstractions.
+- **Validation must be proportional to the semantic delta and real blast radius.**
+  A narrow defect normally follows focused fix + focused regression/non-regression
+  tests + CI + deploy + live verification. Do not reflexively repeat the parent
+  feature's full review process, require independent adversarial review, wait on
+  optional full-suite runs, or add review loops without a concrete escalation
+  trigger. `docs/PROPORTIONAL_VALIDATION.md` is authoritative for this rule.
 - Deterministic rules live in backend services; AI output is advisory until
   validated. Features default off; dry-run defaults on.
 - Schema changes only via reversible Alembic migrations proven locally.
