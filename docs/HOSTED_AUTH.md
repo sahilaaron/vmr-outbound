@@ -159,9 +159,26 @@ Two independent layers. A cross-site write has to defeat both.
 
 **Layer 1 — origin backstop, in the middleware.** Any unsafe method carrying a
 positive cross-site signal is refused: a `Sec-Fetch-Site` that is not
-`same-origin`/`none`, or an `Origin` that is not this site — *including* `null`
-and the empty string, which are opaque origins and are refused, not waved
-through. This layer needs no cooperation from a route or a template.
+`same-origin`/`none`, or an `Origin` naming somewhere other than this site. A
+duplicated copy of either header is ambiguity and refuses too. This layer needs
+no cooperation from a route or a template.
+
+An **opaque `Origin`** — `null` or empty — is the one signal not read literally,
+because on this deployment it is not evidence of anything. The hardening
+boundary sends `Referrer-Policy: no-referrer`, and under that policy the Fetch
+standard serialises `Origin` as `null` on every non-GET/HEAD, non-CORS request,
+including a perfectly ordinary same-origin form post. Reading it as hostile
+refused every write in the hosted UI and was found on the sign-out button during
+Beta UAT (#264).
+
+`Sec-Fetch-Site` decides that case, and it is the signal an attacker cannot
+supply: it is a forbidden header name, so no page script may set, clear or alter
+it, and the browser computes it from the request's real initiator rather than
+from the referrer policy. An opaque `Origin` is therefore accepted **only**
+alongside a single, positive `Sec-Fetch-Site: same-origin`; absent metadata,
+`none`, `same-site`, `cross-site` and any duplicate all still refuse. A
+cross-site post cannot reach that combination from a browser, and a non-browser
+client that writes both headers by hand still has to satisfy layer 2.
 
 **Layer 2 — a per-session token.** Derived from the session identifier with a
 dedicated key, compared with `hmac.compare_digest`, required on every
