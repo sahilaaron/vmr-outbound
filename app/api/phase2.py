@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.core.auth.csrf import require_csrf
+from app.core.auth.extension import is_extension_capture_request
 from app.core.config import get_settings
 from app.models.agent import AgentControl
 from app.models.campaign import Campaign, CampaignContact
@@ -287,6 +288,27 @@ def _email_attempt(attempt: EmailCandidateAttempt) -> dict[str, Any]:
     }
 
 
+def _local_extension_origin(origin: str | None) -> bool:
+    """The unchanged local-development origin rule for the extension selector.
+
+    Mirrors ``app.api.routes._origin_allowed``'s local branch deliberately rather
+    than importing it: this route lives on the Phase 2 operating router, and the
+    hosted rule it pairs with (an explicitly approved extension origin) is
+    applied at the call site.
+    """
+
+    if origin is None:
+        return True
+    parsed = urlsplit(origin)
+    if parsed.scheme == "chrome-extension":
+        return True
+    return parsed.scheme in {"http", "https"} and parsed.hostname in {
+        "127.0.0.1",
+        "localhost",
+        "::1",
+    }
+
+
 @router.get("/campaigns")
 def list_campaigns(
     request: Request,
@@ -302,20 +324,34 @@ def list_campaigns(
     gates. One route therefore owns the resource and OpenAPI contract.
     """
 
+    settings = get_settings()
+    # A hosted capture reaches this route on an extension credential, and a
+    # Chrome extension holding a host permission may have its cross-origin GET
+    # treated as same-origin — in which case the standard omits `Origin`
+    # entirely. Origin alone therefore no longer identifies the extension
+    # selector; the credential does, and it is the stronger signal of the two.
+    extension_credential = is_extension_capture_request(request)
     origin = request.headers.get("origin")
-    extension_request = origin is not None
-    if origin is not None:
-        settings = get_settings()
-        parsed_origin = urlsplit(origin)
-        allowed_origin = parsed_origin.scheme == "chrome-extension" or (
-            parsed_origin.scheme in {"http", "https"}
-            and parsed_origin.hostname in {"127.0.0.1", "localhost", "::1"}
+    extension_request = extension_credential or origin is not None
+    if extension_request:
+        hosted = settings.app_env.lower() != "local"
+        allowed_origin = (
+            settings.extension_auth.is_allowed_origin(origin)
+            if hosted
+            else _local_extension_origin(origin)
         )
         if not (settings.features.salesnav_intake or settings.features.contact_capture_intake):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
-        if settings.app_env.lower() != "local" or not allowed_origin:
+        if hosted and not extension_credential:
+            # Same rule as the capture intake: hosted, only the extension
+            # credential opens this selector. An operator session reads
+            # campaigns through the application's own screens.
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="unauthorized")
-        response.headers["Access-Control-Allow-Origin"] = origin
+        if origin is not None and not allowed_origin:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="unauthorized")
+        if origin is not None:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Vary"] = "Origin"
 
     overviews = campaigns.list_campaigns(db)
     rows = []

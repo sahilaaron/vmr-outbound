@@ -84,7 +84,11 @@ def create_app(
     # * Authentication innermost of the three, but still before routing, so the
     #   decision never depends on a route existing. An unmounted path and an
     #   alternate spelling of a protected path are refused identically.
-    app.add_middleware(OperatorAuthenticationMiddleware, settings=settings.auth)
+    app.add_middleware(
+        OperatorAuthenticationMiddleware,
+        settings=settings.auth,
+        extension_settings=settings.extension_auth,
+    )
     app.add_middleware(CanonicalTrustedHostMiddleware, allowed_hosts=settings.trusted_hosts)
     app.add_middleware(
         ProductionHTTPMiddleware,

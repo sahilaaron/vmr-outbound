@@ -24,7 +24,15 @@ The contract today, in full, is:
   OpenAPI schema.
 * `FEATURES__WORKBENCH=true` is now *permitted* in staging, and only behind a
   complete `AUTH__*` boundary. `create_app()` refuses every partial combination.
-* The local-only intake and promotion switches are still refused in staging by
+* `FEATURES__CONTACT_CAPTURE_INTAKE=true` is *permitted* in staging behind a
+  configured `EXTENSION_AUTH__*` boundary — a per-install bearer credential
+  bound to the enumerated capture contract and to an approved
+  `chrome-extension://` origin. That replaced the blanket "local only" rule for
+  this one switch; enabling it hosted *without* the credential boundary still
+  refuses to start. See `docs/HOSTED_AUTH.md` §7a.
+* The remaining local-only intake and promotion switches (`salesnav_intake`,
+  `linkedin_profile_intake`, `linkedin_company_intake`,
+  `contact_capture_promotion`) are still refused in staging by
   `validate_runtime_settings` and must stay unset.
 
 > **This changes deployment ordering.** A staging box whose `/etc/vmr/vmr.env`

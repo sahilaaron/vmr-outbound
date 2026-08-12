@@ -16,9 +16,18 @@ _LOCAL_ONLY_FEATURES = (
     "salesnav_intake",
     "linkedin_profile_intake",
     "linkedin_company_intake",
-    "contact_capture_intake",
     "contact_capture_promotion",
 )
+
+# Contact capture used to sit in the list above, because the intake route had no
+# authentication of its own and "local only" was the entire boundary. It now has
+# one — a per-install bearer credential bound to the enumerated capture contract
+# and to an approved extension origin (``app/core/auth/extension.py``) — so the
+# rule becomes conditional rather than absolute: the feature may be enabled in a
+# hosted environment exactly when that boundary is configured and would actually
+# admit a request. Enabling it hosted *without* the credential boundary is still
+# refused, and that is the case the old rule was really protecting against.
+_CREDENTIAL_GATED_FEATURES = ("contact_capture_intake",)
 
 
 class RuntimeConfigurationError(RuntimeError):
@@ -131,6 +140,19 @@ def validate_runtime_settings(settings: Settings) -> None:
                 "local-only feature switches must be disabled in staging and production: "
                 + ", ".join(sorted(enabled_local_features))
             )
+
+        if not settings.extension_auth.is_configured():
+            ungated = [
+                name
+                for name in _CREDENTIAL_GATED_FEATURES
+                if bool(getattr(settings.features, name))
+            ]
+            if ungated:
+                issues.append(
+                    "these feature switches require a configured extension capture "
+                    "credential (EXTENSION_AUTH__ENABLED with at least one credential and "
+                    "one approved origin) outside local development: " + ", ".join(sorted(ungated))
+                )
 
         try:
             database_url = make_url(settings.database_url)

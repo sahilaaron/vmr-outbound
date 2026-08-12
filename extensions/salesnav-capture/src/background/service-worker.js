@@ -12,8 +12,14 @@
  *  - Migrate superseded campaign-bound local state explicitly.
  *
  * Campaign filing is optional and additive: acquisition always saves the person
- * first. Never stores credentials/cookies/tokens. Never posts to LinkedIn.
- * Nothing is ever sent without an explicit operator-triggered message.
+ * first. Never posts to LinkedIn. Nothing is ever sent without an explicit
+ * operator-triggered message.
+ *
+ * One credential, and only one: the VMR capture credential a hosted deployment
+ * requires (see `common/constants.js`). It is held in `chrome.storage.session`,
+ * attached only to a request going to a named hosted deployment, and never
+ * returned to the panel, written to a log line, or stored beside the drafts. No
+ * LinkedIn credential, cookie or session is ever read or kept.
  */
 importScripts(
   "../common/constants.js",
@@ -45,6 +51,8 @@ const {
   STORAGE,
   PROFILE_STORAGE,
   CONTACT_STORAGE,
+  CREDENTIAL_STORAGE,
+  CREDENTIAL_PATTERN,
   DEFAULT_PREFERENCES,
   LIMITS,
   CAPTURE_STATUS,
@@ -107,6 +115,95 @@ chrome.runtime.onInstalled.addListener(() => {
   migrateLegacyState();
 });
 if (chrome.runtime.onStartup) chrome.runtime.onStartup.addListener(migrateLegacyState);
+
+// ---- hosted capture credential ---------------------------------------------
+//
+// Held in `chrome.storage.session`: in-memory for the browser session, never
+// written to disk, and unreadable from a content script. Everything below is
+// written so the value has exactly one exit: the `Authorization` header of a
+// request to a named hosted deployment. It is never returned to the panel,
+// never included in a response object, and never passed to `console`.
+
+/** Session storage, or null on a browser too old to have it. */
+function credentialStore() {
+  return (chrome.storage && chrome.storage.session) || null;
+}
+
+async function getCredential() {
+  const store = credentialStore();
+  if (!store) return null;
+  try {
+    const data = await store.get(CREDENTIAL_STORAGE.CAPTURE_CREDENTIAL);
+    const value = data && data[CREDENTIAL_STORAGE.CAPTURE_CREDENTIAL];
+    return typeof value === "string" && value ? value : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+/**
+ * Store a pasted credential after a shape check.
+ *
+ * The shape check refuses an obviously-wrong paste — a truncated copy, the
+ * configuration digest pasted instead of the credential — at the field, so the
+ * operator learns immediately rather than through a 401 three screens later.
+ * The backend remains the only authority on whether a well-formed credential is
+ * a real one.
+ */
+async function setCredential(value) {
+  const store = credentialStore();
+  if (!store) return { ok: false, error: "credential_storage_unavailable" };
+  const candidate = typeof value === "string" ? value.trim() : "";
+  if (!CREDENTIAL_PATTERN.test(candidate)) {
+    return { ok: false, error: "credential_malformed" };
+  }
+  await store.set({ [CREDENTIAL_STORAGE.CAPTURE_CREDENTIAL]: candidate });
+  return { ok: true, hasCredential: true };
+}
+
+async function clearCredential() {
+  const store = credentialStore();
+  if (store) await store.remove(CREDENTIAL_STORAGE.CAPTURE_CREDENTIAL);
+  return { ok: true, hasCredential: false };
+}
+
+/**
+ * Whether a credential is held — never the credential itself.
+ *
+ * This is the only thing the panel is ever told about it, which is what keeps
+ * the value out of the panel's DOM, its state, and anything it might render.
+ */
+async function credentialState() {
+  return {
+    ok: true,
+    hasCredential: (await getCredential()) !== null,
+    storageAvailable: credentialStore() !== null,
+  };
+}
+
+/**
+ * Headers for one backend request, or the refusal to make it.
+ *
+ * A loopback target is unchanged and carries no credential: local development
+ * has no authenticated intake and adding one would be a behaviour change nobody
+ * asked for. A named hosted deployment must carry the credential, and a missing
+ * one is refused here rather than sent anyway to collect a 401 — the operator
+ * gets "set the credential", not "the backend rejected you".
+ */
+async function requestHeaders(url, extra) {
+  const headers = Object.assign({}, extra || {});
+  if (!permissions.isHostedUrl(url)) return { ok: true, headers };
+  const credential = await getCredential();
+  if (!credential) {
+    return {
+      ok: false,
+      error: "credential_missing",
+      message: "Hosted VMR needs a capture credential. Add it in Settings, then retry.",
+    };
+  }
+  headers["Authorization"] = "Bearer " + credential;
+  return { ok: true, headers };
+}
 
 // ---- storage helpers ------------------------------------------------------
 
@@ -588,7 +685,7 @@ async function postSubmission(payload, explicitTarget) {
     return {
       ok: false,
       error: "origin_not_allowed",
-      message: `Refusing to send to ${url}. Only loopback origins are permitted.`,
+      message: `Refusing to send to ${url}. Only loopback and approved VMR origins are permitted.`,
     };
   }
   const perm = await hasHostPermission(url);
@@ -597,20 +694,26 @@ async function postSubmission(payload, explicitTarget) {
       ok: false,
       error: "permission_denied",
       originPattern: perm.pattern,
-      message: `Loopback access not granted for ${perm.pattern || url}. Approve the permission prompt, then save again.`,
+      message: `Access not granted for ${perm.pattern || url}. Approve the permission prompt, then save again.`,
     };
   }
+  const auth = await requestHeaders(url, {
+    "Content-Type": "application/json",
+    "Idempotency-Key": payload.client_submission_id,
+  });
+  if (!auth.ok) return { ok: false, error: auth.error, message: auth.message };
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), CONTACT_CAPTURE_TIMEOUT_MS);
   try {
     const resp = await fetch(url, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Idempotency-Key": payload.client_submission_id,
-      },
+      headers: auth.headers,
       body: serialized.json,
+      // The capture credential is the only thing that authorises this request.
+      // Omitting ambient cookies keeps that true even if the operator is signed
+      // in to the same hosted deployment in this browser.
+      credentials: "omit",
       signal: controller.signal,
     });
     clearTimeout(timer);
@@ -664,10 +767,16 @@ async function fetchLabels() {
   if (!isAllowedBackendOrigin(url)) return { ok: false, error: "origin_not_allowed" };
   const perm = await hasHostPermission(url);
   if (!perm.ok) return { ok: false, error: "permission_denied", originPattern: perm.pattern };
+  const auth = await requestHeaders(url);
+  if (!auth.ok) return { ok: false, error: auth.error };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
   try {
-    const resp = await fetch(url, { signal: controller.signal });
+    const resp = await fetch(url, {
+      headers: auth.headers,
+      credentials: "omit",
+      signal: controller.signal,
+    });
     clearTimeout(timer);
     if (!resp.ok) return { ok: false, error: "http_" + resp.status };
     const body = await resp.json();
@@ -706,6 +815,12 @@ async function probeBackend() {
   if (result.error === "origin_not_allowed") {
     return { ok: false, state: "not_allowed" };
   }
+  if (result.error === "credential_missing") {
+    // A hosted deployment that is running perfectly and simply has not been
+    // given a credential yet. Reporting that as "unreachable" would send the
+    // operator to check a server that is fine.
+    return { ok: false, state: "credential_required" };
+  }
   // Anything else — a timeout, a refused connection, an HTTP error — means the
   // backend did not usefully answer.
   return { ok: false, state: "unreachable", error: result.error };
@@ -719,10 +834,16 @@ async function fetchCampaigns() {
   if (!isAllowedBackendOrigin(url)) return { ok: false, error: "origin_not_allowed" };
   const perm = await hasHostPermission(url);
   if (!perm.ok) return { ok: false, error: "permission_denied", originPattern: perm.pattern };
+  const auth = await requestHeaders(url);
+  if (!auth.ok) return { ok: false, error: auth.error };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
   try {
-    const resp = await fetch(url, { signal: controller.signal });
+    const resp = await fetch(url, {
+      headers: auth.headers,
+      credentials: "omit",
+      signal: controller.signal,
+    });
     clearTimeout(timer);
     if (!resp.ok) return { ok: false, error: "http_" + resp.status };
     const body = await resp.json();
@@ -755,10 +876,16 @@ async function lookupContact(profileUrl) {
   if (!isAllowedBackendOrigin(url)) return { ok: false, error: "origin_not_allowed" };
   const perm = await hasHostPermission(url);
   if (!perm.ok) return { ok: false, error: "permission_denied", originPattern: perm.pattern };
+  const auth = await requestHeaders(url);
+  if (!auth.ok) return { ok: false, error: auth.error };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
   try {
-    const resp = await fetch(url, { signal: controller.signal });
+    const resp = await fetch(url, {
+      headers: auth.headers,
+      credentials: "omit",
+      signal: controller.signal,
+    });
     clearTimeout(timer);
     if (!resp.ok) return { ok: false, error: "http_" + resp.status };
     const body = await resp.json();
@@ -1117,6 +1244,27 @@ async function companySend() {
   const draft = await getCompanyDraft();
   if (!draft) return { ok: false, error: "empty_batch", message: "No reviewed capture to send." };
   const prefs = await getPrefs();
+
+  // The target is checked before the payload is built, because an unsupported
+  // target is not a fixable problem with the capture: telling the operator
+  // their draft failed validation when the real answer is "this backend does
+  // not accept company evidence" sends them to correct the wrong thing.
+  const companyBase = (prefs.backendBaseUrl || "").replace(/\/$/, "");
+  const companyUrl = companyBase + COMPANY_INTAKE_PATH;
+  if (permissions.isHostedUrl(companyUrl)) {
+    // Company evidence is a separate surface from contact capture and is not in
+    // the hosted intake contract the capture credential authorises, so a hosted
+    // company send would be refused by the backend. Saying so here is more
+    // useful than relaying a 401 the operator cannot act on.
+    return {
+      ok: false,
+      error: "company_capture_local_only",
+      message:
+        "Company evidence capture is available against a local VMR backend only. " +
+        "Contact capture works against hosted VMR.",
+    };
+  }
+
   const payload = profileSchema.buildCompanyPayload({
     extraction: draft.extraction,
     clientCaptureId: draft.clientCaptureId,
@@ -1132,22 +1280,21 @@ async function companySend() {
   const serialized = profileSchema.serializePayload(payload);
   if (!serialized.withinLimit) return { ok: false, error: "payload_too_large" };
 
-  const base = (prefs.backendBaseUrl || "").replace(/\/$/, "");
-  const url = base + COMPANY_INTAKE_PATH;
-  if (!isAllowedBackendOrigin(url)) return { ok: false, error: "origin_not_allowed" };
-  const perm = await hasHostPermission(url);
+  if (!isAllowedBackendOrigin(companyUrl)) return { ok: false, error: "origin_not_allowed" };
+  const perm = await hasHostPermission(companyUrl);
   if (!perm.ok) return { ok: false, error: "permission_denied", originPattern: perm.pattern };
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
   try {
-    const resp = await fetch(url, {
+    const resp = await fetch(companyUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Idempotency-Key": payload.client_capture_id,
       },
       body: serialized.json,
+      credentials: "omit",
       signal: controller.signal,
     });
     clearTimeout(timer);
@@ -1279,6 +1426,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           metadata: await getOperatorMetadata(),
           filingContext: await getFilingContext(),
           migration: await getMigrationNotice(),
+          credential: await credentialState(),
         });
         break;
       }
@@ -1327,6 +1475,17 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           ok: true,
           filingContext: await setFilingContext(msg.filingContext),
         });
+        break;
+      // The credential is write-only from the panel's side: it can be set,
+      // cleared, and asked about, but never read back.
+      case "GET_CREDENTIAL_STATE":
+        sendResponse(await credentialState());
+        break;
+      case "SET_CAPTURE_CREDENTIAL":
+        sendResponse(await setCredential(msg.credential));
+        break;
+      case "CLEAR_CAPTURE_CREDENTIAL":
+        sendResponse(await clearCredential());
         break;
       case "FETCH_LABELS":
         sendResponse(await fetchLabels());

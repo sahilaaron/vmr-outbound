@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.core.auth.csrf import require_csrf
+from app.core.auth.extension import EXTENSION_REQUEST_HEADERS, is_extension_capture_request
 from app.core.config import get_settings
 from app.models.enums import CampaignStatus
 from app.services.campaigns import CampaignError, create_campaign
@@ -54,16 +55,35 @@ router = APIRouter(dependencies=[Depends(require_csrf)])
 
 SALESNAV_INTAKE_PATH = "/api/intake/sales-navigator/stage"
 
-# Loopback hosts the capture extension is allowed to talk to. The endpoint is
-# local-only; a request from any non-loopback web origin is refused.
+# Loopback hosts the capture extension is allowed to talk to in local
+# development, where these endpoints have no authentication of their own.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 _CORS_ALLOW_METHODS = "POST, GET, OPTIONS"
-_CORS_ALLOW_HEADERS = "Content-Type, Idempotency-Key, X-Client-Batch-Id"
+# `Authorization` is listed because a hosted capture carries its credential
+# there. The rest is the pre-existing capture contract, unchanged.
+_CORS_ALLOW_HEADERS = ", ".join((*EXTENSION_REQUEST_HEADERS, "X-Client-Batch-Id"))
 
 
 def _origin_allowed(origin: str | None) -> bool:
-    """Allow no-origin (curl/service-worker), the extension, and loopback only."""
+    """Origins a capture route may serve. Two regimes, never blended.
 
+    **Local development** — unchanged: no origin (curl, service worker), any
+    ``chrome-extension://`` origin, or loopback. These endpoints have no
+    authentication locally and being on the machine is the whole boundary, so a
+    developer reloading an unpacked extension does not have to register its id.
+
+    **Hosted** — only an explicitly approved extension install. "Any extension"
+    is not a boundary once the application is on the Internet: every extension in
+    the operator's browser would qualify, including one installed tomorrow. An
+    absent ``Origin`` is accepted here for the same reason the credential check
+    accepts one on a safe method (see ``app/core/auth/extension.py``): hosted,
+    the credential is what authorises the request, and the middleware has already
+    refused anything that did not present one.
+    """
+
+    settings = get_settings()
+    if settings.app_env.lower() != "local":
+        return origin is None or settings.extension_auth.is_allowed_origin(origin)
     if origin is None:
         return True
     parsed = urlsplit(origin)
@@ -75,9 +95,17 @@ def _origin_allowed(origin: str | None) -> bool:
 
 
 def _cors_headers(origin: str | None) -> dict[str, str]:
-    """CORS headers reflecting an allowed origin (empty when there is none)."""
+    """CORS headers reflecting an allowed origin (empty when there is none).
 
-    if origin is None:
+    Reflection is gated by the same rule that admits the request, so a hosted
+    deployment can never echo an origin it has not approved — not even on an
+    error path, where the reflection would otherwise happen before any guard had
+    looked at the value. ``Access-Control-Allow-Credentials`` is never emitted:
+    the extension authenticates with a header it sets itself and needs no
+    ambient cookie.
+    """
+
+    if origin is None or not _origin_allowed(origin):
         return {}
     return {
         "Access-Control-Allow-Origin": origin,
@@ -446,7 +474,7 @@ def _contact_capture_guard(request: Request) -> JSONResponse | None:
 
     Returns an error response, or ``None`` when the request may proceed. Kept in
     one place so the intake, label, and lookup routes cannot drift apart on the
-    feature switch, the local-only rule, or the origin allow-list.
+    feature switch, the environment rule, or the origin allow-list.
     """
 
     settings = get_settings()
@@ -456,11 +484,17 @@ def _contact_capture_guard(request: Request) -> JSONResponse | None:
             status_code=status.HTTP_404_NOT_FOUND,
             content={"error": "not_found", "status": 404},
         )
-    if settings.app_env.lower() != "local":
+    if settings.app_env.lower() != "local" and not is_extension_capture_request(request):
+        # Hosted, this contract is reachable only with an extension capture
+        # credential. An operator's session cookie is deliberately not enough:
+        # it is ambient, it belongs to a human at a browser, and treating it as
+        # capture authorisation would mean any page that could make the browser
+        # issue this request could write capture evidence. The credential is a
+        # separate, revocable, extension-scoped grant — see
+        # `app/core/auth/extension.py`.
         return JSONResponse(
             status_code=status.HTTP_403_FORBIDDEN,
             content={"error": "unauthorized", "status": 403},
-            headers=_cors_headers(origin),
         )
     if not _origin_allowed(origin):
         return JSONResponse(

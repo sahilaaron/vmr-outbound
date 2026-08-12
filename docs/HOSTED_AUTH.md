@@ -279,15 +279,176 @@ leaks the running SHA and has no reason to be public.
 
 ---
 
+## 7a. The Chrome capture extension credential
+
+The operator session cookie above is for a **human at a browser**. The Chrome
+capture extension is not one: it has no sign-in surface, cannot complete an
+OAuth redirect, and must never be handed the operator's cookie — a cookie is
+ambient, carries the operator's identity, and unlocks the whole application.
+
+It therefore has its own credential, and this deployment now holds three that
+are kept apart on purpose. None substitutes for another:
+
+| Credential | Who holds it | What it unlocks |
+| --- | --- | --- |
+| Operator session cookie (`AUTH__*`) | a signed-in human | every operator surface |
+| Google identity client (`AUTH__GOOGLE_*`) | the server, at sign-in only | learning who that human is |
+| Extension capture credential (`EXTENSION_AUTH__*`) | one extension install | the capture intake contract, nothing else |
+
+A future Gmail grant will be a fourth, and it is not this one.
+
+### The contract, enumerated
+
+`app/core/auth/extension.py` holds the whole authorisation surface as a table.
+A credential authorises these and refuses everything else in the application:
+
+| Method | Path | Why the extension needs it |
+| --- | --- | --- |
+| `POST` | `/api/intake/contact-captures` | the capture itself |
+| `GET` | `/api/contact-labels` | offer existing labels before saving |
+| `GET` | `/api/contacts/lookup` | label the button Save or Refresh |
+| `GET` | `/api/campaigns` | the optional Campaign filing selector |
+
+Deliberately absent: the legacy campaign-era intakes (the extension has not
+produced those contracts since 2.0), the company-page intake (a separate
+surface, still local-only), and every other write in the application. A valid
+credential on `/admin`, on `POST /api/campaigns`, or on `DELETE` of the capture
+path is worth exactly as much as no credential at all — pinned by tests.
+
+### Shape, verification and storage
+
+Presented as `Authorization: Bearer vmrx1.<key_id>.<secret>`.
+
+`key_id` is a short non-secret label — the only part that may appear in a log
+line, and what revocation names. `secret` is 32+ characters of
+`secrets.token_urlsafe`.
+
+**The server never stores the secret.** `EXTENSION_AUTH__CREDENTIALS` carries
+`<key_id>:<sha256-hex-of-secret>`; verification hashes what was presented and
+compares digests in constant time. A plain SHA-256 is right here and a password
+KDF would not be: the input is full-entropy random, so there is no dictionary to
+slow down, and the property that matters is that a reader of `/etc/vmr/vmr.env`,
+a leaked backup, or a settings dump learns nothing replayable. The field also
+carries `repr=False`/`exclude=True`, so even the digest stays out of dumps.
+
+On the extension side the credential lives in `chrome.storage.session`: in
+memory for the browser session, never written to disk, and unreadable from a
+content script on a LinkedIn page. The cost is deliberate and stated in the
+panel — Chrome clears it on restart and the operator pastes it again.
+
+### Origin binding
+
+A credential alone is not enough. The request must also come from an approved
+`chrome-extension://` origin, matched exactly against
+`EXTENSION_AUTH__ALLOWED_ORIGINS`. "Any extension origin" is not a boundary once
+the application is on the Internet: every extension in the operator's browser
+would qualify, including one installed tomorrow.
+
+The rule differs by method class, and precisely:
+
+* **The capture `POST` requires an approved `Origin`.** The Fetch standard
+  appends `Origin` to every non-GET/HEAD request regardless of mode, so a real
+  capture always carries one. This is what makes a *stolen* credential replayed
+  from `https://evil.example` fail even though the credential itself verifies.
+* **The three reads accept an absent `Origin`, but never a wrong one.** An
+  extension holding a host permission may have its cross-origin GET treated as
+  same-origin, and the standard then omits the header. A *present* origin is
+  still checked, so the arbitrary-web-origin case is refused on every method.
+
+### CORS and preflight
+
+The minimum the extension needs, and nothing more:
+
+* `Access-Control-Allow-Origin` reflects only an approved extension origin, on
+  the enumerated paths only, and never on an error path where the value had not
+  yet been checked.
+* `Access-Control-Allow-Methods` is the contract's methods for that path.
+* `Access-Control-Allow-Headers` is `Authorization, Content-Type,
+  Idempotency-Key` — the headers the extension actually sends.
+* **`Access-Control-Allow-Credentials` is never emitted.** The extension
+  authenticates with a header it sets itself and needs no ambient cookie; a
+  credentialed CORS grant would be a way to reach this API with the operator's
+  session instead. There is no wildcard origin anywhere.
+* `OPTIONS` is answered by the middleware — 204, no body, no authentication
+  implication — only for an enumerated path, an approved origin, and a requested
+  method inside that path's contract. This closes the M-2 preflight item that
+  `docs/POST_LAUNCH_BACKLOG.md` deferred until extension authentication existed.
+
+The rest of the application's CORS behaviour is unchanged.
+
+### A session cookie is not an extension request
+
+Stated as an acceptance rule because it is the one an implementation drifts on:
+a signed-in operator's cookie does not turn a capture `POST` into an
+authenticated extension request. The middleware records a key id only when a
+credential actually verified, and the intake route requires that key id. A
+cookie-only capture is a 403.
+
+Conversely, a verified credential outranks an ambient cookie on the contract:
+one credential decides one request, and an explicitly presented bearer is the
+stronger signal. An extension is not an operator, so such a request carries no
+operator email and no CSRF token — correctly, since a bearer credential is not
+attached automatically by a browser and is therefore not forgeable cross-site.
+
+### Operating it
+
+**Issuing a credential.**
+
+```bash
+python scripts/mint_extension_credential.py --key-id beta-sahil-laptop
+```
+
+It prints two lines that go to two different places: the credential, pasted once
+into the extension's Settings; and the digest entry, added to
+`EXTENSION_AUTH__CREDENTIALS` in `/etc/vmr/vmr.env`. Then
+`systemctl restart vmr-web`.
+
+**Approving an install.** Open the extension's Settings — it shows its own
+extension ID. Add `chrome-extension://<that-id>` to
+`EXTENSION_AUTH__ALLOWED_ORIGINS` and restart.
+
+**Revoking.** Two paths, both fail-closed and effective on restart:
+
+1. Add the key id to `EXTENSION_AUTH__REVOKED_KEY_IDS` — the preferred one.
+   Revocation is checked *before* the digest, so a revoked id stays dead even if
+   a stale credential entry still carries it.
+2. Remove the entry from `EXTENSION_AUTH__CREDENTIALS`.
+
+The first is safer under pressure: deleting the right line out of a list is a
+chance to delete the wrong one.
+
+**Turning the whole thing off.** `EXTENSION_AUTH__ENABLED=false` and restart.
+Every capture credential stops working immediately; the operator surfaces are
+unaffected.
+
+**Local development is unchanged, and this boundary is inert there.** The
+middleware that reads the credential returns early when `AUTH__ENABLED` is
+false, so setting `EXTENSION_AUTH__*` on a laptop enforces nothing: the intake
+keeps its existing rule (`APP_ENV=local`, loopback or any `chrome-extension://`
+origin, no credential). Staging cannot reach that inert combination — the
+startup contract requires `AUTH__ENABLED` alongside it. The extension mirrors
+this: it attaches a credential only to a request bound for a named hosted
+deployment, never to a loopback one.
+
+### What the startup contract refuses
+
+Enabled with no credential, enabled with no approved origin, enabled without
+`FEATURES__CONTACT_CAPTURE_INTAKE`, enabled without `AUTH__ENABLED` in a hosted
+environment, or enabled in production at all. Each one would otherwise produce a
+deployment that starts cleanly, serves every screen, and refuses every capture,
+with nothing to say why.
+
+`FEATURES__CONTACT_CAPTURE_INTAKE` used to be refused outright outside local
+development, because the intake had no authentication and "local only" was the
+entire boundary. It is now *credential-gated* instead: permitted hosted exactly
+when this credential boundary is configured. The other intakes did not move and
+remain local-only.
+
+---
+
 ## 8. What this slice deliberately does not do
 
 * No Gmail OAuth, drafts, sending, reply ingestion or Sheets.
-* No remote Chrome Extension capture. The extension's future credential is a
-  **bearer token on the API**, kept architecturally separate from this browser
-  cookie: the middleware records `auth_credential` and the CSRF dependency skips
-  any credential that is not the cookie, because a bearer token is not attached
-  by the browser automatically. Nothing issues one today, so an extension-origin
-  request is refused exactly like any other anonymous caller.
 * No password signup, customer tenancy, billing or broad RBAC.
 * No per-operator audit trail. Writes still record the constant `OPERATOR_ACTOR`.
   Now that a verified identity exists on every request, attributing writes to it
