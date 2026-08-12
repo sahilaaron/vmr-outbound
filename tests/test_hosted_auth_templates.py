@@ -202,6 +202,14 @@ EXPECTED_ANONYMOUS_PATHS = {
     "/auth/callback",
     "/auth/logout",
     "/auth/signed-out",
+    # Added by the user-accounts slice (#270), as a deliberate decision recorded
+    # here as well as in the policy. `/auth/password` is where a session is
+    # obtained with an email address and a password; `/auth/setup` is where
+    # somebody who has never signed in sets one, authorized by a one-time token
+    # rather than by a session. Both create a session only for an account that
+    # already exists, and neither can create an account.
+    "/auth/password",
+    "/auth/setup",
 }
 
 

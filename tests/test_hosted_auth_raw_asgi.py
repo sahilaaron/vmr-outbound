@@ -32,8 +32,13 @@ from app.core.auth.session import SESSION_COOKIE_NAME, OperatorSession, SessionC
 from app.core.config import Settings
 from app.main import create_app
 
+from tests.hosted_auth_factory import StubAccountDirectory, stub_snapshot
+
 SECRET = "raw-asgi-secret-raw-asgi-secret-raw-asgi-secret"
 OPERATOR = "operator@vmr.example"
+#: A fixed account identifier for this module. These tests never touch the
+#: database; the stubbed directory below is what resolves it.
+RAW_USER_ID = "00000000-0000-4000-8000-0000000000aa"
 HOST = "vmr.raw.invalid"
 BASE = f"https://{HOST}"
 SESSION_ID = "sid-raw-asgi-1"
@@ -62,6 +67,14 @@ def _app() -> Any:
                 ),
             ),
             readiness_probe=lambda: None,
+            # A stubbed directory rather than the database one. These tests drive
+            # raw ASGI bytes at the middleware and never reach a route, so the
+            # only thing they need from an account directory is a deterministic
+            # answer — and injecting one keeps this module free of any database
+            # dependency, exactly as it was before accounts existed.
+            account_directory=StubAccountDirectory(
+                stub_snapshot(user_id=RAW_USER_ID, email=OPERATOR)
+            ),
         )
     return _APP
 
@@ -132,6 +145,8 @@ def _session_cookie(*, email: str = OPERATOR, session_id: str = SESSION_ID, ttl:
             session_id=session_id,
             issued_at=now,
             expires_at=now + ttl,
+            user_id=RAW_USER_ID,
+            auth_version=1,
         )
     )
 

@@ -1,0 +1,155 @@
+{#
+  The account directory.
+
+  Three things this page shows and one it deliberately does not.
+
+  Shows: whether an account can sign in at all (state), whether it has a password
+  yet, and when it last did sign in. Those three answer the questions an
+  administrator actually has — "why can't Priya get in", "did I ever send her a
+  link", "is this account still in use".
+
+  Does not show: anything derived from the password itself. There is no hash on
+  this page, no hash length, no "strength", and no way to read one back. The only
+  password fact rendered is set / not set.
+
+  The one-time link appears exactly once, on the response to the action that
+  created it, and is gone from the server afterwards. The copy says so, because an
+  administrator who assumes they can come back for it will hand somebody a dead
+  end.
+
+  Every form here is a POST, so the CSRF field is inserted at template-compile
+  time by the extension registered in `app/core/auth/csrf.py`. There is no hidden
+  field to write by hand here, and none to forget.
+#}
+{% extends "base.html" %}
+{% from "_ui.html" import tag, empty %}
+{% block content %}
+<div class="v2-page">
+  <h1 class="v2-h1">People</h1>
+  <p class="v2-lede">
+    Everyone who may sign in to this deployment. There is no public signup: an account
+    exists because an administrator created it here. Disabling an account refuses its
+    existing sessions on the next request, not at the next expiry.
+  </p>
+
+  {% if issued_link %}
+  <div class="v2-card v2-mt">
+    <div class="v2-card-head"><b>One-time password link</b></div>
+    <div class="v2-card-body roomy">
+      <p class="v2-note">
+        Send this to the person out of band — a direct message or a phone call. It works
+        once, expires in 24 hours, and <b>will not be shown again</b>. If you lose it, use
+        “New password link” on their row to create another; the old one stops working.
+        Issuing a link does <b>not</b> end that person's current session — if you are
+        reacting to a suspected compromise, disable the account as well.
+      </p>
+      <p class="m v2-break">{{ issued_link }}</p>
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="v2-card v2-mt">
+    <div class="v2-card-head"><b>Create an account</b></div>
+    <div class="v2-card-body roomy">
+      <form class="v2-form-stack" method="post" action="/app/admin/users/create">
+        <div class="v2-field">
+          <label for="new-user-email">Email address</label>
+          <div class="v2-hint">
+            Any working business or personal address — a VMR address, Gmail, Microsoft 365.
+            The address is how they sign in and how a Google account is matched to them.
+          </div>
+          <input class="v2-input" id="new-user-email" name="email" type="email" required
+                 maxlength="320" autocomplete="off" autocapitalize="none" spellcheck="false"
+                 placeholder="name@company.com">
+        </div>
+        <div class="v2-field">
+          <label for="new-user-name">Display name</label>
+          <div class="v2-hint">Optional. Shown in the account menu; Google fills it in if you leave it blank.</div>
+          <input class="v2-input" id="new-user-name" name="display_name" maxlength="200"
+                 autocomplete="off" placeholder="Priya Nair">
+        </div>
+        <div class="v2-btn-row">
+          <button class="v2-btn primary" type="submit">Create and issue link</button>
+        </div>
+      </form>
+      <p class="v2-note">
+        New accounts get the <b>user</b> role and no password. They set their own password
+        through the one-time link this creates. VMR never generates a temporary password.
+      </p>
+    </div>
+  </div>
+
+  <div class="v2-card clip v2-mt">
+    {% if rows %}
+    <div class="v2-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Account</th>
+            <th>Role</th>
+            <th>State</th>
+            <th>Password</th>
+            <th class="num">Created</th>
+            <th class="num">Last sign-in</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr>
+            <td>
+              <div class="m v2-break">{{ row.email }}</div>
+              {% if row.display_name %}<div class="v2-sub">{{ row.display_name }}</div>{% endif %}
+              {% if row.google_linked %}<div class="v2-sub">Google account linked</div>{% endif %}
+            </td>
+            <td>{{ tag(row.role.value, 'brand' if row.is_admin else '', small=true) }}</td>
+            <td>{{ tag(row.state.value, 'ok' if row.is_active else 'warn', small=true) }}</td>
+            <td>{{ tag(row.password_state, '' if row.has_password else 'warn', small=true) }}</td>
+            <td class="num m v2-nowrap">{{ row.created_at | dt }}</td>
+            <td class="num m v2-nowrap">
+              {% if row.last_login_at %}{{ row.last_login_at | dt }}{% else %}<span class="v2-sub">never</span>{% endif %}
+            </td>
+            <td>
+              <div class="v2-btn-row">
+                <form method="post" action="/app/admin/users/{{ row.id }}/link">
+                  <button class="v2-btn small" type="submit">New password link</button>
+                </form>
+                <form method="post" action="/app/admin/users/{{ row.id }}/state">
+                  <input type="hidden" name="state" value="{{ 'disabled' if row.is_active else 'active' }}">
+                  <button class="v2-btn small{{ ' danger' if row.is_active else '' }}" type="submit">
+                    {{ 'Disable' if row.is_active else 'Reactivate' }}
+                  </button>
+                </form>
+                <form method="post" action="/app/admin/users/{{ row.id }}/role">
+                  <input type="hidden" name="role" value="{{ 'user' if row.is_admin else 'admin' }}">
+                  <button class="v2-btn small" type="submit">
+                    {{ 'Remove admin' if row.is_admin else 'Make admin' }}
+                  </button>
+                </form>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="v2-card-foot plain">
+      Accounts are never deleted here. Disabling keeps the row, its history and anything
+      attributed to it, while refusing every credential it holds — including a password
+      link already sitting in somebody's inbox.
+    </div>
+    {% else %}
+      {{ empty('No accounts yet',
+        'Create the first one above. The configured platform administrator is created automatically at startup.') }}
+    {% endif %}
+  </div>
+
+  {% if not auth_enabled %}
+  <div class="v2-callout v2-mt">
+    <strong>Hosted authentication is switched off in this environment.</strong>
+    Accounts can be created and inspected here, but nothing signs in and nothing is
+    refused — every screen is already open. This is the local-development default.
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

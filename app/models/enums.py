@@ -1502,6 +1502,51 @@ class SequenceStopReason(enum.StrEnum):
     SYNCHRONIZATION_FAILURE = "synchronization_failure"
 
 
+class UserRole(enum.StrEnum):
+    """What a VMR user account is permitted to do.
+
+    Two values and no hierarchy beyond them. ``ADMIN`` is the platform
+    administrator: the only role that may create, disable, reactivate or re-role
+    another account, and the only role that may see the user-management surface
+    at all. ``USER`` is everybody else — full access to the outbound product,
+    none to the account directory.
+
+    The role lives on the account record and nowhere else. It is deliberately
+    never inferred from an email domain: "works at Verified Market Research" and
+    "may create accounts" are different facts, and conflating them would make
+    every colleague an administrator the moment they were added.
+    """
+
+    ADMIN = "admin"
+    USER = "user"
+
+
+class UserState(enum.StrEnum):
+    """Whether an account may authenticate at all.
+
+    ``DISABLED`` is a revocation, not a deletion: the row, its audit history and
+    any future attribution survive, but every credential the account holds stops
+    working — the next request on an already-issued session is refused, a
+    password login is refused, a Google sign-in is refused, and an outstanding
+    password-setup link is refused.
+    """
+
+    ACTIVE = "active"
+    DISABLED = "disabled"
+
+
+class UserCredentialTokenPurpose(enum.StrEnum):
+    """Why a one-time credential link was issued.
+
+    Both purposes mint the same kind of secret and are consumed the same way.
+    They are distinguished only so the audit trail can tell "this account has
+    never had a password" from "an administrator reset an existing one".
+    """
+
+    INITIAL_SETUP = "initial_setup"
+    RESET = "reset"
+
+
 class GmailGrantStatus(enum.StrEnum):
     """The state of one operator's Gmail mailbox authorization.
 

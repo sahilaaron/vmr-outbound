@@ -15,6 +15,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.auth.context import current_operator
 from app.core.config import Settings
 from app.models.campaign import CampaignContact
 from app.models.company import Company
@@ -207,11 +208,23 @@ def nav_groups(counts: AttentionCounts) -> tuple[NavGroup, ...]:
 def operator_identity(session: Session, settings: Settings) -> tuple[str, str, str]:
     """What the account chip says.
 
-    There is no authentication and no user table in this environment, so there is no
-    person to name. Rather than invent one, the chip carries the seller identity the
-    operator entered in the Knowledge Base, and falls back to the environment. The
-    design's avatar initials come from whichever of those is available.
+    Since the user-accounts slice there *is* a person to name on a hosted
+    deployment, so the chip names them: the display name on their account, or
+    their address when the account has no name, with the address underneath.
+
+    Local development still has no session, and the old behaviour is kept exactly
+    for it — the chip carries the seller identity from the Knowledge Base and says
+    plainly that nobody is signed in. Inventing an operator name there would make
+    an unauthenticated environment look authenticated, which is the one thing this
+    chip must never do.
     """
+
+    operator = current_operator()
+    if operator is not None:
+        signed_in = operator.display_name or operator.email
+        parts = [word for word in signed_in.replace("-", " ").replace("@", " ").split() if word]
+        marks = "".join(word[0] for word in parts[:2]).upper() or "VM"
+        return signed_in, operator.email, marks
 
     name = "Operator"
 

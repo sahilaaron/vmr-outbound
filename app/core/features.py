@@ -58,6 +58,13 @@ class FeatureFlags(BaseModel):
     # result, never merges an ambiguous identity, and never makes a contact
     # outreach-eligible; suppression stays authoritative. The lookup itself also
     # requires ``salesnav_domain_enrichment`` and a configured logo.dev key.
+    #
+    # Where it may run is decided in ``app/core/runtime.py``, not here. Local
+    # development is unrestricted; staging permits it only with
+    # ``automatic_company_domain_resolution``, ``salesnav_domain_enrichment`` and
+    # a configured ``LOGO_DEV_API_KEY``, because without them the services above
+    # fail closed and a hosted deployment would promote nothing while looking
+    # healthy; production refuses it outright.
     contact_capture_promotion: bool = False
     # Automatic company-domain resolution for captured contacts (DAT-017A). Off
     # by default: while off, every captured company waits for an explicit

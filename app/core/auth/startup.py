@@ -149,11 +149,21 @@ def validate_hosted_auth_settings(settings: Settings) -> None:
                 "AUTH__SESSION_SECRET must be set and at least "
                 f"{MIN_SESSION_SECRET_CHARS} characters long when authentication is enabled"
             )
-        if not auth.allowed_operator_emails:
+        if not auth.bootstrap_admin_email:
+            # Replaces the old "the allow-list must not be empty" rule, for the
+            # same reason it existed: a hosted deployment that nobody can sign in
+            # to starts cleanly and looks healthy, and the operator finds out at
+            # the door with no way to tell whether the fault is theirs.
+            #
+            # The rule moved because the authority moved. Access now comes from
+            # the `users` table, so "at least one account exists" is the property
+            # that matters, and the bootstrap administrator is what guarantees it.
+            # `AUTH__ALLOWED_OPERATOR_EMAILS` may now legitimately be empty: it is
+            # a one-time seed for deployments that predate accounts, not a gate.
             issues.append(
-                "AUTH__ALLOWED_OPERATOR_EMAILS must name at least one approved operator: "
-                "an empty allow-list means nobody, and starting with one would refuse "
-                "every sign-in while looking healthy"
+                "AUTH__BOOTSTRAP_ADMIN_EMAIL must name the platform administrator: "
+                "access is granted by an account record, and a deployment with no "
+                "administrator has no way to create the first one"
             )
         if not auth.has_google_client():
             issues.append(

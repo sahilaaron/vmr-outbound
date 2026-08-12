@@ -40,7 +40,7 @@ _ANONYMOUS_EXACT_PATHS: frozenset[str] = frozenset(
     }
 )
 
-# The sign-in surface itself, enumerated exactly. These are the five routes on
+# The sign-in surface itself, enumerated exactly. These are the routes on
 # `app/web/auth_routes.py:router`, written out one by one rather than matched by
 # a `/auth/` prefix.
 #
@@ -60,6 +60,29 @@ _ANONYMOUS_AUTH_ROUTES: frozenset[str] = frozenset(
         "/auth/callback",
         "/auth/logout",
         "/auth/signed-out",
+        # Added by the user-accounts slice (#270). Both must be reachable without
+        # a session by definition — one is where a session is obtained and the
+        # other is where somebody who has never signed in sets their password.
+        #
+        # Neither is a hole in default-deny:
+        #
+        # * `/auth/password` is the email/password form's target. It creates a
+        #   session only for an account that already exists, is active and has a
+        #   password; no branch on it creates an account. It is rate-limited, and
+        #   the cross-site backstop applies to it exactly as to any other unsafe
+        #   method.
+        # * `/auth/setup` renders and accepts the first-login password form. It is
+        #   authorized by a one-time token rather than by a session, refuses every
+        #   consumed, expired, superseded or disabled-account token, and never
+        #   signs anybody in — a successful setup redirects to the sign-in page.
+        #
+        # The one-time token travels in the query string on the `GET`. The
+        # application access log records the *route template* and never the query
+        # string (see `_route_name` in `app/core/http.py`), so no raw token
+        # reaches it; keeping it out of the reverse proxy's own access log is a
+        # deployment note in `docs/HOSTED_AUTH.md`.
+        "/auth/password",
+        "/auth/setup",
     }
 )
 
@@ -132,6 +155,32 @@ def anonymous_application_paths() -> frozenset[str]:
     return _ANONYMOUS_EXACT_PATHS | _ANONYMOUS_AUTH_ROUTES
 
 
+def is_identity_free_path(path: str) -> bool:
+    """Whether this path can be served without knowing who the caller is.
+
+    A narrower question than :func:`is_anonymous_path`, and the two must not be
+    confused — conflating them is how ``POST /auth/logout`` quietly stopped being
+    CSRF-protected during the user-accounts slice.
+
+    *Anonymous* means "may be reached without a session". *Identity-free* means
+    "the answer does not depend on who is asking". The sign-in surface is
+    anonymous but not identity-free: ``/auth/login`` sends an already-signed-in
+    operator onward instead of showing them a form, and ``/auth/logout`` demands
+    a CSRF token precisely when there *is* a session to protect. Both of those
+    need the account resolved.
+
+    The probes and the static mount are both. They carry no per-caller content,
+    and keeping them out of the account lookup is what lets a deployment whose
+    database is down still answer ``/readyz``, still serve its stylesheet, and
+    still render a sign-in page.
+    """
+
+    normalized = normalize_request_path(path)
+    return normalized in _ANONYMOUS_EXACT_PATHS or normalized.startswith(
+        _ANONYMOUS_STATIC_MOUNT_PREFIX
+    )
+
+
 def is_anonymous_path(path: str) -> bool:
     """Whether ``path`` may be served without an authenticated operator."""
 
@@ -176,8 +225,12 @@ def safe_next_path(raw: str | None, *, fallback: str) -> str:
         # backslash, and a value that survives one more decoding step than it was
         # checked against is exactly how a redirect filter is eventually escaped.
         return fallback
-    if is_anonymous_path(raw):
+    if is_anonymous_path(raw.partition("?")[0]):
         # Bouncing back to the sign-in page after signing in is a loop, and a
-        # probe path is not an operator destination.
+        # probe path is not an operator destination. The query string is split
+        # off first: `?next=/auth/login%3Fnext=/app` would otherwise slip past
+        # this check and produce exactly the loop it exists to prevent. (Not a
+        # redirect off-site — every rule above still holds — just a page that
+        # bounces.)
         return fallback
     return raw

@@ -128,6 +128,47 @@
       word-break: break-all;
       color: var(--n-700);
     }
+    /* The sign-in and password-setup forms. Plain block layout: these pages have
+       one column, and a grid would only make the fields harder to reorder. */
+    .signin-form { margin: 0 0 4px; }
+    .field-label {
+      display: block;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--n-700);
+      margin-bottom: 6px;
+    }
+    .field {
+      display: block;
+      width: 100%;
+      padding: 11px 12px;
+      margin-bottom: 16px;
+      border: 1px solid var(--n-200);
+      border-radius: 8px;
+      background: var(--n-0);
+      color: var(--ink);
+      font: inherit;
+    }
+    .field:focus-visible {
+      outline: 3px solid var(--teal-500);
+      outline-offset: 1px;
+      border-color: var(--indigo-500);
+    }
+    .divider {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 20px 0;
+      color: var(--n-500);
+      font-size: 13px;
+    }
+    .divider::before,
+    .divider::after {
+      content: "";
+      flex: 1;
+      height: 1px;
+      background: var(--n-200);
+    }
   </style>
 </head>
 <body>

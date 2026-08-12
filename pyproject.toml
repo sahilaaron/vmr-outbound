@@ -33,6 +33,12 @@ dependencies = [
     "PyYAML>=6.0,<7.0",
     # Fernet envelope for Admin-managed verification-provider credentials.
     "cryptography>=42.0,<47.0",
+    # Argon2id password hashing for hosted user accounts (#270). The reference
+    # binding, maintained by the Python Cryptographic Authority, shipping wheels
+    # for every platform this deployment uses so no C toolchain is needed at
+    # install time. See `app/core/auth/passwords.py` for why Argon2id rather than
+    # bcrypt or PBKDF2. No service, no key, no recurring cost.
+    "argon2-cffi>=23.1,<26.0",
 ]
 
 [project.optional-dependencies]
@@ -77,6 +83,11 @@ select = ["E", "F", "I", "UP", "B", "W"]
 "app/web/gmail_routes.py" = ["B008"]
 # And on the Company Intelligence admin page routes (CI-001).
 "app/web/company_intelligence.py" = ["B008"]
+# And on the administrator's account-directory routes.
+"app/web/v2/admin_users.py" = ["B008"]
+# And on the sign-in routes, which now take a database session because both
+# login paths resolve the caller against the `users` table.
+"app/web/auth_routes.py" = ["B008"]
 # The synthetic fixture literals (CSV text, sample rows) exceed the line limit
 # by nature; wrapping them would corrupt the fixture content.
 "app/services/devtools.py" = ["E501"]

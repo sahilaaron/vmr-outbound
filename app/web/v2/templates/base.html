@@ -80,6 +80,16 @@
               <b>Sending accounts</b>
               <span>Not connected — sending is not built yet</span>
             </a>
+            {# Shown to administrators only. This is a courtesy, not a control:
+               the routes refuse a non-administrator server-side (see
+               `app/core/auth/admin.py`), so typing the URL gets a 403 whether or
+               not this link is rendered. #}
+            {% if is_admin %}
+            <a class="v2-menu-item" href="/app/admin/users">
+              <b>People</b>
+              <span>Who may sign in, and how</span>
+            </a>
+            {% endif %}
             <a class="v2-menu-item{% if not signed_in_operator_email() %} last{% endif %}" href="/">
               <b>Operator Workbench</b>
               <span>The admin surface: imports, queues, raw records</span>

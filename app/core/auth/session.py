@@ -1,28 +1,31 @@
-"""The signed, stateless operator session cookie.
+"""The signed operator session cookie.
 
-Why stateless rather than a database session table
---------------------------------------------------
-Three reasons, in order of weight.
+Why a signed cookie plus a version counter, rather than a session table
+-----------------------------------------------------------------------
+There is still no ``sessions`` table, and there does not need to be one. The
+cookie carries the account's revocation counter (``av``) alongside its identity,
+and the account directory compares that counter with the current value on every
+authenticated request. Revoking is therefore one ``UPDATE`` on one row —
+``auth_version = auth_version + 1`` — which invalidates *every* session that
+account holds, everywhere, at once. A session table would have to enumerate and
+delete rows to achieve the same thing, and would leave a second copy of each
+operator's identity at rest for a cleanup job to forget about.
 
-1. **Revocation is already strong without one.** Approval is re-checked against
-   the configured allow-list on *every* request, not just at sign-in. Removing
-   an address from ``AUTH__ALLOWED_OPERATOR_EMAILS`` and restarting therefore
-   invalidates that operator's existing session on their next request. A
-   session table would add a second, weaker revocation path — not a stronger
-   one.
-2. **Authentication must not depend on the database.** A readiness blip or a
-   migration window would otherwise lock every operator out of the very screens
-   they need to diagnose it, and would put a database round trip in front of
-   every static asset.
-3. **Nothing to leak or migrate.** No table, no cleanup job, no reversible
-   migration, and no second copy of an operator's identity at rest.
+What changed from the previous slice, and why
+---------------------------------------------
+That slice re-checked a configuration allow-list on every request and needed no
+database at all. This one re-checks an account record instead, because access is
+now granted by an administrator-created row rather than by an environment
+variable. The consequences are set out in ``app/core/auth/accounts.py``: probes,
+the sign-in surface and static assets stay database-free, and a lookup that
+cannot be answered refuses the request without discarding the session.
 
-The accepted cost is stated plainly in the threat analysis: a cookie that is
-*stolen* stays valid until its absolute expiry (12 hours by default) or until
-the allow-list changes. For an internal Beta with a handful of named operators,
-behind HTTPS with ``HttpOnly``/``Secure``/``SameSite=Lax`` cookies, that is the
-right trade. It is also the reason the lifetime is absolute with no sliding
-renewal: a session cannot be kept alive indefinitely by using it.
+The remaining accepted cost is unchanged and stated plainly: a cookie that is
+*stolen* stays valid until its absolute expiry (12 hours by default), until the
+account is disabled, or until its password is reset. Behind HTTPS with
+``HttpOnly``/``Secure``/``SameSite=Lax`` cookies that is the right trade for this
+Beta. It is also why the lifetime is absolute with no sliding renewal: a session
+cannot be kept alive indefinitely by using it.
 
 Format
 ------
@@ -127,9 +130,29 @@ def derive_key(secret: str, label: bytes) -> bytes:
 class OperatorSession:
     """The authenticated identity carried by one session cookie.
 
-    ``subject`` is Google's stable account identifier and ``email`` is the
-    approved address. Both come from the validated provider assertion; neither
-    is ever taken from a request field the client controls.
+    ``email`` and ``display_name`` are convenience copies for rendering. The two
+    claims that *decide* anything are ``user_id`` and ``auth_version``:
+
+    ``user_id``
+        The VMR account this session belongs to. Access is granted by the account
+        record, not by the address in this cookie, so every authenticated request
+        resolves this identifier against the account directory. An address that
+        was approved when the cookie was minted therefore cannot outlive the
+        account being disabled or deleted.
+    ``auth_version``
+        The account's revocation counter at the moment the session was minted. The
+        directory compares it with the current value, which is what makes a
+        disable or a password reset invalidate sessions already sitting in
+        browsers. A cookie is not evidence of anything the account no longer
+        agrees with.
+
+    ``subject`` remains the provider's stable identifier for a Google-authenticated
+    session and is empty for a password session. It is retained for the audit
+    trail rather than for any access decision.
+
+    Both new claims are **required**. A session minted before this slice has
+    neither, so it fails to decode and its holder signs in again — the safe
+    direction, and a one-time cost on a Beta with a handful of people.
     """
 
     email: str
@@ -138,6 +161,8 @@ class OperatorSession:
     session_id: str
     issued_at: int
     expires_at: int
+    user_id: str
+    auth_version: int
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -147,6 +172,8 @@ class OperatorSession:
             "sid": self.session_id,
             "iat": self.issued_at,
             "exp": self.expires_at,
+            "uid": self.user_id,
+            "av": self.auth_version,
         }
 
     @classmethod
@@ -158,16 +185,22 @@ class OperatorSession:
             session_id = payload["sid"]
             issued_at = payload["iat"]
             expires_at = payload["exp"]
+            user_id = payload["uid"]
+            auth_version = payload["av"]
         except (KeyError, TypeError) as exc:
             raise SessionDecodeError("session payload is missing required claims") from exc
         if not isinstance(email, str) or not isinstance(subject, str):
             raise SessionDecodeError("session payload has malformed identity claims")
         if not isinstance(display_name, str) or not isinstance(session_id, str):
             raise SessionDecodeError("session payload has malformed identity claims")
+        if not isinstance(user_id, str) or not user_id:
+            raise SessionDecodeError("session payload has malformed identity claims")
         if not isinstance(issued_at, int) or not isinstance(expires_at, int):
             raise SessionDecodeError("session payload has malformed lifetime claims")
         if isinstance(issued_at, bool) or isinstance(expires_at, bool):
             raise SessionDecodeError("session payload has malformed lifetime claims")
+        if not isinstance(auth_version, int) or isinstance(auth_version, bool):
+            raise SessionDecodeError("session payload has a malformed revocation claim")
         return cls(
             email=email,
             subject=subject,
@@ -175,6 +208,8 @@ class OperatorSession:
             session_id=session_id,
             issued_at=issued_at,
             expires_at=expires_at,
+            user_id=user_id,
+            auth_version=auth_version,
         )
 
 

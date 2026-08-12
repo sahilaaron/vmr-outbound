@@ -30,10 +30,18 @@ The contract today, in full, is:
   `chrome-extension://` origin. That replaced the blanket "local only" rule for
   this one switch; enabling it hosted *without* the credential boundary still
   refuses to start. See `docs/HOSTED_AUTH.md` §7a.
-* The remaining local-only intake and promotion switches (`salesnav_intake`,
-  `linkedin_profile_intake`, `linkedin_company_intake`,
-  `contact_capture_promotion`) are still refused in staging by
-  `validate_runtime_settings` and must stay unset.
+* `FEATURES__CONTACT_CAPTURE_PROMOTION=true` is *permitted* in staging behind
+  its own prerequisite boundary, and refused outright in production. It requires
+  `FEATURES__AUTOMATIC_COMPANY_DOMAIN_RESOLUTION=true`,
+  `FEATURES__SALESNAV_DOMAIN_ENRICHMENT=true` and a configured
+  `LOGO_DEV_API_KEY`; with any one missing, `validate_runtime_settings` refuses
+  to start. That refusal is the point: without those values the resolution
+  services fail closed and leave every capture untouched, so a half-configured
+  box would accept captures, record every Capture job as succeeded, and promote
+  nothing, with no error to explain it. See `docs/CAPTURE_PROMOTION.md`.
+* The remaining local-only intake switches (`salesnav_intake`,
+  `linkedin_profile_intake`, `linkedin_company_intake`) are still refused in
+  staging by `validate_runtime_settings` and must stay unset.
 
 > **This changes deployment ordering.** A staging box whose `/etc/vmr/vmr.env`
 > has no `AUTH__*` block **will refuse to start** on the first release that
