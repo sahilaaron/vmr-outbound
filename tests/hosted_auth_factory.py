@@ -205,6 +205,19 @@ class RecordingIdentityProvider:
         return self.claims
 
 
+def subject_for(email: str) -> str:
+    """A stable, distinct Google ``sub`` per address.
+
+    A single hard-coded subject used to be fine, because the allow-list decided
+    access from the *email* and the subject was carried along for the ride. Since
+    #270 the subject is the primary link to an account, so reusing one across two
+    addresses would make every "a different Google account" test silently resolve
+    to the same VMR account and assert nothing.
+    """
+
+    return f"google-sub-{email}"
+
+
 def operator_claims(
     *,
     nonce: str,
@@ -212,12 +225,13 @@ def operator_claims(
     email_verified: bool = True,
     audience: str = TEST_CLIENT_ID,
     issuer: str = TEST_ISSUER,
+    subject: str | None = None,
     now: int | None = None,
     expires_in: int = 3600,
 ) -> IdentityClaims:
     moment = int(time.time()) if now is None else now
     return IdentityClaims(
-        subject="1234567890",
+        subject=subject or subject_for(email),
         email=email,
         email_verified=email_verified,
         display_name="VMR Operator",
@@ -226,4 +240,121 @@ def operator_claims(
         expires_at=moment + expires_in,
         issued_at=moment,
         nonce=nonce,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Account directory fixtures for the user-accounts slice (#270)
+# ---------------------------------------------------------------------------
+#
+# Authorization moved from a configuration allow-list to the `users` table, so a
+# test that mints a session cookie now also has to say which account it belongs
+# to. Two ways of doing that live here and they are for different jobs.
+#
+# `seed_account` writes a real row through the application's own session factory
+# and is what the route-level tests use: the sign-in routes read the database, so
+# a fake would prove nothing about them.
+#
+# `StubAccountDirectory` is the seam for the *middleware*, whose job is to decide
+# a request rather than to talk to a database. It can also be told to fail, which
+# is the only way to exercise the "directory unavailable" branch without taking
+# Postgres away from the rest of the suite.
+
+
+@dataclass
+class SeededAccount:
+    """The identifiers a minted session cookie needs."""
+
+    user_id: str
+    email: str
+    auth_version: int = 1
+
+
+def seed_account(
+    *,
+    email: str,
+    role: str = "user",
+    state: str = "active",
+    google_subject: str | None = None,
+    display_name: str | None = None,
+    password: str | None = None,
+) -> SeededAccount:
+    """Create one account row and return what a session cookie needs.
+
+    Committed rather than flushed, because the routes under test run through the
+    application's own `get_db` dependency on a different session. The suite's
+    autouse truncation sweep removes the row after the test.
+    """
+
+    from app.core.auth.passwords import hash_password
+    from app.db.session import SessionLocal
+    from app.models.enums import UserRole, UserState
+    from app.models.user import User
+
+    with SessionLocal() as session:
+        user = User(
+            email=email,
+            email_normalized=email,
+            display_name=display_name,
+            role=UserRole(role),
+            state=UserState(state),
+            google_subject=google_subject,
+            password_hash=hash_password(password) if password else None,
+            auth_version=1,
+        )
+        session.add(user)
+        session.commit()
+        return SeededAccount(user_id=str(user.id), email=user.email_normalized)
+
+
+class StubAccountDirectory:
+    """A deterministic account directory for boundary tests.
+
+    Holds snapshots keyed by user id. Set `unavailable` to make every lookup
+    raise, which is how the "the directory could not answer" branch is tested
+    without breaking the database for everything else.
+    """
+
+    def __init__(self, *accounts: Any, unavailable: bool = False) -> None:
+        self.unavailable = unavailable
+        self.accounts: dict[str, Any] = {str(a.user_id): a for a in accounts}
+        self.lookups: list[str] = []
+
+    def add(self, snapshot: Any) -> None:
+        self.accounts[str(snapshot.user_id)] = snapshot
+
+    def lookup(self, user_id: Any) -> Any:
+        from app.core.auth.accounts import AccountLookupUnavailable
+
+        self.lookups.append(str(user_id))
+        if self.unavailable:
+            raise AccountLookupUnavailable("stubbed outage")
+        return self.accounts.get(str(user_id))
+
+
+def stub_snapshot(
+    *,
+    user_id: str,
+    email: str,
+    role: str = "user",
+    state: str = "active",
+    auth_version: int = 1,
+    display_name: str = "VMR Operator",
+    has_password: bool = False,
+) -> Any:
+    """One `AccountSnapshot` without touching a database."""
+
+    import uuid as _uuid
+
+    from app.core.auth.accounts import AccountSnapshot
+    from app.models.enums import UserRole, UserState
+
+    return AccountSnapshot(
+        user_id=_uuid.UUID(user_id),
+        email=email,
+        display_name=display_name,
+        role=UserRole(role),
+        state=UserState(state),
+        auth_version=auth_version,
+        has_password=has_password,
     )

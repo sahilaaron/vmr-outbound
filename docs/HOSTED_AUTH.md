@@ -101,47 +101,148 @@ Every one of these must pass. None is optional and none is inferred.
 No email, name or identifier is ever read from a request parameter, a form field
 or a header. Identity comes from the verified assertion only.
 
-### The approved-operator list
+### Who may sign in — the account directory
 
-Access is an explicit allow-list of addresses in configuration
-(`AUTH__ALLOWED_OPERATOR_EMAILS`), not "anyone in the Google domain".
+**Changed by issue #270.** Access used to be an allow-list of addresses in
+configuration. It is now a row in the `users` table.
 
-* Empty means **nobody**. Every decision path treats an empty list as a refusal,
-  and a hosted deployment refuses to start with one.
-* Comparison is NFKC-normalised, lower-cased and whitespace-stripped.
-* Gmail's dot-insensitivity and `+tag` stripping are deliberately **not** applied.
-  Folding them would make `a.b@x` match an allow-list entry of `ab@x` — a
-  widening of access nobody configured.
-* `AUTH__ALLOWED_GOOGLE_DOMAIN` is an optional *additional* gate, never a
-  replacement for the list.
+> **Google proves identity. The VMR account record grants access.**
 
-Approval is re-checked on **every request**, not only at sign-in. Removing an
-address and restarting therefore revokes that operator's live session on their
-next request.
+A fully valid, fully verified Google assertion for an address with no active
+account is refused, and creates nothing. So is a password login for one. There is
+no public signup: an account exists because an administrator created it at
+`/app/admin/users`.
+
+What happened to `AUTH__ALLOWED_OPERATOR_EMAILS`:
+
+* It is now a **one-time seed**, not a gate. On each start, every address listed
+  there that has no account gets one created — role `USER`, active, no password —
+  so a deployment that worked the day before the accounts migration works the day
+  after with nobody locked out.
+* It may now legitimately be **empty**, and the startup contract no longer refuses
+  an empty one. What it refuses instead is an empty `AUTH__BOOTSTRAP_ADMIN_EMAIL`.
+* Removing an address from it **no longer revokes anything**. Disable the account
+  instead — see *Sessions* below, which is stronger: it takes effect on the next
+  request with no restart.
+
+Address comparison is unchanged and is the same function everywhere — the typed
+address, the Google claim, the seed list and the stored column all go through
+`normalize_operator_email`: ASCII-only, lower-cased, whitespace-stripped, with
+Gmail's dot-insensitivity and `+tag` folding deliberately **not** applied.
+`AUTH__ALLOWED_GOOGLE_DOMAIN` remains an optional additional gate on the seed
+decision.
+
+### Linking a Google account to a VMR account
+
+1. **By `sub`, when already linked.** Google's subject is stable across a
+   Workspace address rename, so an account linked under an old address keeps
+   working under the new one.
+2. **By address otherwise**, and the `sub` is recorded on that first successful
+   sign-in. From then on rule 1 applies.
+
+Two shapes are refused rather than resolved, because each would create a second
+identity for one person: a `sub` already linked to a *different* account than the
+address resolves to, and a *new* `sub` presented for an address that already
+carries a different one (an address reissued to somebody else).
+
+Both login paths therefore land on the same row, and no combination of them
+produces two accounts for one person — the unique index on `email_normalized`
+makes that a database fact rather than an application convention.
 
 ### Roles
 
-There are none. `/app` and `/admin` are two views of one internal application
-for the same two or three people, and today they have identical access semantics
-(namely: none). Inventing a role model to express a distinction that does not
-exist would be complexity with no present decision behind it. If `/admin` ever
-needs to exclude someone who may use `/app`, that is the moment to add exactly
-one role, and not before.
+Two: `ADMIN` and `USER`, on the account record.
+
+`ADMIN` is the only role that may reach `/app/admin/users`, and it is granted in
+exactly one place — the configured `AUTH__BOOTSTRAP_ADMIN_EMAIL`
+(`sahil@verifiedmarketresearch.com` by default), applied idempotently at startup.
+It is never inferred from an email domain: "works at Verified Market Research" and
+"may create accounts" are different facts, and conflating them would make every
+colleague an administrator the moment their account existed.
+
+The role is read from the account record on **every request** and put in the
+request scope; the admin dependency reads it from there. A demotion therefore
+applies to the next request, and a session cookie cannot assert a privilege the
+directory no longer grants. Hiding the menu entry is a courtesy — typing the URL
+gets a 403.
+
+### Passwords
+
+Argon2id via `argon2-cffi`, at OWASP's minimum configuration (19 MiB, t=2, p=1).
+Only the PHC hash is stored; there is no column, log line, template or API
+response through which it is readable. `app/core/auth/passwords.py` records why
+Argon2id rather than bcrypt (72-byte truncation collides with the 64+ character
+requirement) or PBKDF2 (not memory-hard).
+
+Policy: minimum 15 characters, at least 64 accepted, every character permitted
+including spaces, no composition rules, no expiry, and a bounded blocklist of
+obviously common values. The forms support autofill and paste and carry the
+`autocomplete` tokens password managers key on.
+
+Login refusals — unknown address, wrong password, disabled account, password
+never set — produce one message, one status and the same Argon2id work, so
+neither the text nor a stopwatch distinguishes them. Failed attempts are
+rate-limited per address and per client in a fixed window; there is deliberately
+**no lockout**, because a lockout an attacker can trigger is a way to keep a named
+colleague out of the application indefinitely.
+
+### First-login password setup
+
+Admin-created accounts begin with **no usable password**, and no temporary
+password is ever generated. Creating an account mints one cryptographically
+secure link; only its SHA-256 digest is stored; it lasts 24 hours; issuing a new
+one supersedes every earlier one. The raw link is rendered to the administrator
+**once**, on the response to the action that created it, and is dropped from the
+process — it is never stored, logged, put in an audit payload, or shown again.
+
+Setting a password consumes the link permanently, bumps the account's
+`auth_version`, and **does not sign the person in**: they go to the sign-in form
+and use the credential, which is what proves it. Replayed, expired, superseded and
+disabled-account links all fail, with one message for all four. A password that
+fails the policy does *not* burn the link.
+
+Password reset is the same mechanism under a different name: an administrator
+issues a new link. No existing password is ever revealed, because there is nothing
+to reveal.
 
 ---
 
 ## 3. Sessions
 
-A signed, stateless cookie. `HttpOnly`, `Secure`, `SameSite=Lax`, host-only by
-default, absolute 12-hour expiry with no sliding renewal.
+A signed cookie. `HttpOnly`, `Secure`, `SameSite=Lax`, host-only by default,
+absolute 12-hour expiry with no sliding renewal.
 
-**Why not a database session table.** Revocation is already strong without one
-(see above); authentication must not depend on the database, or a readiness blip
-locks operators out of the screens they would use to diagnose it; and there is no
-second copy of an operator's identity at rest to leak, migrate or clean up.
+**Revocation (#270).** The cookie carries the account's `user_id` and the
+`auth_version` it was minted under. Every authenticated request resolves that
+account and compares the counter, so:
 
-**The accepted cost, stated plainly.** A cookie that is *stolen* stays valid
-until its absolute expiry or until the allow-list changes. Mitigations in place:
+* **disabling an account refuses its existing sessions on the next request** — no
+  restart, no waiting for expiry;
+* **a password change or reset invalidates every earlier session**;
+* **reactivating does not resurrect** the sessions that disabling revoked, because
+  reactivation bumps the counter too;
+* revoking everything for one account is one `UPDATE` on one row.
+
+A cookie minted before this slice carries neither claim, fails to decode, and its
+holder signs in again — a one-time cost, in the safe direction.
+
+**Why still no session table.** The version counter does the job a table would,
+without a second copy of each operator's identity at rest and without a cleanup
+job to forget about.
+
+**What this costs, stated plainly.** One indexed primary-key lookup per
+authenticated request, and authentication now depends on the database. Three
+things bound that: probes, the whole sign-in surface and the `/static/` mount are
+decided without a lookup, so a deployment whose database is down still answers
+`/readyz`, still renders its sign-in page and still serves its stylesheet; a
+lookup that *cannot be answered* returns 503 and leaves the session cookie in
+place, so the browser is signed in again the moment the database is (an outage is
+never mistaken for a mass sign-out); and the directory is a seam
+(`AccountDirectory`), so the boundary is testable without a database.
+
+**The accepted cost of a stolen cookie, stated plainly.** It stays valid until
+its absolute expiry, until the account is disabled, or until its password is
+reset. Mitigations in place:
 `HttpOnly` removes the XSS-to-theft path, `Secure` + HSTS removes the plaintext
 path, the lifetime is bounded and non-renewable, and the population is a handful
 of named people. If a token is known to be stolen, rotating
@@ -449,8 +550,45 @@ remain local-only.
 ## 8. What this slice deliberately does not do
 
 * No Gmail OAuth, drafts, sending, reply ingestion or Sheets.
-* No password signup, customer tenancy, billing or broad RBAC.
-* No per-operator audit trail. Writes still record the constant `OPERATOR_ACTOR`.
-  Now that a verified identity exists on every request, attributing writes to it
-  is a genuinely useful next slice — logged in
+* No public signup, customer tenancy, billing or broad RBAC beyond the two roles.
+* No Microsoft/Entra OAuth. A Microsoft 365 colleague signs in with an email
+  address and a password, which is exactly what the password path is for.
+* No transactional email. Password links are handed to the administrator once and
+  sent out of band; wiring an email provider is a later, separate decision.
+* No per-operator audit trail on *domain* writes. Account changes are fully
+  audited (section 9), but campaign and contact writes still record the constant
+  `OPERATOR_ACTOR`. The `User` model is shaped so issue #269 can attribute them
+  later without redoing authentication; it is logged in
   `docs/POST_LAUNCH_BACKLOG.md`, not implemented here.
+* No change to the extension bearer credential, which is a separate boundary with
+  separate configuration and is untouched by this slice.
+
+---
+
+## 9. Account administration and audit
+
+`/app/admin/users`, administrator only, server-side enforced. An administrator
+can list accounts, create one (email, optional display name; role is always
+`USER`), disable, reactivate, grant or remove the administrator role, see
+`created_at`, `last_login_at` and whether a password is set, and issue a new
+one-time password link.
+
+The screen never renders a password hash, and the service refuses to disable or
+demote the last active administrator. Accounts are never deleted: disabling keeps
+the row, its history and any future attribution while refusing every credential it
+holds — including a link already sitting in somebody's inbox.
+
+Every one of these is an `AuditEvent`: `user.created`, `user.disabled`,
+`user.reactivated`, `user.role_changed`, `user.credential_link_issued`,
+`user.password_setup_completed`, `user.password_reset_completed`,
+`user.google_identity_linked`, `user.bootstrap_admin_ensured`,
+`user.seeded_from_configuration_allowlist`. None of them carries a password, a
+password hash, a raw or digested link, a session secret or an OAuth token.
+
+### One deployment note about the reverse proxy
+
+A password-setup link carries its one-time token in the query string. The
+application access log records the matched **route template** and never the query
+string, so no raw token reaches it. nginx's own `access_log` does log the full
+request line — if that log is retained or shipped anywhere, either exclude
+`/auth/setup` from it or accept that a 24-hour single-use token appears there.

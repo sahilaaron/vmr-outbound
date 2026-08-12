@@ -14,16 +14,23 @@
 
   {% if reason == "not_approved" %}
     <div class="notice err" role="alert">
-      This Google account is not approved for VMR Outbound.
+      This Google account does not have a VMR Outbound account.
     </div>
     {% if email %}
       <p class="tight">You signed in as:</p>
       <p class="identity">{{ email }}</p>
     {% endif %}
     <p>
+      Google confirmed who you are, but VMR grants access from its own account
+      list — and this address is not on it, or its account has been disabled.
       If you have more than one Google account, sign in again and choose your
-      VMR work account. Otherwise ask the VMR administrator to add you.
+      VMR work account. Otherwise ask the VMR administrator to create one.
     </p>
+  {% elif reason == "unavailable" %}
+    <div class="notice err" role="alert">
+      Your account could not be checked right now.
+    </div>
+    <p>This is temporary. Try signing in again in a moment.</p>
   {% elif reason == "expired_request" %}
     <div class="notice err" role="alert">
       That sign-in request expired or was already used.

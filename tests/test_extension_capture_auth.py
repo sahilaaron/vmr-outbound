@@ -42,6 +42,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from tests.hosted_auth_factory import seed_account
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_DIR = REPO_ROOT / "extensions" / "salesnav-capture" / "docs"
 PROFILE_SUBMISSION = json.loads(
@@ -155,15 +157,26 @@ def _fresh(base: dict[str, Any]) -> dict[str, Any]:
 
 
 def _session_cookie(*, email: str = APPROVED_EMAIL) -> tuple[str, str]:
+    """A signed operator cookie for the account seeded by ``approved_account``.
+
+    Since #270 a cookie names the account it belongs to, so this helper reads the
+    seeded row rather than inventing an identifier: a cookie whose ``uid``
+    resolves to nothing is refused, and these tests need the operator half of the
+    extension-versus-operator comparison to actually be signed in.
+    """
+
+    account = seed_account(email=email)
     now = int(time.time())
     session_id = new_session_id()
     session = OperatorSession(
         email=email,
-        subject="1234567890",
+        subject=f"google-sub-{email}",
         display_name="VMR Operator",
         session_id=session_id,
         issued_at=now,
         expires_at=now + 3600,
+        user_id=account.user_id,
+        auth_version=account.auth_version,
     )
     codec = SessionCodec(SESSION_SECRET)
     return codec.encode_session(session), codec.csrf_token(session_id)

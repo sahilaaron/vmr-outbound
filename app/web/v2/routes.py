@@ -36,6 +36,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.core.auth.admin import is_admin_request
 from app.core.auth.csrf import register_csrf, require_csrf
 from app.core.config import Settings, get_settings
 from app.models.campaign import Campaign, CampaignContact
@@ -397,6 +398,10 @@ def _render(
         "operator_name": name,
         "operator_email": email,
         "operator_initials": initials,
+        # Whether to render the administrator entry in the account menu. It is
+        # the same server-side decision the admin routes enforce, read from the
+        # request scope — not a second rule that could quietly disagree with it.
+        "is_admin": is_admin_request(request),
         "capture_ready": "contact_capture_intake" in settings.features.enabled(),
         "campaigns_js_version": CAMPAIGNS_JS_VERSION,
         "v2_css_version": V2_CSS_VERSION,

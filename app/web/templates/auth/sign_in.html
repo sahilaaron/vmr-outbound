@@ -1,26 +1,93 @@
+{#
+  The sign-in screen.
+
+  Two paths, one account behind them. The password form is first because it is
+  the one that works for everybody — a colleague on Outlook, on Gmail, or on a
+  VMR address — while Google is an accelerator for people whose Google account is
+  already the one VMR knows.
+
+  Password-manager compatibility is a deliberate property of this markup rather
+  than an accident of it:
+
+  * a real `<form method="post">` with named `email` and `password` inputs, so a
+    manager recognises it as a login form and offers to fill and to save;
+  * `autocomplete="username"` and `autocomplete="current-password"`, which are
+    the tokens managers key on;
+  * `type="email"` and `inputmode="email"` so a phone shows the right keyboard;
+  * nothing that blocks paste — there is no `onpaste` handler anywhere in this
+    file, which matters because the policy explicitly expects generated
+    30-character values;
+  * `autofocus` on whichever field is empty, so the common case is one keystroke.
+
+  The refused state re-renders this same template with `error` set, so a failed
+  attempt cannot ship different form attributes than the page a manager first
+  saw.
+
+  There is no CSRF field, and that is correct: an anonymous caller has no session
+  to forge against, so there is no token to bind to. The cross-site backstop in
+  the authentication middleware still applies to this POST.
+#}
 {% extends "base.html" %}
 {% block title %}Sign in{% endblock %}
 {% block content %}
   <h1>Sign in to VMR Outbound</h1>
-  <p>This is an internal application. Access is limited to approved VMR operators.</p>
+  <p>This is an internal application. Accounts are created by a VMR administrator.</p>
+
+  {% if error %}
+    <div class="notice err" role="alert">{{ error }}</div>
+  {% endif %}
+
+  <form method="post" action="/auth/password" class="signin-form">
+    <input type="hidden" name="next" value="{{ next }}">
+
+    <label class="field-label" for="email">Email address</label>
+    <input
+      class="field"
+      id="email"
+      name="email"
+      type="email"
+      inputmode="email"
+      autocomplete="username"
+      autocapitalize="none"
+      spellcheck="false"
+      required
+      value="{{ email }}"
+      {% if not email %}autofocus{% endif %}>
+
+    <label class="field-label" for="password">Password</label>
+    <input
+      class="field"
+      id="password"
+      name="password"
+      type="password"
+      autocomplete="current-password"
+      required
+      {% if email %}autofocus{% endif %}>
+
+    <button class="button" type="submit">Sign in</button>
+  </form>
 
   {% if configured %}
-    <a class="button" href="{{ start_url }}">
+    <div class="divider"><span>or</span></div>
+
+    <a class="button secondary" href="{{ start_url }}">
       <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
-        <path fill="#fff" d="M17.6 9.2c0-.6-.05-1.2-.16-1.7H9v3.3h4.8a4.1 4.1 0 0 1-1.8 2.7v2.2h2.9c1.7-1.6 2.7-3.9 2.7-6.5z" opacity=".9"/>
-        <path fill="#fff" d="M9 18c2.4 0 4.5-.8 6-2.2l-2.9-2.2c-.8.5-1.8.9-3.1.9-2.4 0-4.4-1.6-5.1-3.8H.9v2.3A9 9 0 0 0 9 18z" opacity=".75"/>
-        <path fill="#fff" d="M3.9 10.7a5.4 5.4 0 0 1 0-3.4V5H.9a9 9 0 0 0 0 8l3-2.3z" opacity=".6"/>
-        <path fill="#fff" d="M9 3.6c1.3 0 2.5.5 3.4 1.3l2.6-2.6A9 9 0 0 0 .9 5l3 2.3C4.6 5.2 6.6 3.6 9 3.6z" opacity=".85"/>
+        <path fill="currentColor" d="M17.6 9.2c0-.6-.05-1.2-.16-1.7H9v3.3h4.8a4.1 4.1 0 0 1-1.8 2.7v2.2h2.9c1.7-1.6 2.7-3.9 2.7-6.5z" opacity=".9"/>
+        <path fill="currentColor" d="M9 18c2.4 0 4.5-.8 6-2.2l-2.9-2.2c-.8.5-1.8.9-3.1.9-2.4 0-4.4-1.6-5.1-3.8H.9v2.3A9 9 0 0 0 9 18z" opacity=".75"/>
+        <path fill="currentColor" d="M3.9 10.7a5.4 5.4 0 0 1 0-3.4V5H.9a9 9 0 0 0 0 8l3-2.3z" opacity=".6"/>
+        <path fill="currentColor" d="M9 3.6c1.3 0 2.5.5 3.4 1.3l2.6-2.6A9 9 0 0 0 .9 5l3 2.3C4.6 5.2 6.6 3.6 9 3.6z" opacity=".85"/>
       </svg>
       Sign in with Google
     </a>
     <p class="note">
       VMR only reads your name and email address to confirm who you are. Signing in
       here does not give VMR access to your mailbox, and no mail is read or sent.
+      Your Google account must already have a VMR account for this to work.
     </p>
   {% else %}
-    <div class="notice err" role="alert">
-      Sign-in is not configured on this deployment. Contact the VMR administrator.
-    </div>
+    <p class="note">
+      Google sign-in is not configured on this deployment. Use your email address
+      and password, or contact the VMR administrator.
+    </p>
   {% endif %}
 {% endblock %}

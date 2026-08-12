@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 from collections.abc import Iterator
 from typing import Any
 
@@ -34,7 +35,11 @@ from app.core.auth.session import (
 )
 from app.core.auth.startup import HostedAuthConfigurationError
 from app.core.config import Settings, get_settings
+from app.db.session import SessionLocal
 from app.main import create_app
+from app.models.enums import UserState
+from app.models.user import User
+from app.services.users import service as user_service
 from fastapi.testclient import TestClient
 
 from tests.hosted_auth_factory import (
@@ -42,17 +47,25 @@ from tests.hosted_auth_factory import (
     TEST_ISSUER,
     TEST_JWKS_URI,
     RecordingIdentityProvider,
+    SeededAccount,
     SigningKey,
     b64url_json,
     google_claims,
     id_token,
     jwks_transport,
     operator_claims,
+    seed_account,
+    subject_for,
 )
 
 STAGING_HOST = "srv1885453.hstgr.cloud"
 STAGING_ORIGIN = f"https://{STAGING_HOST}"
 APPROVED_EMAIL = "operator@vmr.example"
+# The `sub` the identity fixtures mint for the approved address. The account is
+# seeded already linked to it so that the Google path resolves to the same row
+# every time — and so that a *different* address, which mints a different
+# subject, cannot resolve to it.
+GOOGLE_SUBJECT = subject_for(APPROVED_EMAIL)
 SESSION_SECRET = "test-session-secret-value-at-least-32-chars"
 
 # A staging database URL that satisfies the production-like runtime rules. No
@@ -107,6 +120,23 @@ def provider() -> RecordingIdentityProvider:
     return RecordingIdentityProvider()
 
 
+@pytest.fixture(autouse=True)
+def approved_account() -> SeededAccount:
+    """The approved operator, as an account row.
+
+    Autouse for the whole module because authorization moved from the configured
+    allow-list to the ``users`` table in #270: without this row, every test that
+    used to pass by virtue of ``AUTH__ALLOWED_OPERATOR_EMAILS`` would now be
+    asserting a refusal it did not intend. Seeding it here keeps each test about
+    the one thing it was written to prove.
+
+    The row is committed and the suite's autouse truncation sweep removes it, so
+    every test gets a fresh account with ``auth_version = 1``.
+    """
+
+    return seed_account(email=APPROVED_EMAIL, google_subject=GOOGLE_SUBJECT)
+
+
 @pytest.fixture
 def staging_client(
     monkeypatch: pytest.MonkeyPatch, provider: RecordingIdentityProvider
@@ -127,23 +157,32 @@ def _codec() -> SessionCodec:
 
 
 def _session_cookie(
+    account: SeededAccount,
     *,
-    email: str = APPROVED_EMAIL,
+    email: str | None = None,
     issued_at: int | None = None,
     expires_at: int | None = None,
     session_id: str | None = None,
+    auth_version: int | None = None,
 ) -> tuple[str, str]:
-    """A validly signed session cookie plus its matching CSRF token."""
+    """A validly signed session cookie plus its matching CSRF token.
+
+    Takes the account explicitly since #270: a cookie now names the account it
+    belongs to and the revocation generation it was minted under, and the
+    boundary refuses one whose ``uid`` resolves to nothing.
+    """
 
     now = int(time.time())
     sid = session_id or new_session_id()
     session = OperatorSession(
-        email=email,
-        subject="1234567890",
+        email=email or account.email,
+        subject=GOOGLE_SUBJECT,
         display_name="VMR Operator",
         session_id=sid,
         issued_at=now if issued_at is None else issued_at,
         expires_at=now + 3600 if expires_at is None else expires_at,
+        user_id=account.user_id,
+        auth_version=account.auth_version if auth_version is None else auth_version,
     )
     codec = _codec()
     return codec.encode_session(session), codec.csrf_token(sid)
@@ -170,7 +209,11 @@ def _sign_in(client: TestClient, provider: RecordingIdentityProvider, **claim_ov
         ({"AUTH__ENABLED": "false"}, "AUTH__ENABLED must be true"),
         ({"AUTH__SESSION_SECRET": ""}, "AUTH__SESSION_SECRET"),
         ({"AUTH__SESSION_SECRET": "too-short"}, "AUTH__SESSION_SECRET"),
-        ({"AUTH__ALLOWED_OPERATOR_EMAILS": "[]"}, "AUTH__ALLOWED_OPERATOR_EMAILS"),
+        # The allow-list may now legitimately be empty — it became a one-time
+        # seed rather than a gate in #270. What must not be empty is the
+        # bootstrap administrator, because access is granted by an account row
+        # and a deployment with no administrator cannot create the first one.
+        ({"AUTH__BOOTSTRAP_ADMIN_EMAIL": ""}, "AUTH__BOOTSTRAP_ADMIN_EMAIL"),
         ({"AUTH__GOOGLE_CLIENT_ID": ""}, "AUTH__GOOGLE_CLIENT_ID"),
         ({"AUTH__GOOGLE_CLIENT_SECRET": ""}, "AUTH__GOOGLE_CLIENT_SECRET"),
         ({"AUTH__PUBLIC_BASE_URL": ""}, "AUTH__PUBLIC_BASE_URL"),
@@ -236,7 +279,7 @@ def test_startup_reports_every_problem_at_once(monkeypatch: pytest.MonkeyPatch) 
         monkeypatch,
         _base_env(
             AUTH__SESSION_SECRET="",
-            AUTH__ALLOWED_OPERATOR_EMAILS="[]",
+            AUTH__BOOTSTRAP_ADMIN_EMAIL="",
             AUTH__GOOGLE_CLIENT_ID="",
             AUTH__PUBLIC_BASE_URL="",
         ),
@@ -599,14 +642,20 @@ def test_start_sends_pkce_and_a_bound_transaction(
     assert LOGIN_TRANSACTION_COOKIE_NAME in response.cookies
 
 
-def test_a_verified_google_identity_outside_the_allow_list_is_refused(
+def test_a_verified_google_identity_with_no_account_is_refused(
     staging_client: TestClient, provider: RecordingIdentityProvider
 ) -> None:
-    """The identity is real and fully valid. It is simply not approved."""
+    """The identity is real and fully valid. There is simply no account for it.
+
+    Renamed from ``..._outside_the_allow_list_is_refused``: the refusal is the
+    same and is still asserted, but the *authority* changed. Google proving who
+    somebody is has never been authorization here, and since #270 the thing that
+    grants it is a row in ``users`` rather than a line in an environment file.
+    """
 
     response, _ = _sign_in(staging_client, provider, email="outsider@vmr.example")
     assert response.status_code == 403
-    assert "not approved" in response.text
+    assert "does not have a VMR Outbound account" in response.text
     assert SESSION_COOKIE_NAME not in staging_client.cookies
     # And nothing behind the boundary opened up.
     assert staging_client.get("/app").status_code == 401
@@ -888,9 +937,11 @@ def test_no_token_ever_appears_in_a_url(
     assert staging_client.cookies[SESSION_COOKIE_NAME] not in body
 
 
-def test_an_expired_session_is_refused(staging_client: TestClient) -> None:
+def test_an_expired_session_is_refused(
+    staging_client: TestClient, approved_account: SeededAccount
+) -> None:
     now = int(time.time())
-    cookie, _ = _session_cookie(issued_at=now - 7200, expires_at=now - 1)
+    cookie, _ = _session_cookie(approved_account, issued_at=now - 7200, expires_at=now - 1)
     staging_client.cookies.set(SESSION_COOKIE_NAME, cookie)
     response = staging_client.get("/app")
     assert response.status_code == 401
@@ -905,6 +956,8 @@ def test_a_forged_session_signature_is_refused(staging_client: TestClient) -> No
         session_id=new_session_id(),
         issued_at=int(time.time()),
         expires_at=int(time.time()) + 3600,
+        user_id="00000000-0000-4000-8000-000000000001",
+        auth_version=1,
     )
     staging_client.cookies.set(SESSION_COOKIE_NAME, forged.encode_session(session))
     assert staging_client.get("/app").status_code == 401
@@ -916,29 +969,69 @@ def test_a_malformed_session_cookie_is_refused(staging_client: TestClient, value
     assert staging_client.get("/app").status_code == 401
 
 
-def test_removing_an_operator_from_the_allow_list_revokes_a_live_session(
-    monkeypatch: pytest.MonkeyPatch, provider: RecordingIdentityProvider
+def test_disabling_the_account_revokes_a_live_session(
+    staging_client: TestClient,
+    provider: RecordingIdentityProvider,
+    approved_account: SeededAccount,
 ) -> None:
-    """The stateless design's revocation story, asserted rather than claimed."""
+    """The revocation story, asserted rather than claimed.
 
-    client = _build(monkeypatch, _base_env(), identity_provider=provider)
-    try:
-        _sign_in(client, provider)
-        assert client.get("/app").status_code == 200
-        cookie = client.cookies[SESSION_COOKIE_NAME]
-    finally:
-        get_settings.cache_clear()
+    This test replaces ``test_removing_an_operator_from_the_allow_list_revokes_a
+    _live_session``, which asserted the previous slice's mechanism: an address
+    removed from ``AUTH__ALLOWED_OPERATOR_EMAILS`` stopped verifying on the next
+    request *after a restart*, because the allow-list was configuration.
 
-    revoked = _build(
-        monkeypatch,
-        _base_env(AUTH__ALLOWED_OPERATOR_EMAILS='["someone-else@vmr.example"]'),
-        identity_provider=provider,
-    )
-    try:
-        revoked.cookies.set(SESSION_COOKIE_NAME, cookie)
-        assert revoked.get("/app").status_code == 401
-    finally:
-        get_settings.cache_clear()
+    The mechanism it asserted is gone, deliberately, because it could not do what
+    #270 needs: it required editing a file and restarting the service, and it
+    could not express "this person's password was reset" at all. What replaces it
+    is strictly stronger — one ``UPDATE`` on one row, no restart, effective on the
+    very next request — and this test asserts exactly that, on the same session
+    cookie, with nothing rebuilt in between.
+    """
+
+    _sign_in(staging_client, provider)
+    assert staging_client.get("/app").status_code == 200
+
+    with SessionLocal() as session:
+        user = session.get(User, uuid.UUID(approved_account.user_id))
+        assert user is not None
+        user.state = UserState.DISABLED
+        user.auth_version += 1
+        session.commit()
+
+    assert staging_client.get("/app").status_code == 401
+
+
+def test_reactivating_an_account_does_not_resurrect_its_old_sessions(
+    staging_client: TestClient,
+    provider: RecordingIdentityProvider,
+    approved_account: SeededAccount,
+) -> None:
+    """Reactivation means "may sign in again", never "the open tab is live again"."""
+
+    _sign_in(staging_client, provider)
+    assert staging_client.get("/app").status_code == 200
+
+    with SessionLocal() as session:
+        user = session.get(User, uuid.UUID(approved_account.user_id))
+        assert user is not None
+        user_service.set_state(
+            session, user=user, state=UserState.DISABLED, actor="admin@vmr.example"
+        )
+        session.commit()
+    assert staging_client.get("/app").status_code == 401
+
+    with SessionLocal() as session:
+        user = session.get(User, uuid.UUID(approved_account.user_id))
+        assert user is not None
+        user_service.set_state(
+            session, user=user, state=UserState.ACTIVE, actor="admin@vmr.example"
+        )
+        session.commit()
+
+    # Still refused: the counter moved twice, and the cookie was minted before
+    # either move.
+    assert staging_client.get("/app").status_code == 401
 
 
 def test_logout_invalidates_the_authenticated_state(
@@ -977,6 +1070,8 @@ def test_a_session_stamped_in_the_future_is_refused() -> None:
         session_id=new_session_id(),
         issued_at=now + 600,
         expires_at=now + 4000,
+        user_id="00000000-0000-4000-8000-000000000001",
+        auth_version=1,
     )
     with pytest.raises(SessionDecodeError):
         codec.decode_session(codec.encode_session(session), now=now)
@@ -1041,12 +1136,14 @@ def test_a_wrong_token_is_refused(
 
 
 def test_another_sessions_token_is_refused(
-    staging_client: TestClient, provider: RecordingIdentityProvider
+    staging_client: TestClient,
+    provider: RecordingIdentityProvider,
+    approved_account: SeededAccount,
 ) -> None:
     """Tokens are bound to one session, not shared across all of them."""
 
     _sign_in(staging_client, provider)
-    _, foreign_token = _session_cookie(session_id="a-different-session")
+    _, foreign_token = _session_cookie(approved_account, session_id="a-different-session")
     response = staging_client.post(
         "/api/campaigns",
         json={"name": "Foreign token"},
