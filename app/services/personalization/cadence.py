@@ -172,6 +172,39 @@ def campaign_opted_in(campaign: Campaign) -> bool:
     return sequence_settings(campaign).get("enabled") is True
 
 
+def with_campaign_opt_in(campaign: Campaign, *, enabled: bool) -> dict[str, Any]:
+    """The Campaign's ``cadence_config`` with only the opt-in flag changed.
+
+    Lives next to :func:`sequence_settings` deliberately: the writer and the
+    reader have to agree about the shape of this column, and keeping them in one
+    module is what stops them drifting. Until now nothing wrote it at all — the
+    opt-in could only be set by editing JSON by hand — so the reader's
+    assumptions had never been tested from the writing side.
+
+    Two properties matter and both are easy to get wrong:
+
+    * **Unrelated keys survive.** The column belongs to the Campaign, not to this
+      module, and this module claims exactly one key. Replacing the whole object
+      would silently discard anything else stored alongside it, so the existing
+      value is copied and one key is set. Malformed configuration is treated as
+      absent, matching :func:`sequence_settings`, rather than raising on a page
+      the operator is trying to fix.
+    * **The flag is a real ``bool``.** :func:`campaign_opted_in` tests
+      ``is True``, so an HTML checkbox arriving as the string ``"on"`` would
+      write a value that reads back as *not* opted in — a control that appears
+      to work and does nothing. Callers coerce before calling; the annotation
+      keeps that requirement visible.
+    """
+
+    raw = campaign.cadence_config
+    config: dict[str, Any] = dict(raw) if isinstance(raw, dict) else {}
+    block = config.get(CADENCE_KEY)
+    sequence: dict[str, Any] = dict(block) if isinstance(block, dict) else {}
+    sequence["enabled"] = bool(enabled)
+    config[CADENCE_KEY] = sequence
+    return config
+
+
 def resolve_cadence(campaign: Campaign) -> SequenceCadence:
     """The planned timing for this Campaign's sequences.
 

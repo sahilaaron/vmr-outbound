@@ -74,10 +74,15 @@ from app.services.gmail import mailbox as gmail_mailbox
 from app.services.gmail import provider as gmail_provider
 from app.services.gmail import read as gmail_read
 from app.services.imports import apollo, campaign_import, display, staging
-from app.services.personalization.cadence import campaign_opted_in
+from app.services.personalization.cadence import (
+    DEFAULT_ELAPSED_DAYS,
+    campaign_opted_in,
+    with_campaign_opt_in,
+)
 from app.services.resolution import service as resolution_service
 from app.services.seller import campaign_offerings as seller_campaign_offerings
 from app.services.seller import profile as seller_profile
+from app.services.agents import readiness as agent_readiness
 from app.services.seller import readiness as seller_readiness
 from app.services.seller import records as seller_records
 from app.services.sequences import read as sequence_read
@@ -1235,7 +1240,14 @@ def campaign_edit_page(
         request,
         db,
         "campaign_edit.html",
-        {"active_nav": "campaigns", "page_title": f"Edit {campaign.name}", "campaign": campaign},
+        {
+            "active_nav": "campaigns",
+            "page_title": f"Edit {campaign.name}",
+            "campaign": campaign,
+            "sequence_enabled": campaign_opted_in(campaign),
+            "sequences_on": _sequences_on(get_settings()),
+            "sequence_cadence_days": ", ".join(str(day) for day in DEFAULT_ELAPSED_DAYS),
+        },
     )
 
 
@@ -1247,10 +1259,21 @@ def campaign_edit_submit(
     name: str = Form(...),
     description: str = Form(""),
     allow_provisional_domains: str = Form(""),
+    sequence_enabled: str = Form(""),
 ) -> RedirectResponse:
     identifier = _uuid(campaign_id)
     if identifier is None:
         return _redirect("/app/campaigns", err="That is not a campaign id.")
+    campaign = campaign_service.get_campaign(db, identifier)
+    if campaign is None:
+        return _redirect("/app/campaigns", err="That campaign does not exist.")
+    # The switch is only offered when the deployment flag is on, so an absent
+    # field there means "unchanged" rather than "off". Reading the checkbox
+    # unconditionally would silently opt a Campaign *out* every time somebody
+    # renamed it in an environment where the control was not rendered.
+    opted_in = (
+        bool(sequence_enabled) if _sequences_on(get_settings()) else campaign_opted_in(campaign)
+    )
     try:
         campaign = campaign_service.update_campaign(
             db,
@@ -1258,6 +1281,11 @@ def campaign_edit_submit(
             name=name,
             description=description or None,
             allow_provisional_domains=bool(allow_provisional_domains),
+            # Goes through the service rather than assigning the column, so the
+            # write gets the settings-version bump and the audit event that
+            # `update_campaign` owns. Writing JSON from the template or the
+            # handler would skip both.
+            cadence_config=with_campaign_opt_in(campaign, enabled=opted_in),
             actor=draft_service.OPERATOR_ACTOR,
             reason="campaign edited",
         )
@@ -1374,11 +1402,22 @@ def campaign_page(
     offerings = (
         seller_campaign_offerings.offerings_for_campaign(db, identifier) if _kb_on(settings) else []
     )
+    campaign_record = campaign_service.get_campaign(db, identifier)
     readiness = None
-    if _kb_on(settings):
-        campaign = campaign_service.get_campaign(db, identifier)
-        if campaign is not None:
-            readiness = seller_readiness.campaign_report(db, campaign)
+    if _kb_on(settings) and campaign_record is not None:
+        readiness = seller_readiness.campaign_report(db, campaign_record)
+
+    # What pressing Resume would do to the pipeline, said before it is pressed.
+    # Only meaningful while execution is still off: once it is on the walk has
+    # already happened, and reporting a stage as "would be skipped" then would
+    # describe the past as though it were still a choice.
+    sequence_readiness = None
+    if (
+        campaign_record is not None
+        and not campaign_record.execution_enabled
+        and campaign_opted_in(campaign_record)
+    ):
+        sequence_readiness = agent_readiness.execution_readiness(db, campaign=campaign_record)
 
     # Two different questions, so two different numbers. The strip hint asks "is a
     # re-run likely to help here?" across all nine Agents, and answers it from
@@ -1428,6 +1467,7 @@ def campaign_page(
             "campaigns": campaign_service.list_campaigns(db),
             "offerings": offerings,
             "readiness": readiness,
+            "sequence_readiness": sequence_readiness,
             "kb_on": _kb_on(settings),
         },
     )

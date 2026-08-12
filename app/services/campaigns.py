@@ -31,7 +31,9 @@ from app.models.enums import (
 )
 from app.models.import_batch import ImportBatch
 from app.models.seller_knowledge import CampaignOffering
+from app.services.agents.readiness import execution_readiness
 from app.services.audit import record_audit_event
+from app.services.personalization.cadence import campaign_opted_in
 
 MAX_NAME_LEN = 255
 MAX_DESCRIPTION_LEN = 4_000
@@ -348,6 +350,17 @@ def set_campaign_execution(
         raise CampaignNotFound(f"campaign {campaign_id} does not exist")
     if enabled and campaign.status is CampaignStatus.ARCHIVED:
         raise CampaignError("an archived campaign cannot be enabled")
+    if enabled and not campaign.execution_enabled and campaign_opted_in(campaign):
+        # Preflight, and deliberately here rather than in either route: the UI
+        # switch and the JSON API both reach this function, and it runs before
+        # `execution_enabled` is written, so a refusal leaves nothing applied.
+        #
+        # Scoped to a state *change*. Re-affirming execution on a campaign that
+        # is already running must not start failing, because by then the walk
+        # has happened and refusing would only block the reconcile.
+        readiness = execution_readiness(session, campaign=campaign)
+        if not readiness.runnable:
+            raise CampaignError(readiness.refusal_message())
     if campaign.execution_enabled is enabled:
         if reconcile:
             _reconcile_campaign_controls(session, campaign.id, actor=actor)
