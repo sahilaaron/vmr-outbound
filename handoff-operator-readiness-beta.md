@@ -10,11 +10,19 @@ not from an older feature branch.
 
 ```
 base  a10c1de1c535f26bdc2825a3a9ffc127557b7ecb   (main, CI #361 green on this SHA)
-head  <filled in below after push>
+head  aa5701d7094faea1a7a918f94ac38167757a2938   (verified on the remote)
 ```
+
+`git ls-remote origin refs/heads/fix/operator-readiness-beta` returned
+`aa5701d7094faea1a7a918f94ac38167757a2938`, matching the local head. Every gate
+and every suite recorded below was run at that commit; the only commit after it
+is the one that writes these two SHAs into this file, which touches no code.
 
 `git merge-base HEAD a10c1de1` returns `a10c1de1c535f26bdc2825a3a9ffc127557b7ecb`,
 so the branch descends from that commit and nothing was rebased onto it.
+`origin/main` is still `a10c1de1` and was not modified. The branch is 10 ahead,
+0 behind, and the working tree is clean apart from files that were already
+untracked when the session began.
 
 | Commit | What it does |
 | --- | --- |
