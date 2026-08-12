@@ -635,9 +635,21 @@ def test_the_campaign_screen_is_the_only_page_that_auto_refreshes(
     assert re.search(r"/static/campaigns\.js\?v=[0-9a-f]{12}", campaigns)
     assert "data-live" not in campaigns, "/app/campaigns must not auto-refresh"
 
+    # `/app/review` is deliberately no longer in this list. It carries the
+    # sequence copy controls, and a clipboard write needs script -- the same
+    # `sequence.js` the contact page already loads, which is why the contact
+    # page was never in this list either. It is asserted positively below
+    # instead of being dropped silently: one external same-origin script, no
+    # inline script, and still no auto-refresh.
+    review = client.get("/app/review").text
+    assert re.search(r"/static/sequence\.js\?v=[0-9a-f]+", review), (
+        "/app/review must load the shared copy handler"
+    )
+    assert review.lower().count("<script") == 1, "/app/review must load exactly one script"
+    assert "data-live" not in review, "/app/review must not auto-refresh"
+
     for path in (
         "/app",
-        "/app/review",
         "/app/contacts",
         "/app/companies",
         "/app/knowledge",

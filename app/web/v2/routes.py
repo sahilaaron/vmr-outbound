@@ -77,7 +77,6 @@ from app.services.gmail import read as gmail_read
 from app.services.imports import apollo, campaign_import, display, staging
 from app.services.personalization.cadence import (
     DEFAULT_ELAPSED_DAYS,
-    CadenceError,
     campaign_opted_in,
     with_campaign_opt_in,
 )
@@ -1279,7 +1278,11 @@ def campaign_edit_submit(
         return _redirect("/app/campaigns", err="That is not a campaign id.")
     campaign = campaign_service.get_campaign(db, identifier)
     if campaign is None:
-        return _redirect("/app/campaigns", err="That campaign does not exist.")
+        # Back to the edit page, which answers 404 for an id that does not
+        # exist. Sending them to the campaign list instead would turn a missing
+        # campaign into a 200, which is what reading the row here first
+        # accidentally did.
+        return _redirect(f"/app/campaigns/{identifier}/edit", err="That campaign does not exist.")
     # The switch is only offered when the deployment flag is on, so an absent
     # field there means "unchanged" rather than "off". Reading the checkbox
     # unconditionally would silently opt a Campaign *out* every time somebody
@@ -1308,10 +1311,7 @@ def campaign_edit_submit(
             actor=draft_service.OPERATOR_ACTOR,
             reason="campaign edited",
         )
-    except (CampaignError, CadenceError) as exc:
-        # `CadenceError` reaches here when the stored cadence configuration is
-        # not the shape this control can edit. Refused with the reason shown
-        # rather than silently replacing whatever is in the column.
+    except CampaignError as exc:
         return _redirect(f"/app/campaigns/{identifier}/edit", err=str(exc))
     db.commit()
     return _redirect(f"/app/campaigns/{campaign.id}", ok=f"{campaign.name} updated.")
