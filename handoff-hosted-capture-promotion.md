@@ -48,8 +48,7 @@ In `app/core/runtime.py`:
    _STAGING_PROMOTION_ENVIRONMENTS = frozenset({"staging"})
 
    _PROMOTION_REQUIRED_FEATURES = (
-       ("automatic_company_domain_resolution",
-        "FEATURES__AUTOMATIC_COMPANY_DOMAIN_RESOLUTION"),
+       ("automatic_company_domain_resolution", "FEATURES__AUTOMATIC_COMPANY_DOMAIN_RESOLUTION"),
        ("salesnav_domain_enrichment", "FEATURES__SALESNAV_DOMAIN_ENRICHMENT"),
    )
    ```
