@@ -1111,3 +1111,235 @@ def test_the_user_repr_does_not_print_a_hash(db: Session) -> None:
     user.password_hash = passwords.hash_password(GOOD_PASSWORD)
     assert user.password_hash not in repr(user)
     assert "argon2" not in repr(user)
+
+
+# ---------------------------------------------------------------------------
+# J. Regressions from the focused security review
+# ---------------------------------------------------------------------------
+
+
+def test_the_client_bucket_is_skipped_rather_than_shared_when_unresolvable() -> None:
+    """The finding: behind nginx every peer is 127.0.0.1.
+
+    ``client_fingerprint`` used to read the raw ASGI peer, which behind the
+    deployed reverse proxy is the proxy itself for *every* request. That put the
+    whole deployment in one bucket with a 20-attempt allowance, so any anonymous
+    caller could spend it in seconds and lock every colleague out of password
+    sign-in — turning the throttle into the site-wide denial of service the
+    module docstring promises it is not.
+
+    The fix reads the address the hardening boundary already resolved, and
+    returns ``None`` when there is not one. ``None`` must mean "skip this
+    bucket", never "share a bucket named unknown".
+    """
+
+    from app.core.auth.ratelimit import client_fingerprint
+
+    assert client_fingerprint({"client_ip": "203.0.113.9"}) == "203.0.113.9"
+    assert client_fingerprint({"client_ip": None}) is None
+    assert client_fingerprint({}) is None
+    assert client_fingerprint({"client_ip": "   "}) is None
+
+    limiter = LoginRateLimiter(email_limit=5, client_limit=2, window_seconds=60)
+    for _ in range(10):
+        limiter.record_failure(email="a@vmr.example", client=None, now=1_000)
+    # Those attempts counted against their own address and against nothing else,
+    # so a different person is unaffected.
+    assert not limiter.is_blocked(email="b@vmr.example", client=None, now=1_000)
+
+
+def test_the_hardening_boundary_publishes_the_resolved_client() -> None:
+    """The limiter's input exists and is the address the boundary resolved.
+
+    Asserted through the middleware rather than by unit-testing the helper, so
+    that deleting the ``state["client_ip"]`` assignment breaks a test rather than
+    silently reverting the fix above.
+    """
+
+    import asyncio
+
+    from app.core.http import ProductionHTTPMiddleware
+
+    seen: dict[str, Any] = {}
+
+    async def _probe(scope: Any, receive: Any, send: Any) -> None:
+        seen.update(scope.get("state") or {})
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    async def _receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def _send(message: dict[str, Any]) -> None:
+        return None
+
+    middleware = ProductionHTTPMiddleware(
+        _probe,
+        max_request_bytes=1_000_000,
+        trusted_proxy_cidrs=("127.0.0.1/32",),
+        hsts_max_age_seconds=0,
+    )
+
+    def _run(peer: tuple[str, int], headers: list[tuple[bytes, bytes]]) -> None:
+        seen.clear()
+        asyncio.run(
+            middleware(
+                {
+                    "type": "http",
+                    "method": "GET",
+                    "path": "/healthz",
+                    "headers": [(b"host", HOST.encode()), *headers],
+                    "client": peer,
+                    "scheme": "https",
+                    "query_string": b"",
+                },
+                _receive,
+                _send,
+            )
+        )
+
+    # An untrusted peer is itself the client.
+    _run(("198.51.100.7", 5555), [])
+    assert seen.get("client_ip") == "198.51.100.7"
+
+    # A trusted proxy hands over the forwarded caller, which is the whole point:
+    # behind nginx the peer is always the loopback address.
+    _run(("127.0.0.1", 5555), [(b"x-forwarded-for", b"203.0.113.44")])
+    assert seen.get("client_ip") == "203.0.113.44"
+
+
+def test_an_enormous_password_is_bounded_before_it_reaches_argon2(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The finding: the login path did not bound its input.
+
+    ``validate_password`` enforces the ceiling on the *setup* path, but login
+    verifies rather than validates, so the form value used to reach NFKC
+    normalisation and Argon2 at whatever length arrived. Two consequences: server
+    CPU per unauthenticated request, and a timing oracle — the no-account branch
+    spends a *fixed* dummy verification, so only the real-account branch would
+    grow with the input.
+
+    Asserted as the bound itself rather than as a stopwatch reading. Starlette
+    already caps one form field at 1 MiB, so a timing assertion at that size is
+    within noise on a shared box and would pass even with the defect present;
+    what actually needs pinning is that nothing longer than the policy maximum
+    ever reaches the verifier.
+    """
+
+    seed_account(email="member@gmail.com", password=GOOD_PASSWORD)
+    seen: list[int] = []
+    real_authenticate = user_service.authenticate_password
+
+    def _recording(session: Any, *, email: str, password: str, **kwargs: Any) -> Any:
+        seen.append(len(password))
+        return real_authenticate(session, email=email, password=password, **kwargs)
+
+    monkeypatch.setattr(auth_routes.user_service, "authenticate_password", _recording)
+
+    huge = "a" * 900_000
+    assert _login(client, "member@gmail.com", huge).status_code == 401
+    assert _login(client, "nobody@gmail.com", huge).status_code == 401
+
+    # One character past the maximum, so an over-long value stays a mismatch
+    # rather than silently becoming a shorter, possibly-correct password.
+    assert seen == [passwords.MAX_PASSWORD_CHARS + 1, passwords.MAX_PASSWORD_CHARS + 1]
+
+
+def test_a_disabled_accounts_google_identity_is_not_linked_on_a_refused_sign_in(
+    client: TestClient, provider: RecordingIdentityProvider
+) -> None:
+    """The finding: linking happened before the state check, and was committed.
+
+    A disabled account would permanently acquire whichever Google subject first
+    presented a matching address — and because a *different* subject is refused
+    afterwards, the real owner would be locked out of the Google path for good
+    once the account was reactivated.
+    """
+
+    account = seed_account(email="gone@gmail.com", state="disabled")
+    assert _google_sign_in(client, provider, email="gone@gmail.com").status_code == 403
+
+    with SessionLocal() as session:
+        user = session.get(User, uuid.UUID(account.user_id))
+        assert user is not None
+        assert user.google_subject is None
+        assert user.google_linked_at is None
+
+
+def test_the_allowlist_seed_is_a_one_shot_not_a_per_start_reconciliation(db: Session) -> None:
+    """The finding: an emergency-deleted account came back at the next restart."""
+
+    user_service.seed_from_allowlist(db, emails=("seeded@vmr.example",))
+    assert user_service.get_by_email(db, "seeded@vmr.example") is not None
+
+    # An operator deletes the row by hand in an emergency, and somebody else's
+    # account exists too, so the directory is plainly being administered.
+    user_service.create_user(db, email="managed@vmr.example", display_name=None, actor=ADMIN_EMAIL)
+    deleted = user_service.get_by_email(db, "seeded@vmr.example")
+    assert deleted is not None
+    db.delete(deleted)
+    db.flush()
+
+    user_service.seed_from_allowlist(db, emails=("seeded@vmr.example",))
+    assert user_service.get_by_email(db, "seeded@vmr.example") is None
+
+
+def test_the_seed_still_runs_on_a_directory_holding_only_the_bootstrap_admin(
+    db: Session,
+) -> None:
+    """The guard must not break the one moment the seed exists for."""
+
+    user_service.ensure_bootstrap_admin(db, email=ADMIN_EMAIL)
+    created = user_service.seed_from_allowlist(db, emails=("legacy@vmr.example",))
+    assert [user.email_normalized for user in created] == ["legacy@vmr.example"]
+
+
+def test_one_admin_cannot_drain_another_admins_one_time_link(client: TestClient) -> None:
+    """The finding: the link handle was the target account's id, which is rendered.
+
+    Two administrators is the expected shape of this deployment, so a second
+    administrator polling ``?issued=<uuid>`` — a value visible in the table —
+    could take a colleague's freshly issued link, and the audit trail would still
+    name the colleague as the issuer.
+    """
+
+    csrf = _admin_session(client, email=ADMIN_EMAIL)
+    created = client.post(
+        "/app/admin/users/create",
+        data={"email": "target@gmail.com", "display_name": "", "_csrf": csrf},
+        headers={"Sec-Fetch-Site": "same-origin"},
+    )
+    assert created.status_code == 303
+    handle = created.headers["location"].partition("issued=")[2].partition("&")[0]
+    assert handle
+
+    # Not the account id, and not derivable from anything the table renders.
+    with SessionLocal() as session:
+        target = user_service.get_by_email(session, "target@gmail.com")
+        assert target is not None
+        assert handle != str(target.id)
+
+    # A second administrator, in their own session, cannot read it.
+    second = seed_account(email="admin-two@gmail.com", role="admin")
+    _attach_session(client, second.user_id, second.email)
+    stolen = client.get(f"/app/admin/users?issued={handle}")
+    assert stolen.status_code == 200
+    assert "/auth/setup?token=" not in stolen.text
+
+
+def test_an_over_long_email_is_refused_rather_than_becoming_a_500(db: Session) -> None:
+    long_address = ("x" * 320) + "@vmr.example"
+    with pytest.raises(user_service.UserServiceError):
+        user_service.create_user(db, email=long_address, display_name=None, actor=ADMIN_EMAIL)
+
+
+def test_a_next_value_that_loops_back_to_the_sign_in_page_is_refused() -> None:
+    """The cosmetic redirect-loop gap the review found in ``safe_next_path``."""
+
+    from app.core.auth.policy import safe_next_path
+
+    assert safe_next_path("/auth/login?next=%2Fapp", fallback="/app") == "/app"
+    assert safe_next_path("/auth/setup?token=abc", fallback="/app") == "/app"
+    # A real destination with a query string still survives.
+    assert safe_next_path("/app/campaigns?page=2", fallback="/app") == "/app/campaigns?page=2"

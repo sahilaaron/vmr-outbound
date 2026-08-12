@@ -31,6 +31,7 @@ row.
 
 from __future__ import annotations
 
+import secrets
 import uuid
 from typing import Any
 
@@ -65,11 +66,57 @@ USERS_URL = "/app/admin/users"
 #: and the operator. It is not put in a cookie either, for the same reason plus
 #: one more: a cookie would be sent on every subsequent request.
 #:
-#: It lives in process memory, keyed by the account it belongs to, and is removed
-#: the first time it is rendered. That makes "shown exactly once" a property of
-#: the code rather than a promise in the copy. A restart between the two requests
-#: loses the link, which is the safe direction: the administrator issues another.
-_pending_links: dict[str, str] = {}
+#: It lives in process memory and is removed the first time it is rendered, which
+#: makes "shown exactly once" a property of the code rather than a promise in the
+#: copy. A restart between the two requests loses the link, which is the safe
+#: direction: the administrator issues another.
+#:
+#: Keyed by an unguessable handle and bound to the *session* that created it,
+#: not by the target account's id. Keying by account id would put the handle in
+#: the users table for anyone to read — every row renders its own id — so a second
+#: administrator could poll ``?issued=<uuid>`` and drain a colleague's link before
+#: their redirect landed, taking over that account while the audit trail recorded
+#: the first administrator as the issuer. Two administrators is already the
+#: expected shape of this deployment, so that is a real path rather than a
+#: theoretical one.
+_pending_links: dict[str, tuple[str, str]] = {}
+
+
+def _stash_link(request: Request, url: str) -> str:
+    """Hold one raw link for one session and return its single-use handle."""
+
+    handle = secrets.token_urlsafe(16)
+    _pending_links[handle] = (_session_key(request), url)
+    return handle
+
+
+def _take_link(request: Request, handle: str | None) -> str | None:
+    """Pop the link for this handle, but only for the session that stashed it."""
+
+    if not handle:
+        return None
+    held = _pending_links.pop(handle, None)
+    if held is None:
+        return None
+    owner, url = held
+    if owner != _session_key(request):
+        # Somebody else's handle. It has been consumed either way — a handle that
+        # survived a wrong-session read would be a handle worth guessing at.
+        return None
+    return url
+
+
+def _session_key(request: Request) -> str:
+    """Which browser session this request belongs to, for link ownership.
+
+    The session identifier rather than the address, so that the same
+    administrator signed in from two places cannot pick up a link issued in the
+    other browser. Falls back to a constant when authentication is off, which is
+    local development where there is one operator and no session at all.
+    """
+
+    operator = current_operator()
+    return operator.session_id if operator is not None else "local"
 
 
 def _actor() -> str:
@@ -147,7 +194,7 @@ def users_index(request: Request, db: Session = Depends(get_db)) -> HTMLResponse
     """
 
     issued_for = request.query_params.get("issued")
-    issued_link = _pending_links.pop(issued_for, None) if issued_for else None
+    issued_link = _take_link(request, issued_for)
     return _users_page(request, db, issued_link=issued_link, issued_for=issued_for)
 
 
@@ -179,9 +226,9 @@ def create_user(
         db.rollback()
         return _error_page(request, db, str(exc))
 
-    _pending_links[str(user.id)] = _setup_url(request, issued.raw_token)
+    handle = _stash_link(request, _setup_url(request, issued.raw_token))
     return _redirect(
-        f"{USERS_URL}?issued={user.id}",
+        f"{USERS_URL}?issued={handle}",
         ok=f"Account created for {user.email_normalized}.",
     )
 
@@ -272,9 +319,9 @@ def issue_link(
         db.rollback()
         return _error_page(request, db, str(exc))
 
-    _pending_links[str(user.id)] = _setup_url(request, issued.raw_token)
+    handle = _stash_link(request, _setup_url(request, issued.raw_token))
     return _redirect(
-        f"{USERS_URL}?issued={user.id}",
+        f"{USERS_URL}?issued={handle}",
         ok=f"A new link was created for {user.email_normalized}. Earlier links no longer work.",
     )
 

@@ -225,8 +225,12 @@ def safe_next_path(raw: str | None, *, fallback: str) -> str:
         # backslash, and a value that survives one more decoding step than it was
         # checked against is exactly how a redirect filter is eventually escaped.
         return fallback
-    if is_anonymous_path(raw):
+    if is_anonymous_path(raw.partition("?")[0]):
         # Bouncing back to the sign-in page after signing in is a loop, and a
-        # probe path is not an operator destination.
+        # probe path is not an operator destination. The query string is split
+        # off first: `?next=/auth/login%3Fnext=/app` would otherwise slip past
+        # this check and produce exactly the loop it exists to prevent. (Not a
+        # redirect off-site — every rule above still holds — just a page that
+        # bounces.)
         return fallback
     return raw

@@ -308,7 +308,22 @@ class OperatorAuthenticationMiddleware:
         path = str(scope.get("path", "/"))
         session, account, outcome = self._resolve_session(scope, now=now, path=path)
 
-        if outcome == _DIRECTORY_UNAVAILABLE:
+        # The extension capture credential. Consulted only for the enumerated
+        # capture contract (see `app/core/auth/extension.py`), so this call
+        # returns `None` for every other path in the application and no amount of
+        # a valid credential can widen that.
+        #
+        # Resolved *before* the directory verdict is acted on, because it does not
+        # depend on the directory at all: a capture is authorised by a bearer
+        # credential and a `chrome-extension://` origin, neither of which needs an
+        # account row. Answering 503 to a perfectly valid capture merely because
+        # the same browser also carried a stale session cookie would be an outage
+        # invented out of an irrelevant fact.
+        extension_key = authenticate_capture_request(
+            scope, self.extension_settings, path=path, method=method
+        )
+
+        if outcome == _DIRECTORY_UNAVAILABLE and extension_key is None:
             # The account directory could not answer. This is *unknown*, not
             # *refused*: the session cookie stays exactly where it is, so the
             # browser is signed in again the moment the database is reachable.
@@ -326,14 +341,6 @@ class OperatorAuthenticationMiddleware:
                 ),
             )
             return
-
-        # The extension capture credential. Consulted only for the enumerated
-        # capture contract (see `app/core/auth/extension.py`), so this call
-        # returns `None` for every other path in the application and no amount of
-        # a valid credential can widen that.
-        extension_key = authenticate_capture_request(
-            scope, self.extension_settings, path=path, method=method
-        )
 
         # One credential decides one request, and an explicitly presented bearer
         # outranks an ambient cookie. That ordering is what makes the acceptance

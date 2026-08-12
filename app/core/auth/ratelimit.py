@@ -40,7 +40,9 @@ a timestamp list per bucket.
 from __future__ import annotations
 
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import Any
 
 #: Failed attempts allowed for one email address within one window.
 DEFAULT_EMAIL_ATTEMPT_LIMIT = 5
@@ -94,20 +96,29 @@ class LoginRateLimiter:
 
     # --- queries -------------------------------------------------------------
 
-    def is_blocked(self, *, email: str, client: str, now: int) -> bool:
-        """Whether this attempt should be refused before any password is checked."""
+    def is_blocked(self, *, email: str, client: str | None, now: int) -> bool:
+        """Whether this attempt should be refused before any password is checked.
+
+        ``client`` may be ``None`` when the caller's address could not be
+        resolved; the per-client bucket is then skipped rather than shared. See
+        :func:`client_fingerprint` for why a shared bucket would be a denial of
+        service rather than a defence.
+        """
 
         with self._lock:
-            return self._over_limit(f"e:{email}", self._email_limit, now) or self._over_limit(
-                f"c:{client}", self._client_limit, now
-            )
+            if self._over_limit(f"e:{email}", self._email_limit, now):
+                return True
+            if client is None:
+                return False
+            return self._over_limit(f"c:{client}", self._client_limit, now)
 
-    def retry_after_seconds(self, *, email: str, client: str, now: int) -> int:
+    def retry_after_seconds(self, *, email: str, client: str | None, now: int) -> int:
         """Whole seconds until the most restrictive relevant window rolls over."""
 
+        keys = [f"e:{email}"] + ([f"c:{client}"] if client is not None else [])
         with self._lock:
             remaining = 0
-            for key in (f"e:{email}", f"c:{client}"):
+            for key in keys:
                 bucket = self._buckets.get(key)
                 if bucket is None:
                     continue
@@ -117,12 +128,13 @@ class LoginRateLimiter:
 
     # --- updates -------------------------------------------------------------
 
-    def record_failure(self, *, email: str, client: str, now: int) -> None:
+    def record_failure(self, *, email: str, client: str | None, now: int) -> None:
         """Count one failed attempt against both buckets."""
 
         with self._lock:
             self._increment(f"e:{email}", now)
-            self._increment(f"c:{client}", now)
+            if client is not None:
+                self._increment(f"c:{client}", now)
             self._evict_if_needed()
 
     def record_success(self, *, email: str, now: int) -> None:
@@ -166,16 +178,30 @@ class LoginRateLimiter:
             self._buckets.pop(key, None)
 
 
-def client_fingerprint(client_host: str | None) -> str:
-    """The client identity a bucket is keyed on.
+def client_fingerprint(request_state: Mapping[str, Any]) -> str | None:
+    """The client identity a bucket is keyed on, or ``None`` for "do not count".
 
-    The peer address as the ASGI server reports it, which behind the deployed
-    nginx is the proxy's own address unless ``X-Forwarded-For`` has been applied
-    upstream of the application. That is stated rather than worked around: this
-    project's forwarded-header handling lives in the production hardening
-    middleware and is the single place that decides which forwarded values are
-    trusted, and a login form must not invent a second, laxer rule — an attacker
-    who could set their own bucket key would have no rate limit at all.
+    Read from ``state["client_ip"]``, which the production hardening middleware
+    published after applying this project's one forwarded-header trust rule. It
+    is deliberately *not* re-derived here: a login form inventing a second, laxer
+    rule is how an attacker ends up choosing their own bucket key, and an attacker
+    who can choose their bucket has no rate limit at all.
+
+    ``None`` — no resolvable caller address — means the per-client bucket is
+    **skipped for this request**, and that is the important decision in this
+    function. The obvious alternative, a shared ``"unknown"`` bucket, is worse
+    than useless behind a reverse proxy: uvicorn runs with ``--no-proxy-headers``,
+    so if the forwarded client cannot be resolved then it cannot be resolved for
+    *anybody*, and every request in the deployment lands in one bucket. An
+    anonymous caller could then spend that bucket's whole allowance in a few
+    seconds and lock every colleague out of password sign-in — converting a
+    throttle into the site-wide denial of service this module's docstring
+    promises it is not. Skipping leaves the per-address bucket, which is the
+    limit that actually protects an account, doing its job alone.
     """
 
-    return (client_host or "unknown").strip().lower() or "unknown"
+    raw = request_state.get("client_ip")
+    if not isinstance(raw, str):
+        return None
+    candidate = raw.strip().lower()
+    return candidate or None

@@ -53,6 +53,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.core.auth import passwords
 from app.core.auth.accounts import AccountSnapshot, snapshot_of
 from app.core.auth.csrf import register_csrf, require_csrf
 from app.core.auth.google import (
@@ -212,7 +213,20 @@ def password_sign_in(
 
     now = int(time.time())
     normalized = _normalized_form_email(email)
-    client = client_fingerprint(request.client.host if request.client else None)
+    # The caller's address as the hardening boundary resolved it, not the raw
+    # ASGI peer: behind nginx the peer is always 127.0.0.1, so keying on it would
+    # put the whole deployment in one bucket that any anonymous caller could
+    # exhaust.
+    client = client_fingerprint(request.scope.get("state") or {})
+    # Bounded before it reaches Argon2. `validate_password` enforces the ceiling
+    # on the setup path, but this path does not validate — it verifies — so
+    # without this an attacker could post megabytes and get two things for free:
+    # server CPU per unauthenticated request, and a timing oracle, because the
+    # no-account branch spends a *fixed* dummy verification while this one would
+    # scale with the input. Truncating one character past the maximum keeps an
+    # over-long value a mismatch rather than silently making it a shorter,
+    # possibly-correct password.
+    presented = password[: passwords.MAX_PASSWORD_CHARS + 1]
 
     if login_rate_limiter.is_blocked(email=normalized, client=client, now=now):
         # Throttled, never locked: this clears itself when the window rolls over,
@@ -232,7 +246,7 @@ def password_sign_in(
         return response
 
     try:
-        outcome = user_service.authenticate_password(session, email=normalized, password=password)
+        outcome = user_service.authenticate_password(session, email=normalized, password=presented)
     except Exception:
         # The account directory is unreachable. Say so plainly rather than
         # rendering a refusal that would tell somebody their password was wrong
@@ -534,6 +548,12 @@ def complete_password_setup(
             _, user = token_service.resolve_token(session, token)
         except token_service.CredentialTokenError:
             return _render(request, "password_setup_invalid.html", {}, status_code=400)
+        except Exception:
+            # Same branch the GET has. Without it, a database that drops between
+            # rendering the form and submitting a password that fails the policy
+            # turns a retryable refusal into a 500.
+            _logger.warning('{"event":"password_setup_directory_unavailable"}')
+            return _render(request, "unavailable.html", {}, status_code=503)
         return _render(
             request,
             "password_setup.html",
@@ -558,6 +578,9 @@ def complete_password_setup(
         return _render(request, "password_setup_invalid.html", {}, status_code=400)
     except PasswordPolicyError as exc:
         return _reject(str(exc))
+    except Exception:
+        _logger.warning('{"event":"password_setup_directory_unavailable"}')
+        return _render(request, "unavailable.html", {}, status_code=503)
 
     return _render(request, "password_setup_done.html", {})
 

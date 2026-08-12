@@ -64,6 +64,10 @@ SYSTEM_ACTOR = "system:bootstrap"
 
 _ENTITY_TYPE = "user"
 
+#: The column width for both address columns, and therefore the limit the service
+#: enforces so that an over-long value is a refusal rather than a driver error.
+MAX_EMAIL_CHARS = 320
+
 
 class UserServiceError(Exception):
     """Raised when a requested account change cannot be made.
@@ -159,6 +163,12 @@ def create_user(
         raise UserServiceError(
             "Enter a well-formed email address. Non-ASCII addresses are not supported."
         )
+    if len(normalized) > MAX_EMAIL_CHARS or len(email.strip()) > MAX_EMAIL_CHARS:
+        # Checked here rather than left to the column width. The form's
+        # `maxlength` is advice a client may ignore, and a 400-character address
+        # reaching `flush()` raises a driver error rather than `UserServiceError`,
+        # which escapes the admin screen's handling and becomes a 500.
+        raise UserServiceError(f"An email address may be at most {MAX_EMAIL_CHARS} characters.")
     if get_by_email(session, normalized) is not None:
         raise UserServiceError("An account with that email address already exists.")
 
@@ -486,6 +496,14 @@ def resolve_google_identity(
             return None
         if by_address.google_subject and by_address.google_subject != subject:
             return None
+        if by_address.state != UserState.ACTIVE:
+            # Checked *before* linking, not after. Linking first and refusing
+            # afterwards still commits the link, so a disabled account would
+            # permanently acquire whichever Google subject happened to present a
+            # matching address — and because a *different* subject is refused
+            # above, that would lock the real owner out of the Google path for
+            # good once the account was reactivated.
+            return None
         user = by_address
         user.google_subject = subject
         user.google_linked_at = moment
@@ -602,11 +620,36 @@ def seed_from_allowlist(
 ) -> list[User]:
     """Give every configured legacy allow-list address an ordinary account.
 
-    This exists so that turning on the accounts model does not lock out the
-    people who could sign in the day before. It is idempotent, it never changes
-    an account that already exists, and it never grants ADMIN — the bootstrap
-    administrator is the only source of that role.
+    This exists for exactly one moment: the first start after the accounts
+    migration, so that turning on the accounts model does not lock out the people
+    who could sign in the day before.
+
+    It is therefore a **one-shot**, not a per-start reconciliation, and the guard
+    below is what makes that true. Re-running it on every boot would quietly undo
+    an administrator's decisions: an account deleted from the database by a human
+    operator in an emergency would come back — active, and able to sign in with
+    Google immediately — at the next restart, purely because the address was
+    still sitting in an environment variable nobody had thought about since the
+    migration.
+
+    "Nothing has been seeded yet" is read as "the directory holds only accounts
+    this function did not create", which in practice means: nothing, or only the
+    bootstrap administrator that ran moments earlier in the same startup. It never
+    grants ADMIN — the bootstrap administrator is the only source of that role.
     """
+
+    existing = list_users(session)
+    seedable = {normalize_operator_email(entry) for entry in emails} - {""}
+    unexplained = {
+        user.email_normalized
+        for user in existing
+        if user.role != UserRole.ADMIN and user.email_normalized not in seedable
+    }
+    if unexplained:
+        # The directory already holds an ordinary account that this list does not
+        # explain, so somebody has been administering it. The migration moment has
+        # passed; leave it alone.
+        return []
 
     created: list[User] = []
     for entry in emails:

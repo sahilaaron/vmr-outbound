@@ -254,6 +254,19 @@ class ProductionHTTPMiddleware:
         # the same answer the hardening boundary acted on, not a guess.
         state["forwarded_scheme"] = context.scheme
         state["trusted_proxy"] = context.trusted_proxy
+        # The caller's address as this boundary resolved it: the forwarded client
+        # when the peer is a trusted proxy, the peer otherwise, `None` when
+        # neither could be determined. Published for the same reason as the two
+        # above — anything needing a per-caller identity must read the verdict
+        # this boundary reached rather than re-parsing `X-Forwarded-For` with a
+        # second, laxer rule.
+        #
+        # The login rate limiter is the first consumer, and it is why this exists.
+        # uvicorn runs with `--no-proxy-headers`, so behind nginx every request
+        # has `scope["client"] == 127.0.0.1`: a bucket keyed on the raw peer would
+        # hold the entire deployment, and any anonymous caller could exhaust it
+        # and turn a throttle into a site-wide outage of password sign-in.
+        state["client_ip"] = str(context.client) if context.client is not None else None
         # Publish that verdict into the ASGI scope as well, not only into state.
         #
         # Starlette builds `request.url`, `request.base_url`, every redirect it
