@@ -1050,10 +1050,12 @@ def test_the_workbench_refuses_a_non_local_environment_without_auth(
     """The workbench (and therefore promotion) cannot serve an unauthenticated
     non-local environment.
 
-    Promotion additionally stays local-only on its own account: it is one of the
-    `_LOCAL_ONLY_FEATURES` that `validate_runtime_settings` refuses outside local
-    development, so enabling it in staging is refused even once hosted
-    authentication is fully configured.
+    Promotion is no longer refused in staging outright — it is permitted there
+    behind the prerequisite boundary in `app/core/runtime.py`, which
+    `tests/test_hosted_capture_promotion.py` describes. This test is about the
+    layer under it: the hosted-authentication contract runs first and refuses an
+    anonymous hosted deployment before any feature question is reached, so no
+    promotion configuration can buy its way past a missing operator boundary.
     """
 
     from app.core.auth.startup import HostedAuthConfigurationError
