@@ -9,6 +9,7 @@
 - [Decision 0008: Extension distribution and origin pinning](decisions/0008-extension-distribution-and-origin-pinning.md) — stable extension identity/distribution remains a prerequisite for production origin pinning.
 - [Decision 0009: Sequences as a bounded domain, not seven drafts](decisions/0009-seven-message-sequence-domain.md) — why legacy `DraftVersion` could not carry the seven-message sequence and the accepted approved-by-default review semantics.
 - [The seven-message outreach sequence](EMAIL_SEQUENCE.md) — detailed sequence domain, versioning, cadence and future provider integration contract.
+- [One-click Gmail draft creation](GMAIL_DRAFTS.md) — #267: the separate Gmail mailbox grant, encrypted token storage, draft lineage and idempotency. Built behind `FEATURES__GMAIL_DRAFTS`, **off by default**; it does not change the launch order below.
 
 ## Current merged baseline
 
@@ -31,4 +32,6 @@ Sending remains unavailable.
 4. Run real-contact end-to-end UAT: capture → Campaign/Contact → Agent stages → seven messages → inspect/edit/copy → manual outreach.
 5. Only after that workflow is personally accepted, reconsider separate Gmail mailbox authorization and operator-triggered draft creation.
 
-Gmail draft integration, automatic sending, automatic Gmail cadence, sent/reply/thread automation, Google Sheets synchronization and Campaign spreadsheet export are not current launch gates.
+Automatic sending, automatic Gmail cadence, sent/reply/thread automation, Google Sheets synchronization and Campaign spreadsheet export are not current launch gates.
+
+Gmail *draft* creation (#267) has now been built ahead of step 5, and step 5 is unchanged by it: the feature ships behind `FEATURES__GMAIL_DRAFTS`, which defaults to off, and while it is off the routes 404 and no control renders. It requires a Google Cloud client that does not exist yet (see [`GMAIL_DRAFTS.md`](GMAIL_DRAFTS.md) §8), so no deployment can enable it accidentally. Decision 0007 holds: Google identity and Gmail mailbox authorization are separate grants with separate clients.

@@ -36,7 +36,9 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.core.auth.accounts import session_account_id
 from app.core.auth.admin import is_admin_request
+from app.core.auth.context import current_operator
 from app.core.auth.csrf import register_csrf, require_csrf
 from app.core.config import Settings, get_settings
 from app.models.campaign import Campaign, CampaignContact
@@ -67,6 +69,10 @@ from app.services.companies import detail as company_detail
 from app.services.companies import records as company_records
 from app.services.crm import detail as crm_detail
 from app.services.crm import records as crm_records
+from app.services.gmail import drafts as gmail_drafts
+from app.services.gmail import mailbox as gmail_mailbox
+from app.services.gmail import provider as gmail_provider
+from app.services.gmail import read as gmail_read
 from app.services.imports import apollo, campaign_import, display, staging
 from app.services.personalization.cadence import campaign_opted_in
 from app.services.resolution import service as resolution_service
@@ -541,6 +547,59 @@ class SequenceAvailability:
     @property
     def available(self) -> bool:
         return self.state == SEQUENCE_STATE_AVAILABLE
+
+
+def _gmail_drafts_on(settings: Settings) -> bool:
+    """Whether one-click Gmail draft creation exists in this deployment (#267).
+
+    Both switches. ``gmail_drafts`` acts on a sequence, so without
+    ``email_sequences`` there is nothing for it to act on, and showing a Connect
+    Gmail control that could never lead to a draft would be a control that lies.
+    """
+
+    enabled = settings.features.enabled()
+    return "gmail_drafts" in enabled and "email_sequences" in enabled
+
+
+def _mailbox_state(db: Session, settings: Settings) -> gmail_mailbox.MailboxState:
+    """The connected-mailbox state for the operator making this request.
+
+    Returns the ``unavailable`` state whenever the feature is off, this
+    deployment has no Gmail client configured, or there is no signed-in operator
+    -- local development being the last case. A mailbox grant is bound to one
+    operator identity, so with nobody signed in there is no mailbox to show and
+    none that could be connected.
+    """
+
+    if not _gmail_drafts_on(settings):
+        return gmail_mailbox.UNAVAILABLE
+    owner = session_account_id(current_operator())
+    if owner is None:
+        return gmail_mailbox.UNAVAILABLE
+    return gmail_mailbox.mailbox_state(
+        db,
+        user_id=owner,
+        settings=settings.gmail,
+        feature_on=True,
+    )
+
+
+def _gmail_draft_rows(
+    db: Session, settings: Settings, *, sequence: Any | None
+) -> dict[uuid.UUID, gmail_read.DraftRow]:
+    """Gmail draft state for one sequence, for the operator making the request."""
+
+    if sequence is None or not _gmail_drafts_on(settings):
+        return {}
+    owner = session_account_id(current_operator())
+    if owner is None:
+        return {}
+    grant = gmail_mailbox.connected_grant(db, user_id=owner)
+    if grant is None:
+        return {}
+    return gmail_read.draft_rows(
+        db, sequence=sequence, mailbox_account_subject=grant.mailbox_account_subject
+    )
 
 
 def _sequence_availability(
@@ -2002,6 +2061,11 @@ def review_page(
             "sequence_and_draft_both_present": bool(
                 sequence_queue and sequence_queue.rows and queue.rows
             ),
+            # #267. The mailbox state is what makes the "From" line on an
+            # expanded message truthful, and it is what the Create Gmail drafts
+            # panel is rendered from.
+            "gmail_drafts_on": _gmail_drafts_on(settings),
+            "mailbox": _mailbox_state(db, settings),
         },
     )
 
@@ -2539,6 +2603,123 @@ def sequence_approve(
     )
 
 
+@router.post("/review/sequence/{sequence_id}/gmail-drafts")
+def sequence_create_gmail_drafts(
+    sequence_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    version_ids: str = Form(""),
+    back: str = Form("/app/review"),
+) -> RedirectResponse:
+    """Create one Gmail draft per current, non-discarded message version (#267).
+
+    ``version_ids`` is what the page was showing, submitted for the same reason
+    the bulk approval submits it: if the stored versions no longer match, the
+    operator is looking at text that has been replaced, and drafting the newer
+    text would put a message they never read into somebody's mailbox. The check
+    lives in ``app/services/gmail/drafts.py`` so it cannot be skipped by a
+    second caller.
+
+    This route creates drafts. It cannot send: the Gmail adapter implements no
+    send call, and the only Gmail endpoints reachable from here are
+    ``users.drafts.create`` and a bounded ``users.drafts.list`` lookup.
+    """
+
+    target = _sequence_back(back)
+    settings = get_settings()
+    if not _gmail_drafts_on(settings):
+        return _redirect(
+            target,
+            err="Gmail draft creation is switched off in this environment, so nothing happened.",
+        )
+    identifier = _uuid(sequence_id)
+    if identifier is None:
+        return _redirect(target, err="That is not a sequence id.")
+    if not _same_origin(request):
+        return _redirect(target, err=CROSS_SITE_REFUSAL)
+    if _oversized(request):
+        return _redirect(target, err=OVERSIZED_REFUSAL)
+    # A sequence that is read-only for review is read-only for drafting too.
+    # Creating a draft from a sequence whose feature switch or campaign opt-in
+    # has since been turned off would take a *more* consequential action than
+    # the review decision the same page refuses to record.
+    refusal = _sequence_write_refusal(db, settings, sequence_id=identifier)
+    if refusal is not None:
+        return _redirect(target, err=refusal)
+
+    operator = current_operator()
+    owner = session_account_id(operator)
+    if operator is None or owner is None:
+        return _redirect(
+            target,
+            err=(
+                "Creating Gmail drafts requires a signed-in operator, because a mailbox is "
+                "connected to one. This environment has no operator sign-in."
+            ),
+        )
+    grant = gmail_mailbox.connected_grant(db, user_id=owner)
+    if grant is None:
+        return _redirect(
+            target, err="No Gmail mailbox is connected, so no draft was created. Connect Gmail."
+        )
+
+    parsed = tuple(
+        value
+        for value in (_uuid(item) for item in version_ids.split(",") if item.strip())
+        if value is not None
+    )
+    if not parsed:
+        return _redirect(target, err="No message versions were named, so nothing was drafted.")
+
+    from app.web.gmail_routes import oauth_client
+
+    try:
+        oauth = oauth_client(request, settings)
+    except ValueError:
+        return _redirect(
+            target,
+            err="Gmail is not configured in this environment, so no draft could be created.",
+        )
+    provider = getattr(request.app.state, GMAIL_PROVIDER_STATE_KEY, None) or (
+        gmail_provider.HttpGmailProvider(settings.gmail)
+    )
+
+    try:
+        run = gmail_drafts.create_drafts(
+            db,
+            sequence_id=identifier,
+            expected_version_ids=parsed,
+            grant=grant,
+            settings=settings.gmail,
+            oauth_client=oauth,
+            provider=provider,
+            actor=operator.email,
+        )
+    except gmail_mailbox.GmailMailboxError as exc:
+        # Deliberately no rollback: the service has already committed the
+        # reconnect-required transition, and undoing it would hide why this
+        # failed from the page the operator is about to land on.
+        return _redirect(target, err=str(exc))
+    except gmail_drafts.GmailDraftError as exc:
+        # Raised only before any Gmail call, so nothing external happened and
+        # there is nothing committed to preserve.
+        db.rollback()
+        return _redirect(target, err=str(exc))
+
+    # `create_drafts` commits as it goes, deliberately: each Gmail call is
+    # preceded by a committed reservation. There is nothing left to commit here,
+    # and the summary reports only what was actually observed.
+    if run.fully_successful:
+        return _redirect(target, ok=run.summary())
+    return _redirect(target, err=run.summary())
+
+
+#: Lets a test inject a deterministic Gmail transport without a network. The
+#: production path builds an ``HttpGmailProvider`` per request, which is cheap:
+#: it holds no connection pool of its own.
+GMAIL_PROVIDER_STATE_KEY = "vmr_gmail_provider"
+
+
 @router.get("/contacts")
 def contacts_page(
     request: Request,
@@ -2721,6 +2902,17 @@ def contact_page(
             "sequence_summary": sequence_summary,
             "sequence_rows": sequence_rows,
             "sequence_details": sequence_details,
+            # #267. Resolved on every render rather than cached: a mailbox can
+            # be revoked at Google between two page loads, and the page an
+            # operator is about to click Create Gmail drafts on is exactly the
+            # place that must not be showing a stale "connected".
+            "gmail_drafts_on": _gmail_drafts_on(settings),
+            "mailbox": _mailbox_state(db, settings),
+            # Scoped to this operator's own connected mailbox: a sequence
+            # belongs to a Campaign Contact rather than to an operator, so an
+            # unscoped read would show one operator the address of another
+            # operator's mailbox.
+            "gmail_draft_rows": _gmail_draft_rows(db, settings, sequence=sequence_record),
         },
     )
 

@@ -57,6 +57,13 @@ _TOKEN_VERSION = "v1"
 _SESSION_KEY_LABEL = b"vmr.hosted-auth.session.v1"
 _CSRF_KEY_LABEL = b"vmr.hosted-auth.csrf.v1"
 _LOGIN_KEY_LABEL = b"vmr.hosted-auth.login-transaction.v1"
+# The Gmail mailbox authorization transaction (#267). A key of its own rather
+# than a `kind` field inside the login-transaction payload: a discriminator only
+# helps the side that checks it, so with one shared key a Gmail transaction
+# stays a structurally valid sign-in transaction. A separate derived key makes
+# each token verify for exactly one purpose, in both directions, without either
+# side having to remember to look.
+_GMAIL_KEY_LABEL = b"vmr.gmail-authorization.transaction.v1"
 
 # A bounded ceiling on anything presented as a token. Signature verification is
 # cheap, but there is no reason to base64-decode a megabyte of attacker-supplied
@@ -225,6 +232,7 @@ class SessionCodec:
         self._session_key = derive_key(secret, _SESSION_KEY_LABEL)
         self._csrf_key = derive_key(secret, _CSRF_KEY_LABEL)
         self._login_key = derive_key(secret, _LOGIN_KEY_LABEL)
+        self._gmail_key = derive_key(secret, _GMAIL_KEY_LABEL)
 
     # --- generic signed envelope -------------------------------------------
 
@@ -323,4 +331,28 @@ class SessionCodec:
             raise SessionDecodeError("login transaction has no bounded lifetime")
         if expires_at <= now:
             raise SessionDecodeError("login transaction has expired")
+        return payload
+
+    # --- Gmail mailbox authorization transaction (#267) ----------------------
+
+    def encode_gmail_transaction(self, payload: dict[str, Any]) -> str:
+        """Sign one Gmail authorization transaction with its own key.
+
+        Separate from the sign-in transaction so that neither can ever be
+        presented as the other. The two carry different authority — one is
+        minted before there is a session and decides who signs in, the other
+        only ever exists after and decides which mailbox is bound to an
+        already-approved operator — and a token that verifies for both is one
+        substitution away from being a confused deputy.
+        """
+
+        return self._encode(self._gmail_key, payload)
+
+    def decode_gmail_transaction(self, token: str | None, *, now: int) -> dict[str, Any]:
+        payload = self._decode(self._gmail_key, token)
+        expires_at = payload.get("exp")
+        if not isinstance(expires_at, int) or isinstance(expires_at, bool):
+            raise SessionDecodeError("gmail transaction has no bounded lifetime")
+        if expires_at <= now:
+            raise SessionDecodeError("gmail transaction has expired")
         return payload

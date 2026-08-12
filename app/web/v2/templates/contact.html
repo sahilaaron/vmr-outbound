@@ -242,9 +242,26 @@
         #}
         <div class="v2-card-body">
           <p class="v2-note">
+            {% if gmail_drafts_on %}
+            All seven messages, exactly as they stand. Nothing here is scheduled or sent.
+            Creating Gmail drafts puts this exact text in your own Drafts folder and stops
+            there — VMR has no way to send it.
+            {% else %}
             All seven messages, exactly as they stand. Nothing here is sent, scheduled
             or drafted anywhere: there is no sending path in this build.
+            {% endif %}
           </p>
+          {#
+            The mailbox panel sits above the messages rather than beside one of
+            them: the action covers the whole sequence, and putting it next to
+            message 1 would read as an action on message 1.
+          #}
+          {{ seq.gmail_panel(
+               mailbox,
+               sequence_summary,
+               sequence_rows,
+               "/app/contacts/" ~ detail.contact.id ~ "?campaign=" ~ membership.campaign_id ~ "#sequence",
+               read_only=sequence_availability.read_only) }}
           <div class="v2-seq-copystatus" id="seq-copy-status" role="status" aria-live="polite"></div>
           {% for message_detail in sequence_details %}
           {{ seq.full_message(
@@ -253,7 +270,9 @@
                detail.contact.id,
                membership.campaign_id,
                "/app/contacts/" ~ detail.contact.id ~ "?campaign=" ~ membership.campaign_id ~ "#message-" ~ message_detail.row.position,
-               read_only=sequence_availability.read_only) }}
+               read_only=sequence_availability.read_only,
+               mailbox=mailbox,
+               gmail_draft=gmail_draft_rows.get(message_detail.row.version_id)) }}
           {% endfor %}
         </div>
         {% endif %}

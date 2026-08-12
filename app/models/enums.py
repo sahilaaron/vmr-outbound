@@ -1545,3 +1545,50 @@ class UserCredentialTokenPurpose(enum.StrEnum):
 
     INITIAL_SETUP = "initial_setup"
     RESET = "reset"
+
+
+class GmailGrantStatus(enum.StrEnum):
+    """The state of one operator's Gmail mailbox authorization.
+
+    Three states and no fourth, because the operator-visible question is
+    narrow: can VMR create a draft in this mailbox right now, and if not, is
+    that because nobody connected one or because a connection stopped working?
+
+    ``RECONNECT_REQUIRED`` is deliberately distinct from ``REVOKED``. Revoked
+    means an operator (or Google) deliberately withdrew the grant; reconnect
+    required means the stored refresh token no longer works and the honest
+    answer is "sign in again", not "you disconnected this". Both are recoverable
+    by connecting again, and neither is ever inferred from a transport failure
+    that could equally have been a network blip.
+    """
+
+    CONNECTED = "connected"
+    RECONNECT_REQUIRED = "reconnect_required"
+    REVOKED = "revoked"
+
+
+class GmailDraftStatus(enum.StrEnum):
+    """What is actually known about one Gmail draft VMR tried to create.
+
+    The four values exist because "did Gmail create this draft?" has four
+    truthful answers and collapsing any two of them would either duplicate a
+    draft in a stranger-facing mailbox or claim a success nobody observed.
+
+    ``RESERVED``   the local lineage row is committed and the Gmail call has not
+                   been made yet, or its outcome is not yet recorded. This is the
+                   row that makes the idempotency key exist *before* the external
+                   write, so a crash between the two is a known state.
+    ``CREATED``    Gmail returned a draft id. The only status that claims success.
+    ``UNCONFIRMED`` the call failed in a way that cannot distinguish "Gmail never
+                   saw it" from "Gmail created it and the response was lost" --
+                   a timeout, a dropped connection, a 5xx. Never retried blindly;
+                   see ``app/services/gmail/drafts.py`` for the bounded
+                   reconciliation.
+    ``FAILED``     Gmail refused definitively (a 4xx that is not ambiguous), so it
+                   is known that no draft exists and a retry is safe.
+    """
+
+    RESERVED = "reserved"
+    CREATED = "created"
+    UNCONFIRMED = "unconfirmed"
+    FAILED = "failed"

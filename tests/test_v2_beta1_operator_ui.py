@@ -309,7 +309,13 @@ def test_the_page_never_says_approved_means_sent(
     db_session.commit()
     body = client.get(_contact_url(scenario)).text
     assert "no sending path in this build" in body
-    assert "no sending account can be connected yet" in body
+    # The From line still says no sending account is connected. The wording
+    # changed with #267 -- it used to say one *could not* be connected, which
+    # stopped being true once a Gmail mailbox could be -- but the claim the test
+    # exists to pin is unchanged: this page never implies anything was sent, and
+    # with the Gmail feature off (as it is here) no mailbox is connected either.
+    assert "no sending account is connected" in body
+    assert "Create Gmail drafts" not in body
     for claim in ("has been sent", "will be sent", "ready to send", "scheduled to send"):
         assert claim not in body
 

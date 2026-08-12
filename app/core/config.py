@@ -21,6 +21,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from app.core.auth.config import AuthSettings
 from app.core.auth.extension import ExtensionAuthSettings
 from app.core.features import FeatureFlags
+from app.core.gmail_config import GmailSettings
 
 
 def canonical_trusted_host(value: str) -> str:
@@ -486,6 +487,15 @@ class Settings(BaseSettings):
     # and neither may ever stand in for the other. Defaults to off, so an
     # environment that says nothing about extension capture has none.
     extension_auth: ExtensionAuthSettings = Field(default_factory=ExtensionAuthSettings)
+
+    # Gmail mailbox authorization (env prefix ``GMAIL__``). A third, separate
+    # authority: `auth` proves who the operator is, `extension_auth` is the
+    # capture extension's own credential, and this is permission to write a
+    # draft into a human's mailbox. None of the three may ever stand in for
+    # another, which is why each has its own client, its own secret and its own
+    # configuration block. Defaults to unconfigured, so an environment that says
+    # nothing about Gmail has no mailbox authority at all.
+    gmail: GmailSettings = Field(default_factory=GmailSettings)
 
     @property
     def is_production(self) -> bool:

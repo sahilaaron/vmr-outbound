@@ -26,6 +26,7 @@ from app.core.http import CanonicalTrustedHostMiddleware, ProductionHTTPMiddlewa
 from app.core.runtime import validate_runtime_settings
 from app.web.auth_routes import IDENTITY_PROVIDER_STATE_KEY
 from app.web.auth_routes import router as auth_router
+from app.web.gmail_routes import router as gmail_router
 
 # Compatibility alias. The old name described a rule that no longer exists —
 # "workbench outside local" — and the new contract covers a wider surface than
@@ -241,6 +242,17 @@ def create_app(
     # hosted deployment, and it must exist even when the workbench switch is
     # off, because the API surface behind it is protected either way.
     app.include_router(auth_router)
+
+    # Gmail mailbox authorization (#267). Mounted unconditionally so that the
+    # default-deny boundary covers it whatever the feature switch says: an
+    # anonymous caller gets the same 401 here as on any other protected path,
+    # and an approved operator gets a 404 while the switch is off. Mounting it
+    # conditionally would make the switched-off case answer 404 to anonymous
+    # callers too, which tells them the deployment's feature state.
+    #
+    # These routes are deliberately *not* on the anonymous allow-list in
+    # `app/core/auth/policy.py`. The Gmail callback is not a sign-in path.
+    app.include_router(gmail_router)
 
     app.include_router(phase2_router)
     app.include_router(api_router)

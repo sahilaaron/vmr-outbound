@@ -198,6 +198,25 @@ class FeatureFlags(BaseModel):
     # Google API, schedules nothing and sends nothing — approval remains a
     # statement about text, not authority to deliver it.
     email_sequences: bool = False
+    # #267 — one-click Gmail *draft* creation from a reviewed sequence.
+    #
+    # Off by default, and off means the area does not exist: the Gmail OAuth
+    # routes return 404, the draft route returns 404, no Connect Gmail control
+    # renders, and no Google endpoint is contacted on any code path.
+    #
+    # Turning it on lets an approved hosted operator authorize one Gmail mailbox
+    # through a separate consent screen and create Gmail drafts from the exact
+    # immutable sequence message versions on screen. It adds no sending
+    # capability of any kind: the Gmail scope requested is ``gmail.compose``,
+    # the adapter implements draft creation and a bounded draft lookup and
+    # nothing else, and there is no code path in the application that can reach
+    # ``users.messages.send`` or ``users.drafts.send``. Approval remains a
+    # statement about text; creating a draft is a separate, explicit operator
+    # action that still leaves the human to press send in Gmail.
+    #
+    # It also requires ``email_sequences``, because it acts on a sequence rather
+    # than being a route of its own.
+    gmail_drafts: bool = False
     # Phase 7 — Saleshandy
     saleshandy: bool = False
 

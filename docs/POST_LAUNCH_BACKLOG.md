@@ -142,3 +142,34 @@ the one design question the M-2 decision defers. None blocks the internal Beta.
 | **L-12 — the CSRF token is injected into every POST form regardless of `action`** | No form with an external `action` exists, and the compile-time extension is what makes "no form can forget the token" true. Narrowing it to same-origin actions needs a rule for dynamic `action` values that does not silently drop the token from a legitimate form. |
 | **Strict `parse_jwks` is a liveness risk** | A single JWKS entry with an unexpected `alg` or `use` raises and rejects the whole key set, which would take all sign-ins down. Google publishes only RS256 signing keys today. Skipping an unusable entry — as it already does for non-RSA keys — is strictly safer and is the change to make, after the first live sign-in has proven the happy path. |
 | **`AUTH__PUBLIC_BASE_URL` accepts a userinfo component, and is not cross-checked against `AUTH__COOKIE_DOMAIN`** | Operator-misconfiguration territory, not attacker input: both values come from `/etc/vmr/vmr.env`. A wrong value fails visibly at the first sign-in, because Google matches the redirect URI byte for byte. |
+
+## Deferred by #267 (one-click Gmail draft creation)
+
+Recorded, not built. Each is a real follow-up rather than an idea: the draft-only
+slice deliberately stops short of every one of them.
+
+| Item | Why deferred |
+| --- | --- |
+| **Gmail reply threading (`In-Reply-To`, `References`, `threadId`)** | Gmail anchors a reply thread on the `Message-ID` of a message that was actually **sent**. Before the first sequence message goes out there is no such predecessor, so a reply-thread draft cannot be correctly established — only convincingly faked, which would make seven unrelated drafts look like a conversation that never happened. This belongs to the delivery/sending adapter, after a real send produces a real `Message-ID`. VMR's own predecessor lineage is already stored and untouched. |
+| **One draft at a time, per `docs/EMAIL_SEQUENCE.md` §15** | That constraint exists to keep a *sent* conversation in order and to hold follow-ups when a reply arrives. With no sending, neither applies, and one click that produced one draft would not be the one-click action the issue asks for. Returns with the delivery adapter. |
+| **Detecting that an operator sent, or deleted, a draft** | Requires mailbox polling or Pub/Sub, which #267 explicitly excludes. Today VMR records that it created a draft and does not claim to know its later fate; the operator's remedy for a deleted draft is to edit the message, which creates a new version and therefore a new draft. |
+| **Per-campaign mailbox association** | #267 binds a mailbox to the hosted *operator*, because a draft-only action is taken by a person on a page rather than executed by a campaign. `docs/EMAIL_SEQUENCE.md` §15 describes a Campaign-level association for the delivery adapter; nothing here forecloses it. |
+| **More than one connected mailbox per operator** | The partial unique index permits one live grant per operator. A second mailbox needs a chooser on the draft action and a rule for which one a given sequence belongs to — product questions the first campaign has not asked yet. |
+| **Publishing the Gmail consent screen through Google verification** | `gmail.compose` is a restricted scope. The test-user list is sufficient for a Beta with two or three named operators; verification review is only needed to go wider. |
+| **An HTML alternative part on the drafted message** | There is no canonical safe HTML representation of a sequence message anywhere in the application, so a `text/html` part would have to be invented from the plain text — a content transformation this slice is not permitted to make. |
+| **Retrying an unconfirmed draft on demand** | The bounded reconciliation resolves an ambiguous Gmail response on the next click, and waits out a 60-second window before trusting a "not found". A per-record retry control would need its own UI and its own guard against exactly the duplicate the window prevents. |
+
+## Deferred by the #271 reconciliation onto the accounts-aware main
+
+An adversarial review of the reconciled tree confirmed every ownership and
+OAuth contract. Two findings it raised were repaired in that branch --
+`malformed_response` was reclassified as ambiguous so a 2xx with an unreadable
+body can no longer produce a duplicate draft, and the raw token fields on
+`GmailTokenGrant` were excluded from `repr`. These are the rest, recorded rather
+than built.
+
+| Item | Why deferred |
+| --- | --- |
+| **Two simultaneous Gmail callbacks for one account raise `IntegrityError`** | `bind_mailbox` retires the live grant and inserts the replacement without a lock, and the partial unique index refuses the loser. It needs two valid, distinct authorization codes completing at the same instant in one account's browser, and the failure direction is safe: nothing is bound, and the operator can simply connect again. The fix is a `try/except IntegrityError` around the insert that returns the ordinary "another connection completed first" sentence, and it belongs with the next change to that function rather than to a merge. |
+| **Two VMR users may each hold a live grant on the same Gmail account** | The unique index is per user, and draft lineage is keyed on the Gmail account, so both would share draft rows. Both parties genuinely hold a Google-granted authorization to that mailbox and every field exposed is already visible in the shared Drafts folder, so this discloses nothing the mailbox itself does not. It becomes a real question only if a shared mailbox is ever a supported arrangement. |
+| **No margin between the request-timeout ceiling and the reconciliation quarantine** | `GMAIL__REQUEST_TIMEOUT_SECONDS` may be set as high as 60, which is exactly `RECONCILIATION_MIN_AGE_SECONDS`. At the default of 15 the margin is 45 seconds and the quarantine does its job. Either cap the setting lower or derive the quarantine from it; both are configuration-shaped decisions rather than reconciliation. |

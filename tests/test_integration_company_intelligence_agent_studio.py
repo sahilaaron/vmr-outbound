@@ -437,35 +437,89 @@ def test_existing_agent_studio_modules_still_work(
 # --- 10. one Alembic head ---------------------------------------------------
 
 
+#: The one merge revision this repository is allowed to contain, and the exact
+#: pair of lineages it is allowed to join. Two features were built from the same
+#: ancestor at the same time -- Gmail drafts (#271) and durable user accounts
+#: (#273) -- so their chains genuinely met rather than followed one another, and
+#: `40bb1177a2fa` joins them without rewriting either one's recorded ancestry.
+#:
+#: This is pinned rather than merely tolerated. "No merge revisions at all" was
+#: the previous rule and it was too strong: it forbade the legitimate join. "Any
+#: merge revision is fine" would be too weak, because a merge node created by
+#: accident -- two threads each adding a migration to the same parent and one of
+#: them papering over it -- is exactly the mistake worth catching. Naming the one
+#: reviewed node keeps the alarm and drops the false positive.
+EXPECTED_MERGE = "40bb1177a2fa"
+EXPECTED_MERGE_PARENTS = frozenset({"a7d3e1c85f42", "b8f13a6c47d2"})
+
+
+def _ancestors(by_id: dict[str, Any], revision_id: str) -> set[str]:
+    """Every revision that must be applied before ``revision_id`` can be."""
+
+    seen: set[str] = set()
+    stack = [revision_id]
+    while stack:
+        for parent in by_id[stack.pop()]._all_down_revisions:
+            if parent not in seen:
+                seen.add(parent)
+                stack.append(parent)
+    return seen
+
+
 def test_the_assembled_migration_chain_has_exactly_one_head() -> None:
     script = ScriptDirectory.from_config(Config(str(REPO_ROOT / "alembic.ini")))
     heads = script.get_heads()
     assert len(heads) == 1, f"expected one head, found {heads}"
 
     # Deliberately not pinned to a literal head revision. What this test defends
-    # is that the two assembled chains stayed linearised behind a single head —
-    # not that nothing has been written since the integration. Pinning the head
+    # is that the assembled chains stayed reachable behind a single head — not
+    # that nothing has been written since the integration. Pinning the head
     # asserted the second thing, so the first migration to land afterwards
     # failed it while every guarantee it exists for still held. That is a false
     # alarm about the invariant, which is worse than no alarm.
-    #
-    # The CI-002 revision still has to be on the chain; the ordering assertions
-    # below index into the walk and raise if any of these revisions went missing.
     revisions = list(script.walk_revisions())
-    assert "a8f3c92d4e17" in {revision.revision for revision in revisions}
+    by_id = {revision.revision: revision for revision in revisions}
 
-    # And it is genuinely linear: the two assembled chains are in one sequence,
-    # not hidden behind a merge revision with two parents.
-    assert all(len(revision._all_down_revisions) <= 1 for revision in revisions), (
-        "a merge revision would make downgrade order ambiguous"
+    # No orphaned branch. Every migration file on disk has to be reachable from
+    # that single head; one that is not would either be a second head or a chain
+    # nothing upgrades through, and both are silent until a deployment finds them.
+    on_disk = {
+        path.name.split("_", 1)[0] for path in (REPO_ROOT / "migrations" / "versions").glob("*.py")
+    }
+    assert on_disk == set(by_id), (
+        f"unreachable from head: {sorted(on_disk - set(by_id))}; "
+        f"walked but absent from disk: {sorted(set(by_id) - on_disk)}"
     )
-    order = [revision.revision for revision in script.walk_revisions()]
+
+    # The revisions this integration and the two it merged with are built on.
+    # Losing any of them silently would take the feature's tables with it.
+    for required in ("a8f3c92d4e17", "b8f13a6c47d2", "a7d3e1c85f42", "b45732880eff"):
+        assert required in by_id, f"{required} is no longer in the assembled graph"
+
+    # Exactly one merge node, and it is the reviewed one joining the two intended
+    # lineages — not a third branch that quietly acquired a second parent.
+    merges = {revision.revision for revision in revisions if len(revision._all_down_revisions) > 1}
+    assert merges == {EXPECTED_MERGE}, f"unexpected merge revisions: {sorted(merges)}"
+    assert set(by_id[EXPECTED_MERGE]._all_down_revisions) == EXPECTED_MERGE_PARENTS, (
+        f"{EXPECTED_MERGE} joins {sorted(by_id[EXPECTED_MERGE]._all_down_revisions)}, "
+        f"expected {sorted(EXPECTED_MERGE_PARENTS)}"
+    )
+
+    # The Gmail ownership revision sits on the assembled lineage, downstream of
+    # both branches — so it can rely on `users` and on the Gmail tables alike.
+    gmail_ownership = _ancestors(by_id, "b45732880eff")
+    for required in (EXPECTED_MERGE, *EXPECTED_MERGE_PARENTS, "a8f3c92d4e17"):
+        assert required in gmail_ownership, f"b45732880eff no longer descends from {required}"
+
+    # Ordering, stated as ancestry rather than as position in the walk: a merge
+    # node makes "index in the walk" an ordering the walk chose, while "must be
+    # applied before" is the ordering upgrade and downgrade actually obey.
     for later, earlier in (
         ("c41a9d78e5b2", "7b3e1c9a4d20"),
         ("a8f3c92d4e17", "c41a9d78e5b2"),
         ("7b3e1c9a4d20", "f2a91d7c4e60"),
     ):
-        assert order.index(later) < order.index(earlier), f"{later} must sit above {earlier}"
+        assert earlier in _ancestors(by_id, later), f"{later} must sit above {earlier}"
 
 
 # --- 11 & 12. Sending disabled, Identity Studio absent ----------------------

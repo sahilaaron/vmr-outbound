@@ -79,6 +79,8 @@ select = ["E", "F", "I", "UP", "B", "W"]
 "app/web/admin_workbench.py" = ["B008"]
 # And on the customer-facing v2 page routes.
 "app/web/v2/routes.py" = ["B008"]
+# And on the Gmail mailbox authorization routes (#267).
+"app/web/gmail_routes.py" = ["B008"]
 # And on the Company Intelligence admin page routes (CI-001).
 "app/web/company_intelligence.py" = ["B008"]
 # And on the administrator's account-directory routes.

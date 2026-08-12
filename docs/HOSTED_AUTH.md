@@ -3,9 +3,16 @@
 How an approved internal VMR operator reaches `/app` and `/admin` on a hosted
 deployment, and how everyone else is refused.
 
-This document covers the browser sign-in boundary only. Gmail mailbox
-authorization, Gmail drafts, sending, reply ingestion, Sheets and the remote
-Chrome Extension capture path are **not** part of it and are not implemented.
+This document covers the browser sign-in boundary only. Sending, reply
+ingestion and Sheets are **not** part of it and are not implemented.
+
+Gmail mailbox authorization is also not part of it, and that separation is the
+point rather than an omission. #267 added a Gmail *draft* grant with its own
+OAuth client, its own consent screen, its own secret and its own routes under
+`/gmail/*` — none of which is on the anonymous allow-list below. Signing in to
+VMR still requests `openid email profile` and nothing else, and no configuration
+change here can turn a sign-in into mailbox access. See
+[`GMAIL_DRAFTS.md`](GMAIL_DRAFTS.md).
 
 ---
 
@@ -75,10 +82,11 @@ Google Sign-In, authorization-code flow with PKCE, used **only** to establish wh
 the person is.
 
 * Scopes requested: `openid email profile`. Nothing else, ever.
-* No Gmail scope is requested and no Gmail token is stored.
-* Signing in to VMR does not imply mailbox authorization. When mailbox access is
-  built, it will be a separate grant with a separate client and a separate
-  consent screen.
+* No Gmail scope is requested here and no Gmail token is stored by this path.
+* Signing in to VMR does not imply mailbox authorization. Mailbox access is a
+  separate grant with a separate client, a separate secret and a separate
+  consent screen, requested only from an explicit Connect Gmail click — see
+  [`GMAIL_DRAFTS.md`](GMAIL_DRAFTS.md).
 
 ### What is proven before anyone is signed in
 
@@ -357,7 +365,8 @@ slash on the redirect URI. The redirect URI is built from
 
 On the OAuth consent screen choose **Internal** if the Google Workspace allows
 it. Scopes: `openid`, `email`, `profile` only. Do **not** add a Gmail scope to
-this client; when mailbox authorization is built it gets its own client.
+this client. Mailbox authorization has its own client, its own consent screen
+and its own secret — see [`GMAIL_DRAFTS.md`](GMAIL_DRAFTS.md) §8.
 
 ---
 
@@ -395,8 +404,11 @@ are kept apart on purpose. None substitutes for another:
 | Operator session cookie (`AUTH__*`) | a signed-in human | every operator surface |
 | Google identity client (`AUTH__GOOGLE_*`) | the server, at sign-in only | learning who that human is |
 | Extension capture credential (`EXTENSION_AUTH__*`) | one extension install | the capture intake contract, nothing else |
+| Gmail mailbox grant (`GMAIL__*`) | one operator, per connected mailbox | creating a draft in that mailbox, nothing else |
 
-A future Gmail grant will be a fourth, and it is not this one.
+The Gmail grant (#267) is the fourth, and it is not this one. It is stored
+encrypted, bound to one operator identity, and reaches only
+`users.drafts.create` and a bounded `users.drafts.list` lookup.
 
 ### The contract, enumerated
 
@@ -549,7 +561,10 @@ remain local-only.
 
 ## 8. What this slice deliberately does not do
 
-* No Gmail OAuth, drafts, sending, reply ingestion or Sheets.
+* No sending, reply ingestion or Sheets. (Gmail *draft* creation was added
+  later by #267 as a separate grant with its own routes and its own client;
+  it authorizes against the `User` record this slice introduced, and changed
+  nothing about how that record is authenticated.)
 * No public signup, customer tenancy, billing or broad RBAC beyond the two roles.
 * No Microsoft/Entra OAuth. A Microsoft 365 colleague signs in with an email
   address and a password, which is exactly what the password path is for.

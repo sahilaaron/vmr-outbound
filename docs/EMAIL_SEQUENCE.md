@@ -7,12 +7,18 @@ together, and reviewed one message at a time.
 This document is the reference for what that means, what it deliberately does
 not mean, and what a later delivery workflow may assume about it.
 
-**Nothing in this build sends anything.** There is no Gmail integration, no
-Google OAuth, no Sheets projection, no mailbox polling, no scheduler and no
-sending adapter. Approving a message records a decision about text. It does not
-create a draft anywhere, and it grants no authority to deliver anything. The
-"Future delivery model" section below describes what has been *designed for*,
-not what exists.
+**Nothing in this build sends anything.** There is no Sheets projection, no
+mailbox polling, no scheduler and no sending adapter. Approving a message
+records a decision about text; it creates no draft anywhere and grants no
+authority to deliver anything.
+
+**One piece of §15 now exists, and only one.** #267 added *draft-only* Gmail
+integration: an operator connects a mailbox through a separate consent screen
+and explicitly clicks Create Gmail drafts, and VMR writes one Gmail draft per
+current message version. It cannot send — there is no send call in the adapter
+and no route reaches one — and it is an explicit operator action, not something
+approval triggers. Everything else in §15 remains designed for and unbuilt.
+See [`GMAIL_DRAFTS.md`](GMAIL_DRAFTS.md).
 
 ---
 
@@ -452,13 +458,19 @@ the page size was previously decided by whatever happened to be in the column.
 Bounding does not sanitise — escaping is the template's job, Jinja already does
 it, and a second implementation here would be a weaker one.
 
-## 15. Future delivery model — designed for, not implemented
+## 15. Future delivery model — designed for, mostly not implemented
 
-**None of this exists.** No Google OAuth, no Gmail API, no Sheets API, no
-mailbox polling, no Pub/Sub, no reply detection, no scheduler, no external sync
-worker, no automatic draft creation and no sending. The domain is shaped so
-that the approved workflow can be added later without replacing or weakening
-anything above.
+**One part of this now exists: operator-initiated Gmail *draft* creation
+(#267).** It reuses the identity split below exactly as designed — the exact
+message version is the authority, `email_sequence_messages.id` stays stable, and
+draft lineage lives in a table of its own rather than in columns on a core row.
+See [`GMAIL_DRAFTS.md`](GMAIL_DRAFTS.md) for what was built.
+
+**Everything else below still does not exist.** No Sheets API, no mailbox
+polling, no Pub/Sub, no reply detection, no scheduler, no external sync worker,
+no automatic draft creation and no sending. The domain is shaped so that the
+approved workflow can be added later without replacing or weakening anything
+above.
 
 ### The approved operating model
 
@@ -477,8 +489,16 @@ anything above.
 
 ### One draft at a time
 
-All seven messages exist and are reviewable in VMR; the adapter creates one
-external draft per sequence. This is not a simplification — it is required.
+**This applies to the *delivery* adapter, not to #267.** The draft-only slice
+creates all seven standalone drafts on one click, because with no sending there
+is no thread to keep in order and no reply to hold a follow-up for; one click
+that produced one draft would not be the one-click action the operator asked
+for. When the delivery adapter is built, one-at-a-time returns with the
+threading it exists to serve.
+
+All seven messages exist and are reviewable in VMR; the *delivery* adapter
+creates one external draft per sequence. This is not a simplification — it is
+required.
 The first sent message establishes the authoritative conversation; later
 messages must be replies in that thread; messages must not go out of order;
 follow-ups must be held when a reply arrives; planned timing must remain
@@ -599,7 +619,11 @@ synchronization state and stop conditions.
 
 ### Future user and mailbox association
 
-No user accounts or Workspace OAuth in this task. The model does not assume one
+No user accounts or Workspace OAuth in this task. (#267 later attached a mailbox
+grant to the *hosted operator identity* rather than to a Campaign, because a
+draft-only action is taken by a person on the page rather than executed by a
+campaign. The Campaign-level association described below remains the right shape
+for the delivery adapter, and nothing in #267 forecloses it.) The model does not assume one
 global sender forever: sender context already lives on the Campaign, the
 sequence records its Campaign, and the deferred external-reference table carries
 `account_reference` per message. A future user/mailbox association attaches at
@@ -628,9 +652,12 @@ draft is created. No sender identity is hardcoded into sequence persistence.
 Nothing in the fixes above added any of these. Not built, and not partially
 built:
 
-Google OAuth · Gmail API calls · Google Sheets API calls · mailbox polling ·
-Gmail push notifications or Pub/Sub · reply detection · scheduling · automatic
-draft creation · automatic sending · Gmail webhook handling · external sync
-workers · user accounts · a second Personalization stage · per-follow-up Agent
-Jobs · any weakening of the Research, Company Intelligence, Insights,
-Personalization Policy, evidence, review or audit contracts.
+Google Sheets API calls · mailbox polling · Gmail push notifications or Pub/Sub ·
+reply detection · scheduling · **automatic** draft creation · automatic sending ·
+Gmail webhook handling · external sync workers · a second Personalization stage ·
+per-follow-up Agent Jobs · any weakening of the Research, Company Intelligence,
+Insights, Personalization Policy, evidence, review or audit contracts.
+
+Two entries moved off this list in #267, and only these two: a Gmail OAuth grant
+that is separate from sign-in, and `users.drafts.create` called from an explicit
+operator click. Gmail *sending* endpoints remain unreachable by construction.

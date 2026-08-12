@@ -71,7 +71,7 @@
       {% set base = "/app/review?sequence=" ~ sequence_card.sequence_id ~ scope %}
       {{ seq.selector(sequence_rows, sequence_step, base) }}
       {% if sequence_detail %}
-        {{ seq.message(sequence_detail, base ~ "&step=" ~ sequence_step, read_only=sequence_availability.read_only) }}
+        {{ seq.message(sequence_detail, base ~ "&step=" ~ sequence_step, read_only=sequence_availability.read_only, mailbox=mailbox) }}
       {% else %}
         {{ empty("That message is not available", "The sequence does not currently hold a message at this position.") }}
       {% endif %}
@@ -90,7 +90,7 @@
       {% set base = "/app/review?sequence=" ~ sequence_card.sequence_id ~ scope %}
       {{ seq.selector(sequence_rows, sequence_step, base) }}
       {% if sequence_detail %}
-        {{ seq.message(sequence_detail, base ~ "&step=" ~ sequence_step, read_only=sequence_availability.read_only) }}
+        {{ seq.message(sequence_detail, base ~ "&step=" ~ sequence_step, read_only=sequence_availability.read_only, mailbox=mailbox) }}
       {% else %}
         {{ empty("That message is not available", "The sequence does not currently hold a message at this position.") }}
       {% endif %}
@@ -113,6 +113,25 @@
           you were reading, nothing is recorded and you are asked to reload.
         </span>
       </form>
+      {% endif %}
+      {#
+        Create Gmail drafts is deliberately *not* offered here, and the omission
+        is the point rather than an oversight.
+
+        This page shows one message body at a time; the action drafts every
+        message in the sequence. Offering it here would let an operator put six
+        bodies they have not read into a real mailbox with one click, which is
+        exactly the "approved by default is not the same as read" gap the
+        sequence review model exists to keep visible. The Contact page renders
+        all seven bodies at once, so that is where the action lives.
+      #}
+      {% if mailbox and mailbox.available %}
+      <p class="v2-note">
+        {% if mailbox.connected %}Gmail drafts go to {{ mailbox.mailbox_address }}.{% endif %}
+        Creating Gmail drafts covers all seven messages, so it lives on the contact page,
+        where every body is on screen —
+        <a href="/app/contacts/{{ sequence_card.contact_id }}?campaign={{ sequence_card.campaign_id }}#sequence">open the contact</a>.
+      </p>
       {% endif %}
     </div>
     {% endif %}
