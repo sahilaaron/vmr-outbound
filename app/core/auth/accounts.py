@@ -39,13 +39,16 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.models.enums import UserRole, UserState
 from app.models.user import User
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from app.core.auth.session import OperatorSession
 
 
 class AccountLookupUnavailable(RuntimeError):
@@ -123,6 +126,29 @@ class DatabaseAccountDirectory:
             # the boundary's response to all three is identical: this request
             # cannot be decided, so refuse it and keep the session intact.
             raise AccountLookupUnavailable("the account directory is unavailable") from exc
+
+
+def session_account_id(session: OperatorSession | None) -> uuid.UUID | None:
+    """The durable account a signed-in session belongs to, as a ``UUID``.
+
+    The one identifier anything downstream should key ownership on. A session
+    carries ``user_id`` on both login paths; it carries a Google ``subject`` only
+    on one, and ``OperatorSession`` says plainly that the subject is kept for the
+    audit trail rather than for access decisions.
+
+    ``None`` when there is no session, or when the claim is not a well-formed
+    UUID. The middleware has already refused anything whose ``user_id`` did not
+    resolve to an active account, so a malformed value here is not a live attack
+    path -- it is returned as "no owner" so that a caller cannot accidentally
+    treat an unparseable claim as a match.
+    """
+
+    if session is None:
+        return None
+    try:
+        return uuid.UUID(session.user_id)
+    except (AttributeError, TypeError, ValueError):
+        return None
 
 
 def default_account_directory() -> DatabaseAccountDirectory:

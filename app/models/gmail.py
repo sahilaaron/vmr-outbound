@@ -76,13 +76,16 @@ class GmailMailboxGrant(Base):
         # but only one row at a time can answer "which mailbox do drafts go to".
         Index(
             "uq_gmail_mailbox_grants_connected",
-            "operator_subject",
+            "user_id",
             unique=True,
             postgresql_where=text("status = 'CONNECTED'"),
         ),
-        Index("ix_gmail_mailbox_grants_operator", "operator_subject"),
+        Index("ix_gmail_mailbox_grants_operator", "user_id"),
         Index("ix_gmail_mailbox_grants_account", "mailbox_account_subject"),
-        CheckConstraint("btrim(operator_subject) <> ''", name="operator_subject_not_blank"),
+        CheckConstraint(
+            "operator_subject IS NULL OR btrim(operator_subject) <> ''",
+            name="operator_subject_not_blank",
+        ),
         CheckConstraint("btrim(mailbox_address) <> ''", name="mailbox_address_not_blank"),
         CheckConstraint(
             "btrim(mailbox_account_subject) <> ''", name="mailbox_account_subject_not_blank"
@@ -98,12 +101,26 @@ class GmailMailboxGrant(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
-    #: The VMR operator this mailbox belongs to, as Google's stable ``sub`` from
-    #: the *hosted sign-in* assertion. Deliberately the subject rather than the
-    #: address: an operator's address can be re-pointed at a different person,
-    #: and a mailbox grant must not follow it.
-    operator_subject: Mapped[str] = mapped_column(String(255), nullable=False)
-    #: The approved operator address, kept for display only.
+    #: The VMR user this mailbox belongs to. **This is the ownership key**, and
+    #: the only field any authorization decision reads.
+    #:
+    #: It was Google's ``sub`` when this slice was built, because a session was
+    #: then necessarily a Google session. #273 made accounts durable and gave
+    #: them a password path, and a password session carries no subject at all --
+    #: ``OperatorSession`` says so itself, and says the subject is "retained for
+    #: the audit trail rather than for any access decision". Keying a mailbox on
+    #: it would have left every password operator unable to connect one.
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    #: Google's stable ``sub`` for the sign-in that authorized this mailbox, when
+    #: there was one. Provenance only -- never an ownership test. Null for a
+    #: grant authorized from a password session.
+    operator_subject: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: The operator address at the time of authorization, kept for display only.
     operator_email: Mapped[str] = mapped_column(String(320), nullable=False)
 
     #: The Google account the mailbox belongs to, taken from the ID token

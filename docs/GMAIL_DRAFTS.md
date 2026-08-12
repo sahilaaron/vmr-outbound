@@ -70,7 +70,7 @@ Every one of these, none optional and none inferred:
 | the signed, single-use transaction cookie decodes and has not expired | one consent, one transaction |
 | it was signed with the Gmail transaction key | a key of its own, not the sign-in key with a discriminator: a `kind` field only helps the side that checks it, so one shared key would leave a Gmail transaction structurally valid as a sign-in transaction. Separate keys make each token verify for exactly one purpose in **both** directions |
 | `state` equals the transaction's, constant-time | the classic CSRF on an OAuth callback |
-| **the transaction's operator subject equals the signed-in operator's** | a captured callback replayed into a second operator's browser cannot bind the first operator's mailbox to them |
+| **the transaction's owning account equals the signed-in account** | a captured callback replayed into a second operator's browser cannot bind the first operator's mailbox to them. The claim is the durable `users.id`, not the Google subject: a password session has no subject at all, so a subject comparison would have read `"" == ""` between any two password operators and proven nothing |
 | PKCE `code_verifier` | the code is bound to a verifier only this process held |
 | RS256 signature against Google's JWKS, `aud` = the *Gmail* client id, `iss`, `nonce`, freshness, `email_verified` | reuses `app/core/auth/jwks.py` and `identity.py` verbatim rather than writing a second, weaker verifier |
 | the granted scopes contain `gmail.compose` | see above |
@@ -78,6 +78,31 @@ Every one of these, none optional and none inferred:
 
 Every distinguishable failure of the round trip returns the *same* sentence.
 Telling them apart would tell an attacker which check they defeated.
+
+### Who a mailbox belongs to
+
+`gmail_mailbox_grants.user_id` — a foreign key to `users.id`, and the only field
+any authorization path reads. Every mailbox function takes that id and nothing
+else: there is no variant keyed on an address, a Google subject or a role, so no
+caller can reach another operator's mailbox by holding some other identifier for
+it. "One live mailbox per owner" is a partial unique index on `user_id`, not a
+convention.
+
+This slice originally keyed ownership on `operator_subject`, Google's `sub`,
+which was the only durable identity a session had before accounts existed. #273
+made accounts durable rows and gave them a password path, and a password session
+carries no subject at all — `OperatorSession` keeps the subject "for the audit
+trail rather than for any access decision". The column survives as exactly that:
+nullable provenance recording which Google sign-in authorized a mailbox, when one
+did.
+
+Two consequences worth stating, because both are load-bearing for the Beta:
+
+- an administrator has no mailbox authority over anyone else. `is_admin` gates
+  the account directory, and nothing in the Gmail path consults a role;
+- disabling an account, or bumping its `auth_version`, refuses that operator's
+  next request before any Gmail route runs. The grant row survives — it is the
+  record of what was authorized — but nothing can act through it.
 
 ---
 

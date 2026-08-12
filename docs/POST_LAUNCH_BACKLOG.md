@@ -158,3 +158,18 @@ slice deliberately stops short of every one of them.
 | **Publishing the Gmail consent screen through Google verification** | `gmail.compose` is a restricted scope. The test-user list is sufficient for a Beta with two or three named operators; verification review is only needed to go wider. |
 | **An HTML alternative part on the drafted message** | There is no canonical safe HTML representation of a sequence message anywhere in the application, so a `text/html` part would have to be invented from the plain text — a content transformation this slice is not permitted to make. |
 | **Retrying an unconfirmed draft on demand** | The bounded reconciliation resolves an ambiguous Gmail response on the next click, and waits out a 60-second window before trusting a "not found". A per-record retry control would need its own UI and its own guard against exactly the duplicate the window prevents. |
+
+## Deferred by the #271 reconciliation onto the accounts-aware main
+
+An adversarial review of the reconciled tree confirmed every ownership and
+OAuth contract. Two findings it raised were repaired in that branch --
+`malformed_response` was reclassified as ambiguous so a 2xx with an unreadable
+body can no longer produce a duplicate draft, and the raw token fields on
+`GmailTokenGrant` were excluded from `repr`. These are the rest, recorded rather
+than built.
+
+| Item | Why deferred |
+| --- | --- |
+| **Two simultaneous Gmail callbacks for one account raise `IntegrityError`** | `bind_mailbox` retires the live grant and inserts the replacement without a lock, and the partial unique index refuses the loser. It needs two valid, distinct authorization codes completing at the same instant in one account's browser, and the failure direction is safe: nothing is bound, and the operator can simply connect again. The fix is a `try/except IntegrityError` around the insert that returns the ordinary "another connection completed first" sentence, and it belongs with the next change to that function rather than to a merge. |
+| **Two VMR users may each hold a live grant on the same Gmail account** | The unique index is per user, and draft lineage is keyed on the Gmail account, so both would share draft rows. Both parties genuinely hold a Google-granted authorization to that mailbox and every field exposed is already visible in the shared Drafts folder, so this discloses nothing the mailbox itself does not. It becomes a real question only if a shared mailbox is ever a supported arrangement. |
+| **No margin between the request-timeout ceiling and the reconciliation quarantine** | `GMAIL__REQUEST_TIMEOUT_SECONDS` may be set as high as 60, which is exactly `RECONCILIATION_MIN_AGE_SECONDS`. At the default of 15 the margin is 45 seconds and the quarantine does its job. Either cap the setting lower or derive the quarantine from it; both are configuration-shaped decisions rather than reconciliation. |

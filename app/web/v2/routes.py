@@ -36,6 +36,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.core.auth.accounts import session_account_id
 from app.core.auth.admin import is_admin_request
 from app.core.auth.context import current_operator
 from app.core.auth.csrf import register_csrf, require_csrf
@@ -572,12 +573,12 @@ def _mailbox_state(db: Session, settings: Settings) -> gmail_mailbox.MailboxStat
 
     if not _gmail_drafts_on(settings):
         return gmail_mailbox.UNAVAILABLE
-    operator = current_operator()
-    if operator is None:
+    owner = session_account_id(current_operator())
+    if owner is None:
         return gmail_mailbox.UNAVAILABLE
     return gmail_mailbox.mailbox_state(
         db,
-        operator_subject=operator.subject,
+        user_id=owner,
         settings=settings.gmail,
         feature_on=True,
     )
@@ -590,10 +591,10 @@ def _gmail_draft_rows(
 
     if sequence is None or not _gmail_drafts_on(settings):
         return {}
-    operator = current_operator()
-    if operator is None:
+    owner = session_account_id(current_operator())
+    if owner is None:
         return {}
-    grant = gmail_mailbox.connected_grant(db, operator_subject=operator.subject)
+    grant = gmail_mailbox.connected_grant(db, user_id=owner)
     if grant is None:
         return {}
     return gmail_read.draft_rows(
@@ -2647,7 +2648,8 @@ def sequence_create_gmail_drafts(
         return _redirect(target, err=refusal)
 
     operator = current_operator()
-    if operator is None:
+    owner = session_account_id(operator)
+    if operator is None or owner is None:
         return _redirect(
             target,
             err=(
@@ -2655,7 +2657,7 @@ def sequence_create_gmail_drafts(
                 "connected to one. This environment has no operator sign-in."
             ),
         )
-    grant = gmail_mailbox.connected_grant(db, operator_subject=operator.subject)
+    grant = gmail_mailbox.connected_grant(db, user_id=owner)
     if grant is None:
         return _redirect(
             target, err="No Gmail mailbox is connected, so no draft was created. Connect Gmail."

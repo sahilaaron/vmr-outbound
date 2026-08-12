@@ -58,6 +58,7 @@ from tests.gmail_factory import (
     build_sequence,
     decoded_message,
 )
+from tests.hosted_auth_factory import SeededAccount, seed_account
 
 STAGING_HOST = "srv1885453.hstgr.cloud"
 STAGING_ORIGIN = f"https://{STAGING_HOST}"
@@ -67,6 +68,15 @@ SESSION_SECRET = "test-session-secret-value-at-least-32-chars"
 STAGING_DATABASE_URL = "postgresql+psycopg://vmr:secret@db.internal.example:5432/vmr_staging"
 GMAIL_CLIENT_ID = "vmr-gmail-test-client.apps.googleusercontent.com"
 IDENTITY_CLIENT_ID = "vmr-identity-test-client.apps.googleusercontent.com"
+
+# The Chrome capture extension's own credential, used by exactly one test in
+# section M: the point there is that it opens *no* Gmail door, so it is defined
+# beside the operator constants rather than hidden inside that test.
+EXTENSION_ID = "abcdefghijklmnopabcdefghijklmnop"
+EXTENSION_ORIGIN = f"chrome-extension://{EXTENSION_ID}"
+EXTENSION_KEY_ID = "beta-laptop"
+EXTENSION_SECRET = "3fVQx8Zk2nLp7Rw6TyUiOaSdFgHjKlZxCvBnM4qWeRt"
+EXTENSION_CREDENTIAL = f"vmrx1.{EXTENSION_KEY_ID}.{EXTENSION_SECRET}"
 
 
 class _AlwaysReadyProbe:
@@ -124,18 +134,56 @@ def _apply(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -> None:
     get_settings.cache_clear()
 
 
+def _seed_operator(
+    *,
+    email: str = APPROVED_EMAIL,
+    subject: str | None = OPERATOR_SUBJECT,
+    role: str = "user",
+    password: str | None = None,
+) -> SeededAccount:
+    """One committed ``users`` row, and the identifiers a cookie needs from it.
+
+    Every operator in this file is a real account row since #273. There is no
+    such thing here as "an approved address": a Gmail mailbox now belongs to
+    ``users.id``, so a test that invents an identifier out of a string would be
+    asserting against an owner that no request could ever resolve.
+    """
+
+    return seed_account(email=email, role=role, google_subject=subject, password=password)
+
+
 def _session_cookie(
-    *, email: str = APPROVED_EMAIL, subject: str = OPERATOR_SUBJECT
+    account: SeededAccount | None = None,
+    *,
+    email: str = APPROVED_EMAIL,
+    subject: str = OPERATOR_SUBJECT,
+    auth_version: int | None = None,
 ) -> tuple[str, str]:
+    """A validly signed session cookie for one account, plus its CSRF token.
+
+    ``user_id`` and ``auth_version`` became required claims in #273, and the
+    authentication boundary resolves the first against the ``users`` table on
+    every request. A cookie whose ``uid`` names nothing is refused before any
+    Gmail route is reached, so this helper seeds the account when it is not
+    handed one rather than letting a caller mint a session belonging to nobody.
+
+    ``subject`` is the Google ``sub`` the *session* carries. It is provenance,
+    never ownership: passing ``""`` produces exactly the password-authenticated
+    session that this reconciliation exists for.
+    """
+
+    owner = account if account is not None else _seed_operator(email=email, subject=subject or None)
     now = int(time.time())
     sid = new_session_id()
     session = OperatorSession(
-        email=email,
+        email=owner.email,
         subject=subject,
         display_name="VMR Operator",
         session_id=sid,
         issued_at=now,
         expires_at=now + 3600,
+        user_id=owner.user_id,
+        auth_version=owner.auth_version if auth_version is None else auth_version,
     )
     codec = SessionCodec(SESSION_SECRET)
     return codec.encode_session(session), codec.csrf_token(sid)
@@ -170,12 +218,25 @@ def _flash(response: Any) -> str:
     return unquote(message)
 
 
-def _signed_in(client: TestClient) -> str:
-    """Sign the client in and return the CSRF token for its session."""
+def _sign_in_as(
+    client: TestClient, account: SeededAccount, *, subject: str = OPERATOR_SUBJECT
+) -> str:
+    """Attach a session for one already-seeded account and return its CSRF token.
 
-    cookie, csrf = _session_cookie()
+    The variant to use whenever a test needs to *name* the operator afterwards --
+    to assert which account a grant was recorded against, to disable it, or to
+    sign a second operator in beside it.
+    """
+
+    cookie, csrf = _session_cookie(account, subject=subject)
     client.cookies.set(SESSION_COOKIE_NAME, cookie, domain=STAGING_HOST)
     return csrf
+
+
+def _signed_in(client: TestClient) -> str:
+    """Sign the client in as the default approved operator, and return its CSRF."""
+
+    return _sign_in_as(client, _seed_operator())
 
 
 def _connect(
@@ -314,13 +375,18 @@ def test_a_connected_mailbox_is_recorded_against_the_operator(
     """Acceptance 5: the connected Gmail identity is recorded correctly."""
 
     client, oauth, _ = hosted
-    csrf = _signed_in(client)
+    operator = _seed_operator()
+    csrf = _sign_in_as(client, operator)
     response = _connect(client, oauth, csrf)
 
     assert response.status_code == 303
     assert "Gmail connected" in _flash(response)
     grant = committed_session.scalars(select(GmailMailboxGrant)).one()
     assert grant.status is GmailGrantStatus.CONNECTED
+    # Ownership is the durable account, and only the account. The Google subject
+    # is still recorded because this consent *was* authorized from a Google
+    # session, but it is provenance now rather than the ownership key.
+    assert grant.user_id == uuid.UUID(operator.user_id)
     assert grant.operator_subject == OPERATOR_SUBJECT
     assert grant.operator_email == APPROVED_EMAIL
     assert grant.mailbox_address == oauth.mailbox_address
@@ -364,9 +430,12 @@ def test_a_callback_cannot_bind_a_mailbox_to_a_different_operator(
     assert started.status_code == 303
     state = oauth.authorization_calls[-1]["state"]
 
-    # The second operator is signed in, approved, and presents the *same*
-    # transaction cookie the first operator's browser was given.
-    other_cookie, _ = _session_cookie(subject="operator-google-subject-2")
+    # The second operator is signed in, has an account of their own, and
+    # presents the *same* transaction cookie the first operator's browser was
+    # given.
+    other_cookie, _ = _session_cookie(
+        email="second@vmr.example", subject="operator-google-subject-2"
+    )
     client.cookies.set(SESSION_COOKIE_NAME, other_cookie, domain=STAGING_HOST)
 
     response = client.get(f"/gmail/callback?code=consent-code&state={state}")
@@ -572,9 +641,33 @@ def test_the_oauth_client_never_propagates_googles_error_text() -> None:
 
 
 def _grant_for(
-    session: Session, *, settings: GmailSettings, subject: str = "gmail-account-subject-1"
+    session: Session,
+    *,
+    settings: GmailSettings,
+    subject: str = "gmail-account-subject-1",
+    user_id: uuid.UUID | None = None,
 ) -> GmailMailboxGrant:
+    """One connected grant, owned by a real account row.
+
+    ``user_id`` is a foreign key to ``users`` and is not nullable, so a grant can
+    no longer be conjured from an operator subject alone. When a caller does not
+    name an owner, one is seeded: the service-level tests below are about drafts
+    rather than about who owns the mailbox, and each of them wants an owner that
+    collides with nobody else's.
+    """
+
+    owner = (
+        user_id
+        if user_id is not None
+        else uuid.UUID(
+            _seed_operator(
+                email=f"operator-{uuid.uuid4().hex[:8]}@vmr.example",
+                subject=f"google-sub-{uuid.uuid4().hex[:8]}",
+            ).user_id
+        )
+    )
     grant = GmailMailboxGrant(
+        user_id=owner,
         operator_subject=OPERATOR_SUBJECT,
         operator_email=APPROVED_EMAIL,
         mailbox_account_subject=subject,
@@ -850,8 +943,10 @@ def test_idempotency_survives_a_disconnect_and_reconnect(
     grant.encrypted_refresh_token = None
     grant.encrypted_access_token = None
     committed_session.flush()
-    # A new grant row for the *same* Google account.
-    reconnected = _grant_for(committed_session, settings=settings)
+    # A new grant row for the *same* Google account, belonging to the *same* VMR
+    # user: a reconnect replaces a row, it does not move the mailbox to somebody
+    # else.
+    reconnected = _grant_for(committed_session, settings=settings, user_id=grant.user_id)
     committed_session.commit()
 
     run = gmail_drafts.create_drafts(
@@ -1175,7 +1270,7 @@ def test_a_rejected_refresh_produces_a_reconnect_required_state(
     assert transport.created == []
 
     state = gmail_mailbox.mailbox_state(
-        committed_session, operator_subject=OPERATOR_SUBJECT, settings=settings, feature_on=True
+        committed_session, user_id=grant.user_id, settings=settings, feature_on=True
     )
     assert state.needs_reconnect
     assert state.mailbox_address == "operator@vmr.example"
@@ -1247,27 +1342,52 @@ def test_disconnect_still_forgets_the_token_when_google_cannot_be_reached(
 
 GMAIL_PACKAGE = Path(__file__).resolve().parents[1] / "app" / "services" / "gmail"
 GMAIL_ROUTES = Path(__file__).resolve().parents[1] / "app" / "web" / "gmail_routes.py"
+#: The draft-creation route lives in the v2 router, not in `gmail_routes.py`, so
+#: it is the most plausible place for a direct `httpx` call to a send endpoint to
+#: be added -- and a call made there would bypass the provider protocol and the
+#: adapter instrumentation that the two guards below rely on. `gmail_config.py`
+#: is scanned for the same reason a scope widened there would not show up in
+#: either of them.
+V2_ROUTES = Path(__file__).resolve().parents[1] / "app" / "web" / "v2" / "routes.py"
+GMAIL_CONFIG = Path(__file__).resolve().parents[1] / "app" / "core" / "gmail_config.py"
 
 
 def test_no_gmail_send_endpoint_appears_anywhere_in_the_feature() -> None:
     """Acceptance 15, part one: the endpoints simply are not written down."""
 
-    forbidden = (
+    # Unambiguously Gmail's send endpoints, in every spelling. Safe to look for
+    # in any file, because no other feature has a reason to write them down.
+    gmail_send_tokens = (
         "messages/send",
         "drafts/send",
         "users.messages.send",
         "users.drafts.send",
-        "/send",
     )
-    sources = list(GMAIL_PACKAGE.glob("*.py")) + [GMAIL_ROUTES]
-    for path in sources:
-        body = path.read_text(encoding="utf-8")
-        # Strip comments and docstrings' prose is fine -- what must not exist is
-        # a URL path. These tokens would only appear in a request.
-        for token in forbidden:
-            assert token not in body.replace("``users.messages.send``", "").replace(
-                "``users.drafts.send``", ""
-            ), f"{path.name} names {token}"
+    # A bare relative path, checked only where the Gmail HTTP requests are built.
+    # It cannot be applied more widely: `/sending` is the operator UI's own
+    # Sending page, which has nothing to do with Gmail and would match it.
+    gmail_request_tokens = (*gmail_send_tokens, "/send")
+
+    scoped = {
+        **{path: gmail_request_tokens for path in GMAIL_PACKAGE.glob("*.py")},
+        GMAIL_ROUTES: gmail_request_tokens,
+        # The draft-creation route lives here, so a direct `httpx` call to a send
+        # endpoint would most plausibly be added here -- and would bypass both the
+        # protocol guard and the adapter guard below.
+        V2_ROUTES: gmail_send_tokens,
+        # A widened scope here would show up in neither of those guards either.
+        GMAIL_CONFIG: gmail_send_tokens,
+    }
+    for path, tokens in scoped.items():
+        # Naming an endpoint in prose to say VMR does not call it is fine; what
+        # must not exist is the string as a request would carry it.
+        body = (
+            path.read_text(encoding="utf-8")
+            .replace("``users.messages.send``", "")
+            .replace("``users.drafts.send``", "")
+        )
+        for token in tokens:
+            assert token not in body, f"{path.name} names {token}"
 
 
 def test_the_provider_protocol_exposes_no_send_method() -> None:
@@ -1725,9 +1845,11 @@ def test_one_operator_never_sees_another_operators_mailbox(
     )
     assert committed_session.scalars(select(GmailDraftRecord)).all()
 
-    # A second approved operator, with no mailbox of their own, opens the same
-    # contact. They must not learn where the first operator drafted.
-    other_cookie, _ = _session_cookie(subject="operator-google-subject-2")
+    # A second account, with no mailbox of its own, opens the same contact. They
+    # must not learn where the first operator drafted.
+    other_cookie, _ = _session_cookie(
+        email="second@vmr.example", subject="operator-google-subject-2"
+    )
     client.cookies.set(SESSION_COOKIE_NAME, other_cookie, domain=STAGING_HOST)
     page = client.get(f"/app/contacts/{fixture.contact.id}?campaign={fixture.campaign.id}")
     assert page.status_code == 200
@@ -1751,3 +1873,380 @@ def test_a_gmail_transaction_is_not_a_sign_in_transaction() -> None:
         codec.decode_login_transaction(gmail_token, now=now)
     with pytest.raises(SessionDecodeError):
         codec.decode_gmail_transaction(login_token, now=now)
+
+
+# ---------------------------------------------------------------------------
+# M. Ownership after durable user accounts (#273), pinned so it stays fixed
+# ---------------------------------------------------------------------------
+#
+# This slice was written when a session was necessarily a Google session, so a
+# mailbox was keyed on Google's `sub` (`operator_subject`). #273 gave accounts a
+# password path, and a password session carries `user_id` and an **empty**
+# subject. Two things followed, and every test in this section names one of them:
+#
+# * every password operator was locked out of Gmail, because the ownership key
+#   they were being looked up by was `""`; and
+# * `""` is the same value for *everybody*, so the one key that was supposed to
+#   separate operators had collapsed into a single shared bucket -- a check
+#   constraint away from binding one person's mailbox consent to another's
+#   account.
+#
+# Ownership is now `users.id`. The subject survives as provenance on the grant
+# and decides nothing.
+
+
+def test_a_password_authenticated_operator_can_connect_and_draft(
+    hosted: tuple[TestClient, FakeGmailOAuthClient, FakeGmailTransport], committed_session: Session
+) -> None:
+    """The exact case that was broken: a real account, and no Google subject.
+
+    An operator who signed in with an email and a password holds a session whose
+    ``subject`` is ``""``. Under the previous ownership key that operator could
+    not connect a mailbox at all -- and the grant row would have violated the
+    ``operator_subject_not_blank`` check on the way out. This test walks the
+    whole feature for them: connect, see it connected, create the drafts.
+    """
+
+    client, oauth, transport = hosted
+    operator = _seed_operator(
+        email="password-only@vmr.example", subject=None, password="a-long-enough-passphrase"
+    )
+    csrf = _sign_in_as(client, operator, subject="")
+
+    response = _connect(client, oauth, csrf)
+    assert response.status_code == 303
+    assert "Gmail connected" in _flash(response)
+
+    grant = committed_session.scalars(select(GmailMailboxGrant)).one()
+    assert grant.status is GmailGrantStatus.CONNECTED
+    assert grant.user_id == uuid.UUID(operator.user_id)
+    # No Google sign-in authorized this consent, so there is no subject to
+    # record. Null rather than an empty string: the column is provenance, and a
+    # blank provenance value is a fact nobody has.
+    assert grant.operator_subject is None
+    assert grant.operator_email == "password-only@vmr.example"
+
+    fixture = build_sequence(committed_session)
+    committed_session.commit()
+
+    page = client.get(f"/app/contacts/{fixture.contact.id}?campaign={fixture.campaign.id}")
+    assert page.status_code == 200
+    assert oauth.mailbox_address in page.text
+
+    created = client.post(
+        f"/app/review/sequence/{fixture.sequence.id}/gmail-drafts",
+        data={"version_ids": fixture.version_ids_csv, "back": "/app/review", "_csrf": csrf},
+        headers={"sec-fetch-site": "same-origin"},
+    )
+    assert created.status_code == 303
+    assert "7 Gmail drafts created" in _flash(created)
+    assert len(transport.created) == 7
+
+
+def test_a_second_operator_can_neither_use_nor_disconnect_the_first_ones_mailbox(
+    hosted: tuple[TestClient, FakeGmailOAuthClient, FakeGmailTransport], committed_session: Session
+) -> None:
+    """Isolation asserted from the side of the operator who does not own it.
+
+    Not seeing another operator's mailbox address on a page is the polite half.
+    The half that matters is that the mailbox cannot be *acted on*: signed in as
+    somebody else, the draft action finds nothing to draft through and the
+    disconnect action finds nothing to revoke -- and the real owner's credential
+    is still sitting there afterwards, untouched.
+    """
+
+    client, oauth, transport = hosted
+    owner = _seed_operator(email="owner@vmr.example", subject="google-sub-owner")
+    owner_csrf = _sign_in_as(client, owner)
+    _connect(client, oauth, owner_csrf)
+
+    fixture = build_sequence(committed_session)
+    committed_session.commit()
+    settings = gmail_settings()
+
+    stranger = _seed_operator(email="stranger@vmr.example", subject="google-sub-stranger")
+    stranger_csrf = _sign_in_as(client, stranger, subject="google-sub-stranger")
+    stranger_id = uuid.UUID(stranger.user_id)
+
+    # The services answer the stranger's question honestly: they have no mailbox.
+    assert gmail_mailbox.connected_grant(committed_session, user_id=stranger_id) is None
+    assert (
+        gmail_mailbox.mailbox_state(
+            committed_session, user_id=stranger_id, settings=settings, feature_on=True
+        ).state
+        == "disconnected"
+    )
+
+    drafted = client.post(
+        f"/app/review/sequence/{fixture.sequence.id}/gmail-drafts",
+        data={
+            "version_ids": fixture.version_ids_csv,
+            "back": "/app/review",
+            "_csrf": stranger_csrf,
+        },
+        headers={"sec-fetch-site": "same-origin"},
+    )
+    assert drafted.status_code == 303
+    assert "No Gmail mailbox is connected" in _flash(drafted)
+    assert transport.created == []
+    assert committed_session.scalars(select(GmailDraftRecord)).all() == []
+
+    disconnected = client.post(
+        "/gmail/disconnect",
+        data={"back": "/app/review", "_csrf": stranger_csrf},
+        headers={"sec-fetch-site": "same-origin"},
+    )
+    assert disconnected.status_code == 303
+    assert "No Gmail mailbox was connected" in _flash(disconnected)
+    assert oauth.revoked == [], "a stranger's click asked Google to revoke nothing"
+
+    grant = committed_session.scalars(select(GmailMailboxGrant)).one()
+    assert grant.user_id == uuid.UUID(owner.user_id)
+    assert grant.status is GmailGrantStatus.CONNECTED
+    assert grant.encrypted_refresh_token is not None
+
+
+def test_two_password_operators_get_two_separate_mailboxes(
+    hosted: tuple[TestClient, FakeGmailOAuthClient, FakeGmailTransport], committed_session: Session
+) -> None:
+    """The collision the old ownership key guaranteed, now impossible.
+
+    Both of these operators have ``subject == ""``. Keyed on the subject they
+    were one operator: the second connect would have retired the first's grant
+    as though it were their own, and every later lookup would have handed both
+    of them whichever mailbox was connected last. Keyed on the account they are
+    two people with two mailboxes, and each sees exactly one.
+    """
+
+    client, oauth, _transport = hosted
+    settings = gmail_settings()
+
+    first = _seed_operator(
+        email="first-password@vmr.example", subject=None, password="passphrase-1"
+    )
+    first_csrf = _sign_in_as(client, first, subject="")
+    _connect(client, oauth, first_csrf)
+
+    second = _seed_operator(
+        email="second-password@vmr.example", subject=None, password="passphrase-2"
+    )
+    oauth.mailbox_address = "second-mailbox@vmr.example"
+    oauth.mailbox_subject = "gmail-account-subject-2"
+    second_csrf = _sign_in_as(client, second, subject="")
+    _connect(client, oauth, second_csrf)
+
+    grants = committed_session.scalars(select(GmailMailboxGrant)).all()
+    assert len(grants) == 2
+    assert {grant.status for grant in grants} == {GmailGrantStatus.CONNECTED}
+    assert {grant.user_id for grant in grants} == {
+        uuid.UUID(first.user_id),
+        uuid.UUID(second.user_id),
+    }
+    assert all(grant.operator_subject is None for grant in grants)
+
+    for account, address in (
+        (first, "operator@vmr.example"),
+        (second, "second-mailbox@vmr.example"),
+    ):
+        owned = gmail_mailbox.connected_grant(committed_session, user_id=uuid.UUID(account.user_id))
+        assert owned is not None
+        assert owned.mailbox_address == address
+        state = gmail_mailbox.mailbox_state(
+            committed_session,
+            user_id=uuid.UUID(account.user_id),
+            settings=settings,
+            feature_on=True,
+        )
+        assert state.connected
+        assert state.mailbox_address == address
+
+
+def test_an_administrator_does_not_inherit_another_users_mailbox(
+    hosted: tuple[TestClient, FakeGmailOAuthClient, FakeGmailTransport], committed_session: Session
+) -> None:
+    """Role is not ownership, and a mailbox is not an administrable object.
+
+    An administrator can create accounts, disable them and change their roles.
+    None of that is a claim on somebody else's Google authorization: the grant
+    holds an encrypted refresh token for a real human's mailbox, and the only
+    request that may use it is one made by the account it belongs to.
+    """
+
+    client, oauth, _transport = hosted
+    owner = _seed_operator(email="mailbox-owner@vmr.example", subject="google-sub-mailbox-owner")
+    oauth.mailbox_address = "shared-outbox@vmr.example"
+    owner_csrf = _sign_in_as(client, owner)
+    _connect(client, oauth, owner_csrf)
+    assert committed_session.scalars(select(GmailMailboxGrant)).one().status is (
+        GmailGrantStatus.CONNECTED
+    )
+
+    administrator = _seed_operator(
+        email="admin@vmr.example", subject="google-sub-admin", role="admin"
+    )
+    _sign_in_as(client, administrator, subject="google-sub-admin")
+    admin_id = uuid.UUID(administrator.user_id)
+
+    assert gmail_mailbox.connected_grant(committed_session, user_id=admin_id) is None
+    assert (
+        gmail_mailbox.mailbox_state(
+            committed_session, user_id=admin_id, settings=gmail_settings(), feature_on=True
+        ).state
+        == "disconnected"
+    )
+
+    fixture = build_sequence(committed_session)
+    committed_session.commit()
+    page = client.get(f"/app/contacts/{fixture.contact.id}?campaign={fixture.campaign.id}")
+    assert page.status_code == 200
+    assert 'action="/gmail/connect"' in page.text
+    assert "shared-outbox@vmr.example" not in page.text
+
+
+def test_a_callback_started_by_one_account_cannot_bind_to_another(
+    hosted: tuple[TestClient, FakeGmailOAuthClient, FakeGmailTransport], committed_session: Session
+) -> None:
+    """The replay, retold with the identifier that used to make it succeed.
+
+    ``test_a_callback_cannot_bind_a_mailbox_to_a_different_operator`` above
+    drives the same attack with two Google operators, which the subject
+    comparison already caught. These two are password operators, so the subject
+    on both sides is ``""`` -- the comparison the route used to make would have
+    found them *equal* and bound the first operator's consent to the second's
+    account. Comparing the durable account id is what refuses it.
+    """
+
+    client, oauth, _transport = hosted
+    starter = _seed_operator(email="starter@vmr.example", subject=None, password="passphrase-a")
+    starter_csrf = _sign_in_as(client, starter, subject="")
+
+    started = client.post(
+        "/gmail/connect",
+        data={"back": "/app/review", "_csrf": starter_csrf},
+        headers={"sec-fetch-site": "same-origin"},
+    )
+    assert started.status_code == 303
+    state = oauth.authorization_calls[-1]["state"]
+
+    # The captured callback is opened in a second password operator's browser,
+    # which still holds the transaction cookie from the first.
+    receiver = _seed_operator(email="receiver@vmr.example", subject=None, password="passphrase-b")
+    _sign_in_as(client, receiver, subject="")
+
+    response = client.get(f"/gmail/callback?code=consent-code&state={state}")
+    assert response.status_code == 303
+    assert "different operator" in _flash(response)
+    assert oauth.exchanges == [], "no code was exchanged, so no token was ever minted"
+    assert committed_session.scalars(select(GmailMailboxGrant)).all() == []
+
+
+def test_a_disabled_accounts_open_session_cannot_touch_gmail(
+    hosted: tuple[TestClient, FakeGmailOAuthClient, FakeGmailTransport], committed_session: Session
+) -> None:
+    """Disabling an account ends its Gmail authority on the very next request.
+
+    The cookie in this browser is still validly signed and has hours left on it.
+    What stops it is the account record: the directory is read on every
+    authenticated request and the session's revocation counter no longer matches.
+    An administrator who removes somebody's access at 5pm has removed their
+    ability to draft from a mailbox at 5pm, not at the next expiry.
+    """
+
+    import uuid as _uuid
+
+    from app.db.session import SessionLocal
+    from app.models.enums import UserState
+    from app.models.user import User
+
+    client, oauth, transport = hosted
+    operator = _seed_operator(email="soon-disabled@vmr.example", subject="google-sub-disabled")
+    csrf = _sign_in_as(client, operator)
+    _connect(client, oauth, csrf)
+    fixture = build_sequence(committed_session)
+    committed_session.commit()
+    assert client.get("/app/review").status_code == 200
+
+    with SessionLocal() as session:
+        user = session.get(User, _uuid.UUID(operator.user_id))
+        assert user is not None
+        user.state = UserState.DISABLED
+        user.auth_version += 1
+        session.commit()
+
+    for response in (
+        client.post(
+            "/gmail/disconnect",
+            data={"back": "/app/review", "_csrf": csrf},
+            headers={"sec-fetch-site": "same-origin"},
+        ),
+        client.post(
+            "/gmail/connect",
+            data={"back": "/app/review", "_csrf": csrf},
+            headers={"sec-fetch-site": "same-origin"},
+        ),
+        client.post(
+            f"/app/review/sequence/{fixture.sequence.id}/gmail-drafts",
+            data={"version_ids": fixture.version_ids_csv, "back": "/app/review", "_csrf": csrf},
+            headers={"sec-fetch-site": "same-origin"},
+        ),
+    ):
+        assert response.status_code == 401, response.text
+
+    # Nothing moved: the mailbox is neither disconnected nor drafted through.
+    grant = committed_session.scalars(select(GmailMailboxGrant)).one()
+    assert grant.status is GmailGrantStatus.CONNECTED
+    assert oauth.revoked == []
+    assert transport.created == []
+    assert committed_session.scalars(select(GmailDraftRecord)).all() == []
+
+
+def test_the_extension_capture_credential_reaches_no_gmail_route(
+    monkeypatch: pytest.MonkeyPatch, committed_session: Session
+) -> None:
+    """A fourth credential exists in this deployment, and it opens no Gmail door.
+
+    The Chrome capture extension holds a bearer credential good for exactly the
+    enumerated capture contract. It is not an operator, has no account row and
+    therefore has no ``user_id`` a mailbox could belong to. The refusal here is
+    not vacuous: the same credential, in the same request, is accepted on a
+    contract path -- so what the Gmail routes are refusing is a credential that
+    genuinely verifies.
+    """
+
+    import json
+
+    from app.core.auth.extension import credential_digest
+
+    _apply(
+        monkeypatch,
+        _env(
+            FEATURES__CONTACT_CAPTURE_INTAKE="true",
+            EXTENSION_AUTH__ENABLED="true",
+            EXTENSION_AUTH__CREDENTIALS=json.dumps(
+                [f"{EXTENSION_KEY_ID}:{credential_digest(EXTENSION_SECRET)}"]
+            ),
+            EXTENSION_AUTH__ALLOWED_ORIGINS=json.dumps([EXTENSION_ORIGIN]),
+        ),
+    )
+    app = create_app(readiness_probe=_AlwaysReadyProbe())
+    oauth = FakeGmailOAuthClient()
+    setattr(app.state, GMAIL_OAUTH_CLIENT_STATE_KEY, oauth)
+    setattr(app.state, GMAIL_PROVIDER_STATE_KEY, FakeGmailTransport())
+    client = TestClient(app, base_url=STAGING_ORIGIN, follow_redirects=False)
+    bearer = {"Authorization": f"Bearer {EXTENSION_CREDENTIAL}", "Origin": EXTENSION_ORIGIN}
+
+    try:
+        # The control: this credential is real and this deployment accepts it.
+        assert client.get("/api/contact-labels", headers=bearer).status_code == 200
+
+        form = {"back": "/app/review"}
+        assert client.post("/gmail/connect", data=form, headers=bearer).status_code == 401
+        assert client.post("/gmail/disconnect", data=form, headers=bearer).status_code == 401
+        callback = client.get("/gmail/callback?code=x&state=y", headers=bearer)
+        assert callback.status_code in {303, 401}
+
+        assert oauth.authorization_calls == []
+        assert oauth.exchanges == []
+        assert committed_session.scalars(select(GmailMailboxGrant)).all() == []
+    finally:
+        get_settings.cache_clear()

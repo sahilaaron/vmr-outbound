@@ -12,11 +12,10 @@ What is proven before a mailbox is bound
 ``state``     compared against the signed, single-use, ``HttpOnly`` transaction
               cookie minted for *this* browser -- checked in the route before
               this module is reached.
-``operator``  the transaction cookie also carries the operator subject the
+``operator``  the transaction cookie also carries the durable ``users.id`` the
               authorization was started by, and the route refuses if the
-              signed-in operator is not that operator. A callback replayed into
-              a second operator's browser therefore cannot bind a mailbox to
-              them.
+              signed-in account is not that one. A callback replayed into a
+              second operator's browser therefore cannot bind a mailbox to them.
 ``PKCE``      the code is bound to a verifier only this process ever held.
 ``ID token``  RS256 against Google's published JWKS, ``aud`` equal to the *Gmail*
               client id, ``iss`` a documented Google issuer, bounded freshness,
@@ -32,7 +31,7 @@ What is proven before a mailbox is bound
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 from urllib.parse import urlencode
 
@@ -66,11 +65,15 @@ class GmailAuthorizationError(Exception):
 class GmailTokenGrant:
     """What Google returned for one authorization code or refresh."""
 
-    access_token: str
+    #: ``repr=False`` on both token fields, matching ``GmailSettings`` and
+    #: ``GmailMailboxGrant``: nothing in this package logs today, and this is the
+    #: line that keeps the first log statement somebody adds from printing a live
+    #: credential in the clear.
+    access_token: str = field(repr=False)
     #: ``None`` on a refresh: Google returns a new refresh token only when it
     #: decides to rotate one, and the absence of it means "keep the one you
     #: have", never "the grant has no refresh token".
-    refresh_token: str | None
+    refresh_token: str | None = field(repr=False)
     expires_in: int
     granted_scopes: tuple[str, ...]
     #: Present on the initial exchange, absent on a refresh.

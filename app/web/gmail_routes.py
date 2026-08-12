@@ -20,13 +20,18 @@ same-origin ``POST`` is what makes that assertable rather than assumed.
 Why the callback binds to the session and not to the transaction alone
 ----------------------------------------------------------------------
 The signed transaction cookie carries the ``state``, the ``nonce``, the PKCE
-verifier, the return path **and the operator subject it was started by**. The
-callback requires all of:
+verifier, the return path **and the account it was started by**. The callback
+requires all of:
 
 * a live, approved operator session;
 * a transaction cookie that decodes, verifies and has not expired;
 * ``state`` equal to the transaction's, compared in constant time;
-* the transaction's operator subject equal to the *signed-in* operator's.
+* the transaction's owning account equal to the *signed-in* account.
+
+That last claim is the durable ``users.id``, not Google's subject. It was the
+subject until #273 gave accounts a password path: a password session carries no
+subject at all, so the comparison would have read ``"" == ""`` between any two
+password operators and proven nothing.
 
 The last one is the check that makes "an OAuth callback cannot bind a mailbox to
 the wrong operator" true rather than merely likely. Without it, a callback URL
@@ -53,6 +58,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.core.auth.accounts import session_account_id
 from app.core.auth.context import current_operator
 from app.core.auth.csrf import require_csrf
 from app.core.auth.session import SessionCodec, SessionDecodeError
@@ -206,7 +212,8 @@ def connect_gmail(
             ),
         )
     operator = current_operator()
-    if operator is None:
+    owner = session_account_id(operator)
+    if operator is None or owner is None:
         # Local development has no operator session. Binding a mailbox to
         # nobody would produce a grant no request could ever find again, so the
         # feature says so rather than pretending.
@@ -239,7 +246,7 @@ def connect_gmail(
             "state": state,
             "nonce": nonce,
             "verifier": verifier,
-            "operator": operator.subject,
+            "operator": str(owner),
             "next": target,
             "exp": now + settings.gmail.authorization_transaction_max_age_seconds,
         }
@@ -296,10 +303,11 @@ def gmail_callback(
         return _finish(settings, target, err=_REFUSED)
 
     operator = current_operator()
+    owner = session_account_id(operator)
     expected_operator = transaction.get("operator")
-    if operator is None or not isinstance(expected_operator, str):
+    if operator is None or owner is None or not isinstance(expected_operator, str):
         return _finish(settings, target, err=_REFUSED)
-    if not _constant_equal(expected_operator, operator.subject):
+    if not _constant_equal(expected_operator, str(owner)):
         # The authorization was started by somebody else. Binding it here would
         # attach one operator's mailbox consent to another operator's account.
         return _finish(
@@ -341,7 +349,8 @@ def gmail_callback(
     try:
         row = gmail_mailbox.bind_mailbox(
             db,
-            operator_subject=operator.subject,
+            user_id=owner,
+            operator_subject=operator.subject or None,
             operator_email=operator.email,
             mailbox_address=address,
             mailbox_account_subject=account_subject,
@@ -376,7 +385,8 @@ def disconnect_gmail(
         return _not_available()
     target = _safe_return(back)
     operator = current_operator()
-    if operator is None:
+    owner = session_account_id(operator)
+    if operator is None or owner is None:
         return _redirect(target, err="There is no signed-in operator, so nothing was changed.")
 
     client: GmailOAuthClient | None
@@ -386,7 +396,7 @@ def disconnect_gmail(
         client = None
 
     disconnected, revoked = gmail_mailbox.disconnect(
-        db, operator_subject=operator.subject, settings=settings.gmail, client=client
+        db, user_id=owner, settings=settings.gmail, client=client
     )
     db.commit()
     if not disconnected:

@@ -1,6 +1,12 @@
 """Gmail mailbox grants: connecting, reading, refreshing and disconnecting.
 
-One operator has at most one connected mailbox, enforced by a partial unique
+A mailbox belongs to a **VMR user**, identified by ``users.id``, and every
+function in this module takes that id rather than an address, a Google subject
+or anything else a request could carry. Ownership was Google's ``sub`` when this
+slice was written, which stopped being viable when #273 gave accounts a password
+path and left password sessions with no subject at all.
+
+One user has at most one connected mailbox, enforced by a partial unique
 index rather than by a convention any code path could forget. Connecting a
 second mailbox replaces the first: the previous grant is marked ``REVOKED`` and
 kept, because it is the record of what was authorized and when, and because the
@@ -14,6 +20,7 @@ transaction have to be one atomic outcome.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -69,20 +76,24 @@ UNAVAILABLE = MailboxState(state="unavailable")
 DISCONNECTED = MailboxState(state="disconnected")
 
 
-def connected_grant(session: Session, *, operator_subject: str) -> GmailMailboxGrant | None:
-    """The one live grant for this operator, or ``None``."""
+def connected_grant(session: Session, *, user_id: uuid.UUID) -> GmailMailboxGrant | None:
+    """The one live grant belonging to this VMR user, or ``None``.
 
-    if not operator_subject:
-        return None
+    Scoped by ``user_id`` and nothing else. There is deliberately no variant
+    that takes an address, a subject or a role: every caller that wants "the
+    mailbox for this request" has to name the account, so no caller can reach
+    another operator's mailbox by holding some other identifier for it.
+    """
+
     return session.scalars(
         select(GmailMailboxGrant).where(
-            GmailMailboxGrant.operator_subject == operator_subject,
+            GmailMailboxGrant.user_id == user_id,
             GmailMailboxGrant.status == GmailGrantStatus.CONNECTED,
         )
     ).first()
 
 
-def latest_grant(session: Session, *, operator_subject: str) -> GmailMailboxGrant | None:
+def latest_grant(session: Session, *, user_id: uuid.UUID) -> GmailMailboxGrant | None:
     """The most recent grant of any status, so a reconnect state can be shown.
 
     Without this, an operator whose refresh token was revoked at Google would
@@ -91,24 +102,22 @@ def latest_grant(session: Session, *, operator_subject: str) -> GmailMailboxGran
     working.
     """
 
-    if not operator_subject:
-        return None
     return session.scalars(
         select(GmailMailboxGrant)
-        .where(GmailMailboxGrant.operator_subject == operator_subject)
+        .where(GmailMailboxGrant.user_id == user_id)
         .order_by(GmailMailboxGrant.connected_at.desc(), GmailMailboxGrant.id.desc())
         .limit(1)
     ).first()
 
 
 def mailbox_state(
-    session: Session, *, operator_subject: str, settings: GmailSettings, feature_on: bool
+    session: Session, *, user_id: uuid.UUID, settings: GmailSettings, feature_on: bool
 ) -> MailboxState:
     """The operator-visible mailbox state for one signed-in operator."""
 
     if not feature_on or not settings.is_configured():
         return UNAVAILABLE
-    grant = latest_grant(session, operator_subject=operator_subject)
+    grant = latest_grant(session, user_id=user_id)
     if grant is None:
         return DISCONNECTED
     if grant.status is GmailGrantStatus.CONNECTED:
@@ -131,7 +140,8 @@ def mailbox_state(
 def bind_mailbox(
     session: Session,
     *,
-    operator_subject: str,
+    user_id: uuid.UUID,
+    operator_subject: str | None,
     operator_email: str,
     mailbox_address: str,
     mailbox_account_subject: str,
@@ -140,12 +150,13 @@ def bind_mailbox(
 ) -> GmailMailboxGrant:
     """Record one verified mailbox authorization against one operator.
 
-    The operator identity is passed in from the *session* the callback was
-    served under, never from a request parameter. That is what makes it
+    The owning account is passed in from the *session* the callback was served
+    under, never from a request parameter. That is what makes it
     impossible for a callback replayed into another browser to bind a mailbox to
-    somebody else: the route checks the transaction cookie's operator subject
-    against the signed-in operator before this function is reached, and this
-    function has no way to learn an operator identity from the OAuth response.
+    somebody else: the route checks the transaction cookie's owning account --
+    the durable ``users.id`` -- against the signed-in account before this
+    function is reached, and this function has no way to learn an owner from the
+    OAuth response.
     """
 
     if not grant.has_compose_scope():
@@ -169,7 +180,7 @@ def bind_mailbox(
     # of an audit trail.
     for existing in session.scalars(
         select(GmailMailboxGrant).where(
-            GmailMailboxGrant.operator_subject == operator_subject,
+            GmailMailboxGrant.user_id == user_id,
             GmailMailboxGrant.status == GmailGrantStatus.CONNECTED,
         )
     ).all():
@@ -187,7 +198,8 @@ def bind_mailbox(
         raise GmailMailboxError(str(exc)) from exc
 
     row = GmailMailboxGrant(
-        operator_subject=operator_subject,
+        user_id=user_id,
+        operator_subject=operator_subject or None,
         operator_email=operator_email,
         mailbox_account_subject=mailbox_account_subject.strip(),
         mailbox_address=address,
@@ -206,7 +218,7 @@ def bind_mailbox(
 def disconnect(
     session: Session,
     *,
-    operator_subject: str,
+    user_id: uuid.UUID,
     settings: GmailSettings,
     client: GmailOAuthClient | None,
 ) -> tuple[bool, bool]:
@@ -220,7 +232,7 @@ def disconnect(
     succeed.
     """
 
-    grant = connected_grant(session, operator_subject=operator_subject)
+    grant = connected_grant(session, user_id=user_id)
     if grant is None:
         return False, False
 

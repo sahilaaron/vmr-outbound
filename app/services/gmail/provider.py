@@ -84,11 +84,17 @@ class GmailProvider(Protocol):
 
 
 def _handle_from(payload: Any) -> GmailDraftHandle:
+    # `ambiguous=True`, deliberately. This function only ever runs on a response
+    # the status ladder in `_request` has already accepted as success, so on the
+    # create path Gmail has *acted* and this is a body VMR cannot read -- which
+    # proves nothing about whether a draft exists. Calling it definite would send
+    # the row to FAILED, which the reconciler does not revisit, and the operator's
+    # next click would put a second identical draft in a stranger-facing mailbox.
     if not isinstance(payload, dict):
-        raise GmailProviderError("malformed_response", ambiguous=False)
+        raise GmailProviderError("malformed_response", ambiguous=True)
     draft_id = payload.get("id")
     if not isinstance(draft_id, str) or not draft_id:
-        raise GmailProviderError("malformed_response", ambiguous=False)
+        raise GmailProviderError("malformed_response", ambiguous=True)
     message = payload.get("message")
     message_id = None
     thread_id = None
@@ -152,7 +158,10 @@ class HttpGmailProvider:
         try:
             return response.json()
         except ValueError as exc:
-            raise GmailProviderError("malformed_response", ambiguous=False) from exc
+            # Same reasoning as `_handle_from`: the status was a success, so the
+            # write may well have happened and an unreadable body is not evidence
+            # that it did not.
+            raise GmailProviderError("malformed_response", ambiguous=True) from exc
 
     def create_draft(self, *, access_token: str, raw_message: str) -> GmailDraftHandle:
         payload = self._request(
