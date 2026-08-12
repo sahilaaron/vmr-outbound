@@ -220,7 +220,7 @@ automatic behaviour below happens unless it is deliberately enabled.
 | `FEATURES__AUTOMATIC_COMPANY_DOMAIN_RESOLUTION` | resolving a domain *without* an operator — both in-request and in the worker | `pending.py:147`, `intake.py:1064` |
 | `FEATURES__SALESNAV_DOMAIN_ENRICHMENT` | any logo.dev provider lookup | `pending.py:157`, `intake.py:1073` |
 | `LOGO_DEV_API_KEY` | the same provider lookup (a key, not a switch) | `pending.py:164`, `intake.py:1073` |
-| `FEATURES__WORKBENCH` | the operator pages under `/contact-captures/` | app factory, which refuses to mount them outside `APP_ENV=local` |
+| `FEATURES__WORKBENCH` | the operator pages under `/contact-captures/` | `app/core/auth/startup.py`, which permits it in local development and staging and refuses it outright in production |
 
 Two additional facts that are easy to get wrong:
 
@@ -238,6 +238,31 @@ Two additional facts that are easy to get wrong:
 
 Without a provider key the flow still works — the operator can enter a domain by
 hand or leave the capture pending.
+
+### Where promotion may run
+
+`contact_capture_promotion` was local-only until the hosted Beta. It is now
+permitted in exactly two places, and `app/core/runtime.py` decides:
+
+| Environment | Rule |
+| --- | --- |
+| `local` / `development` / `test` / `ci` | Unchanged. The switch alone is enough, and the operator-driven flow needs no provider key. |
+| `staging` | Permitted **only** with `FEATURES__AUTOMATIC_COMPANY_DOMAIN_RESOLUTION`, `FEATURES__SALESNAV_DOMAIN_ENRICHMENT` and a configured `LOGO_DEV_API_KEY`. Any one missing and startup is refused. |
+| `production` | Refused outright. Production has no operator surface to review a promoted Contact on, and a production promotion path is a separate design. |
+
+The staging prerequisites are the four things automatic promotion actually
+needs, and the refusal exists because the failure without them is silent: the
+services above fail closed and leave the capture untouched, which is safe and
+correct and looks exactly like a deployment where nothing was ever captured. A
+half-configured hosted promotion would accept captures, file campaign requests,
+record every Capture job as succeeded, and promote nothing, with no error
+anywhere. Startup refusing is what makes that state visible.
+
+Nothing about what promotion may *conclude* changes with the environment. The
+DAT-014 rules hold everywhere: no fabricated domain, no provider rank treated as
+confirmation, no merge on weak evidence, no promotion of a suppressed identity,
+and a Campaign Contact only where the immutable capture already carried an
+explicit filing request.
 
 ### Where a Contact actually gets created
 
