@@ -1,5 +1,4 @@
 {% extends "base.html" %}
-{% from "_ui.html" import unbuilt %}
 {% block content %}
 <div class="v2-page wiz">
   <h1 class="v2-h1">New campaign</h1>
@@ -75,36 +74,6 @@
             on. Nothing here is irreversible.
           </p>
         </form>
-      </div>
-    </div>
-
-    <div class="v2-card">
-      <div class="v2-card-head tight"><h2>The three later steps</h2></div>
-      <div class="v2-row tight">
-        <div class="v2-sidelist-top"><b>Audience rules</b>{{ unbuilt() }}</div>
-        <div class="v2-hint">
-          Role, industry, geography and size criteria that decide who a capture may join. There is
-          no rules engine yet — you enrol contacts from the Contacts screen instead, which is
-          explicit and reversible.
-        </div>
-      </div>
-      <div class="v2-row tight">
-        <div class="v2-sidelist-top"><b>Message shape</b>{{ unbuilt() }}</div>
-        <div class="v2-hint">
-          The ask, the tone and the length cap. Today the Personalization Agent works from your
-          Knowledge Base guardrails, which are set once and apply everywhere.
-        </div>
-      </div>
-      <div class="v2-row tight">
-        <div class="v2-sidelist-top"><b>Sending</b>{{ unbuilt() }}</div>
-        <div class="v2-hint">
-          Mailboxes, a daily cap, a send window and an auto-send threshold. None exists: there is no
-          sending adapter, so every draft waits for your approval and goes no further.
-        </div>
-      </div>
-      <div class="v2-card-foot plain">
-        Showing these as steps rather than hiding them is deliberate. You should be able to see what
-        the product will ask for, without a form implying it will act on the answer.
       </div>
     </div>
   </div>

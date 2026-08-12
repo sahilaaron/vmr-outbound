@@ -689,6 +689,33 @@ def test_new_campaign_form_defaults_the_provisional_checkbox_to_checked(
     assert "checked" in tag
 
 
+def test_new_campaign_page_does_not_list_the_three_unbuilt_steps(
+    client: TestClient,
+) -> None:
+    """The creation page offers only what it can actually do.
+
+    A card headed "The three later steps" used to enumerate Audience rules,
+    Message shape and Sending with an explanation of each. On a screen whose
+    only job is to name a campaign, three detailed descriptions of absent
+    features read as a form that is about to ask for them. The numbered chips
+    above the form still show all five steps with the last three disabled, so
+    the shape of the finished product stays legible without the prose.
+    """
+
+    body = client.get("/app/campaigns/new").text
+
+    assert "The three later steps" not in body
+    # The distinctive sentence from each removed row. The bare labels are not
+    # asserted against: the step chips legitimately still carry them.
+    assert "Role, industry, geography and size criteria" not in body
+    assert "The ask, the tone and the length cap" not in body
+    assert "Mailboxes, a daily cap, a send window" not in body
+
+    # The page still does its actual job.
+    assert 'id="campaign-provisional"' in body
+    assert "Create the campaign" in body
+
+
 def test_creating_a_campaign_with_the_box_checked_enables_provisional_domains(
     client: TestClient, db_session: Session
 ) -> None:
