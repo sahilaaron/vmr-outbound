@@ -65,6 +65,7 @@ from app.models import seller_knowledge as _seller_knowledge  # noqa: E402,F401
 from app.models import seller_profile as _seller_profile  # noqa: E402,F401
 from app.models import suppression as _suppression  # noqa: E402,F401
 from app.models import usage_ledger as _usage_ledger  # noqa: E402,F401
+from app.models import user as _user  # noqa: E402,F401
 from app.models import verification_attempt as _verification_attempt  # noqa: E402,F401
 from app.models import verification_job as _verification_job  # noqa: E402,F401
 from app.models import verification_usage as _verification_usage  # noqa: E402,F401

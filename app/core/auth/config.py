@@ -109,12 +109,38 @@ class AuthSettings(BaseModel):
         description="Google OAuth 2.0 client secret (secret).",
     )
 
-    # The allow-list. Empty means "nobody", never "everybody": every decision
-    # path treats an empty list as a refusal, and the startup contract refuses
-    # to boot a hosted deployment that has one.
+    # The allow-list. Its meaning changed in the user-accounts slice (#270) and
+    # the change is the important part:
+    #
+    # * It used to be the *authority* — a request was authorized because the
+    #   address in its cookie appeared here, re-checked on every request.
+    # * It is now a **seed**. On first boot after the accounts migration, every
+    #   address here that has no account row gets one created (role USER, active,
+    #   no password), so a deployment that was working before this slice keeps
+    #   working after it with nobody locked out. From then on the ``users`` table
+    #   is the only authority: removing an address here does **not** revoke
+    #   access, and an administrator must disable the account instead.
+    #
+    # It may now legitimately be empty, because the bootstrap administrator below
+    # guarantees at least one account exists. ``is_approved`` is retained for the
+    # seeding decision and for the optional Workspace-domain gate; it is no longer
+    # consulted on the request path.
     allowed_operator_emails: tuple[str, ...] = Field(
         default=(),
-        description="Explicitly approved internal operator email addresses.",
+        description="Legacy seed list: addresses given an account on first boot.",
+    )
+
+    # The one platform administrator, named explicitly rather than inferred.
+    #
+    # Inferring it from the `verifiedmarketresearch.com` domain would make every
+    # colleague an administrator the moment their account was created, which is
+    # the opposite of what an admin-created-users model is for. So this is a
+    # single configured address with a documented default, it is applied
+    # idempotently, and it is the only path by which the first ADMIN role comes
+    # into existence.
+    bootstrap_admin_email: str = Field(
+        default="sahil@verifiedmarketresearch.com",
+        description="The single account bootstrapped with the ADMIN role.",
     )
 
     # Optional second gate, not a substitute for the allow-list. When set, the
@@ -206,6 +232,28 @@ class AuthSettings(BaseModel):
             if candidate not in normalized:
                 normalized.append(candidate)
         return tuple(normalized)
+
+    @field_validator("bootstrap_admin_email")
+    @classmethod
+    def _normalize_bootstrap_admin(cls, value: str) -> str:
+        """Refuse an unusable administrator address at load time.
+
+        An empty value is permitted and means "bootstrap nothing", which is what
+        a deployment that already has its administrator wants. Anything that is
+        *present but unusable* refuses the start: an address with a typo would
+        otherwise produce a deployment that boots cleanly with no administrator
+        and no indication of why.
+        """
+
+        candidate = value.strip()
+        if not candidate:
+            return ""
+        normalized = normalize_operator_email(candidate)
+        if not normalized:
+            raise ValueError(
+                "AUTH__BOOTSTRAP_ADMIN_EMAIL must be a well-formed ASCII email address"
+            )
+        return normalized
 
     @field_validator("allowed_google_domain")
     @classmethod

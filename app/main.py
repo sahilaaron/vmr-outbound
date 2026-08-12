@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -11,6 +14,8 @@ from fastapi.staticfiles import StaticFiles
 from app import __version__
 from app.api.phase2 import router as phase2_router
 from app.api.routes import router as api_router
+from app.core.auth.accounts import AccountDirectory
+from app.core.auth.admin import AdminRequiredError
 from app.core.auth.csrf import CsrfError
 from app.core.auth.identity import IdentityProvider
 from app.core.auth.middleware import OperatorAuthenticationMiddleware
@@ -28,14 +33,24 @@ from app.web.auth_routes import router as auth_router
 # catching the old name still catches the refusal.
 WorkbenchConfigurationError = HostedAuthConfigurationError
 
+_startup_logger = logging.getLogger("vmr.startup")
+
 
 def create_app(
     settings: Settings | None = None,
     *,
     readiness_probe: ReadinessProbe | None = None,
     identity_provider: IdentityProvider | None = None,
+    account_directory: AccountDirectory | None = None,
 ) -> FastAPI:
-    """Application factory."""
+    """Application factory.
+
+    ``account_directory`` is the same kind of seam as ``identity_provider``: the
+    live one reads the ``users`` table, and a test injects a deterministic one so
+    the authentication boundary can be exercised without a database. Left as
+    ``None`` the middleware resolves the database-backed directory lazily, so
+    building an app never opens a connection as a side effect.
+    """
 
     settings = settings or get_settings()
 
@@ -56,10 +71,49 @@ def create_app(
             connect_timeout_seconds=settings.database_connect_timeout_seconds,
         )
 
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        """Make sure the configured administrator exists, and only that.
+
+        Best-effort by design. A database that is unreachable at boot must not
+        stop the process starting — the probes and the sign-in page are exactly
+        what an operator needs in that situation, and both work without it. The
+        operation is idempotent, so the next successful start converges.
+
+        It is also inert unless hosted authentication is on: a developer running
+        locally has no sign-in and does not need an administrator row appearing in
+        their database merely because they started the app.
+
+        A lifespan handler rather than ``@app.on_event("startup")``, which is
+        deprecated in this FastAPI version and which the test suite turns into an
+        error.
+        """
+
+        if settings.auth.enabled:
+            try:
+                from app.db.session import SessionLocal
+                from app.services.users import service as user_service
+
+                with SessionLocal() as session:
+                    user_service.ensure_bootstrap_admin(
+                        session, email=settings.auth.bootstrap_admin_email
+                    )
+                    user_service.seed_from_allowlist(
+                        session, emails=settings.auth.allowed_operator_emails
+                    )
+                    session.commit()
+            except Exception:  # noqa: BLE001 - startup must not depend on the database
+                _startup_logger.warning(
+                    '{"event":"account_bootstrap_deferred",'
+                    '"detail":"the database was not reachable at startup"}'
+                )
+        yield
+
     app = FastAPI(
         title=settings.app_name,
         version=__version__,
         debug=settings.debug,
+        lifespan=lifespan,
         summary=(
             "Contact-first outbound operations with durable Campaign, Agent, "
             "queue, and pipeline state."
@@ -88,6 +142,7 @@ def create_app(
         OperatorAuthenticationMiddleware,
         settings=settings.auth,
         extension_settings=settings.extension_auth,
+        account_directory=account_directory,
     )
     app.add_middleware(CanonicalTrustedHostMiddleware, allowed_hosts=settings.trusted_hosts)
     app.add_middleware(
@@ -96,6 +151,25 @@ def create_app(
         trusted_proxy_cidrs=settings.trusted_proxy_cidrs,
         hsts_max_age_seconds=settings.hsts_max_age_seconds,
     )
+
+    @app.exception_handler(AdminRequiredError)
+    async def admin_required(request: Request, exc: AdminRequiredError) -> JSONResponse:
+        """One shape for every administrator-only refusal.
+
+        A 403 rather than a 404: pretending the users screen does not exist would
+        be security through obscurity that also confuses the administrator who
+        mistyped their own URL. It names no account and reveals nothing about who
+        the administrators are.
+        """
+
+        return JSONResponse(
+            status_code=403,
+            content={
+                "error": "admin_required",
+                "status": 403,
+                "message": "This area is limited to platform administrators.",
+            },
+        )
 
     @app.exception_handler(CsrfError)
     async def csrf_failed(request: Request, exc: CsrfError) -> JSONResponse:
@@ -200,6 +274,14 @@ def create_app(
             """
 
             return RedirectResponse("/app", status_code=307)
+
+        # The administrator's account directory. Included before the general v2
+        # router so that `/app/admin/...` resolves on the router that carries the
+        # `require_admin` dependency, and can never be picked up by a broader
+        # pattern added to the v2 router later.
+        from app.web.v2.admin_users import router as admin_users_router
+
+        app.include_router(admin_users_router)
 
         # The v2 router is included first so its `/app/...` paths are matched
         # before any broader admin pattern can shadow them.

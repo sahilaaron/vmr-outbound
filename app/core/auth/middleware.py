@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from contextvars import Token
 from http.cookies import SimpleCookie
 from typing import Any
@@ -29,6 +30,7 @@ from urllib.parse import quote
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from app.core.auth.accounts import AccountDirectory, AccountLookupUnavailable, AccountSnapshot
 from app.core.auth.config import AuthSettings
 from app.core.auth.context import (
     current_operator,
@@ -47,6 +49,7 @@ from app.core.auth.extension import (
 from app.core.auth.policy import (
     REDIRECTABLE_METHODS,
     is_anonymous_path,
+    is_identity_free_path,
     is_safe_method,
     normalize_request_path,
 )
@@ -62,6 +65,15 @@ __all__ = [
     "clear_session_cookie_value",
     "current_operator",
 ]
+
+# Outcomes of resolving one request's session. Named constants rather than a
+# pair of booleans because the three cases are genuinely different and the
+# difference between "refused" and "could not tell" decides whether the browser
+# keeps its cookie.
+_NO_SESSION = 0  # No cookie presented, or an anonymous path that needs no identity.
+_SESSION_ACCEPTED = 1  # Cookie verified and the account still agrees.
+_SESSION_REFUSED = 2  # Decided refusal: forged, expired, unknown, disabled, superseded.
+_DIRECTORY_UNAVAILABLE = 3  # Undecided: the account directory could not be consulted.
 
 
 def clear_session_cookie_value(*, secure: bool, domain: str | None) -> str:
@@ -253,9 +265,17 @@ class OperatorAuthenticationMiddleware:
         *,
         settings: AuthSettings,
         extension_settings: ExtensionAuthSettings | None = None,
+        account_directory: AccountDirectory | None = None,
     ) -> None:
         self.app = app
         self.settings = settings
+        # The account directory is a seam for the same reason `IdentityProvider`
+        # is: the boundary must be testable without a database, and the live
+        # implementation must not be constructed at import time. `None` here means
+        # "resolve the default lazily on first use", which keeps importing this
+        # module free of any connection side effect.
+        self._account_directory = account_directory
+        self._account_directory_resolved = account_directory is not None
         # The extension boundary is a second, much narrower credential and is
         # deliberately its own object rather than a field on `AuthSettings`: the
         # two are configured separately, revoked separately, and must never be
@@ -284,17 +304,43 @@ class OperatorAuthenticationMiddleware:
 
         state["auth_enforced"] = True
         now = int(time.time())
-        session, revoked = self._resolve_session(scope, now=now)
         method = str(scope.get("method", "GET")).upper()
         path = str(scope.get("path", "/"))
+        session, account, outcome = self._resolve_session(scope, now=now, path=path)
 
         # The extension capture credential. Consulted only for the enumerated
         # capture contract (see `app/core/auth/extension.py`), so this call
         # returns `None` for every other path in the application and no amount of
         # a valid credential can widen that.
+        #
+        # Resolved *before* the directory verdict is acted on, because it does not
+        # depend on the directory at all: a capture is authorised by a bearer
+        # credential and a `chrome-extension://` origin, neither of which needs an
+        # account row. Answering 503 to a perfectly valid capture merely because
+        # the same browser also carried a stale session cookie would be an outage
+        # invented out of an irrelevant fact.
         extension_key = authenticate_capture_request(
             scope, self.extension_settings, path=path, method=method
         )
+
+        if outcome == _DIRECTORY_UNAVAILABLE and extension_key is None:
+            # The account directory could not answer. This is *unknown*, not
+            # *refused*: the session cookie stays exactly where it is, so the
+            # browser is signed in again the moment the database is reachable.
+            # Written as its own branch rather than folded into the anonymous
+            # refusal so that a database outage can never silently log everybody
+            # out and then look like a wave of expired sessions.
+            await self._respond(
+                scope,
+                send,
+                status=503,
+                error="account_directory_unavailable",
+                message=(
+                    "Your account could not be verified right now. "
+                    "This is temporary — try again in a moment."
+                ),
+            )
+            return
 
         # One credential decides one request, and an explicitly presented bearer
         # outranks an ambient cookie. That ordering is what makes the acceptance
@@ -307,6 +353,7 @@ class OperatorAuthenticationMiddleware:
         # by a browser and therefore is not forgeable cross-site.
         if extension_key is not None:
             session = None
+            account = None
         state[EXTENSION_KEY_ID_STATE_KEY] = extension_key
         state["auth_credential"] = (
             EXTENSION_CREDENTIAL_LABEL
@@ -315,6 +362,12 @@ class OperatorAuthenticationMiddleware:
         )
         state["operator_email"] = session.email if session is not None else None
         state["csrf_token"] = self.codec.csrf_token(session.session_id) if session else None
+        # Role comes from the account record read this request, never from the
+        # cookie. A demotion therefore takes effect immediately, and a cookie
+        # cannot assert a privilege the directory no longer grants. The admin
+        # dependency in `app/core/auth/admin.py` reads exactly this key.
+        state["operator_role"] = account.role.value if account is not None else None
+        state["operator_user_id"] = str(account.user_id) if account is not None else None
 
         operator_token = set_current_operator(session)
         csrf_token: Token[str | None] = set_current_csrf_token(state["csrf_token"])
@@ -334,7 +387,9 @@ class OperatorAuthenticationMiddleware:
                     await self._respond_preflight(scope, send, headers=preflight)
                     return
                 if not is_anonymous_path(path):
-                    await self._refuse_anonymous(scope, send, method=method, revoked=revoked)
+                    await self._refuse_anonymous(
+                        scope, send, method=method, revoked=outcome == _SESSION_REFUSED
+                    )
                     return
 
             if (
@@ -365,28 +420,85 @@ class OperatorAuthenticationMiddleware:
 
     # --- internals ----------------------------------------------------------
 
-    def _resolve_session(self, scope: Scope, *, now: int) -> tuple[OperatorSession | None, bool]:
-        """Decode the cookie and re-apply the approval policy.
+    def _directory(self) -> AccountDirectory:
+        """The account directory, resolved once and then reused.
 
-        Approval is re-checked on every request, not just at sign-in. That is
-        what makes removing an address from the allow-list an immediate
-        revocation of that operator's existing session, and it is the reason a
-        server-side session table earns its keep nowhere in this design.
+        Lazy rather than eager so that importing this module, or building an app
+        whose authentication is switched off, never constructs a database session
+        factory as a side effect.
+        """
+
+        if not self._account_directory_resolved:
+            from app.core.auth.accounts import default_account_directory
+
+            self._account_directory = default_account_directory()
+            self._account_directory_resolved = True
+        assert self._account_directory is not None
+        return self._account_directory
+
+    def _resolve_session(
+        self, scope: Scope, *, now: int, path: str
+    ) -> tuple[OperatorSession | None, AccountSnapshot | None, int]:
+        """Decode the cookie, then re-check the account behind it.
+
+        Two independent gates, in this order:
+
+        1. **The cookie must verify.** Signature, version, and absolute lifetime.
+           A forged, malformed or expired cookie is one outcome — no session —
+           and the stale cookie is cleared.
+        2. **The account must still agree.** It must exist, be active, and carry
+           the ``auth_version`` the cookie was minted under. This is the gate that
+           makes disabling an account and resetting a password take effect on
+           already-issued sessions rather than at the next expiry.
+
+        Gate 2 is skipped entirely for anonymous paths. A probe, the sign-in page
+        and the stylesheet must keep working when the database does not, and none
+        of them needs to know who is asking.
         """
 
         assert self.codec is not None
         raw = _cookie(scope, SESSION_COOKIE_NAME)
         if raw is None:
-            return None, False
+            return None, None, _NO_SESSION
         try:
             session = self.codec.decode_session(raw, now=now)
         except SessionDecodeError:
-            # Forged, malformed or expired are all one outcome: no session. The
-            # stale cookie is cleared so the browser stops presenting it.
-            return None, True
-        if not self.settings.is_approved(session.email):
-            return None, True
-        return session, False
+            return None, None, _SESSION_REFUSED
+
+        if is_identity_free_path(path):
+            # A probe or a static asset. The answer does not depend on who is
+            # asking, so the directory is not consulted and this request carries
+            # no operator — which is what keeps those paths answering while the
+            # database is down. Note the deliberately *narrower* test than
+            # `is_anonymous_path`: the sign-in surface is anonymous but still
+            # needs the account resolved, because `/auth/login` redirects a
+            # signed-in operator and `/auth/logout` must demand a CSRF token
+            # exactly when there is a session to protect.
+            return None, None, _NO_SESSION
+
+        try:
+            account = self._directory().lookup(uuid.UUID(session.user_id))
+        except AccountLookupUnavailable:
+            if is_anonymous_path(path):
+                # The sign-in surface must keep working when the database does
+                # not: it is where an operator ends up when everything else is
+                # refused. Serving it as anonymous is the graceful degradation —
+                # a signed-in operator sees a sign-in form rather than a 503, and
+                # nothing is granted that a session would have granted.
+                return None, None, _NO_SESSION
+            return None, None, _DIRECTORY_UNAVAILABLE
+        except ValueError:
+            # A `uid` claim that is not a UUID cannot have been minted here.
+            return None, None, _SESSION_REFUSED
+
+        if account is None or not account.is_active:
+            return None, None, _SESSION_REFUSED
+        if account.auth_version != session.auth_version:
+            # Disabled and re-enabled, password reset, role changed, or an
+            # administrator invalidated everything. Whatever the cause, this
+            # cookie predates it.
+            return None, None, _SESSION_REFUSED
+        return session, account, _SESSION_ACCEPTED
 
     async def _refuse_anonymous(
         self, scope: Scope, send: Send, *, method: str, revoked: bool
