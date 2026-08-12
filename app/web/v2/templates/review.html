@@ -115,17 +115,24 @@
       </form>
       {% endif %}
       {#
-        The same mailbox panel the Contact page carries. The action covers the
-        whole sequence, and the seven exact versions it names are the ones this
-        page just listed -- so an operator who has been reading here does not
-        have to open another page to act on what they read.
+        Create Gmail drafts is deliberately *not* offered here, and the omission
+        is the point rather than an oversight.
+
+        This page shows one message body at a time; the action drafts every
+        message in the sequence. Offering it here would let an operator put six
+        bodies they have not read into a real mailbox with one click, which is
+        exactly the "approved by default is not the same as read" gap the
+        sequence review model exists to keep visible. The Contact page renders
+        all seven bodies at once, so that is where the action lives.
       #}
-      {{ seq.gmail_panel(
-           mailbox,
-           sequence_card,
-           sequence_rows,
-           base ~ "&step=" ~ sequence_step,
-           read_only=sequence_availability.read_only) }}
+      {% if mailbox and mailbox.available %}
+      <p class="v2-note">
+        {% if mailbox.connected %}Gmail drafts go to {{ mailbox.mailbox_address }}.{% endif %}
+        Creating Gmail drafts covers all seven messages, so it lives on the contact page,
+        where every body is on screen —
+        <a href="/app/contacts/{{ sequence_card.contact_id }}?campaign={{ sequence_card.campaign_id }}#sequence">open the contact</a>.
+      </p>
+      {% endif %}
     </div>
     {% endif %}
     {% endfor %}

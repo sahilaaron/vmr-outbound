@@ -76,9 +76,10 @@ router = APIRouter(
 #: The single-use authorization transaction. A cookie of its own rather than a
 #: reuse of ``vmr_login``: the sign-in transaction is minted before there is a
 #: session and this one only ever exists after, and letting one be presented as
-#: the other is exactly the confusion this feature must not create. Its signing
-#: key is the login-transaction key with a different payload shape; the ``kind``
-#: field below is what keeps the two payloads distinguishable.
+#: the other is exactly the confusion this feature must not create. It is signed
+#: with a key of its own (``SessionCodec.encode_gmail_transaction``), so neither
+#: token verifies as the other in *either* direction; the ``kind`` field below
+#: is a second, cheaper statement of the same thing rather than the mechanism.
 GMAIL_TRANSACTION_COOKIE_NAME = "vmr_gmail_auth"
 _TRANSACTION_KIND = "gmail-mailbox-authorization"
 
@@ -232,7 +233,7 @@ def connect_gmail(
     nonce = secrets.token_urlsafe(32)
     verifier = generate_code_verifier()
     now = int(time.time())
-    token = _codec(settings).encode_login_transaction(
+    token = _codec(settings).encode_gmail_transaction(
         {
             "kind": _TRANSACTION_KIND,
             "state": state,
@@ -276,7 +277,7 @@ def gmail_callback(
     raw_transaction = request.cookies.get(GMAIL_TRANSACTION_COOKIE_NAME)
 
     try:
-        transaction = codec.decode_login_transaction(raw_transaction, now=now)
+        transaction = codec.decode_gmail_transaction(raw_transaction, now=now)
     except SessionDecodeError:
         return _finish(
             settings,

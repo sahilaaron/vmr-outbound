@@ -578,6 +578,24 @@ def _mailbox_state(db: Session, settings: Settings) -> gmail_mailbox.MailboxStat
     )
 
 
+def _gmail_draft_rows(
+    db: Session, settings: Settings, *, sequence: Any | None
+) -> dict[uuid.UUID, gmail_read.DraftRow]:
+    """Gmail draft state for one sequence, for the operator making the request."""
+
+    if sequence is None or not _gmail_drafts_on(settings):
+        return {}
+    operator = current_operator()
+    if operator is None:
+        return {}
+    grant = gmail_mailbox.connected_grant(db, operator_subject=operator.subject)
+    if grant is None:
+        return {}
+    return gmail_read.draft_rows(
+        db, sequence=sequence, mailbox_account_subject=grant.mailbox_account_subject
+    )
+
+
 def _sequence_availability(
     settings: Settings, *, campaign: Campaign | None, sequence: Any | None
 ) -> SequenceAvailability:
@@ -2883,11 +2901,11 @@ def contact_page(
             # place that must not be showing a stale "connected".
             "gmail_drafts_on": _gmail_drafts_on(settings),
             "mailbox": _mailbox_state(db, settings),
-            "gmail_draft_rows": (
-                gmail_read.draft_rows(db, sequence=sequence_record)
-                if sequence_record is not None and _gmail_drafts_on(settings)
-                else {}
-            ),
+            # Scoped to this operator's own connected mailbox: a sequence
+            # belongs to a Campaign Contact rather than to an operator, so an
+            # unscoped read would show one operator the address of another
+            # operator's mailbox.
+            "gmail_draft_rows": _gmail_draft_rows(db, settings, sequence=sequence_record),
         },
     )
 

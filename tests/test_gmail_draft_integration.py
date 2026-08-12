@@ -1360,10 +1360,16 @@ def test_the_page_shows_the_connected_mailbox_and_the_create_action(
         assert str(version_id) in page.text
 
 
-def test_the_review_page_carries_the_same_mailbox_panel(
+def test_the_review_page_does_not_offer_the_draft_action(
     hosted: tuple[TestClient, FakeGmailOAuthClient, FakeGmailTransport], committed_session: Session
 ) -> None:
-    """The action is offered on the review surface too, naming the same versions."""
+    """The review queue shows one body at a time, so it must not draft seven.
+
+    Offering the action here would let an operator put six bodies they have not
+    read into a real mailbox with one click -- exactly the gap between "approved
+    by default" and "read" that the sequence review model exists to keep
+    visible. The page names the mailbox and points at the contact page instead.
+    """
 
     client, oauth, _transport = hosted
     csrf = _signed_in(client)
@@ -1374,7 +1380,8 @@ def test_the_review_page_carries_the_same_mailbox_panel(
     page = client.get(f"/app/review?sequence={fixture.sequence.id}")
     assert page.status_code == 200
     assert oauth.mailbox_address in page.text
-    assert f"/app/review/sequence/{fixture.sequence.id}/gmail-drafts" in page.text
+    assert "/gmail-drafts" not in page.text
+    assert f"/app/contacts/{fixture.contact.id}" in page.text
 
 
 def test_the_one_click_route_creates_the_drafts_and_reports_honestly(
@@ -1587,3 +1594,160 @@ def test_the_fingerprint_changes_with_every_part_of_the_message() -> None:
     assert base != gmail_mime.content_fingerprint(
         recipient="ada@kiln.example", subject="A", body="C"
     )
+
+
+# ---------------------------------------------------------------------------
+# L. Defects found by the 2026-08-12 adversarial review, pinned so they stay fixed
+# ---------------------------------------------------------------------------
+
+
+def test_a_reserved_row_left_by_a_killed_worker_is_reconciled_not_redrafted(
+    committed_session: Session, service_setup: tuple[Any, GmailMailboxGrant, GmailSettings]
+) -> None:
+    """The critical duplicate: a process killed after Gmail accepted the draft.
+
+    The reservation is committed before the Gmail call and stays ``RESERVED``
+    across it, so a row in that state on a later run cannot distinguish "never
+    called" from "called, and the outcome commit never happened". Re-attempting
+    it blindly put a second copy of an identical email in a real mailbox.
+    """
+
+    fixture, grant, _settings = service_setup
+    transport = FakeGmailTransport()
+    _run(committed_session, service_setup, transport)
+    assert len(transport.created) == 7
+
+    # Simulate the kill: the drafts exist in Gmail, the local rows never
+    # recorded the outcome.
+    for record in committed_session.scalars(select(GmailDraftRecord)).all():
+        record.status = GmailDraftStatus.RESERVED
+        record.gmail_draft_id = None
+        record.gmail_message_id = None
+        record.gmail_thread_id = None
+    committed_session.commit()
+
+    later = datetime.now(UTC) + timedelta(seconds=gmail_drafts.RECONCILIATION_MIN_AGE_SECONDS + 5)
+    run = _run(committed_session, service_setup, transport, now=later)
+
+    assert run.created == 0
+    assert run.reused == 7
+    assert len(transport.created) == 7, "no second copy was written to the mailbox"
+    assert len(transport.lookups) == 7, "each unresolved row was reconciled, not re-attempted"
+    assert {row.status for row in committed_session.scalars(select(GmailDraftRecord)).all()} == {
+        GmailDraftStatus.CREATED
+    }
+
+
+def test_a_second_click_while_the_first_is_still_in_flight_creates_nothing(
+    committed_session: Session, service_setup: tuple[Any, GmailMailboxGrant, GmailSettings]
+) -> None:
+    """A double-click: the second request finds a reservation the first has open."""
+
+    fixture, grant, _settings = service_setup
+    # The state a request that has reserved but not yet heard back leaves behind.
+    for index, version in enumerate(fixture.versions):
+        committed_session.add(
+            GmailDraftRecord(
+                mailbox_grant_id=grant.id,
+                mailbox_account_subject=grant.mailbox_account_subject,
+                mailbox_address=grant.mailbox_address,
+                campaign_contact_id=fixture.membership.id,
+                sequence_id=fixture.sequence.id,
+                sequence_key=fixture.sequence.sequence_key,
+                message_id=fixture.messages[index].id,
+                message_version_id=version.id,
+                position=index + 1,
+                recipient_email=fixture.contact.email or "",
+                content_fingerprint="a" * 64,
+                rfc_message_id=f"<in-flight-{index}@vmr-test.invalid>",
+                status=GmailDraftStatus.RESERVED,
+                attempt_count=1,
+                created_by=APPROVED_EMAIL,
+            )
+        )
+    committed_session.commit()
+
+    transport = FakeGmailTransport()
+    run = _run(committed_session, service_setup, transport)
+
+    assert transport.created == [], "the second click wrote nothing to the mailbox"
+    assert run.created == 0
+    assert run.unconfirmed == 7
+    assert "in flight" in run.outcomes[0].detail
+
+
+def test_an_unusable_recipient_is_a_refusal_rather_than_a_crash(committed_session: Session) -> None:
+    """A non-ASCII local part used to escape as `MessageDefect` and 500."""
+
+    settings = gmail_settings()
+    fixture = build_sequence(committed_session, email="jose@kiln.example")
+    fixture.contact.email = "jos\u00e9@kiln.example"
+    grant = _grant_for(committed_session, settings=settings)
+    committed_session.commit()
+
+    transport = FakeGmailTransport()
+    run = gmail_drafts.create_drafts(
+        committed_session,
+        sequence_id=fixture.sequence.id,
+        expected_version_ids=fixture.version_ids,
+        grant=grant,
+        settings=settings,
+        oauth_client=FakeGmailOAuthClient(),
+        provider=transport,
+        actor=APPROVED_EMAIL,
+    )
+    assert run.failed == 7
+    assert run.created == 0
+    assert transport.created == []
+    assert {row.status for row in committed_session.scalars(select(GmailDraftRecord)).all()} == {
+        GmailDraftStatus.FAILED
+    }, "no row is left reserved for a later run to re-attempt"
+
+
+def test_one_operator_never_sees_another_operators_mailbox(
+    hosted: tuple[TestClient, FakeGmailOAuthClient, FakeGmailTransport], committed_session: Session
+) -> None:
+    """A sequence belongs to a Campaign Contact, not to an operator."""
+
+    client, oauth, _transport = hosted
+    # A mailbox address that is nobody's sign-in address, so the assertion below
+    # cannot be satisfied (or defeated) by the account menu in the page shell.
+    oauth.mailbox_address = "shared-outbox@vmr.example"
+    csrf = _signed_in(client)
+    _connect(client, oauth, csrf)
+    fixture = build_sequence(committed_session)
+    committed_session.commit()
+
+    client.post(
+        f"/app/review/sequence/{fixture.sequence.id}/gmail-drafts",
+        data={"version_ids": fixture.version_ids_csv, "back": "/app/review", "_csrf": csrf},
+        headers={"sec-fetch-site": "same-origin"},
+    )
+    assert committed_session.scalars(select(GmailDraftRecord)).all()
+
+    # A second approved operator, with no mailbox of their own, opens the same
+    # contact. They must not learn where the first operator drafted.
+    other_cookie, _ = _session_cookie(subject="operator-google-subject-2")
+    client.cookies.set(SESSION_COOKIE_NAME, other_cookie, domain=STAGING_HOST)
+    page = client.get(f"/app/contacts/{fixture.contact.id}?campaign={fixture.campaign.id}")
+    assert page.status_code == 200
+    assert oauth.mailbox_address not in page.text
+    assert "drafted in" not in page.text
+
+
+def test_a_gmail_transaction_is_not_a_sign_in_transaction() -> None:
+    """Neither token verifies as the other, in either direction."""
+
+    from app.core.auth.session import SessionCodec, SessionDecodeError
+
+    codec = SessionCodec(SESSION_SECRET)
+    now = int(time.time())
+    gmail_token = codec.encode_gmail_transaction({"state": "s", "exp": now + 600})
+    login_token = codec.encode_login_transaction({"state": "s", "exp": now + 600})
+
+    assert codec.decode_gmail_transaction(gmail_token, now=now)["state"] == "s"
+    assert codec.decode_login_transaction(login_token, now=now)["state"] == "s"
+    with pytest.raises(SessionDecodeError):
+        codec.decode_login_transaction(gmail_token, now=now)
+    with pytest.raises(SessionDecodeError):
+        codec.decode_gmail_transaction(login_token, now=now)

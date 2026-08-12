@@ -68,7 +68,7 @@ Every one of these, none optional and none inferred:
 |---|---|
 | a live, approved operator session | `/gmail/*` is not on the anonymous allow-list; the callback is not a sign-in path |
 | the signed, single-use transaction cookie decodes and has not expired | one consent, one transaction |
-| `kind` is the Gmail transaction kind | a sign-in transaction cannot be presented here |
+| it was signed with the Gmail transaction key | a key of its own, not the sign-in key with a discriminator: a `kind` field only helps the side that checks it, so one shared key would leave a Gmail transaction structurally valid as a sign-in transaction. Separate keys make each token verify for exactly one purpose in **both** directions |
 | `state` equals the transaction's, constant-time | the classic CSRF on an OAuth callback |
 | **the transaction's operator subject equals the signed-in operator's** | a captured callback replayed into a second operator's browser cannot bind the first operator's mailbox to them |
 | PKCE `code_verifier` | the code is bound to a verifier only this process held |
@@ -158,10 +158,20 @@ Four statuses, because "did Gmail create this draft?" has four truthful answers:
 
 | Status | Means | A retry |
 |---|---|---|
-| `RESERVED` | committed locally, outcome not yet recorded | attempts |
+| `RESERVED` | committed locally, outcome not yet recorded | **reconciles first** |
 | `CREATED` | Gmail returned a draft id | reuses, and says so |
 | `UNCONFIRMED` | timeout / dropped connection / 5xx — proves nothing | **reconciles first** |
 | `FAILED` | a definite 4xx — proves no draft exists | attempts |
+
+`RESERVED` reconciles for the same reason `UNCONFIRMED` does, and it is worth
+being explicit about why, because treating it as "nothing happened yet" was a
+real duplicate. A reservation is committed *before* the Gmail call and stays
+`RESERVED` across it, so finding one on a later run means the process died
+before the call, died after it, or another request is inside that window right
+now — and nothing on the row distinguishes the three. Only the first is safe to
+re-attempt. Both a worker killed mid-flight and a double-click therefore go
+through the lookup below rather than writing a second copy.
+`tests/test_gmail_draft_integration.py` pins both cases.
 
 ### The bounded reconciliation
 
@@ -185,6 +195,13 @@ needs and which Gmail would otherwise assign. It is not a threading claim — se
 ---
 
 ## 5. Sequence correctness
+
+The action lives on the **contact page**, which renders all seven bodies, and
+deliberately not on the review queue, which renders one at a time. Offering it
+there would let an operator put six bodies they have not read into a real
+mailbox with one click — exactly the gap between "approved by default" and
+"read" that the review model exists to keep visible. The review queue names the
+connected mailbox and links to the contact page instead.
 
 The action carries the exact `version_ids` the page rendered, the same way bulk
 approval does. If that set is not exactly the set of current versions stored
@@ -301,6 +318,12 @@ and only from an explicit operator click.
   to *sending*; this slice is draft-only and standalone, so all seven are
   drafted together, which is what makes one click useful. When the delivery
   adapter is built, one-at-a-time returns with the threading it exists to serve.
+- **The per-message draft chip is scoped to the reader's own mailbox.** A
+  sequence belongs to a Campaign Contact rather than to an operator, so an
+  unscoped read would show operator A the address of the mailbox operator B
+  drafted into. `app/services/gmail/read.py` requires the account subject, and
+  an operator with no mailbox connected sees no draft state at all — including
+  for drafts that do exist in somebody else's.
 - **No audit event is written.** The draft lineage row *is* the record, and it
   carries actor and timestamps. A second, weaker copy in the audit table would
   be a claim to maintain rather than a fact.

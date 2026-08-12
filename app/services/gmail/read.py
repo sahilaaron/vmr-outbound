@@ -57,18 +57,32 @@ class DraftRow:
         return "warn"
 
 
-def draft_rows(session: Session, *, sequence: EmailSequence) -> dict[uuid.UUID, DraftRow]:
-    """Gmail draft state for one sequence, keyed by message version id.
+def draft_rows(
+    session: Session, *, sequence: EmailSequence, mailbox_account_subject: str
+) -> dict[uuid.UUID, DraftRow]:
+    """Gmail draft state for one sequence *in one mailbox*, keyed by version id.
 
     One statement for the whole sequence: "has this been drafted?" is a question
     about the set, and asking it seven times would issue seven queries for one
     page section. Keyed by version rather than by position, because an edit
     creates a new version and the answer for the new text is legitimately
     different from the answer for the text it replaced.
+
+    Scoped to the caller's own mailbox account, and that is a privacy boundary
+    rather than a filter. A sequence belongs to a Campaign Contact, not to an
+    operator, so a query by ``sequence_key`` alone would show operator A the
+    address of the mailbox operator B drafted into. It also answers the question
+    the page is actually asking -- "has *this* mailbox got this draft?" -- which
+    is the same question the idempotency key answers.
     """
 
+    if not mailbox_account_subject:
+        return {}
     rows = session.scalars(
-        select(GmailDraftRecord).where(GmailDraftRecord.sequence_key == sequence.sequence_key)
+        select(GmailDraftRecord).where(
+            GmailDraftRecord.sequence_key == sequence.sequence_key,
+            GmailDraftRecord.mailbox_account_subject == mailbox_account_subject,
+        )
     ).all()
     return {
         row.message_version_id: DraftRow(

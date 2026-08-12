@@ -18,12 +18,15 @@ never read into a stranger's mailbox with their approval implied.
 a check-then-act. The row is committed *before* the Gmail call rather than after
 it, which is what makes the third property possible.
 
-**3. An ambiguous Gmail failure is never treated as "no draft".** A timeout or a
-5xx proves nothing about whether Gmail acted. The row stays ``UNCONFIRMED`` and
-a later attempt reconciles it with one exact ``rfc822msgid:`` lookup before
-deciding anything -- and if that lookup finds nothing, it still waits out
-``RECONCILIATION_MIN_AGE_SECONDS`` first, because Gmail's search index is not
-instantaneous and "not found" a second after the write is not evidence.
+**3. An unresolved attempt is never treated as "no draft".** A timeout or a 5xx
+proves nothing about whether Gmail acted, and neither does a reservation whose
+outcome was never recorded -- the process may have died on either side of the
+call, or another request may be inside that window right now. Both states
+(``UNCONFIRMED`` and ``RESERVED``) are reconciled with one exact
+``rfc822msgid:`` lookup before anything is decided, and if that lookup finds
+nothing it still waits out ``RECONCILIATION_MIN_AGE_SECONDS`` first, because
+Gmail's search index is not instantaneous and "not found" a second after the
+write is not evidence.
 
 What is deliberately *not* built here: no scheduler, no cadence execution, no
 mailbox polling, no reply detection, no send, no generic synchronization
@@ -65,6 +68,10 @@ from app.services.suppressions import evaluate_suppression
 #: find nothing that does in fact exist. Waiting is the difference between an
 #: idempotency guarantee and a race.
 RECONCILIATION_MIN_AGE_SECONDS = 60
+
+#: The two statuses that mean "Gmail may or may not hold a draft for this exact
+#: message version". Neither may be re-attempted without asking Gmail first.
+_UNRESOLVED_STATUSES = frozenset({GmailDraftStatus.RESERVED, GmailDraftStatus.UNCONFIRMED})
 
 
 class GmailDraftError(RuntimeError):
@@ -367,7 +374,20 @@ def _draft_one(
             detail="a Gmail draft for this exact message version already exists",
         )
 
-    if record is not None and record.status is GmailDraftStatus.UNCONFIRMED:
+    if record is not None and record.status in _UNRESOLVED_STATUSES:
+        # ``RESERVED`` is here, and not only ``UNCONFIRMED``, because the two are
+        # the same question wearing different clothes. A reservation is committed
+        # *before* the Gmail call and stays ``RESERVED`` across it, so finding one
+        # on a later run means one of three things: the process died between the
+        # reservation and the call, it died between the call and the outcome
+        # commit, or another request is inside that window right now. Only the
+        # first is safe to re-attempt, and nothing in the row distinguishes it.
+        #
+        # Treating ``RESERVED`` as "nothing happened yet" was a real duplicate:
+        # a worker killed after Gmail accepted the draft, or a second click a
+        # moment behind the first, produced a second copy in a stranger-facing
+        # mailbox. Reconciling first costs one lookup and answers the question
+        # properly.
         resolved = _reconcile(
             session,
             record=record,
@@ -552,6 +572,6 @@ def _reconcile(
             position=record.position,
             message_version_id=record.message_version_id,
             outcome="unconfirmed",
-            detail="the previous attempt is too recent to rule out; try again shortly",
+            detail=("an attempt is in flight or too recent to rule out; try again shortly"),
         )
     return None

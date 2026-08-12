@@ -91,10 +91,25 @@ def _validated_address(value: str) -> str:
     candidate = (value or "").strip()
     if not candidate:
         raise GmailMessageError("This contact has no email address, so nothing can be drafted.")
-    if any(character in candidate for character in ("\r", "\n", "\t", ",", ";", "<", ">")):
+    # ASCII-only, and refused rather than encoded. A non-ASCII local part is a
+    # `SMTPUTF8` address, which ``EmailMessage`` refuses to serialise under the
+    # default policy -- and it raises ``email.errors.MessageDefect``, which is
+    # *not* a subclass of this module's error, so it would escape every caller
+    # and surface as a 500 with a half-written lineage row behind it. Refusing
+    # here turns a crash into a message the operator can act on. VMR's own
+    # address normalisation is ASCII-only for the same reason
+    # (``app/core/auth/config.normalize_operator_email``), so nothing that can
+    # reach this function legitimately is being excluded.
+    if not candidate.isascii():
+        raise GmailMessageError("This contact's email address is not usable as a recipient.")
+    if any(character.isspace() for character in candidate):
+        raise GmailMessageError("This contact's email address is not usable as a recipient.")
+    if any(
+        character in candidate for character in (",", ";", "<", ">", '"', "\\", "(", ")", "[", "]")
+    ):
         raise GmailMessageError("This contact's email address is not usable as a recipient.")
     local, separator, domain = candidate.partition("@")
-    if not separator or not local or not domain or "@" in domain:
+    if not separator or not local or not domain or "@" in domain or "." not in domain:
         raise GmailMessageError("This contact's email address is not usable as a recipient.")
     return candidate
 
@@ -145,4 +160,16 @@ def build_raw_message(
     # to reply to, and fabricating one would misrepresent a conversation.
     message.set_content(clean_body, subtype="plain", charset="utf-8")
 
-    return base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
+    try:
+        serialized = message.as_bytes()
+    except Exception as exc:  # noqa: BLE001 - see below
+        # Deliberately broad, and deliberately re-raised as this module's own
+        # error. `email` reports a malformed message through several unrelated
+        # exception types -- `MessageDefect`, `LookupError`, `UnicodeError` --
+        # none of which shares a base class with `GmailMessageError`. The
+        # validation above is written to make every one of them unreachable;
+        # this converts the one that is not into a refusal the caller already
+        # handles, instead of a 500 with a reserved lineage row behind it.
+        raise GmailMessageError("This message could not be assembled as an email.") from exc
+
+    return base64.urlsafe_b64encode(serialized).decode("ascii")
