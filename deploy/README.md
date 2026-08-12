@@ -134,7 +134,7 @@ component deciding what to trust.
 
 ## Dependency reproducibility
 
-`constraints.txt` at the repository root is a pinned runtime closure (64
+`constraints.txt` at the repository root is a pinned runtime closure (66
 packages, CPython 3.11 / Linux). `vmr-deploy` installs it as a requirements file
 and then installs the project `--no-deps`, so a release gets exactly the reviewed
 versions while the source tree stays authoritative for templates and static
