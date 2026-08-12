@@ -165,7 +165,11 @@ def _session_cookie(*, email: str = APPROVED_EMAIL) -> tuple[str, str]:
     extension-versus-operator comparison to actually be signed in.
     """
 
-    account = seed_account(email=email)
+    # An administrator on purpose. The rule under test is "a signed-in
+    # operator is not the extension", and `/api` is administrator-only for
+    # session callers -- so an ordinary operator would be refused for the
+    # wrong reason and the extension rule would never be reached.
+    account = seed_account(email=email, role="admin")
     now = int(time.time())
     session_id = new_session_id()
     session = OperatorSession(

@@ -132,9 +132,29 @@ def approved_account() -> SeededAccount:
 
     The row is committed and the suite's autouse truncation sweep removes it, so
     every test gets a fresh account with ``auth_version = 1``.
+
+    An administrator, for the same reason the row exists at all. This file is
+    about *authentication* -- sessions, CSRF, cross-site handling, revocation --
+    and it exercises those through writes to ``/api/...``, which is now
+    administrator-only for session callers. An ordinary operator would be
+    refused on authorization before reaching the behaviour each test was written
+    to prove, which is the same failure mode #270 caused and this fixture was
+    added to fix. Role itself is covered in ``tests/test_user_accounts.py`` and
+    ``tests/test_route_authorization.py``.
     """
 
-    return seed_account(email=APPROVED_EMAIL, google_subject=GOOGLE_SUBJECT)
+    # A second administrator, so that the "last active administrator" guard
+    # is not silently under test here. Two tests in this file disable and
+    # reactivate the approved account to prove a session dies with it; with
+    # only one administrator in the database the user service refuses the
+    # disable outright and the session assertion is never reached. That
+    # guard has its own coverage in tests/test_user_accounts.py.
+    seed_account(
+        email="second-admin@vmr.example",
+        google_subject="google-sub-second-admin",
+        role="admin",
+    )
+    return seed_account(email=APPROVED_EMAIL, google_subject=GOOGLE_SUBJECT, role="admin")
 
 
 @pytest.fixture
