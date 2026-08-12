@@ -278,7 +278,6 @@ ADMIN_SURFACE: tuple[tuple[str, str], ...] = (
     ("GET", "/imports"),
     ("GET", "/local-tools"),
     ("POST", "/campaigns"),
-    ("GET", "/review"),
 )
 
 #: Every route that can reach a paid provider, or rotate the credential that
@@ -861,6 +860,14 @@ EXPECTED_USER_REACHABLE: frozenset[str] = frozenset(
         "POST /knowledge-base/proof-points/{proof_point_id}",
         "POST /knowledge-base/proof-points/{proof_point_id}/state",
         "GET /knowledge-base/restricted-claims",
+        # Ambiguous-import triage. Reached from a decision card on the
+        # operator's own campaign page, and the confirmation is deliberately
+        # a human's because merging the wrong two records is not reversible
+        # by a retry. Not the legacy twin of `/app/review` it resembles.
+        "GET /review",
+        "GET /review/rows/{row_id}",
+        "POST /review/rows/{row_id}/preview",
+        "POST /review/rows/{row_id}/resolve",
     }
 )
 
@@ -996,7 +1003,6 @@ def test_the_administrator_prefixes_and_exact_paths_are_the_ones_recorded_here()
         "/workbench",
         "/imports",
         "/campaigns",
-        "/review",
         "/local-tools",
         "/docs",
     }
@@ -1010,3 +1016,70 @@ def test_the_administrator_prefixes_and_exact_paths_are_the_ones_recorded_here()
         "/activity",
         "/settings",
     }
+
+
+# ---------------------------------------------------------------------------
+# L. Control characters in the path
+# ---------------------------------------------------------------------------
+# This section exists because of a real bypass, found by adversarial review
+# after the boundary was written and before it was published.
+#
+# The policy decides by string comparison. Starlette's router decides by
+# `re.match("^/admin$", path)`. Python's `$` matches at end-of-string *or*
+# immediately before a single trailing newline, and uvicorn percent-decodes the
+# request target before either matcher runs. So `GET /admin%0A` arrived as
+# `/admin\n`, which `==` called "not the admin path" and the router called
+# "/admin" -- and served the Workbench to any signed-in account.
+#
+# The fix refuses the whole control-character class rather than normalising the
+# one spelling, because the bug is a disagreement between two matchers that were
+# never written to agree, and a newline is only the spelling that happens to be
+# reachable today.
+
+
+CONTROL_CHARACTER_SUFFIXES: tuple[str, ...] = ("\n", "\r\n", "\t", "\x00", "\x0b", "\x0c", "\x7f")
+
+
+@pytest.mark.parametrize("suffix", CONTROL_CHARACTER_SUFFIXES)
+@pytest.mark.parametrize(
+    "path",
+    ["/admin", "/docs", "/redoc", "/openapi.json", "/campaigns", "/workbench", "/imports"],
+)
+def test_a_control_character_cannot_smuggle_a_path_past_the_admin_classification(
+    path: str, suffix: str
+) -> None:
+    """The classification must not disagree with the router about what a path is.
+
+    Asserted against the policy directly rather than over the wire, because a
+    client library will not send these bytes: `httpx` rejects a raw newline in a
+    URL, so the only honest place to pin this is where the decision is made.
+    """
+
+    assert is_admin_only_request(path + suffix, "GET") is True, (
+        f"{path + suffix!r} was not classified as administrator-only; "
+        "the router would still route it to the administrator surface"
+    )
+
+
+@pytest.mark.parametrize("suffix", CONTROL_CHARACTER_SUFFIXES)
+def test_the_middleware_refuses_a_control_character_outright(suffix: str) -> None:
+    """Refused as malformed, before any access decision is reached.
+
+    Belt and braces with the normalisation above: one of them makes the two
+    matchers agree, the other stops the request before it matters which.
+    """
+
+    from app.core.auth.middleware import _has_control_character
+
+    assert _has_control_character("/admin" + suffix) is True
+
+
+def test_an_ordinary_path_carries_no_control_character() -> None:
+    """Anti-vacuity: the refusal must not be refusing everything."""
+
+    from app.core.auth.middleware import _has_control_character
+
+    ordinary = ["/app", "/app/review", "/admin", "/gmail/connect", "/static/app.css", "/healthz"]
+    assert ordinary, "no paths checked — the guard is vacuous"
+    for path in ordinary:
+        assert _has_control_character(path) is False, path

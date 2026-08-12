@@ -77,6 +77,7 @@ from app.services.gmail import read as gmail_read
 from app.services.imports import apollo, campaign_import, display, staging
 from app.services.personalization.cadence import (
     DEFAULT_ELAPSED_DAYS,
+    CadenceError,
     campaign_opted_in,
     with_campaign_opt_in,
 )
@@ -502,6 +503,18 @@ def _reader(db: Session) -> workbench_agents.PhaseTwoWorkbenchReader:
 
 def _agent_workbench_on(settings: Settings) -> bool:
     return "agent_workbench" in settings.features.enabled()
+
+
+def _checkbox(value: str) -> bool:
+    """One reading of a posted checkbox, shared by the controls that use one.
+
+    A browser omits an unchecked box and sends ``on`` for a checked one, so a
+    bare truthiness test happens to work for a browser and quietly inverts the
+    meaning of an explicit ``false`` or ``0`` from anything else. This matches
+    the wording the execution toggle already accepts.
+    """
+
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _sequences_on(settings: Settings) -> bool:
@@ -1271,8 +1284,14 @@ def campaign_edit_submit(
     # field there means "unchanged" rather than "off". Reading the checkbox
     # unconditionally would silently opt a Campaign *out* every time somebody
     # renamed it in an environment where the control was not rendered.
+    # Parsed the same way the execution toggle parses its own checkbox, rather
+    # than with `bool()`. A bare truthiness test treats any non-empty string as
+    # on, so a client posting `sequence_enabled=false` or `=0` would have opted
+    # the campaign *in* -- the opposite of what it asked for.
     opted_in = (
-        bool(sequence_enabled) if _sequences_on(get_settings()) else campaign_opted_in(campaign)
+        _checkbox(sequence_enabled)
+        if _sequences_on(get_settings())
+        else campaign_opted_in(campaign)
     )
     try:
         campaign = campaign_service.update_campaign(
@@ -1289,7 +1308,10 @@ def campaign_edit_submit(
             actor=draft_service.OPERATOR_ACTOR,
             reason="campaign edited",
         )
-    except CampaignError as exc:
+    except (CampaignError, CadenceError) as exc:
+        # `CadenceError` reaches here when the stored cadence configuration is
+        # not the shape this control can edit. Refused with the reason shown
+        # rather than silently replacing whatever is in the column.
         return _redirect(f"/app/campaigns/{identifier}/edit", err=str(exc))
     db.commit()
     return _redirect(f"/app/campaigns/{campaign.id}", ok=f"{campaign.name} updated.")

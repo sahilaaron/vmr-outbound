@@ -296,6 +296,36 @@ class OperatorAuthenticationMiddleware:
 
         state: dict[str, Any] = scope.setdefault("state", {})
 
+        if _has_control_character(str(scope.get("path", "/"))):
+            # Refused before any policy decision, and before the
+            # authentication-disabled shortcut, because this is a malformed
+            # request rather than an unauthorised one.
+            #
+            # The reason it matters here specifically: this policy decides by
+            # string comparison, and Starlette's router decides by
+            # `re.match("^/admin$", path)`. Python's `$` also matches just
+            # before a single trailing newline, so `/admin\n` is NOT `/admin` to
+            # `==` and IS `/admin` to the router. uvicorn percent-decodes the
+            # target before either sees it, so `GET /admin%0A` arrived here as
+            # `/admin\n`, was classified as not-administrator-only, and was then
+            # routed to the Workbench. The same trick reached `/docs`,
+            # `/openapi.json`, `/campaigns` and every other path matched by
+            # whole-string equality rather than by prefix.
+            #
+            # Normalising the newline away would fix that one spelling. Refusing
+            # the whole character class kills the family: no route in this
+            # application has a control character in its path, so anything
+            # carrying one is either a probe or a mismatch waiting to be found
+            # between two matchers that were never written to agree.
+            await self._respond(
+                scope,
+                send,
+                status=400,
+                error="malformed_path",
+                message="This request could not be processed.",
+            )
+            return
+
         if not self.settings.enabled or self.codec is None:
             # Local development and any deployment that has not turned hosted
             # authentication on. Nothing is enforced and nothing is recorded, so
@@ -629,6 +659,16 @@ class OperatorAuthenticationMiddleware:
         start: Message = {"type": "http.response.start", "status": status, "headers": headers}
         await send(start)
         await send({"type": "http.response.body", "body": body})
+
+
+def _has_control_character(path: str) -> bool:
+    """Whether the request path carries a C0 control character or DEL.
+
+    Kept separate from the policy module because it is not an access decision:
+    a path like this is refused outright rather than classified.
+    """
+
+    return any(character < " " or character == "\x7f" for character in path)
 
 
 def _prefers_html(scope: Scope) -> bool:

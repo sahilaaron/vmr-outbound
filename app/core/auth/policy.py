@@ -169,11 +169,19 @@ _ADMIN_PATH_PREFIXES: frozenset[str] = frozenset(
         # Spreadsheet import lineage and staging. The operator product has its
         # own campaign-scoped import surface under `/app/campaigns/{id}/imports`.
         "/imports",
-        # Legacy root-level twins of surfaces the operator product now owns at
-        # `/app/campaigns` and `/app/review`. `/review/rows/...` here is
-        # import-row triage, not draft review.
+        # Legacy root-level twin of the campaign surface the operator product
+        # now owns at `/app/campaigns`.
         "/campaigns",
-        "/review",
+        #
+        # NOT here, deliberately: `/review`. It looks like a legacy twin of
+        # `/app/review` and is not one -- `/review/rows/{id}` is ambiguous-import
+        # triage, where an operator confirms whether two records are the same
+        # person. Nothing is merged automatically because merging the wrong two
+        # is not reversible by a retry, so the confirmation is the operator's by
+        # design. It is also reached from a first-class decision card on the
+        # operator's own campaign page. Gating it made that card answer 403 and
+        # left the operator no route to the work at all, since no equivalent
+        # exists under `/app`.
         # Already refused outside local development by `_local_tools_available`;
         # named anyway so that the boundary does not depend on a second check
         # elsewhere continuing to exist.
@@ -297,6 +305,16 @@ def normalize_request_path(raw: str) -> str:
     arrives here as literal ``..`` and is resolved rather than matched as an
     opaque segment.
     """
+
+    # Trailing C0 control characters are stripped so this function cannot
+    # disagree with the router about what a path *is*. Starlette matches with
+    # `re.match("^/admin$", path)`, and Python's `$` also matches immediately
+    # before a single trailing newline -- so `/admin\n` routes to `/admin` while
+    # `==` says it is something else. The middleware refuses control characters
+    # outright before this is ever called; this is the second half of that fix,
+    # kept here so the two matchers agree on their own terms rather than only
+    # because something upstream filtered the input.
+    raw = raw.rstrip("\x00\t\n\r\x0b\x0c\x1c\x1d\x1e\x1f\x7f")
 
     segments: list[str] = []
     for segment in raw.split("/"):

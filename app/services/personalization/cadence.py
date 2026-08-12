@@ -197,8 +197,24 @@ def with_campaign_opt_in(campaign: Campaign, *, enabled: bool) -> dict[str, Any]
     """
 
     raw = campaign.cadence_config
+    if raw is not None and not isinstance(raw, dict):
+        # The reader treats this as absent and carries on, which is right for
+        # rendering a page. Writing is different: replacing the column here
+        # would destroy whatever is actually stored, and a value this function
+        # does not understand is not a value it should be quietly deleting.
+        raise CadenceError(
+            "This campaign's cadence configuration is not an object, so the "
+            "sequence switch cannot be changed without discarding it. Fix the "
+            "stored value first."
+        )
     config: dict[str, Any] = dict(raw) if isinstance(raw, dict) else {}
     block = config.get(CADENCE_KEY)
+    if block is not None and not isinstance(block, dict):
+        raise CadenceError(
+            "This campaign's stored sequence settings are not an object, so the "
+            "switch cannot be changed without discarding them. Fix the stored "
+            "value first."
+        )
     sequence: dict[str, Any] = dict(block) if isinstance(block, dict) else {}
     sequence["enabled"] = bool(enabled)
     config[CADENCE_KEY] = sequence
