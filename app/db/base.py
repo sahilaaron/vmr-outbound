@@ -47,6 +47,7 @@ from app.models import email_evidence as _email_evidence  # noqa: E402,F401
 from app.models import email_sequence as _email_sequence  # noqa: E402,F401
 from app.models import email_verification_studio as _email_verification_studio  # noqa: E402,F401
 from app.models import external_event as _external_event  # noqa: E402,F401
+from app.models import gmail as _gmail  # noqa: E402,F401
 from app.models import identity_resolution as _identity_resolution  # noqa: E402,F401
 from app.models import import_batch as _import_batch  # noqa: E402,F401
 from app.models import imported_email as _imported_email  # noqa: E402,F401

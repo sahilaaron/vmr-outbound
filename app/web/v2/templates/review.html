@@ -71,7 +71,7 @@
       {% set base = "/app/review?sequence=" ~ sequence_card.sequence_id ~ scope %}
       {{ seq.selector(sequence_rows, sequence_step, base) }}
       {% if sequence_detail %}
-        {{ seq.message(sequence_detail, base ~ "&step=" ~ sequence_step, read_only=sequence_availability.read_only) }}
+        {{ seq.message(sequence_detail, base ~ "&step=" ~ sequence_step, read_only=sequence_availability.read_only, mailbox=mailbox) }}
       {% else %}
         {{ empty("That message is not available", "The sequence does not currently hold a message at this position.") }}
       {% endif %}
@@ -90,7 +90,7 @@
       {% set base = "/app/review?sequence=" ~ sequence_card.sequence_id ~ scope %}
       {{ seq.selector(sequence_rows, sequence_step, base) }}
       {% if sequence_detail %}
-        {{ seq.message(sequence_detail, base ~ "&step=" ~ sequence_step, read_only=sequence_availability.read_only) }}
+        {{ seq.message(sequence_detail, base ~ "&step=" ~ sequence_step, read_only=sequence_availability.read_only, mailbox=mailbox) }}
       {% else %}
         {{ empty("That message is not available", "The sequence does not currently hold a message at this position.") }}
       {% endif %}
@@ -114,6 +114,18 @@
         </span>
       </form>
       {% endif %}
+      {#
+        The same mailbox panel the Contact page carries. The action covers the
+        whole sequence, and the seven exact versions it names are the ones this
+        page just listed -- so an operator who has been reading here does not
+        have to open another page to act on what they read.
+      #}
+      {{ seq.gmail_panel(
+           mailbox,
+           sequence_card,
+           sequence_rows,
+           base ~ "&step=" ~ sequence_step,
+           read_only=sequence_availability.read_only) }}
     </div>
     {% endif %}
     {% endfor %}
