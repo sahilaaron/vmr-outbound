@@ -104,7 +104,7 @@ Every one of these must pass. None is optional and none is inferred.
 | `nonce` equals the nonce minted for *this* browser's sign-in | `app/core/auth/identity.py` |
 | `exp` / `iat` freshness with a 60-second symmetric leeway | `app/core/auth/identity.py` |
 | `email_verified` is explicitly true | `app/core/auth/identity.py` |
-| the address is on the approved-operator list | `app/core/auth/config.py` |
+| the address resolves to an active account in the `users` table | `app/core/auth/accounts.py` |
 
 No email, name or identifier is ever read from a request parameter, a form field
 or a header. Identity comes from the verified assertion only.

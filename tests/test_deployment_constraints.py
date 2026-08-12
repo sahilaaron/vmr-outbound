@@ -124,6 +124,62 @@ def test_the_deploy_readme_package_count_matches_the_file() -> None:
     )
 
 
+def test_every_env_example_value_survives_shell_sourcing() -> None:
+    """`vmr-deploy` *sources* the env file to run Alembic against the release.
+
+    systemd's parser and the shell's do not agree: systemd keeps the quotes in
+    ``A=["x"]``, the shell strips them, and the value arrives as ``[x]`` and
+    fails to parse. So the failure appears only under `vmr-deploy`, only at the
+    migration step, and only after the database backup has been taken — while
+    `vmr-web` started from the same file would have been fine.
+
+    That is exactly what happened to ``AUTH__ALLOWED_OPERATOR_EMAILS``. The file
+    states this rule at the top and then broke it, which is the kind of thing a
+    reader trusts and a test does not.
+
+    Commented lines are checked too: a placeholder is uncommented verbatim by
+    whoever turns the feature on.
+    """
+
+    example = (REPO_ROOT / "deploy" / "vmr.env.example").read_text(encoding="utf-8")
+    offenders: list[str] = []
+    checked = 0
+    for raw in example.splitlines():
+        line = raw.strip()
+        commented = line.startswith("#")
+        if commented:
+            line = line.lstrip("#").strip()
+        if not line or "=" not in line:
+            continue
+        name, _, value = line.partition("=")
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]*", name):
+            continue
+        checked += 1
+        if not value:
+            continue
+        # Single-quoted is always safe: the shell hands the contents through
+        # untouched, which is what the FORMAT RULE asks for.
+        if value.startswith("'") and value.endswith("'") and len(value) > 1:
+            continue
+        # Only characters the shell actually *alters*. Brackets are not among
+        # them -- `A=[]` and `A=[a@b.com]` both survive intact, and it is the
+        # double quotes inside `["a@b.com"]` that get stripped.
+        hazards = '"`$\\'
+        if not commented:
+            # An unquoted space is the other half of the systemd/shell
+            # disagreement the FORMAT RULE describes. Prose is common inside
+            # comments, so this stricter rule applies to live lines only.
+            hazards += " "
+        if any(character in value for character in hazards):
+            offenders.append(line)
+
+    assert checked, "no assignments parsed from vmr.env.example — the reader is broken"
+    assert not offenders, (
+        "these values contain shell metacharacters and are not single-quoted, so "
+        "`vmr-deploy` would mangle them when it sources the file: " + "; ".join(offenders)
+    )
+
+
 def test_the_documented_install_command_matches_what_vmr_deploy_runs() -> None:
     """`--constraint` and `--requirement` mean different things here.
 

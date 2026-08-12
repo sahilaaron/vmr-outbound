@@ -105,13 +105,25 @@ The Email Agent attempts no more than three candidates in one fixed versioned or
 
 It enqueues one child Verification Agent Job at a time and stops immediately after the first verified result.
 
-A live MillionVerifier result requires:
+A live MillionVerifier result on the Agent path requires:
 
-- `FEATURES__MILLIONVERIFIER=true`;
-- configured provider credentials;
-- effective Verification Agent configuration containing `{"live": true}`.
+- an `ENABLED` Verification Agent control on an execution-enabled Campaign;
+- effective Verification Agent configuration containing `{"live": true}`;
+- a real, non-test provider credential — `MILLIONVERIFIER_API_KEY` or an active
+  Agent Studio credential.
 
 Simulated evidence cannot complete a live Campaign stage.
+
+`FEATURES__MILLIONVERIFIER` is **not** in that list, and this page previously
+said it was. The flag gates the legacy `/verification` console routes and the
+smoke script; it is never read on the Agent path
+(`app/services/agents/adapters.py` → `app/services/verification/waterfall.py` →
+`provider.py`). Turning it off closes the console and leaves the Agent free to
+spend.
+
+`DRY_RUN` does not gate it either. `DRY_RUN` is about sending, and the overview
+banner reading "no real email can be scheduled" is true about sending and says
+nothing about verification credits.
 
 ## Current operating choices
 

@@ -2,9 +2,24 @@
 # Installs to /etc/nginx/snippets/vmr-access.conf
 #
 # Included by `location /` in the vmr-staging site. That location covers the
-# operator UI (when it exists), the entire /api surface, root-level
-# POST /campaigns, /docs, /redoc and /openapi.json - none of which the
-# application authenticates today.
+# operator UI, the entire /api surface, root-level POST /campaigns, /docs,
+# /redoc and /openapi.json.
+#
+# The application now authenticates all of them. `app/core/auth/policy.py` is
+# default-deny: only the health probes, the /auth/* sign-in surface and /static/
+# are anonymous, and everything else needs an approved operator session. It also
+# now decides *which* operator - the administrator surface, /api and the
+# provider-spend routes need an ADMIN account, not merely a signed-in one.
+#
+# So this snippet is defence in depth, not the only boundary, and the sentence
+# that used to be here - "none of which the application authenticates today" -
+# is no longer true.
+#
+# One consequence worth stating plainly, because the old wording taught the
+# opposite: AUTH__ALLOWED_OPERATOR_EMAILS is a startup SEED, not an access gate.
+# Removing an address from it revokes nothing. Access is granted by a row in the
+# `users` table, and revoking means disabling that account on the admin screen,
+# which refuses the person's existing session on their next request.
 #
 # ############################################################################
 # THIS FILE SHIPS AS DENY-ALL AND CONTAINS NO CREDENTIALS.
