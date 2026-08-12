@@ -1,4 +1,16 @@
-"""The route access policy: what an anonymous caller may reach, and nothing more.
+"""The route access policy: who may reach what.
+
+Two questions, answered separately and in this order.
+
+**May this caller in at all?** The policy is **default-deny**. A path is
+anonymous only if it appears below; everything else needs an approved operator
+session.
+
+**Which operators may reach this?** A second, narrower set names the
+administrator-only surface — see ``is_admin_only_request`` further down. Until
+that existed every router in the application was session-gated and none was
+role-gated, so any signed-in account could reach the Workbench, the Agent
+Studio and the provider-spend routes.
 
 The policy is **default-deny**. A path is anonymous only if it appears below;
 everything else — every UI surface, every API, every state-changing route, the
@@ -25,6 +37,8 @@ on a protected or unmounted path is refused exactly like an anonymous ``GET``.
 """
 
 from __future__ import annotations
+
+import re
 
 # Deployment probes. nginx already restricts these at the network edge
 # (`vmr-probe-access.conf` ships as `deny all;`), but the application must not
@@ -96,6 +110,157 @@ _ANONYMOUS_AUTH_ROUTES: frozenset[str] = frozenset(
 # Bare `/static` is *not* anonymous: it is not an asset, and Starlette answers it
 # with a 307 to `/static/`, which would tell an anonymous caller the mount exists.
 _ANONYMOUS_STATIC_MOUNT_PREFIX = "/static/"
+
+# --------------------------------------------------------------------------
+# The administrator-only surface.
+# --------------------------------------------------------------------------
+# Authentication and authorization are different questions, and until now this
+# module only answered the first. Every router above was session-gated and none
+# was role-gated, so a normal operator with a valid cookie and a valid CSRF
+# token could reach the Agent Studio, rotate the MillionVerifier credential,
+# start a bulk verification run, or halt the sending agent. `require_admin`
+# existed but was declared on exactly one router.
+#
+# Why prefixes here, when anonymity is granted by exact path
+# ----------------------------------------------------------
+# The two rules point in opposite directions, and that is the whole reason the
+# asymmetry is safe. An anonymous *prefix* would grant access to routes that do
+# not exist yet — the opposite of default-deny. An admin prefix *withholds*
+# access from routes that do not exist yet, so a router mounted under `/admin`
+# next month is administrator-only the moment it is mounted, which is the same
+# property the anonymity rule gets from being default-deny.
+#
+# The residual risk runs the other way: a brand-new *top-level* surface defaults
+# to USER, because it matches nothing here. That is what the classification
+# conformance test in `tests/test_route_authorization.py` is for — it walks the
+# live router table and fails until every route has been recorded as one or the
+# other, so the decision is made deliberately rather than by omission.
+#
+# Matching runs on the normalised path, so `/app/../admin` is `/admin` here.
+_ADMIN_PATH_PREFIXES: frozenset[str] = frozenset(
+    {
+        # The Workbench, Agent Studio and Company Intelligence, all three of
+        # which are mounted on different routers but share this one prefix.
+        "/admin",
+        # The account directory. Already refused by the `require_admin`
+        # dependency on its own router, and named here as well so that this set
+        # is a complete statement of the administrator surface rather than a
+        # partial one that has to be read alongside a router declaration. The
+        # two cannot disagree: both read the single role that the directory
+        # lookup writes into the request scope.
+        "/app/admin",
+        # The programmatic tree. The server-rendered operator product makes no
+        # calls to it at all -- no `fetch`, no htmx, no XHR -- so withholding it
+        # from a normal session costs the product nothing and removes campaign,
+        # agent-control and job APIs from a USER's reach. The extension is
+        # unaffected: a verified capture credential is checked before this rule
+        # and carries no role, so the enumerated capture contract in
+        # `app/core/auth/extension.py` still answers.
+        #
+        # `/api/intake/linkedin-company/stage` sits under here too. It is called
+        # by the extension but is deliberately outside the credential contract,
+        # and the extension refuses to send it to a hosted backend at all
+        # (`company_capture_local_only`, service-worker.js) -- company evidence
+        # capture is a local-development path, where this middleware is inert.
+        # So it is covered here rather than being added to the bearer contract,
+        # which would have widened extension authority for no live caller.
+        "/api",
+        "/workbench",
+        # Spreadsheet import lineage and staging. The operator product has its
+        # own campaign-scoped import surface under `/app/campaigns/{id}/imports`.
+        "/imports",
+        # Legacy root-level twins of surfaces the operator product now owns at
+        # `/app/campaigns` and `/app/review`. `/review/rows/...` here is
+        # import-row triage, not draft review.
+        "/campaigns",
+        "/review",
+        # Already refused outside local development by `_local_tools_available`;
+        # named anyway so that the boundary does not depend on a second check
+        # elsewhere continuing to exist.
+        "/local-tools",
+        # The machine-readable inventory of every route above. Reachable by any
+        # signed-in account today, which makes it a map for everything else.
+        "/docs",
+    }
+)
+
+_ADMIN_EXACT_PATHS: frozenset[str] = frozenset(
+    {
+        "/redoc",
+        "/openapi.json",
+        # Legacy Workbench navigation stubs that render "unavailable". Harmless
+        # in themselves, and grouped with the surface they belong to rather than
+        # left as the one part of it a normal operator can see.
+        "/scoring",
+        "/research",
+        "/drafts",
+        "/sequences",
+        "/activity",
+        "/settings",
+    }
+)
+
+# Surfaces the operator product legitimately links to, where reading is normal
+# operator work but writing spends money or lowers a guardrail. The page stays
+# reachable; the dangerous verb does not.
+#
+# Written as patterns rather than prefixes because the split is finer than a
+# path segment: `/contacts/{id}` is the contact record a USER works with every
+# day, and only `/contacts/{id}/verify` reaches a paid provider.
+_ADMIN_ONLY_UNSAFE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # `/verification` is linked from the operator agents page, so the page is
+    # product. `bulk` enqueues up to 500 contacts in one request, `run` drains
+    # the queue and `recover` returns leased jobs for another pass -- all three
+    # spend real MillionVerifier credits, and the staging host already holds a
+    # live key.
+    re.compile(r"^/verification(/.*)?$"),
+    # One live verification per POST, against a credential the same surface can
+    # rotate.
+    re.compile(r"^/contacts/[^/]+/verify$"),
+    # KB-001 restricted claims are the control that stops the product making a
+    # prohibited claim. Reading them is operator work; deactivating one is not.
+    # Every other knowledge-base section stays writable by a USER, because
+    # operator entry is the only approval the seller knowledge base has.
+    re.compile(r"^/knowledge-base/restricted-claims(/.*)?$"),
+    # Agent controls are platform-wide, not campaign-wide: posting here with no
+    # campaign names one reaches `set_global_agent_status` and can halt or
+    # resume every campaign's pipeline, the sending agent included. Reading
+    # `/app/agents` stays operator work -- an operator needs to see which agents
+    # are enabled, and the resume preflight tells them what is missing -- but
+    # changing a global control is administration.
+    re.compile(r"^/app/agents/[^/]+/control$"),
+)
+
+
+def is_admin_only_request(path: str, method: str) -> bool:
+    """Whether this request needs an administrator rather than any operator.
+
+    Answers for the *request*, not the path alone, because three surfaces are
+    deliberately split by verb — see ``_ADMIN_ONLY_UNSAFE_PATTERNS``.
+    """
+
+    normalized = normalize_request_path(path)
+    if normalized in _ADMIN_EXACT_PATHS:
+        return True
+    for prefix in _ADMIN_PATH_PREFIXES:
+        if normalized == prefix or normalized.startswith(prefix + "/"):
+            return True
+    if not is_safe_method(method):
+        return any(pattern.match(normalized) for pattern in _ADMIN_ONLY_UNSAFE_PATTERNS)
+    return False
+
+
+def admin_only_prefixes() -> frozenset[str]:
+    """Exposed for the conformance test, which asserts against the live routes."""
+
+    return _ADMIN_PATH_PREFIXES
+
+
+def admin_only_exact_paths() -> frozenset[str]:
+    """Exposed for the conformance test, which asserts against the live routes."""
+
+    return _ADMIN_EXACT_PATHS
+
 
 # Methods that never change state, and therefore the methods the cross-site
 # backstop does not apply to.

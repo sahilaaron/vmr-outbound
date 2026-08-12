@@ -42,6 +42,18 @@
         </div>
         <div class="v2-card-body">
           {% if spec.implemented %}
+          {# An agent control is platform-wide -- applying one here can halt or
+             resume every campaign's pipeline -- so it is an administrator's to
+             change. The route refuses a non-administrator server-side; the form
+             is withheld here so an ordinary operator is told what to ask for
+             instead of being shown a button that answers 403. #}
+          {% if not is_admin %}
+          <p class="v2-note">
+            Agent state is a platform-wide setting, so only a platform administrator can
+            change it. This page shows the current state; ask an administrator to enable
+            an agent that a campaign needs.
+          </p>
+          {% else %}
           <form class="v2-inline-form" method="post" action="/app/agents/{{ selected.value }}/control">
             {# Blank when the page saw no stored control. Never 0: that would claim a
                version exists and turn a conflict into a silent overwrite. #}
@@ -61,6 +73,7 @@
               {{ 'Apply to this campaign' if campaign_id else 'Apply globally' }}
             </button>
           </form>
+          {% endif %}
           <p class="v2-hint v2-mt-sm">
             Enabled means it may claim new work. Paused holds work in flight rather than discarding
             it. Disabled claims nothing new, and held work stays held.

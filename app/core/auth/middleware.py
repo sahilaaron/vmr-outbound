@@ -48,6 +48,7 @@ from app.core.auth.extension import (
 )
 from app.core.auth.policy import (
     REDIRECTABLE_METHODS,
+    is_admin_only_request,
     is_anonymous_path,
     is_identity_free_path,
     is_safe_method,
@@ -59,6 +60,7 @@ from app.core.auth.session import (
     SessionCodec,
     SessionDecodeError,
 )
+from app.models.enums import UserRole
 
 __all__ = [
     "OperatorAuthenticationMiddleware",
@@ -410,6 +412,47 @@ class OperatorAuthenticationMiddleware:
                     status=403,
                     error="cross_site_request_refused",
                     message="This request did not originate from the VMR application.",
+                )
+                return
+
+            if (
+                extension_key is None
+                and session is not None
+                and is_admin_only_request(path, method)
+                and state["operator_role"] != UserRole.ADMIN.value
+            ):
+                # Authorization, after authentication and after the cross-site
+                # backstop. Checked here rather than as a router dependency for
+                # the same reason the anonymity check lives here: this runs
+                # *before routing*, so an alternate spelling, an unmounted path
+                # under an administrator prefix, and a route somebody forgets to
+                # decorate are all refused identically. The administrator
+                # surface is spread across three routers, one of which also
+                # serves normal operator routes, so no per-router dependency
+                # could express it anyway.
+                #
+                # Skipped for a verified extension credential, which has no
+                # account and therefore no role: the capture contract is
+                # authorised by the bearer credential and its approved origin,
+                # and refusing it here for "not being an administrator" would
+                # break capture without making anything safer.
+                #
+                # `session is None` at this point means an anonymous path, which
+                # is never administrator-only; a protected path with no session
+                # was already refused above.
+                #
+                # The role is read from `state`, which the directory lookup
+                # above wrote from the account record on *this* request, so a
+                # demotion applies immediately. The shape matches the
+                # `AdminRequiredError` handler in `app/main.py` exactly, so a
+                # refusal looks the same whether it came from here or from the
+                # dependency on the account-directory router.
+                await self._respond(
+                    scope,
+                    send,
+                    status=403,
+                    error="admin_required",
+                    message="This area is limited to platform administrators.",
                 )
                 return
 
