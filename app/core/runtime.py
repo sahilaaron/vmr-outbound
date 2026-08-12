@@ -16,7 +16,6 @@ _LOCAL_ONLY_FEATURES = (
     "salesnav_intake",
     "linkedin_profile_intake",
     "linkedin_company_intake",
-    "contact_capture_promotion",
 )
 
 # Contact capture used to sit in the list above, because the intake route had no
@@ -28,6 +27,62 @@ _LOCAL_ONLY_FEATURES = (
 # admit a request. Enabling it hosted *without* the credential boundary is still
 # refused, and that is the case the old rule was really protecting against.
 _CREDENTIAL_GATED_FEATURES = ("contact_capture_intake",)
+
+
+# --- The hosted Beta's one promotion exception --------------------------------
+#
+# ``contact_capture_promotion`` also used to sit in the local-only list, and for
+# a better reason than the intakes did: promotion is the step that turns
+# extension evidence into a canonical Contact, a Company association and — when
+# the capture carried an explicit filing request — a Campaign Contact. Doing
+# that in an environment reachable from the Internet, with nothing stated about
+# what has to be true first, is exactly what "local only" existed to refuse.
+#
+# The hosted Beta needs it, so the rule becomes conditional rather than absolute
+# — the same move the capture credential made above, held to the same standard.
+# Deleting the name from the list would not have been that move: it would have
+# permitted promotion in every hosted environment, in every state of
+# configuration, including the half-configured one this boundary exists to
+# refuse. So the exception is written out instead, and it is narrow in three
+# separate ways.
+#
+# **One environment.** Staging, named here rather than derived from "hosted", so
+# production does not inherit the Beta by accident. Production has no operator
+# surface (``FEATURES__WORKBENCH`` is already refused there), and a promoted
+# Contact nobody can review is not a product decision anyone has taken. When a
+# production promotion path is wanted it is a design, not a default.
+#
+# **Every dependency, not just the switch.** Automatic promotion is the whole
+# point of enabling it hosted, and automatic promotion is four things, not one:
+# the promotion switch, the automatic-resolution switch, the provider switch and
+# a provider key. ``app/services/resolution/pending.py`` and
+# ``app/services/captures/intake.py`` both fail closed when any of them is
+# missing — correctly, and silently, because a capture that is left untouched is
+# the safe outcome and looks identical to one that was never submitted. That is
+# the failure this refuses: a staging deployment that starts cleanly, accepts
+# captures, files campaign requests, reports every Capture job as succeeded, and
+# promotes nothing, with no error anywhere to explain why.
+#
+# **Nothing weakened to get there.** This grants no promotion authority. The
+# DAT-014 rules are untouched: a domain is never fabricated, a provider rank is
+# never confirmation, an ambiguous identity never merges, a suppressed person is
+# never promoted, and a Campaign Contact appears only where the immutable
+# capture already carried an explicit filing request. This decides which
+# environments may *run* that service, and nothing about what it may conclude.
+_STAGING_PROMOTION_ENVIRONMENTS = frozenset({"staging"})
+
+# The switches automatic promotion cannot work without, paired with the exact
+# environment-variable name to set. The variable name is carried here rather
+# than spelled inside each message for the reason
+# ``app/services/resolution/pending.py`` states about its operator-facing
+# blockers: a name someone has to retype is worth naming exactly once.
+_PROMOTION_REQUIRED_FEATURES: tuple[tuple[str, str], ...] = (
+    (
+        "automatic_company_domain_resolution",
+        "FEATURES__AUTOMATIC_COMPANY_DOMAIN_RESOLUTION",
+    ),
+    ("salesnav_domain_enrichment", "FEATURES__SALESNAV_DOMAIN_ENRICHMENT"),
+)
 
 
 class RuntimeConfigurationError(RuntimeError):
@@ -92,6 +147,54 @@ def _local_database_host(host: str | None) -> bool:
         return bool(legacy and legacy.is_loopback)
 
 
+def _hosted_promotion_issues(settings: Settings, *, environment: str) -> list[str]:
+    """Refuse a hosted capture promotion that is unauthorised or half-configured.
+
+    Called only for the production-like environments, so local development is
+    not merely unaffected by this rule — it never reaches it.
+
+    The production refusal returns immediately instead of accumulating the
+    dependency findings alongside it. Everything else in this module reports at
+    once, deliberately, so one restart teaches an operator all of their missing
+    values; here that would teach the wrong thing. Listing the three
+    prerequisites under a refusal that no prerequisite can lift reads as a
+    checklist, and the honest answer is that production is not a configuration
+    problem.
+    """
+
+    if not settings.features.contact_capture_promotion:
+        # Off is always allowed and is how staging runs until the operator
+        # deliberately turns the Beta path on. Nothing is promoted while it is
+        # off; captures stay staged and stay promotable later.
+        return []
+
+    if environment not in _STAGING_PROMOTION_ENVIRONMENTS:
+        return [
+            "FEATURES__CONTACT_CAPTURE_PROMOTION may not be enabled in "
+            f"{environment}: hosted capture promotion is authorised for staging only. "
+            "Promotion creates canonical Contacts and Campaign memberships from "
+            "extension evidence, and production has no operator surface to review "
+            "them on, so it fails closed until a production path is separately designed"
+        ]
+
+    issues = [
+        f"{variable} must be true when FEATURES__CONTACT_CAPTURE_PROMOTION is enabled "
+        "outside local development: without it a hosted capture is never resolved "
+        "automatically, so the deployment would accept captures and promote none of "
+        "them with no error to explain it"
+        for name, variable in _PROMOTION_REQUIRED_FEATURES
+        if not bool(getattr(settings.features, name))
+    ]
+    if not settings.has_logo_dev_key():
+        issues.append(
+            "LOGO_DEV_API_KEY must be configured when FEATURES__CONTACT_CAPTURE_PROMOTION "
+            "is enabled outside local development: without a provider key the resolution "
+            "policy declines to record a decision it could not make, so every hosted "
+            "capture stays pending indefinitely"
+        )
+    return issues
+
+
 def validate_runtime_settings(settings: Settings) -> None:
     """Refuse known-dangerous combinations without echoing secret values."""
 
@@ -153,6 +256,8 @@ def validate_runtime_settings(settings: Settings) -> None:
                     "credential (EXTENSION_AUTH__ENABLED with at least one credential and "
                     "one approved origin) outside local development: " + ", ".join(sorted(ungated))
                 )
+
+        issues.extend(_hosted_promotion_issues(settings, environment=environment))
 
         try:
             database_url = make_url(settings.database_url)
