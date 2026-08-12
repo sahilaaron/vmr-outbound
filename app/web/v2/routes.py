@@ -60,6 +60,7 @@ from app.models.suppression import Suppression
 from app.services import campaigns as campaign_service
 from app.services import drafts as draft_service
 from app.services import workbench_agents
+from app.services.agents import readiness as agent_readiness
 from app.services.agents import rerun as agent_rerun
 from app.services.agents.registry import AGENT_SPECS, PIPELINE_ORDER
 from app.services.campaigns import CampaignError
@@ -82,7 +83,6 @@ from app.services.personalization.cadence import (
 from app.services.resolution import service as resolution_service
 from app.services.seller import campaign_offerings as seller_campaign_offerings
 from app.services.seller import profile as seller_profile
-from app.services.agents import readiness as agent_readiness
 from app.services.seller import readiness as seller_readiness
 from app.services.seller import records as seller_records
 from app.services.sequences import read as sequence_read
