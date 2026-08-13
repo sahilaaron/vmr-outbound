@@ -64,6 +64,14 @@ class HostedAuthConfigurationError(RuntimeError):
 def _extension_auth_issues(settings: Settings, *, environment: str, hosted: bool) -> list[str]:
     """Refuse every half-configured shape of the extension capture boundary.
 
+    Two switches now, held to the same standard. ``EXTENSION_AUTH__ENABLED`` is
+    the legacy per-install shared credential — development compatibility only,
+    and inert outside ``APP_ENV=local`` at the middleware. ``EXTENSION_AUTH__
+    LINK_ENABLED`` is the account-linked authorization the hosted product uses.
+    Either one being on brings the same completeness requirements, because either
+    one being half-configured produces the same failure: a deployment that starts
+    cleanly, serves every operator screen, and refuses every capture.
+
     The failure this prevents is the quiet one. A capture credential that is
     enabled but has no issued credential, or no approved origin, produces a
     deployment that starts cleanly, serves every operator screen, and refuses
@@ -80,18 +88,25 @@ def _extension_auth_issues(settings: Settings, *, environment: str, hosted: bool
     extension = settings.extension_auth
     issues: list[str] = []
 
-    if not extension.enabled:
+    if not extension.enabled and not extension.link_enabled:
         # Configuration present but switched off is fine and is how a credential
         # is staged before it is turned on. Nothing is accepted while it is off.
         return issues
 
     if environment == "production":
-        issues.append(
-            "EXTENSION_AUTH__ENABLED may not be true in production: capture is an "
-            "operator activity and the production operator-access policy is not defined yet"
-        )
+        if extension.enabled:
+            issues.append(
+                "EXTENSION_AUTH__ENABLED may not be true in production: capture is an "
+                "operator activity and the production operator-access policy is not defined yet"
+            )
+        if extension.link_enabled:
+            issues.append(
+                "EXTENSION_AUTH__LINK_ENABLED may not be true in production: extension "
+                "account linking authorises capture, and the production operator-access "
+                "policy is not defined yet"
+            )
 
-    if not extension.credentials:
+    if extension.enabled and not extension.credentials:
         issues.append(
             "EXTENSION_AUTH__CREDENTIALS must list at least one issued credential when "
             "extension capture authentication is enabled: an empty list means nobody, and "
@@ -104,11 +119,24 @@ def _extension_auth_issues(settings: Settings, *, environment: str, hosted: bool
             "complete a capture"
         )
     if hosted and not settings.auth.enabled:
-        issues.append(
-            "EXTENSION_AUTH__ENABLED requires AUTH__ENABLED in staging and production: the "
-            "capture credential authorises one narrow intake contract and is not a "
-            "substitute for the operator session protecting everything else"
-        )
+        if extension.enabled:
+            issues.append(
+                "EXTENSION_AUTH__ENABLED requires AUTH__ENABLED in staging and production: the "
+                "capture credential authorises one narrow intake contract and is not a "
+                "substitute for the operator session protecting everything else"
+            )
+        if extension.link_enabled:
+            # Stated separately rather than folded into the line above because
+            # the dependency is stronger here, not merely equal: an extension
+            # link *is* an operator session's authority, delegated. With hosted
+            # authentication off there are no sessions to delegate from, so
+            # `/extension/authorize` could never identify an account and the
+            # whole flow would authorise nobody while looking configured.
+            issues.append(
+                "EXTENSION_AUTH__LINK_ENABLED requires AUTH__ENABLED in staging and "
+                "production: an extension authorization is delegated from a signed-in "
+                "operator account, and there are no accounts to delegate from without it"
+            )
     if not settings.features.contact_capture_intake:
         issues.append(
             "FEATURES__CONTACT_CAPTURE_INTAKE must be true when extension capture "

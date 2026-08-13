@@ -100,6 +100,47 @@ _ANONYMOUS_AUTH_ROUTES: frozenset[str] = frozenset(
     }
 )
 
+# The two account-linking endpoints an extension's service worker calls directly,
+# with no cookie and no browser navigation. Added by the extension
+# account-linking slice, and the *only* two paths under `/extension/` that are
+# not session-authenticated: `GET`/`POST /extension/authorize` are ordinary
+# signed-in operator pages, so an anonymous caller is sent to `/auth/login` by
+# the default-deny rule above — which is exactly the one sign-in action the
+# product is allowed to ask for.
+#
+# Why these two are anonymous, stated precisely, because "anonymous" is the wrong
+# word for what they are:
+#
+# * `POST /extension/token` is authorised by a single-use PKCE authorization code
+#   (or by a rotating refresh secret) presented from an approved
+#   `chrome-extension://` origin. It is a public OAuth client and holds no secret
+#   a cookie could stand in for. A caller with neither gets `invalid_grant` and
+#   learns nothing; a caller with a stale session cookie gets no more than one
+#   with none, because the endpoint never reads a session.
+# * `POST /extension/revoke` is authorised the same way, by the access token
+#   being revoked, and can only ever *reduce* authority. It also accepts a
+#   signed-in session, which is how an operator disconnects an install from the
+#   VMR app rather than from the extension. It is listed here so the extension's
+#   own Disconnect works: without it the middleware would refuse a cookie-less
+#   revocation before the handler could check the token, and a disconnected
+#   install would keep a live server-side link for thirty days.
+#
+# Neither grants anything by being reachable. Both are enumerated exactly, so no
+# route added under `/extension/` later inherits this.
+_ANONYMOUS_EXTENSION_PATHS: frozenset[str] = frozenset(
+    {
+        "/extension/token",
+        "/extension/revoke",
+    }
+)
+
+#: The subset the authentication middleware exempts from the cross-site backstop
+#: when — and only when — the request carries an approved extension origin. The
+#: backstop compares `Origin` against this site's own origin, which a legitimate
+#: `chrome-extension://` caller can never match, so without this the two
+#: endpoints above would be refused for a property they cannot have.
+EXTENSION_LINK_PUBLIC_PATHS: frozenset[str] = _ANONYMOUS_EXTENSION_PATHS
+
 # The one intentional mount exception, and deliberately *not* a general prefix
 # rule. `/static/...` is served by a `StaticFiles` mount over a fixed directory —
 # compiled CSS, one SVG mark and two progressive-enhancement scripts, all of
@@ -376,7 +417,7 @@ def anonymous_application_paths() -> frozenset[str]:
     table rather than against a second hand-written copy of it.
     """
 
-    return _ANONYMOUS_EXACT_PATHS | _ANONYMOUS_AUTH_ROUTES
+    return _ANONYMOUS_EXACT_PATHS | _ANONYMOUS_AUTH_ROUTES | _ANONYMOUS_EXTENSION_PATHS
 
 
 def is_identity_free_path(path: str) -> bool:
@@ -400,6 +441,18 @@ def is_identity_free_path(path: str) -> bool:
     """
 
     normalized = normalize_request_path(path)
+    if normalized == "/extension/token":
+        # A public OAuth client endpoint. The answer genuinely does not depend on
+        # who is asking — it reads no session, writes no session, and is decided
+        # entirely by the code or refresh secret presented — so the account
+        # directory is not consulted for it. That is also what keeps a service
+        # worker's token refresh working while an unrelated stale cookie rides
+        # along in the same browser profile.
+        #
+        # `/extension/revoke` is deliberately *not* here: it accepts a signed-in
+        # session as one of its two credentials, so the session behind a cookie
+        # still has to be resolved before the handler can act on it.
+        return True
     return normalized in _ANONYMOUS_EXACT_PATHS or normalized.startswith(
         _ANONYMOUS_STATIC_MOUNT_PREFIX
     )
@@ -409,7 +462,11 @@ def is_anonymous_path(path: str) -> bool:
     """Whether ``path`` may be served without an authenticated operator."""
 
     normalized = normalize_request_path(path)
-    if normalized in _ANONYMOUS_EXACT_PATHS or normalized in _ANONYMOUS_AUTH_ROUTES:
+    if (
+        normalized in _ANONYMOUS_EXACT_PATHS
+        or normalized in _ANONYMOUS_AUTH_ROUTES
+        or normalized in _ANONYMOUS_EXTENSION_PATHS
+    ):
         return True
     # Normalisation has already resolved `..` and `.`, so `/static/../admin`
     # arrives here as `/admin` and does not match. A path that merely *starts*

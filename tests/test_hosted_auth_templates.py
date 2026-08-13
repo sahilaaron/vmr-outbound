@@ -210,6 +210,36 @@ EXPECTED_ANONYMOUS_PATHS = {
     # already exists, and neither can create an account.
     "/auth/password",
     "/auth/setup",
+    # Added by the extension account-linking slice. Neither is "public" in the
+    # ordinary sense and neither is on the sign-in router; both are OAuth-style
+    # public-client endpoints on `app/web/extension_link_routes.py`, authorised
+    # by a presented token rather than by a cookie:
+    #
+    # * `POST /extension/token` redeems a single-use PKCE authorization code, or
+    #   rotates a refresh secret, and requires an approved `chrome-extension://`
+    #   origin. A caller with neither a code nor a refresh secret gets
+    #   `invalid_grant` and learns nothing; a session cookie would add nothing,
+    #   because the endpoint never reads one.
+    # * `POST /extension/revoke` is authorised by the access token being revoked
+    #   (or, for an operator disconnecting from the VMR app, by their own
+    #   session) and can only ever *reduce* authority. It is here so that the
+    #   extension's own Disconnect works with no cookie: otherwise the middleware
+    #   would refuse the call before the handler could check the token, and a
+    #   disconnected install would keep a live server-side link for 30 days.
+    #
+    # `GET`/`POST /extension/authorize` are deliberately NOT here. They are
+    # ordinary signed-in operator pages, and an anonymous caller is sent to
+    # `/auth/login` — which is the single sign-in action the product asks for.
+    "/extension/token",
+    "/extension/revoke",
+}
+
+#: The one router other than the sign-in router that deliberately serves an
+#: anonymous path, named exactly. Anything else turning up in the walk below is
+#: the failure that test exists to catch.
+DELIBERATELY_ANONYMOUS_ROUTES = {
+    "app.web.extension_link_routes:/extension/token",
+    "app.web.extension_link_routes:/extension/revoke",
 }
 
 
@@ -246,21 +276,34 @@ def test_no_other_router_mounts_under_an_anonymous_path() -> None:
     with every gate green. Anonymity is granted by exact path now, so that can
     no longer happen silently — and this test says so out loud, so the next
     person to try it gets a failure that explains itself.
+
+    Two changes were made here by the extension account-linking slice, and both
+    make the test stricter rather than looser:
+
+    * The path is read as ``route.path``, which on this FastAPI version already
+      carries the router's prefix. The previous line concatenated the prefix
+      again, so a prefixed router's `/x/y` was checked as `/x/x/y` — a spelling
+      that matches nothing — and every prefixed router was silently exempt from
+      this walk. Fixing that is what lets the assertion below be an equality.
+    * The result is compared against a named set of deliberate exceptions rather
+      than against the empty list, so the two account-linking endpoints are
+      recorded as decisions instead of hidden behind a skip.
     """
 
     from app.core.auth.policy import is_anonymous_path
 
-    leaked: list[str] = []
+    leaked: set[str] = set()
     for name, router in _application_routers().items():
         if name == "app.web.auth_routes":
             continue
         for route in router.routes:
-            path = str(getattr(route, "path", "") or "")
-            prefix = str(getattr(router, "prefix", "") or "")
-            full = f"{prefix}{path}"
+            # Already prefixed by FastAPI when the route was declared on a
+            # router carrying a prefix; concatenating `router.prefix` again
+            # produces a path no policy rule can ever match.
+            full = str(getattr(route, "path", "") or "")
             if full and is_anonymous_path(full):
-                leaked.append(f"{name}:{full}")
-    assert leaked == []
+                leaked.add(f"{name}:{full}")
+    assert leaked == DELIBERATELY_ANONYMOUS_ROUTES
 
 
 def test_the_static_mount_is_the_only_prefix_exception() -> None:

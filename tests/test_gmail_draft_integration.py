@@ -2211,6 +2211,21 @@ def test_the_extension_capture_credential_reaches_no_gmail_route(
     not vacuous: the same credential, in the same request, is accepted on a
     contract path -- so what the Gmail routes are refusing is a credential that
     genuinely verifies.
+
+    ``APP_ENV`` is ``local`` here, and only for that control. The extension
+    account-linking slice made the legacy ``vmrx1`` shared credential development
+    compatibility -- it verifies only when ``APP_ENV=local``, so that no reusable
+    pasted secret can authorise a hosted capture -- and a control that no longer
+    verifies would make this whole test a tautology. Nothing else about the test
+    depends on the environment: the Gmail refusals below come from the
+    authentication boundary, which is enforced identically in both.
+
+    The hosted equivalent of this claim -- an *account-linked* extension token
+    against all three Gmail routes -- is asserted in
+    ``tests/test_extension_account_linking.py``
+    (``test_no_gmail_route_is_reachable_with_an_extension_authorization``), so
+    the Gmail boundary is now covered against both credential schemes rather
+    than only the legacy one.
     """
 
     import json
@@ -2220,6 +2235,7 @@ def test_the_extension_capture_credential_reaches_no_gmail_route(
     _apply(
         monkeypatch,
         _env(
+            APP_ENV="local",
             FEATURES__CONTACT_CAPTURE_INTAKE="true",
             EXTENSION_AUTH__ENABLED="true",
             EXTENSION_AUTH__CREDENTIALS=json.dumps(

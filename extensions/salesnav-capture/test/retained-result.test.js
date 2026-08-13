@@ -19,7 +19,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
 const { createPanel, DEFAULT_PREFS, fixtures } = require("./panel-harness.js");
-const { createWorker } = require("./worker-harness.js");
+const { createWorker, linkedAccount } = require("./worker-harness.js");
 
 const constants = require("../src/common/constants.js");
 const { SURFACES, PROFILE_STORAGE, STORAGE } = constants;
@@ -467,6 +467,11 @@ test("the worker stores the page a saved result belongs to, and returns it", asy
   const w = createWorker({
     tabs: [{ id: 3, active: true, url: PROFILE_A, title: "Dana Whitfield | LinkedIn" }],
     onTabMessage: () => captured,
+    // Captures now go to the product's hosted deployment by default, authorised
+    // by the account link. This test is about the retained RESULT, so it starts
+    // from an install that is already linked rather than re-testing the link.
+    storage: linkedAccount().local,
+    sessionStorage: linkedAccount().session,
     fetch: () =>
       Promise.resolve({
         ok: true,

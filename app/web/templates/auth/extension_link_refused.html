@@ -1,0 +1,29 @@
+{#
+  The refusal page for an authorization request that did not validate.
+
+  A page and never a redirect. Redirecting on a bad `redirect_uri` is precisely
+  how an authorization endpoint becomes an open redirect, and an open redirect
+  standing next to an authorization code is an account takeover — so a request
+  this application will not honour ends here, on this origin, with nothing
+  attached.
+
+  It echoes nothing that was submitted. The `reason` is one of a fixed set of
+  identifiers chosen by the route, and `detail` is the sentence that route paired
+  with it; neither is built from a request value, so this page cannot be used to
+  put an attacker's text on a VMR-origin page.
+#}
+{% extends "base.html" %}
+{% block title %}Connection refused{% endblock %}
+{% block content %}
+  <h1>This extension was not connected</h1>
+
+  <div class="notice err" role="alert">{{ detail }}</div>
+
+  <p>
+    Nothing was authorized and nothing was changed. If you were trying to connect
+    the VMR capture extension, open it again from the browser toolbar and start
+    the connection from there.
+  </p>
+
+  <a class="button secondary" href="/app">Back to VMR Outbound</a>
+{% endblock %}
