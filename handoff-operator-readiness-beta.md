@@ -698,3 +698,244 @@ spend and terminal auto-skip — are closed at the service boundary rather than 
 the UI. I am not grading this: it needs ChatGPT's independent review against the
 actual diff and CI, and the Hosted Beta workflow still needs a real UAT pass on
 staging with the configuration above. Green CI does not meet that bar.
+
+---
+
+# Repair pass 2 — after the independent adversarial review
+
+Cowork reviewed `ea385985cb9033fb9286bf7c535b0a3e7eca4d79` against base
+`a10c1de1c535f26bdc2825a3a9ffc127557b7ecb` and returned **OPERATOR READINESS
+REVIEW: REPAIR REQUIRED**. The artifact is
+`OPERATOR_READINESS_ADVERSARIAL_REVIEW.md` (supplied out-of-band, not committed
+here). This pass implements the review's own "minimum path to pass" and nothing
+beyond it. No rebase, no squash, no force, no history rewrite, no migration, and
+nothing deployed.
+
+## What the review found, and what closing it cost
+
+Three blockers were reproduced by the reviewer through the supported operator
+UI, with no administrator and no API. All three are closed here, and each was
+reproduced locally *before* being repaired — a fix with no failing test in front
+of it is not evidence.
+
+### B-1 — an empty campaign defeated the preflight entirely
+
+`_furthest_desired_stage` returns `None` for a campaign with no contacts, so
+`execution_readiness` reported `runnable=True` and Resume was accepted. The
+guard was scoped to the off-to-on transition, so it never ran again. Contacts
+imported afterwards walked into a disabled Research and were terminally
+`SKIPPED`.
+
+Closed by re-evaluating readiness **at enrolment**, in `enrol_contact` — the
+choke point all six enrolment surfaces pass through, so the refusal is atomic by
+construction. `campaign_import_confirm` asks the same question before the import
+starts, because `campaign_import.confirm` catches only `SQLAlchemyError` per row
+and a mid-file refusal would otherwise have escaped as a 500 with a batch
+partially written.
+
+**Refuse rather than hold, deliberately.** `enqueue=False` is not an escape
+hatch: in `schedule_next` the auto-skip branch runs *before* the
+`allow_enqueue` check, so a deferred enqueue burns the stage just as thoroughly.
+A true hold would strand the membership — `reconcile_agent_control` only
+re-schedules rows matching `next_stage == agent_id` or holding a live job, and a
+held contact sits at Identity, never names Research, and has no job. Enabling
+Research later would never find it. That is the silent import drop the brief
+forbids. Refusal loses nothing: a Contact is permanent and never requires a
+campaign.
+
+The campaign page now renders the readiness warning **while running**, not only
+before the first Resume, so the state is visible before an operator imports.
+
+### B-2 — the operator could bypass the refusal in three clicks
+
+Untick the sequence box, Save, Resume (now accepted), re-tick, Save. The
+refusal message actively pointed at the page containing the bypass.
+
+Closed on the **write transition**: `update_campaign` re-runs readiness when the
+sequence opt-in goes false-to-true on a campaign that is running or has enrolled
+contacts, and refuses above the SAVEPOINT. Nothing is partially persisted and
+`settings_version` is not bumped on a refusal. The edit route is **not** made
+administrator-only — that would have hidden the defect rather than fixed it.
+
+### B-3 — one control-disable click burned an unbounded in-flight cohort
+
+`reconcile_agent_control` selects every matching membership with no `LIMIT` and
+called `schedule_next`, which terminally skipped each one, under an operator
+message that read *"nothing is discarded."*
+
+`schedule_next` gains `allow_autoskip: bool = True`; the reconcile path passes
+`False`, so a control flip **holds** work at the disabled boundary instead of
+destroying it. The ordinary scheduler keeps its auto-skip, which is historically
+intended. `_IN_FLIGHT_NOTES[DISABLED]` no longer claims nothing is discarded.
+
+Because `set_campaign_execution` reconciles through the same function, the
+Resume-triggered burn is closed by this change too.
+
+### H-1 and H-2 — two metered surfaces were USER-reachable
+
+`POST /contact-captures/{id}/company/{lookup,resolve}` pass `force=True`, which
+bypasses the one-lookup-per-company cache, so N presses were N billed logo.dev
+calls. `POST /knowledge-base/generate` spawns the Claude CLI with `WebSearch`
+and operator-supplied URLs. All three are now administrator-only.
+
+`confirm`, `correct`, `reject` and `promote` were read before being left with
+the USER and spend nothing: two write a decision onto the stored enrichment
+record, `resolution.correct` records a correction with
+`provider_call_made=False`, and `promote` evaluates already-stored state.
+`/app/capture` is neither read-only nor administrator-only.
+
+The false comment in `policy.py` — *"only `/contacts/{id}/verify` reaches a paid
+provider"* — is corrected and now names all three paid dependencies.
+
+### H-3 and M-2 — operations documentation that would have been acted on
+
+`docs/HOSTED_AUTH.md` section 7 described a revocation that revokes nothing:
+`is_approved` has **zero call sites in `app/`**, and `seed_from_allowlist` only
+ever creates rows. Removing an address and restarting left the operator with
+full access. Section 7 now states that the `users` table is authoritative, that
+operators are added at `/app/admin/users`, that **disabling the account** is the
+revocation, that it takes effect on the **next request** via `auth_version`, and
+that **no restart is required**. Section 5's staging requirement is corrected
+from a non-empty allow-list to a non-empty `AUTH__BOOTSTRAP_ADMIN_EMAIL` —
+acting on the old text would have reproduced the pydantic crash this PR fixed,
+at the Alembic step, after the database backup.
+
+`deploy/README.md`, `deploy/nginx/vmr-staging.conf` and
+`docs/STAGING_RUNBOOK.md` no longer claim the application has no authentication,
+and no longer justify HTTP Basic Auth or IP allow-listing on that ground. The
+genuine infrastructure hardening advice is kept; only the false premise is gone.
+
+## The "25 baseline failures" claim is withdrawn
+
+The earlier section of this handoff recorded *"25 failures in
+`test_email_sequence_web.py` and `test_v2_beta1_operator_ui.py`, identical 25 on
+the untouched base."* **That claim is wrong and is not repeated.** Measured
+here, on this machine, with a fresh database per run:
+
+| Tree | Result |
+|---|---|
+| `ea385985` (reviewed head) | **76 passed, 0 failed** |
+| `a10c1de1` (untouched base) | **76 passed, 0 failed** |
+
+Both sides clean, both files, exit code 0. The original number was almost
+certainly a poisoned shared session leaking from a prior full-suite run — the
+same cascade this handoff describes ten lines above it and then failed to apply
+to its own measurement. A number produced under a known-contaminating condition
+should not have been reported as a baseline at all.
+
+## Deferred, deliberately, with the risk stated
+
+Scope was cut to the review's minimum path. These remain **open** and are not
+fixed here:
+
+- **H-4 — `enrol_contacts` has no server-side batch bound.** A normal USER can
+  enrol unbounded contacts, and once an administrator arms Verification with
+  `{"live": true}` that is uncapped MillionVerifier/DeBounce spend through
+  ordinary product actions. Campaign and contact volume is therefore a cost
+  boundary. Documented in `deploy/vmr.env.example`; not capped.
+- **H-5 — sequence-*disabled* campaigns still burn skippable stages.** The
+  reconcile path is fixed by B-3, but ordinary worker progress still auto-skips:
+  a contact completing Identity walks into a disabled Research and is terminally
+  skipped. For sequence campaigns B-1 and B-2 make that state unreachable; for
+  single-draft campaigns it is unguarded and unwarned, as before.
+- **M-7 and M-8 — the two test gaps.** No behavioural CSRF-refusal test on an
+  `/app` write, and the control-character middleware guard is still proven only
+  through its pure helper. M-8 was confirmed real in passing: with the guard
+  disabled in source, 74 wire-level requests failed while **every** existing
+  control-character test still passed. Those wire-level tests were written and
+  then removed under the scope cut; `tests/test_hosted_auth_raw_asgi.py` and
+  `app/core/auth/middleware.py` are byte-identical to the reviewed head.
+- **The auto-skip recursion drops `generation`.** An operator re-run at
+  generation N that auto-skips schedules the following stage back at generation
+  1, where `enqueue_job`'s idempotency can hand back a stale job. Not
+  load-bearing for these repairs — the reconcile path no longer enters that
+  branch — but real. Belongs with whoever owns `rerun.py`.
+- Everything the review listed under MEDIUM and LOW that is not named above,
+  including tenancy (M-10), the legacy navigation (M-1), the audit actor (M-6),
+  and the JSONB warning poison row (L-12).
+
+## Two existing test files were modified — read this before the diff
+
+Neither is a weakened assertion.
+
+**`tests/test_campaign_execution_readiness.py`** — a fixture *reorder* in
+`test_re_affirming_execution_on_a_running_campaign_never_refuses`. It enrolled
+into an already-running, already-blocked sequence campaign, which is now
+refused. Contacts are enrolled first and the switch is then flipped directly,
+which is the only order that state can now be reached in. Every assertion is
+untouched, including `runnable is False`.
+
+**`tests/test_import_to_sequence.py`** — one autouse fixture enabling Research,
+Insights and Personalization. The module's campaigns are execution-enabled and
+sequence-opted-in while those three sat at their registry default of DISABLED,
+so its imports were walking contacts into a terminal `SKIPPED` at Research and
+then generating sequences out-of-band through the adapter, where the pipeline
+could not contradict them. The fixture states the configuration those tests
+always implied. Nothing about import truth, provenance or sequence content
+depended on the Agents being off. No test was deleted, skipped, xfailed or
+relaxed.
+
+## Beyond the minimum path, already complete when scope was cut
+
+Three items were finished and green before the scope reduction and were kept
+rather than reverted, because removing working, tested corrections would have
+cost time and restored known-false text:
+
+- `constraints.txt` — the glibc floor note (L-1) was wrong in both halves. The
+  brittle prose is removed rather than re-stated with new numbers, because a
+  number in a comment goes stale silently and is then acted on as though
+  something had checked it. **No pinned version changed**; the closure is 66
+  pinned lines, byte-identical to the reviewed head.
+- `deploy/vmr.env.example` — records that synchronous verification spend is
+  administrator-only while ordinary USER campaign operation can cause
+  asynchronous Agent spend once live Verification is armed.
+- `tests/test_review_copy_contract.py` — a static cross-check that the copy
+  controls' JavaScript literals equal the strings the templates emit (M-9).
+  Mutation-verified: renaming the live-region id, the label attribute or the
+  delegation selector in the script alone each fail it.
+
+## Validation for this pass
+
+Local validation was scoped to the blocker reproductions, the touched-file
+suites, the static gates and the dependency closure. GitHub CI is the broad
+authority, as the brief directs.
+
+One consolidated run on the assembled head, thirteen suites, fresh database:
+**659 passed, 0 failed, exit code 0.** The suites are
+`test_campaign_enrolment_readiness`, `test_agent_control_disable_holds`,
+`test_provider_spend_authorization`, `test_campaign_execution_readiness`,
+`test_campaign_sequence_control`, `test_import_to_sequence`,
+`test_route_authorization`, `test_phase2_orchestration`,
+`test_review_copy_contract`, `test_deployment_constraints`,
+`test_extension_capture_auth`, `test_hosted_auth` and
+`test_hosted_auth_raw_asgi`.
+
+Static gates on the same tree: `ruff check .` all checks passed;
+`ruff format --check .` 547 files already formatted; `mypy app` no issues in 274
+source files; `VMR_TEST_MODE=1 python -c "import app.main"` clean.
+
+Each blocker was reproduced before repair. B-1: the enrolment assertion is
+deliberately taken *after* walking the contact through Identity and Company,
+because enrolment starts a contact three stages short of Research and asserting
+at the enrolment instant passes on broken code — the first draft of that test
+did exactly that and was corrected. B-2: the re-tick was accepted on unrepaired
+code. B-3: `6 of 6 terminally skipped by one click`, the reviewer's figure
+verbatim. H-1 and H-2: a USER receives 403 with zero logo.dev calls and zero
+subprocess spawns, while an ADMIN making the identical request produces exactly
+one of each — the positive control is what makes the zero mean something.
+
+The `vmr-deploy` install pattern **cannot be executed on this machine**:
+`constraints.txt` pins `uvloop==0.22.1`, which has no Windows support, so the
+requirement install fails on any tree including the untouched base. What is
+provable locally, and is what matters, is that the closure content is unchanged:
+66 pinned lines on both sides, byte-identical to the reviewed head, with only
+comments differing. The reviewer already verified this exact closure end to end
+on Linux with the real `vmr-deploy` commands.
+
+## Claimed status
+
+The review's minimum path is implemented and the three blockers are closed at
+the service boundary. I am not grading this. It needs ChatGPT's independent
+review against the actual diff and CI, and the deferred items above — H-4 and
+H-5 in particular — are real, open risks that a Hosted Beta UAT pass must be
+told about rather than discover.
