@@ -6,14 +6,34 @@ This document defines the management structure for the current VMR Outbound Agen
 
 The tracker must answer:
 
-> **What prevents the assembled Contact-to-approved-draft product from being accepted in real operation?**
+> **What prevents the assembled product from being accepted in real operation, and what is the shortest safe next step to UAT?**
 
 The current answer is operating proof, not another architecture build.
+
+## UAT-first management rule
+
+Management status must optimize for **time-to-UAT**, not process volume.
+
+For every active blocker, the tracker should identify:
+
+- the exact UAT outcome currently blocked;
+- the smallest repair or decision needed;
+- the minimum credible local proof;
+- the GitHub CI gate;
+- the immediate deploy/UAT action once green.
+
+Do not present optional review, broad local test duplication, post-Beta hardening,
+refactors, or non-blocking cleanup as current launch blockers. After one broad
+review of a substantial boundary, successor repairs are tracked as delta-only
+re-review unless new evidence widens the blast radius.
+
+`PROPORTIONAL_VALIDATION.md` is authoritative for delivery depth and escalation.
 
 ## Systems of record
 
 - **GitHub** owns source code, issues, pull requests, technical decisions, tests and implementation evidence.
 - **Google Sheets build tracker** owns management status, owner, blocker, next action and readiness consequence.
+- [`PROPORTIONAL_VALIDATION.md`](PROPORTIONAL_VALIDATION.md) owns the UAT-first delivery and validation policy.
 - [`CURRENT_MVP.md`](CURRENT_MVP.md) owns the current product reality.
 - [`GOAL.md`](GOAL.md) owns the authorized MVP outcome and acceptance criteria.
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) owns the current data and Agent boundaries.
@@ -59,7 +79,7 @@ Do not return to the old phase-first plan. The current system is assembled verti
 | Owner | Person or agent responsible for the next action |
 | Current reality | What is actually usable now |
 | Blocker | Specific condition preventing the next state |
-| Next action | One concrete step |
+| Next action | One concrete step that moves toward UAT |
 | Launch impact | Current MVP, acceptance, send-capable pilot or future |
 | Confidence | Low, Medium or High |
 | Last updated | Timestamp and updater |
@@ -97,9 +117,12 @@ Do not use percentage-complete estimates.
 
 Record one verdict:
 
-- **Pass** — close #202 and plan post-MVP work.
-- **Conditional pass** — accept the MVP with named follow-up defects that do not invalidate the workflow.
+- **Pass** — close the acceptance blocker and continue to the next UAT step.
+- **Conditional pass** — accept with named follow-up defects that do not invalidate the workflow.
 - **Blocked** — name the exact operating failure and smallest repair.
+
+A conditional pass is a valid delivery state. Non-blocking defects must not be
+promoted into current UAT blockers merely because they exist.
 
 ## Current product truth
 
@@ -117,12 +140,14 @@ Record one verdict:
 
 After a meaningful delivery or acceptance event:
 
-1. Verify the remote branch or PR, diff, tests and migrations.
-2. Update the authoritative GitHub issue.
-3. Update one Roadmap row and the relevant Acceptance or Product row.
-4. State what became usable, what remains blocked and who acts next.
-5. Preserve earlier evidence but mark superseded guidance clearly.
-6. Reconcile `CURRENT_MVP.md` when the product boundary or actual capability changes.
+1. Verify the remote branch or PR and the evidence required by its validation tier.
+2. Do not hold a narrow repair for optional local broad-suite duplication when GitHub CI is authoritative.
+3. Update the authoritative GitHub issue or PR with the concrete blocker/pass state.
+4. Update one Roadmap row and the relevant Acceptance or Product row.
+5. State what became usable, what remains blocked and the **next UAT action**.
+6. Move non-blocking findings to deferred/post-Beta tracking instead of keeping them on the critical path.
+7. Preserve earlier evidence but mark superseded guidance clearly.
+8. Reconcile `CURRENT_MVP.md` when the product boundary or actual capability changes.
 
 ## Backlog rule
 
@@ -130,8 +155,12 @@ Keep a separate open issue only when it is:
 
 - current MVP operating acceptance;
 - a narrow live defect;
-- required safety hardening;
+- required safety hardening that blocks the authorized UAT path;
 - an active post-MVP provider build;
 - or a future item with an explicit activation gate.
 
 A future capability must not be presented as incomplete MVP work merely because an old roadmap once included it.
+
+A review finding that is real but does not invalidate current UAT belongs in the
+deferred backlog with its risk stated. It must not silently extend the active
+release gate.
