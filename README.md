@@ -2,6 +2,32 @@
 
 VMR Outbound Agent is a private, single-operator outbound operating system built around permanent Contacts, reusable Companies and observable Campaign execution.
 
+## Delivery principle
+
+The project optimizes for the **shortest safe path to real UAT**.
+
+For a narrow fix, the normal path is:
+
+```text
+reproduce
+→ smallest correct fix
+→ directly affected test/file
+→ touched-file static checks
+→ push
+→ GitHub CI
+→ merge
+→ deploy
+→ real UAT
+```
+
+Do not duplicate broad CI locally, restart a whole-feature review for a tiny
+successor patch, or delay UAT for optional validation without a named risk that
+the extra step uniquely reduces. Substantial security, spend, migration, data-loss
+or sending-boundary changes still receive proportionate deeper review.
+
+[`docs/PROPORTIONAL_VALIDATION.md`](docs/PROPORTIONAL_VALIDATION.md) is the
+authoritative delivery and validation policy.
+
 ## Current MVP
 
 The current MVP produces a trustworthy human-approved email draft:
@@ -132,6 +158,7 @@ The first live acceptance should use one Contact before increasing batch size.
 
 ## Governing documents
 
+- [`docs/PROPORTIONAL_VALIDATION.md`](docs/PROPORTIONAL_VALIDATION.md) — UAT-first delivery, review and validation authority
 - [`docs/CURRENT_MVP.md`](docs/CURRENT_MVP.md) — current product and acceptance truth
 - [`docs/GOAL.md`](docs/GOAL.md) — authorized MVP outcome
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — current data and Agent architecture
