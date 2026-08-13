@@ -94,7 +94,7 @@ The Email Agent tries at most three candidates and stops after the first verifie
 
 It enqueues one child Verification Agent Job at a time and resumes from the committed Verification outcome.
 
-Live MillionVerifier use requires the feature switch, valid credentials and effective Verification Agent configuration containing `{"live": true}`. Simulated evidence cannot complete a live Campaign stage.
+Live MillionVerifier use on the Agent path requires an enabled Verification control on an execution-enabled Campaign, valid credentials, and effective Verification Agent configuration containing `{"live": true}`. Simulated evidence cannot complete a live Campaign stage. `FEATURES__MILLIONVERIFIER` gates the legacy `/verification` console routes and the smoke script only — it is not read on the Agent path and is not a spend brake, and neither is `DRY_RUN`.
 
 ## Core objects
 

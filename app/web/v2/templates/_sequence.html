@@ -128,6 +128,11 @@
 #}
 {% macro message(detail, back, show_edit=true, read_only=false, mailbox=none) %}
 {% set row = detail.row %}
+{# Stable ids so the shared copy handler can find this message's own text.
+   Keyed on the version id, matching `full_message` below, so two messages
+   rendered on one page can never target each other's nodes. #}
+{% set subject_id = 'seq-subj-' ~ row.version_id %}
+{% set body_id = 'seq-body-' ~ row.version_id %}
 <div class="v2-seq-message">
   <div class="v2-seq-meta">
     <span class="v2-fact">{{ row.purpose_label }}</span>
@@ -142,9 +147,28 @@
   <div class="v2-mail">
     <div class="v2-mail-head">
       <div class="v2-mail-line"><span>From</span>{% if mailbox and mailbox.connected %}<span class="m">{{ mailbox.mailbox_address }}</span>{% elif mailbox and mailbox.available %}<span class="v2-muted">No Gmail mailbox is connected, so a draft has nowhere to go yet</span>{% else %}<span class="v2-muted">Not set — no sending account is connected</span>{% endif %}</div>
-      <div class="v2-mail-line"><span>Subject</span><b>{{ row.subject }}</b></div>
+      <div class="v2-mail-line"><span>Subject</span><b id="{{ subject_id }}">{{ row.subject }}</b></div>
     </div>
-    <pre class="v2-mail-body">{{ detail.body }}</pre>
+    <pre class="v2-mail-body" id="{{ body_id }}">{{ detail.body }}</pre>
+    {# The same three controls the contact page carries, driven by the same
+       delegated handler in `static/sequence.js` -- no second copy mechanism.
+       They read the rendered nodes above, so subject and body stay separate and
+       a copy takes this message only.
+
+       Deliberately outside `v2-mail-foot` and outside the edit `<details>`
+       below: copying is not a decision. These are `type="button"`, the handler
+       calls `preventDefault`, and no approve/discard/edit state is touched. #}
+    <div class="v2-seq-copyrow">
+      <button type="button" class="v2-btn sm"
+              data-copy="subject" data-copy-subject="{{ subject_id }}"
+              data-copy-label-what="Subject of {{ row.step_label }}">Copy Subject</button>
+      <button type="button" class="v2-btn sm"
+              data-copy="body" data-copy-body="{{ body_id }}"
+              data-copy-label-what="Body of {{ row.step_label }}">Copy Body</button>
+      <button type="button" class="v2-btn sm"
+              data-copy="full" data-copy-subject="{{ subject_id }}" data-copy-body="{{ body_id }}"
+              data-copy-label-what="{{ row.step_label }}">Copy Full Email</button>
+    </div>
     <div class="v2-mail-foot">
       {% if read_only %}
       <span class="v2-btn is-disabled" title="This sequence is read-only: the feature or the campaign opt-in is switched off.">Confirm this message</span>

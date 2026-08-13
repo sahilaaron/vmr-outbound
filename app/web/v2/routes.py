@@ -60,6 +60,7 @@ from app.models.suppression import Suppression
 from app.services import campaigns as campaign_service
 from app.services import drafts as draft_service
 from app.services import workbench_agents
+from app.services.agents import readiness as agent_readiness
 from app.services.agents import rerun as agent_rerun
 from app.services.agents.registry import AGENT_SPECS, PIPELINE_ORDER
 from app.services.campaigns import CampaignError
@@ -74,7 +75,11 @@ from app.services.gmail import mailbox as gmail_mailbox
 from app.services.gmail import provider as gmail_provider
 from app.services.gmail import read as gmail_read
 from app.services.imports import apollo, campaign_import, display, staging
-from app.services.personalization.cadence import campaign_opted_in
+from app.services.personalization.cadence import (
+    DEFAULT_ELAPSED_DAYS,
+    campaign_opted_in,
+    with_campaign_opt_in,
+)
 from app.services.resolution import service as resolution_service
 from app.services.seller import campaign_offerings as seller_campaign_offerings
 from app.services.seller import profile as seller_profile
@@ -497,6 +502,18 @@ def _reader(db: Session) -> workbench_agents.PhaseTwoWorkbenchReader:
 
 def _agent_workbench_on(settings: Settings) -> bool:
     return "agent_workbench" in settings.features.enabled()
+
+
+def _checkbox(value: str) -> bool:
+    """One reading of a posted checkbox, shared by the controls that use one.
+
+    A browser omits an unchecked box and sends ``on`` for a checked one, so a
+    bare truthiness test happens to work for a browser and quietly inverts the
+    meaning of an explicit ``false`` or ``0`` from anything else. This matches
+    the wording the execution toggle already accepts.
+    """
+
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _sequences_on(settings: Settings) -> bool:
@@ -1235,7 +1252,14 @@ def campaign_edit_page(
         request,
         db,
         "campaign_edit.html",
-        {"active_nav": "campaigns", "page_title": f"Edit {campaign.name}", "campaign": campaign},
+        {
+            "active_nav": "campaigns",
+            "page_title": f"Edit {campaign.name}",
+            "campaign": campaign,
+            "sequence_enabled": campaign_opted_in(campaign),
+            "sequences_on": _sequences_on(get_settings()),
+            "sequence_cadence_days": ", ".join(str(day) for day in DEFAULT_ELAPSED_DAYS),
+        },
     )
 
 
@@ -1247,10 +1271,31 @@ def campaign_edit_submit(
     name: str = Form(...),
     description: str = Form(""),
     allow_provisional_domains: str = Form(""),
+    sequence_enabled: str = Form(""),
 ) -> RedirectResponse:
     identifier = _uuid(campaign_id)
     if identifier is None:
         return _redirect("/app/campaigns", err="That is not a campaign id.")
+    campaign = campaign_service.get_campaign(db, identifier)
+    if campaign is None:
+        # Back to the edit page, which answers 404 for an id that does not
+        # exist. Sending them to the campaign list instead would turn a missing
+        # campaign into a 200, which is what reading the row here first
+        # accidentally did.
+        return _redirect(f"/app/campaigns/{identifier}/edit", err="That campaign does not exist.")
+    # The switch is only offered when the deployment flag is on, so an absent
+    # field there means "unchanged" rather than "off". Reading the checkbox
+    # unconditionally would silently opt a Campaign *out* every time somebody
+    # renamed it in an environment where the control was not rendered.
+    # Parsed the same way the execution toggle parses its own checkbox, rather
+    # than with `bool()`. A bare truthiness test treats any non-empty string as
+    # on, so a client posting `sequence_enabled=false` or `=0` would have opted
+    # the campaign *in* -- the opposite of what it asked for.
+    opted_in = (
+        _checkbox(sequence_enabled)
+        if _sequences_on(get_settings())
+        else campaign_opted_in(campaign)
+    )
     try:
         campaign = campaign_service.update_campaign(
             db,
@@ -1258,6 +1303,11 @@ def campaign_edit_submit(
             name=name,
             description=description or None,
             allow_provisional_domains=bool(allow_provisional_domains),
+            # Goes through the service rather than assigning the column, so the
+            # write gets the settings-version bump and the audit event that
+            # `update_campaign` owns. Writing JSON from the template or the
+            # handler would skip both.
+            cadence_config=with_campaign_opt_in(campaign, enabled=opted_in),
             actor=draft_service.OPERATOR_ACTOR,
             reason="campaign edited",
         )
@@ -1374,11 +1424,32 @@ def campaign_page(
     offerings = (
         seller_campaign_offerings.offerings_for_campaign(db, identifier) if _kb_on(settings) else []
     )
+    campaign_record = campaign_service.get_campaign(db, identifier)
     readiness = None
-    if _kb_on(settings):
-        campaign = campaign_service.get_campaign(db, identifier)
-        if campaign is not None:
-            readiness = seller_readiness.campaign_report(db, campaign)
+    if _kb_on(settings) and campaign_record is not None:
+        readiness = seller_readiness.campaign_report(db, campaign_record)
+
+    # What the disabled skippable Agents would do to this campaign, said before
+    # anything is pressed.
+    #
+    # This used to be withheld once execution was on, on the reasoning that the
+    # walk had already happened and describing it would be describing the past.
+    # That reasoning had a hole exactly the size of the failure it caused: an
+    # empty campaign can be started safely, and every contact imported into it
+    # afterwards is burned on arrival, with the page saying nothing at all
+    # because execution was already on. So the question changes with the state
+    # rather than disappearing — while execution is off it is "what would
+    # starting do", and once it is on it is "what would enrolling do", which is
+    # why the running case asks with the stage a new enrolment would be aimed at.
+    sequence_readiness = None
+    if campaign_record is not None and campaign_opted_in(campaign_record):
+        sequence_readiness = agent_readiness.execution_readiness(
+            db,
+            campaign=campaign_record,
+            prospective_stage=(
+                AgentIdentifier.SENDING if campaign_record.execution_enabled else None
+            ),
+        )
 
     # Two different questions, so two different numbers. The strip hint asks "is a
     # re-run likely to help here?" across all nine Agents, and answers it from
@@ -1428,6 +1499,7 @@ def campaign_page(
             "campaigns": campaign_service.list_campaigns(db),
             "offerings": offerings,
             "readiness": readiness,
+            "sequence_readiness": sequence_readiness,
             "kb_on": _kb_on(settings),
         },
     )
@@ -1794,6 +1866,21 @@ def campaign_import_confirm(
         )
     if campaign.status is CampaignStatus.ARCHIVED:
         return _redirect(base, err="An archived campaign cannot receive contacts.")
+    # Asked here as well as in the enrolment service, and not as belt and braces.
+    # `campaign_import.confirm` writes a batch and then commits each row in its
+    # own SAVEPOINT, catching only `SQLAlchemyError`; a refusal raised from
+    # enrolment part-way down the file would escape as a 500 with a batch already
+    # written and some rows already through. Asking before the first write makes
+    # the refusal what the operator needs it to be — whole, with the file still
+    # staged and nothing imported — and says it on the page they uploaded from.
+    if campaign.execution_enabled and campaign_opted_in(campaign):
+        readiness = agent_readiness.execution_readiness(
+            db, campaign=campaign, prospective_stage=AgentIdentifier.SENDING
+        )
+        if not readiness.runnable:
+            return _redirect(
+                f"{base}/staged/{staged_id}", err=readiness.enrolment_refusal_message()
+            )
 
     content = staging.read_staged_content(_staging_dir(), staged_id)
     try:

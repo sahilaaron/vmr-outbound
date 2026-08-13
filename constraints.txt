@@ -6,7 +6,8 @@
 # wrong for deployment: two deploys of the same Git SHA could install different
 # library versions and behave differently. `vmr-deploy` installs with
 #
-#     pip install --constraint constraints.txt .
+#     pip install --requirement constraints.txt
+#     pip install --no-deps --editable .
 #
 # so the release directory gets exactly these versions.
 #
@@ -30,6 +31,16 @@
 # `psycopg-binary` is a platform wheel; regenerate on the target platform if
 # that ever changes.
 #
+# Several pins here ship manylinux wheels, and their glibc floors differ from
+# each other and move with every upstream release. No floor is written down here
+# on purpose: a number in a comment goes stale silently, and a reader would act
+# on it as though something had checked it. The check that cannot go stale is
+# installation itself - pip refuses a wheel the platform cannot use, and
+# `vmr-deploy` installs this closure and then import-checks the release before
+# the symlink moves. So before changing the base image or the target platform,
+# run the REGENERATING recipe below on that platform: an unusable wheel fails
+# there, against the real thing, rather than against a comment.
+#
 # REGENERATING
 #   python3.11 -m venv /tmp/lockvenv
 #   /tmp/lockvenv/bin/pip install --upgrade pip setuptools wheel
@@ -43,6 +54,8 @@ alembic==1.19.1
 annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.14.2
+argon2-cffi-bindings==25.1.0
+argon2-cffi==25.1.0
 attrs==26.1.0
 babel==2.18.0
 beautifulsoup4==4.15.0

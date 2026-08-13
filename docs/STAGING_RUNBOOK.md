@@ -280,27 +280,48 @@ curl -sS -D - -o /dev/null https://$HOST/healthz | grep -ci strict-transport-sec
 
 ## The access boundary
 
-The application has no authentication. Its staging surface includes
-unauthenticated state-changing calls — the whole `/api` surface, and root-level
-`POST /campaigns` from the unprefixed router in `app/api/routes.py` — plus
-`/docs`, `/redoc` and `/openapi.json`.
+Two boundaries, in series. They are not interchangeable, and the difference
+decides how you configure the outer one.
 
-The nginx site therefore **default-denies**. Only `/.well-known/acme-challenge/`
-is public. Everything else, probes included, goes through an access snippet that
-ships as `deny all;`:
+**The application authenticates.** `app/core/auth/policy.py` is default-deny:
+only the health probes, the `/auth/*` sign-in surface and the `/static/` mount
+are anonymous. Everything else needs a signed-in operator holding an active row
+in the `users` table — the operator UI, the whole `/api` surface, root-level
+`POST /campaigns` from the unprefixed router in `app/api/routes.py`, `/docs`,
+`/redoc` and `/openapi.json`. It also decides *which* operator: the administrator
+surface, `/api` and the provider-spend routes require an `ADMIN` account rather
+than merely a signed-in one. Staging refuses to start without that boundary
+configured — see `docs/HOSTED_AUTH.md`.
+
+**nginx is the outer network boundary.** The site **default-denies**. Only
+`/.well-known/acme-challenge/` is public. Everything else, probes included, goes
+through an access snippet that ships as `deny all;`:
 
 * `/etc/nginx/snippets/vmr-access.conf` — the application surface
 * `/etc/nginx/snippets/vmr-probe-access.conf` — `/healthz`, `/readyz`, `/version`
 
 Relax the probe snippet only if remote infrastructure monitoring genuinely needs
 it; the deployment gate probes loopback on this host and does not need them
-published. Relax the application snippet to an operator IP allow-list, temporary
-HTTP Basic Auth over HTTPS, or both (`satisfy all`).
+published.
 
-Neither live snippet nor any htpasswd file is ever committed. This is a network
-boundary, not authentication — it buys time until authenticated remote access
-exists, and is retired deliberately in the same change that proves the
-replacement works.
+Relax the application snippet on infrastructure grounds — not because the
+application is unauthenticated, because it is not. The options are an operator IP
+allow-list, HTTP Basic Auth over HTTPS, or both (`satisfy all`), and two of them
+have a cost worth stating before you install one:
+
+* An **IP allow-list** is a real hardening win for an operator with a fixed
+  address, and a liability for one without. A beta operator on a residential
+  connection is locked out every time the ISP hands out a new address, and the
+  symptom is indistinguishable from an outage. It is not the product's
+  authentication mechanism; the account directory is.
+* **HTTP Basic Auth** puts a second credential prompt in front of Google
+  sign-in. Add it only when the deployment wants an independent factor at the
+  network edge — not to supply a login the application already has.
+* **Opening `location /`** so operators can reach the sign-in page over the
+  Internet is a legitimate choice with the application boundary in place. It is
+  a deliberate decision, and it does not extend to the probe snippet.
+
+Neither live snippet nor any htpasswd file is ever committed.
 
 ## Inspecting logs
 

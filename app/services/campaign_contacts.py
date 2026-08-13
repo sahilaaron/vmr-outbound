@@ -29,7 +29,9 @@ from app.models.enums import (
 from app.models.pipeline import CampaignContactSource
 from app.models.verification_job import AgentJob
 from app.services.agents import locking
+from app.services.agents.readiness import execution_readiness
 from app.services.audit import record_audit_event
+from app.services.personalization.cadence import campaign_opted_in
 from app.services.pipeline import (
     agent_state,
     append_event,
@@ -545,6 +547,27 @@ def enrol_contact(
         raise CampaignContactNotFound(f"campaign {campaign_id} does not exist")
     if campaign.status is CampaignStatus.ARCHIVED:
         raise CampaignContactError("an archived campaign cannot receive contacts")
+    # Refused here, before the first write, because everything after this point
+    # is the damage. `schedule_next` steps a running Campaign's contact past a
+    # disabled skippable Agent into SKIPPED, and SKIPPED is absorbing — enabling
+    # the Agent afterwards recovers nobody.
+    #
+    # `enqueue=False` is not an escape from it: the auto-skip in `schedule_next`
+    # runs before that flag is consulted, so a deferred enqueue burns the stage
+    # just as thoroughly as an immediate one. Holding the membership unqueued
+    # instead was therefore not an option this pipeline offers — it would need
+    # the scheduler not to walk at all, plus a wake-up path that does not exist:
+    # `reconcile_agent_control` only re-schedules memberships whose `next_stage`
+    # already names the Agent being enabled, so a membership held before its walk
+    # would simply be stranded.
+    #
+    # Refusing the enrolment loses nothing. The Contact is permanent and never
+    # required a Campaign to exist, so the operator can enrol them the moment the
+    # Agent is switched on.
+    if campaign.execution_enabled and campaign_opted_in(campaign):
+        readiness = execution_readiness(session, campaign=campaign, prospective_stage=desired_stage)
+        if not readiness.runnable:
+            raise CampaignContactError(readiness.enrolment_refusal_message())
     contact = session.get(Contact, contact_id)
     if contact is None:
         raise CampaignContactNotFound(f"contact {contact_id} does not exist")

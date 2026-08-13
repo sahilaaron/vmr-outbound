@@ -35,6 +35,13 @@ from app.models.email_sequence import SEQUENCE_LENGTH
 #: The key inside ``campaigns.cadence_config`` this module owns.
 CADENCE_KEY = "sequence"
 
+#: Where a value this module cannot read is kept when it has to write beside it.
+#: Only ever written by :func:`with_campaign_opt_in`, and never read back — the
+#: point is that the original survives for a human to look at, not that anything
+#: here knows what to do with it.
+UNREADABLE_CONFIG_KEY = "_unreadable_cadence_config"
+UNREADABLE_SEQUENCE_KEY = "_unreadable_sequence"
+
 #: Bounded default. Day 0 for the initial message, then a widening ladder.
 DEFAULT_ELAPSED_DAYS: tuple[int, ...] = (0, 3, 7, 12, 18, 25, 35)
 
@@ -170,6 +177,65 @@ def campaign_opted_in(campaign: Campaign) -> bool:
     """
 
     return sequence_settings(campaign).get("enabled") is True
+
+
+def with_campaign_opt_in(campaign: Campaign, *, enabled: bool) -> dict[str, Any]:
+    """The Campaign's ``cadence_config`` with only the opt-in flag changed.
+
+    Lives next to :func:`sequence_settings` deliberately: the writer and the
+    reader have to agree about the shape of this column, and keeping them in one
+    module is what stops them drifting. Until now nothing wrote it at all — the
+    opt-in could only be set by editing JSON by hand — so the reader's
+    assumptions had never been tested from the writing side.
+
+    Two properties matter and both are easy to get wrong:
+
+    * **Nothing already stored is lost.** The column belongs to the Campaign,
+      not to this module, and this module claims exactly one key. Unrelated keys
+      are carried through, and a value this module cannot read is moved aside
+      under :data:`UNREADABLE_CONFIG_KEY` or :data:`UNREADABLE_SEQUENCE_KEY`
+      rather than being overwritten. Malformed configuration is treated as
+      absent for *deciding*, matching :func:`sequence_settings`, but never as
+      absent for *writing* — the reader can afford to read past something it
+      does not understand, and a writer cannot afford to delete it.
+    * **The flag is a real ``bool``.** :func:`campaign_opted_in` tests
+      ``is True``, so an HTML checkbox arriving as the string ``"on"`` would
+      write a value that reads back as *not* opted in — a control that appears
+      to work and does nothing. Callers coerce before calling; the annotation
+      keeps that requirement visible.
+    """
+
+    raw = campaign.cadence_config
+    if isinstance(raw, dict):
+        config: dict[str, Any] = dict(raw)
+    else:
+        # Not an object. The reader treats this as absent and carries on, and
+        # this writer has to meet the same rows -- but "treat as absent" must
+        # not become "delete", which is what replacing the column outright
+        # would do.
+        #
+        # Refusing instead was tried and is worse: this function is on the path
+        # of *every* settings save, so raising here would make an unreadable
+        # value block renaming the campaign too, breaking the settings page for
+        # exactly the campaign somebody is trying to repair.
+        #
+        # So the unreadable value is moved aside and kept. Nothing is lost,
+        # nothing is blocked, and the next write sees a well-formed object and
+        # quarantines nothing.
+        config = {} if raw is None else {UNREADABLE_CONFIG_KEY: raw}
+    block = config.get(CADENCE_KEY)
+    if isinstance(block, dict):
+        sequence: dict[str, Any] = dict(block)
+    else:
+        # The realistic case: `cadence_config` reaches the JSON API as an
+        # unvalidated object, so `{"sequence": "..."}` is storable even though
+        # the column itself is validated as an object.
+        sequence = {}
+        if block is not None:
+            config[UNREADABLE_SEQUENCE_KEY] = block
+    sequence["enabled"] = bool(enabled)
+    config[CADENCE_KEY] = sequence
+    return config
 
 
 def resolve_cadence(campaign: Campaign) -> SequenceCadence:

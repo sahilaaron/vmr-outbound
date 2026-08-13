@@ -75,11 +75,16 @@ The Email Agent does not call MillionVerifier or the Verification worker synchro
 
 Live Verification additionally requires:
 
-- `FEATURES__MILLIONVERIFIER=true`;
-- configured real provider credentials;
-- effective Agent configuration containing `{"live": true}`.
+- an `ENABLED` Verification control on an execution-enabled Campaign;
+- effective Agent configuration containing `{"live": true}`;
+- configured real provider credentials.
 
 Simulated evidence cannot complete the live Campaign stage.
+
+`FEATURES__MILLIONVERIFIER` is **not** required and is not a brake: it gates the
+legacy `/verification` console routes and the smoke script only, and is never
+read on the Agent path. Neither is `DRY_RUN`, which concerns sending rather than
+provider spend.
 
 ## Insights and Personalization
 

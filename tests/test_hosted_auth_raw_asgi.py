@@ -73,7 +73,12 @@ def _app() -> Any:
             # answer — and injecting one keeps this module free of any database
             # dependency, exactly as it was before accounts existed.
             account_directory=StubAccountDirectory(
-                stub_snapshot(user_id=RAW_USER_ID, email=OPERATOR)
+                # An administrator, because these tests drive writes against
+                # `/api/...` to exercise the *transport* boundary -- cookies,
+                # `Origin`, `Sec-Fetch-Site`. `/api` is administrator-only for
+                # session callers, so an ordinary operator would be refused on
+                # authorization before the header handling under test ran.
+                stub_snapshot(user_id=RAW_USER_ID, email=OPERATOR, role="admin")
             ),
         )
     return _APP

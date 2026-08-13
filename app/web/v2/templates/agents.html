@@ -42,6 +42,18 @@
         </div>
         <div class="v2-card-body">
           {% if spec.implemented %}
+          {# An agent control is platform-wide -- applying one here can halt or
+             resume every campaign's pipeline -- so it is an administrator's to
+             change. The route refuses a non-administrator server-side; the form
+             is withheld here so an ordinary operator is told what to ask for
+             instead of being shown a button that answers 403. #}
+          {% if not is_admin %}
+          <p class="v2-note">
+            Agent state is a platform-wide setting, so only a platform administrator can
+            change it. This page shows the current state; ask an administrator to enable
+            an agent that a campaign needs.
+          </p>
+          {% else %}
           <form class="v2-inline-form" method="post" action="/app/agents/{{ selected.value }}/control">
             {# Blank when the page saw no stored control. Never 0: that would claim a
                version exists and turn a conflict into a silent overwrite. #}
@@ -61,6 +73,7 @@
               {{ 'Apply to this campaign' if campaign_id else 'Apply globally' }}
             </button>
           </form>
+          {% endif %}
           <p class="v2-hint v2-mt-sm">
             Enabled means it may claim new work. Paused holds work in flight rather than discarding
             it. Disabled claims nothing new, and held work stays held.
@@ -142,7 +155,9 @@
           {% endfor %}
           <div class="v2-card-foot plain">
             Showing the most recent {{ jobs.jobs | length }} of {{ jobs.total }}.
-            <a href="/workbench/jobs?agent={{ selected.value }}">Open the full queue in the admin Workbench →</a>
+            {# The Workbench is administrator-only, so the link is too. Left
+               rendered for everyone it would be a dead end answering 403. #}
+            {% if is_admin %}<a href="/workbench/jobs?agent={{ selected.value }}">Open the full queue in the admin Workbench →</a>{% endif %}
           </div>
         {% else %}
           {{ empty('This Agent has not run', 'No job has ever been queued for it. Either it is switched off, or nothing has reached it yet.') }}
@@ -207,7 +222,14 @@
             worse than not showing one.
           </div>
         </div>
+        {# The console stays readable to any operator, but everything it can
+           *do* -- run, recover, bulk verify -- spends provider credits and is
+           administrator-only. Sending an ordinary operator there would offer
+           them three buttons that all refuse, so the link is administrators'
+           and the panel above already shows them the state. #}
+        {% if is_admin %}
         <div class="v2-card-foot plain"><a href="/verification">Open the verification console →</a></div>
+        {% endif %}
       </div>
     </div>
   </div>

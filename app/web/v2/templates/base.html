@@ -90,10 +90,16 @@
               <span>Who may sign in, and how</span>
             </a>
             {% endif %}
-            <a class="v2-menu-item{% if not signed_in_operator_email() %} last{% endif %}" href="/">
+            {# Administrators only, for the same reason as the link above. It was
+               rendered to everybody, which both advertised a surface an ordinary
+               operator may not use and pointed at `/` -- which redirects
+               straight back to `/app`. #}
+            {% if is_admin %}
+            <a class="v2-menu-item{% if not signed_in_operator_email() %} last{% endif %}" href="/admin">
               <b>Operator Workbench</b>
               <span>The admin surface: imports, queues, raw records</span>
             </a>
+            {% endif %}
             {# Only rendered on a hosted deployment. Local development has no
                session to end, so the control would do nothing. The CSRF field is
                inserted into this form automatically at template-compile time. #}

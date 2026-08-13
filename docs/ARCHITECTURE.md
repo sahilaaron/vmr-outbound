@@ -176,7 +176,7 @@ Verification can accept one.
 
 It enqueues one child Verification Agent Job at a time and stops immediately after the first verified result.
 
-Verification is the authority for exact-address provider truth. Live completion requires the feature switch, provider credentials and effective `{"live": true}` Agent configuration. Simulated evidence cannot complete a live Campaign stage.
+Verification is the authority for exact-address provider truth. Live completion requires an enabled Verification control on an execution-enabled Campaign, provider credentials and effective `{"live": true}` Agent configuration. Simulated evidence cannot complete a live Campaign stage. `FEATURES__MILLIONVERIFIER` is not part of that path — it gates the legacy console routes and the smoke script — and `DRY_RUN` concerns sending, not provider spend.
 
 Verification traverses the active immutable provider waterfall inside one
 existing Verification Agent attempt. Provider adapters normalize their own

@@ -244,12 +244,18 @@ def schedule_next(
     parent_job: AgentJob | None = None,
     priority: int = 100,
     allow_enqueue: bool = True,
+    allow_autoskip: bool = True,
     generation: int = 1,
 ) -> AgentJob | None:
     """Enqueue the next eligible Agent or persist why it cannot run.
 
     ``generation`` is passed through to :func:`stage_job_key`; only an explicit
     operator re-run ever raises it.
+
+    ``allow_autoskip=False`` forbids the terminal auto-skip of a disabled
+    skippable stage; the stage holds at ``DISABLED`` instead. Control
+    reconciliation passes it. See the comment on that branch for why the two
+    callers must differ.
     """
 
     if membership.membership_status is not CampaignMembershipStatus.ACTIVE:
@@ -324,8 +330,32 @@ def schedule_next(
         # exists, may still finish, and its stage is not the Campaign's to
         # rewrite from here. This used to raise ``PipelineStateError`` out of
         # transition_stage and surface as a 500 on the pause button.
+        #
+        # ``allow_autoskip`` is the fourth case, and it is about *who is asking*
+        # rather than about the stage. The ordinary scheduler — a worker that
+        # just finished a stage and is looking for the next one — steps over a
+        # disabled skippable Agent for the reasons above, and keeps doing so.
+        # Control reconciliation must not, and the difference is not a taste
+        # question: ``reconcile_agent_control`` selects every matching
+        # Campaign Contact and calls this function on each in one transaction,
+        # so one operator click on "disable Research" would walk the entire
+        # cohort into SKIPPED at once. SKIPPED is absorbing — pipeline.py gives
+        # it an empty outgoing transition set — so enabling the Agent an hour
+        # later recovers none of it. A Campaign of two thousand Contacts loses
+        # two thousand stages to a single POST whose own message told the
+        # operator that nothing is discarded.
+        #
+        # Disabling an Agent is a statement about what may run from now on, not
+        # consent to destroy work that already exists. So when reconciliation
+        # asks, a disabled skippable stage falls through to the DISABLED
+        # projection immediately below and *holds* there — reversible, visible,
+        # and picked up again by the enable branch of reconcile_agent_control,
+        # which schedules it the moment the control comes back. The auto-skip
+        # keeps the case it was written for: a Contact arriving at a stage this
+        # Campaign was already configured not to use.
         if (
-            spec.skippable
+            allow_autoskip
+            and spec.skippable
             and agent_id is not AgentIdentifier.CAPTURE
             and control.source != CAMPAIGN_EXECUTION_SOURCE
             and can_transition(state.status, PipelineStageStatus.SKIPPED)
@@ -356,6 +386,7 @@ def schedule_next(
                 parent_job=parent_job,
                 priority=priority,
                 allow_enqueue=allow_enqueue,
+                allow_autoskip=allow_autoskip,
             )
         # A control projects itself onto the stage only where that is a legal
         # move. A stage that already failed keeps its failure: "disabled" would
@@ -508,6 +539,10 @@ def reconcile_agent_control(
     Safety controls take effect in the same transaction as the control write.
     Re-enabling resumes only jobs paused by a control; domain-blocked jobs keep
     their original reason and require their own resolution.
+
+    Turning an Agent off holds the memberships already standing at it; it never
+    skips them. Every ``schedule_next`` call made from the disable path passes
+    ``allow_autoskip=False`` for that reason.
     """
 
     relevant_job = exists(
@@ -632,7 +667,16 @@ def reconcile_agent_control(
                 )
                 changed += 1
         if membership.next_stage == agent_id and not has_domain_pause and not in_flight:
-            schedule_next(session, membership=membership, actor=actor)
+            # Reconciliation projects the control onto the stage; it never
+            # discards the stage. ``allow_autoskip=False`` is what keeps that
+            # true for a *skippable* Agent, whose disabled auto-skip is terminal
+            # and would apply here to every selected Campaign Contact at once.
+            schedule_next(
+                session,
+                membership=membership,
+                actor=actor,
+                allow_autoskip=False,
+            )
     if memberships:
         session.flush()
     return changed

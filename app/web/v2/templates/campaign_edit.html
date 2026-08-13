@@ -3,8 +3,9 @@
 <div class="v2-page wiz">
   <h1 class="v2-h1">Edit {{ campaign.name }}</h1>
   <p class="v2-lede">
-    Name, memory note and the provisional-domain policy are the settings a campaign can change
-    after it exists. Nothing enrolled, sent or drafted is touched by saving this form.
+    Name, memory note, the provisional-domain policy and the message-sequence switch are the
+    settings a campaign can change after it exists. Nothing enrolled, sent or drafted is touched
+    by saving this form.
   </p>
 
   <div class="v2-card v2-mt">
@@ -34,6 +35,32 @@
             they wait for a confirmed domain past company research.
           </div>
         </div>
+        {# The seven-message opt-in. Until now this value existed only in
+           `cadence_config` and could be set only by editing JSON by hand, so a
+           campaign could not be put into sequence mode from the product at all.
+
+           Rendered only when the deployment flag is on. Withholding it rather
+           than showing a disabled box is what lets the handler treat an absent
+           field as "unchanged": a checkbox that is never rendered would
+           otherwise read back as unchecked and silently opt the campaign out
+           every time somebody renamed it. #}
+        {% if sequences_on %}
+        <div class="v2-field v2-check-field">
+          <label for="campaign-sequence">
+            <input type="checkbox" id="campaign-sequence" name="sequence_enabled"
+                   {{ "checked" if sequence_enabled }}>
+            Generate a seven-message sequence
+          </label>
+          <div class="v2-hint">
+            Checked, Personalization writes seven messages for each contact in this campaign on a
+            fixed cadence — days {{ sequence_cadence_days }} — instead of one draft. The cadence is
+            not editable here. Unchecked, contacts already carrying a sequence keep it; nothing
+            recorded is discarded by saving this form.
+            <b>This changes what is drafted, not what is sent.</b> Every message still needs your
+            approval, and creating Gmail drafts stays a separate, explicit action.
+          </div>
+        </div>
+        {% endif %}
         <div class="v2-btn-row">
           <button class="v2-btn primary big" type="submit">Save changes</button>
           <a class="v2-btn big" href="/app/campaigns/{{ campaign.id }}">Cancel</a>

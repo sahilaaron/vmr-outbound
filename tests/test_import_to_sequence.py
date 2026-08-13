@@ -37,6 +37,8 @@ from app.models.email_sequence import (
     EmailSequenceMessageVersion,
 )
 from app.models.enums import (
+    AgentControlStatus,
+    AgentIdentifier,
     SequenceMessageOrigin,
     SequenceReviewState,
     SuppressionReason,
@@ -46,6 +48,7 @@ from app.models.enums import (
 from app.models.imported_email import ImportedContactEmail, ImportSourceIdentifier
 from app.models.verification_job import AgentJob
 from app.services import suppressions
+from app.services.agents import controls as agent_controls
 from app.services.imports import campaign_import
 from app.services.personalization import policy as personalization_policy
 from app.services.personalization import sequence as sequence_generation
@@ -98,6 +101,40 @@ def client_off(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> Iterator
     with _client(db_session, monkeypatch, sequences=False) as app_client:
         yield app_client
     get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _sequence_agents_enabled(db_session: Session) -> None:
+    """The three skippable Agents a sequence campaign actually needs.
+
+    Left at their registry defaults, Research, Insights and Personalization are
+    all DISABLED — and a disabled *skippable* Agent is not held, it is stepped
+    over permanently. Every campaign in this module is execution-enabled and
+    opted in to sequences, so the imports below were walking their contacts
+    straight into a terminal ``SKIPPED`` at Research and then generating a
+    sequence out-of-band, through the adapter, where the pipeline could not
+    contradict them.
+
+    That configuration is now refused at enrolment rather than accepted and
+    silently spent, which is a deliberate product change: a running sequence
+    campaign may not take contacts it is going to burn. So these tests have to
+    state the configuration they were always implying. Nothing they assert
+    about import truth, provenance or sequence content depends on the three
+    Agents being off — what depended on it was only that the enrolment was
+    allowed to happen at all.
+    """
+
+    for agent_id in (
+        AgentIdentifier.RESEARCH,
+        AgentIdentifier.INSIGHTS,
+        AgentIdentifier.PERSONALIZATION,
+    ):
+        agent_controls.set_global_control(
+            db_session,
+            agent_id=agent_id,
+            status=AgentControlStatus.ENABLED,
+            reason="sequence campaigns need their skippable Agents on",
+        )
 
 
 @pytest.fixture(autouse=True)

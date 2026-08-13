@@ -57,6 +57,13 @@
     dropped: following a link to a sequence must show that sequence, and the
     filter narrows the list beneath it.
   #}
+  {# One live region for the whole page, announcing what the copy controls did.
+     Placed above both branches below so the single opened message -- whichever
+     branch rendered it -- has one to write into. `announce()` no-ops silently
+     when it is absent, so without this the controls would still copy but say
+     nothing to a screen reader. #}
+  <div class="v2-seq-copystatus" id="seq-copy-status" role="status" aria-live="polite"></div>
+
   {% set open_ids = sequence_queue.rows | map(attribute='sequence_id') | list if sequence_queue else [] %}
   {% set open_outside = sequence_card and sequence_card.sequence_id not in open_ids %}
   {% if open_outside %}
@@ -352,3 +359,9 @@
 </div>
 {% endif %}
 {% endblock %}
+
+{# The shared copy handler, unchanged and unconditional -- it is a delegated
+   document listener with no page-specific coupling, so the review page reuses
+   exactly the file the contact page loads. External `/static` script because
+   the deployed CSP is `script-src 'self'` with no nonce. #}
+{% block scripts %}<script src="{{ url_for('static', path='sequence.js') }}?v={{ sequence_js_version }}" defer></script>{% endblock %}
