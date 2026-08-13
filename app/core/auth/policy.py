@@ -213,8 +213,18 @@ _ADMIN_EXACT_PATHS: frozenset[str] = frozenset(
 # reachable; the dangerous verb does not.
 #
 # Written as patterns rather than prefixes because the split is finer than a
-# path segment: `/contacts/{id}` is the contact record a USER works with every
-# day, and only `/contacts/{id}/verify` reaches a paid provider.
+# path segment. Three separate paid dependencies are reachable from pages a USER
+# is meant to use every day, and in each case only one or two verbs on the page
+# spend anything:
+#
+# * MillionVerifier, through `/verification/...` and `/contacts/{id}/verify` --
+#   while `/contacts/{id}` itself is the contact record a USER works with all
+#   day and `/verification` is a page the agents screen links to;
+# * logo.dev, through the two company-domain buttons on a capture, while
+#   `confirm`, `correct`, `reject` and `promote` on the same page are decisions
+#   recorded against evidence already stored and call nothing out;
+# * metered model spend, through `/knowledge-base/generate`, while every other
+#   knowledge-base write is an operator typing into a form.
 _ADMIN_ONLY_UNSAFE_PATTERNS: tuple[re.Pattern[str], ...] = (
     # `/verification` is linked from the operator agents page, so the page is
     # product. `bulk` enqueues up to 500 contacts in one request, `run` drains
@@ -225,11 +235,42 @@ _ADMIN_ONLY_UNSAFE_PATTERNS: tuple[re.Pattern[str], ...] = (
     # One live verification per POST, against a credential the same surface can
     # rotate.
     re.compile(r"^/contacts/[^/]+/verify$"),
+    # The two buttons on a capture that call logo.dev, and the only two on that
+    # page that call anything at all. Both pass `force=True` deliberately -- the
+    # operator pressed a button and a silent no-op would read as a broken one --
+    # which also means each press bypasses the one-lookup-per-company cache and
+    # buys a fresh lookup. Nothing anywhere rate-limits them, so N presses are N
+    # billed calls against a key the deployment holds and the operator does not.
+    # The same provider is already administrator-only on
+    # `/imports/{id}/enrich/refresh`, by virtue of the `/imports` prefix. A
+    # capture page reached it by a route that had simply never been classified,
+    # which is the shape this whole section exists to catch.
+    #
+    # `confirm`, `correct`, `reject` and `promote` on the same capture stay with
+    # the USER, and were read before being left alone: `confirm_domain` and
+    # `reject_candidate` write a decision onto the stored enrichment record,
+    # `resolution.correct` records an operator correction with
+    # `provider_call_made=False`, and `promote` evaluates already-stored state --
+    # `evaluate_company` never calls the provider and never picks a candidate.
+    # Deciding what captured evidence means is the operator's own work, and it
+    # is the only approval a capture's company domain ever gets.
+    re.compile(r"^/contact-captures/[^/]+/company/(lookup|resolve)$"),
     # KB-001 restricted claims are the control that stops the product making a
     # prohibited claim. Reading them is operator work; deactivating one is not.
     # Every other knowledge-base section stays writable by a USER, because
     # operator entry is the only approval the seller knowledge base has.
     re.compile(r"^/knowledge-base/restricted-claims(/.*)?$"),
+    # Generation is the one knowledge-base write that is not an operator typing.
+    # It spawns the local Claude CLI as a subprocess with operator-supplied URLs
+    # and `WebSearch` enabled, which makes it three things at once: metered model
+    # spend, a fetch primitive that will retrieve whatever address it is handed,
+    # and a prompt-injection sink whose output is written into the knowledge base
+    # the personalization agent draws outreach copy from. A page the seller
+    # controls is the assumption the feature is built on; nothing on this route
+    # enforces it. The manual entry and read surfaces around it stay with the
+    # USER -- operator entry is the only approval KB-001 has, and withholding it
+    # would leave the knowledge base empty rather than safe.
+    re.compile(r"^/knowledge-base/generate$"),
     # Agent controls are platform-wide, not campaign-wide: posting here with no
     # campaign names one reaches `set_global_agent_status` and can halt or
     # resume every campaign's pipeline, the sending agent included. Reading
@@ -243,7 +284,7 @@ _ADMIN_ONLY_UNSAFE_PATTERNS: tuple[re.Pattern[str], ...] = (
 def is_admin_only_request(path: str, method: str) -> bool:
     """Whether this request needs an administrator rather than any operator.
 
-    Answers for the *request*, not the path alone, because three surfaces are
+    Answers for the *request*, not the path alone, because several surfaces are
     deliberately split by verb — see ``_ADMIN_ONLY_UNSAFE_PATTERNS``.
     """
 

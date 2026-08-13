@@ -16,7 +16,8 @@ Two properties are worth more than the rest, and both are enumerations rather
 than examples:
 
 * **Section B, the provider-spend lockout.** A USER must not be able to spend
-  MillionVerifier credits or rotate the credential that spends them.
+  money the deployment pays for: MillionVerifier credits, the credential that
+  spends them, logo.dev company lookups, or metered model budget.
 * **Section K, classification conformance.** The live router table is walked and
   compared against a hand-written list of what a USER may reach, so a router
   added next month fails this file until somebody decides which side it is on.
@@ -283,6 +284,13 @@ ADMIN_SURFACE: tuple[tuple[str, str], ...] = (
 #: Every route that can reach a paid provider, or rotate the credential that
 #: pays it. Kept as its own list rather than folded into ``ADMIN_SURFACE``
 #: because this one is about money rather than about tidiness.
+#:
+#: Three providers, not one. The list began as MillionVerifier only, which is
+#: how the last three entries went unnoticed for a release: logo.dev is reached
+#: from a capture page and the local Claude CLI from the Knowledge Base, and
+#: neither looks like "verification" from the outside. Both are counted here now,
+#: and ``tests/test_provider_spend_authorization.py`` proves the refusal with the
+#: provider boundaries stubbed and counted rather than by reading this table.
 PROVIDER_SPEND_SURFACE: tuple[tuple[str, str], ...] = (
     ("POST", "/verification/bulk"),
     ("POST", "/verification/run"),
@@ -290,6 +298,14 @@ PROVIDER_SPEND_SURFACE: tuple[tuple[str, str], ...] = (
     ("POST", f"/contacts/{SAMPLE_ID}/verify"),
     ("POST", "/admin/agents/studio/verification/test"),
     ("POST", "/admin/agents/studio/verification/credentials/millionverifier"),
+    # logo.dev. Both send `force=True`, so each press bypasses the
+    # one-lookup-per-company cache and buys a fresh billed lookup; nothing rate
+    # limits them.
+    ("POST", f"/contact-captures/{SAMPLE_ID}/company/lookup"),
+    ("POST", f"/contact-captures/{SAMPLE_ID}/company/resolve"),
+    # Metered model spend, through a subprocess spawned with operator-supplied
+    # URLs and `WebSearch` enabled.
+    ("POST", "/knowledge-base/generate"),
 )
 
 #: Reads the operator product links to from pages a USER works on every day.
@@ -368,9 +384,15 @@ def test_an_ordinary_operator_cannot_spend_provider_credits(
     spend against. Before the administrator surface existed, any signed-in
     account could reach every one of them.
 
+    The same is true of the two other providers this list now covers: a capture's
+    company lookup and resolve buttons bill logo.dev on every press, and Knowledge
+    Base generation spends metered model budget through a spawned subprocess.
+
     Nothing here reaches a provider. The refusal happens in the authentication
     middleware, which runs before routing, so no handler that could open an
-    outbound connection is ever entered.
+    outbound connection is ever entered. ``tests/test_provider_spend_authorization.py``
+    proves that second claim directly, by counting calls at the provider
+    boundaries instead of reasoning about where the refusal happened.
     """
 
     csrf = _user_session(client)
@@ -385,6 +407,33 @@ def test_every_provider_spend_route_is_classified_as_administrator_only() -> Non
     assert PROVIDER_SPEND_SURFACE, "the provider-spend list is empty — the test proves nothing"
     for method, path in PROVIDER_SPEND_SURFACE:
         assert is_admin_only_request(path, method), f"{method} {path} is not administrator-only"
+
+
+def test_the_classification_counts_are_the_ones_deliberately_recorded() -> None:
+    """The two enumerations, counted, so a silent edit to either is a failure.
+
+    Both numbers moved once, in one direction, for one reason. The provider-spend
+    list went from 6 to 9 and the operator-reachable list from 90 to 87, and it is
+    the same three routes in both cases:
+
+    * ``POST /contact-captures/{capture_id}/company/lookup``
+    * ``POST /contact-captures/{capture_id}/company/resolve``
+    * ``POST /knowledge-base/generate``
+
+    The first two bill logo.dev on every press — both pass ``force=True``, so the
+    one-lookup-per-company cache does not stand in the way and nothing rate-limits
+    them. The third spawns the local Claude CLI with operator-supplied URLs and
+    ``WebSearch`` enabled. All three were reachable by any signed-in account.
+
+    Nothing else was reclassified. ``confirm``, ``correct``, ``reject`` and
+    ``promote`` on the same capture page, and every manual knowledge-base write,
+    stayed with the USER — a capture's company domain and the seller knowledge
+    base have no approval other than an operator's, so withholding those would
+    have broken the product rather than protected it.
+    """
+
+    assert len(PROVIDER_SPEND_SURFACE) == 9, sorted(PROVIDER_SPEND_SURFACE)
+    assert len(EXPECTED_USER_REACHABLE) == 87, len(EXPECTED_USER_REACHABLE)
 
 
 def test_reading_the_verification_page_is_not_spending(client: TestClient) -> None:
@@ -815,11 +864,18 @@ EXPECTED_USER_REACHABLE: frozenset[str] = frozenset(
         "GET /contact-captures/pending",
         "GET /contact-captures/submissions/{submission_id}",
         "GET /contact-captures/{capture_id}",
+        # `company/lookup` and `company/resolve` are absent on purpose, and are
+        # the reason this list is three entries shorter than it was: both call
+        # logo.dev with `force=True`, so a USER holding the capture page could
+        # bill the deployment once per click with nothing in the way. What is
+        # left here is the operator's own judgement about evidence already
+        # stored -- confirming a candidate, correcting a decision, rejecting one,
+        # and promoting the capture. Each was read before being left: none of
+        # them reaches a provider, and a capture's company domain has no approval
+        # other than an operator's.
         "POST /contact-captures/{capture_id}/company/confirm",
         "POST /contact-captures/{capture_id}/company/correct",
-        "POST /contact-captures/{capture_id}/company/lookup",
         "POST /contact-captures/{capture_id}/company/reject",
-        "POST /contact-captures/{capture_id}/company/resolve",
         "POST /contact-captures/{capture_id}/promote",
         # Contacts. `POST /contacts/{contact_id}/verify` is absent on purpose:
         # it is the one route here that spends a MillionVerifier credit.
@@ -841,10 +897,17 @@ EXPECTED_USER_REACHABLE: frozenset[str] = frozenset(
         # The seller knowledge base. Operator entry is the only approval it has,
         # so a USER may write every section of it except restricted claims,
         # whose GET stays here and whose writes do not.
+        #
+        # `POST /knowledge-base/generate` is the second exception and is also
+        # absent deliberately. It is not operator entry at all: it spawns the
+        # local Claude CLI with operator-supplied URLs and `WebSearch` enabled,
+        # which is metered spend, a fetch primitive, and a prompt-injection sink
+        # whose output lands in the knowledge base outreach copy is written from.
+        # Everything a USER needs in order to fill the knowledge base by hand
+        # stays below.
         "GET /knowledge-base",
         "GET /knowledge-base/company",
         "POST /knowledge-base/company",
-        "POST /knowledge-base/generate",
         "GET /knowledge-base/offerings",
         "POST /knowledge-base/offerings",
         "GET /knowledge-base/offerings/{offering_id}",
