@@ -4,11 +4,44 @@ Claude is a bounded research, scoring, drafting, and coding collaborator inside
 the outbound system. Claude does not own campaign eligibility, verification
 truth, approval state, or sending.
 
-Read `GOAL.md`, `AGENTS.md`, and `docs/PROJECT_TRACKING.md` before working.
-Read `docs/PARALLEL_INTEGRATION.md` as well whenever another thread is
-building at the same time or the branch is stacked on another branch.
-Optimize for the first successful campaign, not for a theoretical fully
-autonomous platform.
+Read `GOAL.md`, `AGENTS.md`, `docs/PROJECT_TRACKING.md`, and
+`docs/PROPORTIONAL_VALIDATION.md` before working. Read
+`docs/PARALLEL_INTEGRATION.md` as well whenever another thread is building at
+the same time or the branch is stacked on another branch.
+
+Optimize for the first successful real UAT outcome, not for a theoretical fully
+autonomous platform or the maximum possible validation process.
+
+## UAT-first delivery behavior
+
+For every active build or fix, identify the exact UAT step it is meant to
+unblock. Use the shortest safe path to that outcome.
+
+For a narrow understood defect, default to:
+
+1. reproduce;
+2. smallest correct fix;
+3. directly affected test/file;
+4. touched-file static checks;
+5. push promptly;
+6. GitHub CI for broad regression;
+7. deploy and perform the real UAT step.
+
+Do not locally duplicate a broad CI shard by default. Do not start parallel
+specialist tracks for a narrow repair. Do not repeat a whole-feature adversarial
+review after one broad review; successor fixes get delta-only review unless new
+evidence widens the blast radius.
+
+Before adding another suite, reviewer, specialist, investigation, or handoff
+cycle, state the specific failure that step can catch which focused proof + CI +
+UAT would not catch. If there is no concrete answer, do not add the step.
+
+When a tightly bounded repair cannot be completed inside the authorized scope,
+stop and report the blocker instead of silently widening the work.
+
+`docs/PROPORTIONAL_VALIDATION.md` is authoritative for validation tiers,
+escalation triggers, time discipline, CI authority, and the stop-the-process
+rule.
 
 ## Working Principles
 
@@ -139,9 +172,13 @@ outreach.
 
 ## Coding Behavior
 
-- Start with the relevant acceptance criterion in `GOAL.md`.
-- Inspect existing code and tests before proposing architecture.
-- Implement and verify a thin end-to-end slice before adding abstractions.
+- Start with the relevant acceptance criterion in `GOAL.md` and name the UAT step
+  the work unblocks.
+- Inspect existing code and directly relevant tests before changing behavior.
+- Implement and verify the smallest complete slice before adding abstractions.
+- For a narrow fix, do not run broad local suites that GitHub CI will immediately
+  duplicate unless a concrete failure requires that exact grouping.
+- Push promptly once the required focused proof is green.
 - Ask only when a missing choice changes safety, cost, or product behavior.
 - Keep integration adapters replaceable.
 - Prefer explicit state machines and typed schemas.
@@ -151,35 +188,38 @@ outreach.
   ownership block and against the exact frozen base SHA supplied. If that SHA is
   no longer the tip of the base branch, stop and report it rather than following
   the moving branch.
-- Do not declare a stacked or assembled branch final until the gate sequence
-  defined in `docs/PARALLEL_INTEGRATION.md` passes locally on the final head.
-  When the session cannot run those gates, say `Integration incomplete; do not
-  publish yet` instead of handing over a supposedly final bundle.
+- The complete integration gate in `docs/PARALLEL_INTEGRATION.md` applies to a
+  substantial final assembled feature head. It does not require every narrow
+  successor repair to recreate authoritative CI locally.
 
 When suggesting a future feature, label it as post-launch and do not build it
 unless the goal file is updated.
 
 ## Project Tracking Behavior
 
-GitHub is the development command center. After a meaningful build, provide a
-structured handoff containing:
+GitHub is the development command center. A handoff must be factual and useful,
+but it must not become a ceremony that delays a push when the branch can already
+be published safely.
 
-- Authorized phase and issues
-- Branch and commits, including whether the branch is actually on GitHub
-- Base SHA, head SHA, bundle path and SHA-256, `git bundle verify` output, and
-  `git merge-base` proof against the declared base
-- Local check results and reproducible evidence
-- What became usable
-- What remains incomplete
-- Known failures, risks, and recovery behavior
-- Blockers and decisions required, with an owner where known
-- Claude's claimed phase status and go-live answer
-- A concise proposed tracker update
+For a substantial build, report:
+
+- authorized scope;
+- branch/base/head and whether the branch is actually on GitHub;
+- local checks actually run;
+- what became usable;
+- what remains incomplete;
+- known failures/risks and recovery behavior;
+- concrete blockers/decisions;
+- the next UAT action.
+
+For a narrow successor fix, a concise handoff is enough: exact head, semantic
+change, focused proof, and remote verification. Do not manufacture bundle,
+full-suite, specialist, or review ceremony when it adds no risk reduction.
 
 Do not claim that Claude's own tests or handoff constitute independent
 acceptance. Sahil decides material scope, risk, cost, and product questions.
-ChatGPT operates the remote GitHub workflow and independently verifies the
-build.
+ChatGPT operates the remote GitHub workflow and independently verifies the build
+at the depth required by `PROPORTIONAL_VALIDATION.md`.
 
 ## GitHub Division of Labour
 
@@ -188,12 +228,12 @@ Claude builds; Sahil bridges; ChatGPT operates and reviews.
 Claude owns the product implementation:
 
 - Create branches and commit intentional changes with clear messages.
-- Deliver the branch to the local repository (git bundle handoff) when the
-  session cannot push directly.
+- Push promptly when credentialed and the required focused proof is green.
+- Deliver a bundle only when direct publication is unavailable or explicitly
+  required.
 - Supply a factual handoff that ChatGPT can verify against the repository.
-- Inspect check failures and prepare correction commits for ChatGPT's review
-  findings.
-- Identify which authorized issues and acceptance criteria the build addresses.
+- Inspect check failures and prepare narrowly scoped correction commits.
+- Identify which authorized acceptance criterion/UAT step the build addresses.
 
 Sahil owns only the bridge and decision points:
 
@@ -207,19 +247,20 @@ Once the branch is on GitHub, ChatGPT owns remote administration:
 - Open or update PRs and write PR descriptions, issue comments, review verdicts,
   labels, project status, and closing notes.
 - Inspect the actual diff and CI rather than relying on Claude's handoff.
-- Request corrections from Claude and verify each correction commit.
-- Merge only after a passing verdict and Sahil's explicit approval.
-- Close or update linked issues and clean up remote branches where appropriate.
+- Keep review proportional: one broad review for a substantial new boundary;
+  delta-only re-review for narrow successor fixes unless new evidence widens
+  scope.
+- Request corrections only for concrete release blockers or authorized fixes.
+- Merge only after the required passing verdict and Sahil's explicit approval.
+- Move the merged candidate promptly toward deployment/UAT rather than inventing
+  new gates.
 
-When several Claude threads build related work at the same time, exactly one of
-them is the integration thread. Implementation threads produce commits and
-bundles only. The integration thread selects the authoritative upstream heads,
-restacks downstream commits in dependency order, resolves semantic conflicts,
-runs the complete gate sequence on the final assembled head, and produces the
-only branches handed over for publication. Publication itself is unchanged:
-Claude pushes when credentialed, Sahil bridges when it is not, and ChatGPT owns
-the PR and the merge. An implementation thread never restacks another thread's
-work and never declares a dependent branch final.
+When several threads build related work at the same time, exactly one of them is
+the integration thread. Implementation threads must not restack one another's
+work or widen their ownership blocks. The integration thread owns the final
+assembled feature head and the broader integration gate. Narrow successor fixes
+after assembly follow the proportional-validation policy rather than replaying
+the full integration process.
 
 Do not ask Sahil to author GitHub content or perform web administration that
 ChatGPT can perform. When a local push is unavoidable, provide the shortest
