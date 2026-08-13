@@ -50,17 +50,32 @@
       {# Said before the button is pressed, not only after it is refused. A
          disabled skippable Agent is stepped over permanently, so an operator
          who starts the campaign now loses those stages for every contact that
-         reaches them, with no way back. #}
+         reaches them, with no way back.
+
+         Two wordings, because the campaign is in one of two states and they need
+         different next actions. A sequence campaign that has not started is
+         refused at Resume; one that has already started is refused at enrolment
+         instead, and telling a plainly running campaign it "cannot be started"
+         would read as a bug rather than as a warning. #}
       {% if sequence_readiness and not sequence_readiness.runnable %}
       <p class="v2-notice err" role="alert">
+        {% if execution.execution_enabled %}
+        <b>This campaign cannot take new contacts.</b>
+        It generates a seven-message sequence, and these Agents are switched off:
+        {{ sequence_readiness.blocking_names }}.
+        Enrolling or importing anyone now would step past them permanently, so enrolment is
+        refused until they are enabled — a skipped stage cannot be re-run afterwards. Ask a
+        platform administrator to enable them, then enrol.
+        {% else %}
         <b>This campaign cannot be started yet.</b>
         It generates a seven-message sequence, and these Agents are switched off:
-        {% for entry in sequence_readiness.blocking %}{{ entry.display_name }}{{ ", " if not loop.last }}{% endfor %}.
+        {{ sequence_readiness.blocking_names }}.
         Starting now would step past them permanently for every contact that reaches them —
         a skipped stage cannot be re-run afterwards. Ask a platform administrator to enable
         them, then start the campaign.
+        {% endif %}
       </p>
-      {% elif sequence_readiness and sequence_readiness.holding %}
+      {% elif sequence_readiness and sequence_readiness.holding and not execution.execution_enabled %}
       <p class="v2-notice" role="status">
         Ready to start. These Agents are not enabled, so work will wait at them rather than
         being lost:

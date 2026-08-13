@@ -33,7 +33,7 @@ from app.models.import_batch import ImportBatch
 from app.models.seller_knowledge import CampaignOffering
 from app.services.agents.readiness import execution_readiness
 from app.services.audit import record_audit_event
-from app.services.personalization.cadence import campaign_opted_in
+from app.services.personalization.cadence import CADENCE_KEY, campaign_opted_in
 
 MAX_NAME_LEN = 255
 MAX_DESCRIPTION_LEN = 4_000
@@ -118,6 +118,30 @@ def _json_object(value: dict[str, Any] | None, *, field_name: str) -> dict[str, 
     if len(encoded.encode("utf-8")) > MAX_JSON_BYTES:
         raise CampaignError(f"{field_name} is too large (max {MAX_JSON_BYTES} bytes)")
     return value
+
+
+def _opts_into_sequence(config: dict[str, Any] | None) -> bool:
+    """Whether a *proposed* ``cadence_config`` turns the seven-message workflow on.
+
+    Reads the key ``cadence.campaign_opted_in`` reads and asks its identical
+    ``is True`` question, but of a value that has not been assigned to the
+    Campaign yet. It has to: the refusal below must happen before anything is
+    written, so it cannot ask the Campaign what it is about to become.
+    """
+
+    if not isinstance(config, dict):
+        return False
+    block = config.get(CADENCE_KEY)
+    return isinstance(block, dict) and block.get("enabled") is True
+
+
+def _has_enrolled_contacts(session: Session, campaign_id: uuid.UUID) -> bool:
+    return (
+        session.scalars(
+            select(CampaignContact.id).where(CampaignContact.campaign_id == campaign_id).limit(1)
+        ).first()
+        is not None
+    )
 
 
 def _validate_status_change(current: CampaignStatus, target: CampaignStatus) -> None:
@@ -269,6 +293,29 @@ def update_campaign(
     changed = {key: value for key, value in proposed.items() if getattr(campaign, key) != value}
     if not changed:
         return campaign
+    # The start refusal in `set_campaign_execution` only guards a campaign that
+    # is *opted in* when Resume is pressed, and this form is not
+    # administrator-only. Untick the sequence, press Resume, tick it again, and
+    # the campaign ends up running in seven-message mode having never been
+    # checked once. The transition into the opt-in is therefore refused on its
+    # own, for a campaign that is running or already carries contacts — a draft
+    # campaign with nobody in it still has nothing to lose, and refusing there
+    # would only stop an operator configuring before they populate.
+    #
+    # Placed above the SAVEPOINT deliberately: the block below writes every
+    # changed field and bumps `settings_version` together, so a refusal raised
+    # after it would either leave the cadence change applied or take an unrelated
+    # rename down with it. Refused here, nothing is written and the version does
+    # not move.
+    if (
+        "cadence_config" in changed
+        and _opts_into_sequence(changed["cadence_config"])
+        and not campaign_opted_in(campaign)
+        and (campaign.execution_enabled or _has_enrolled_contacts(session, campaign.id))
+    ):
+        readiness = execution_readiness(session, campaign=campaign)
+        if not readiness.runnable:
+            raise CampaignError(readiness.opt_in_refusal_message())
     try:
         with session.begin_nested():
             for key, value in changed.items():

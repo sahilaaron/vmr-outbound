@@ -408,8 +408,17 @@ def test_re_affirming_execution_on_a_running_campaign_never_refuses(
     are also idempotent by design, and a repeat call must stay so.
     """
 
-    campaign = _campaign(db_session, execution=True)
+    campaign = _campaign(db_session)
     _enrol(db_session, campaign)
+    # Enrolled before execution was switched on, which is the only order this
+    # state can now be reached in: a *running* sequence campaign whose skippable
+    # Agents are off refuses new enrolments outright, because that is where the
+    # walk would burn them. The campaign under test here is one that was already
+    # running when the Agents were switched off, not one being populated while
+    # unsafe -- so the switch is flipped directly rather than by enrolling into
+    # an already-running campaign.
+    campaign.execution_enabled = True
+    db_session.flush()
     _set(db_session, SKIPPABLE, AgentControlStatus.DISABLED)
 
     assert execution_readiness(db_session, campaign=campaign).runnable is False

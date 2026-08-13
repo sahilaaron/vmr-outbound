@@ -86,24 +86,77 @@ class ExecutionReadiness:
 
         return not self.blocking
 
+    @property
+    def blocking_names(self) -> str:
+        """The blocking Agents, named as the registry names them.
+
+        Every sentence below and the campaign page all need the same list, and
+        none of them may spell it out: a name written into prose drifts from the
+        pipeline the moment the registry changes, and the operator is then told
+        to enable something that no longer exists under that name.
+        """
+
+        return ", ".join(entry.display_name for entry in self.blocking)
+
     def refusal_message(self) -> str:
         """One sentence naming exactly what must be enabled, and why.
 
         Written for the operator who pressed Resume, so it says what to do and
-        what would otherwise be lost rather than reporting a status code. The
-        Agent names come from the registry rather than being spelled out here,
-        so this cannot drift from what the pipeline actually runs.
+        what would otherwise be lost rather than reporting a status code.
         """
 
-        names = ", ".join(entry.display_name for entry in self.blocking)
         plural = "s are" if len(self.blocking) > 1 else " is"
         return (
-            f"This campaign generates a seven-message sequence, and the {names} "
-            f"Agent{plural} switched off. Starting now would step past that stage "
-            "permanently for every contact that reaches it — a skipped stage cannot "
-            "be re-run once the campaign has moved past it, so enabling the Agent "
-            "afterwards would not recover those contacts. Ask a platform "
+            f"This campaign generates a seven-message sequence, and the "
+            f"{self.blocking_names} Agent{plural} switched off. Starting now would step "
+            "past that stage permanently for every contact that reaches it — a skipped "
+            "stage cannot be re-run once the campaign has moved past it, so enabling "
+            "the Agent afterwards would not recover those contacts. Ask a platform "
             "administrator to enable it, then start the campaign."
+        )
+
+    def enrolment_refusal_message(self) -> str:
+        """Why nobody could be enrolled right now, said to the operator enrolling.
+
+        The Resume refusal cannot carry this case. By the time contacts are being
+        enrolled the campaign is already running, so there is no start to refuse
+        and no button to press again — what happens instead is that each newly
+        enrolled contact walks straight into the disabled stage and is stepped
+        past it permanently, one import at a time.
+
+        Refusing the *enrolment* is what makes that recoverable. Contacts are
+        permanent and never require a campaign, so a refused enrolment loses
+        nothing that was not already saved; an accepted one cannot be undone.
+        """
+
+        verb = "are" if len(self.blocking) > 1 else "is"
+        return (
+            f"This campaign generates a seven-message sequence, and the "
+            f"{self.blocking_names} {verb} switched off. Enrolling anyone now would step "
+            "past that stage permanently for every contact that reaches it, and a "
+            "skipped stage cannot be re-run afterwards — so nobody was enrolled. The "
+            "contacts themselves are saved and unaffected. Ask a platform administrator "
+            "to enable it, then enrol them."
+        )
+
+    def opt_in_refusal_message(self) -> str:
+        """Why the seven-message switch cannot be turned on for this Campaign.
+
+        The start refusal guards one button, and the sequence switch is not
+        administrator-only — deliberately, because choosing what a campaign
+        drafts is an operator's decision. What it must not become is a way around
+        that button: untick the switch, start the campaign, tick it again. So the
+        write itself is refused rather than the person making it.
+        """
+
+        verb = "are" if len(self.blocking) > 1 else "is"
+        return (
+            f"The seven-message sequence cannot be switched on while the "
+            f"{self.blocking_names} {verb} switched off. This campaign is already "
+            "running or already has contacts, and the sequence needs that stage for "
+            "every one of them — a stage that is off is stepped past permanently and "
+            "cannot be re-run afterwards. Nothing was saved. Ask a platform "
+            "administrator to enable it, then turn the sequence on."
         )
 
 
@@ -155,17 +208,37 @@ def _furthest_desired_stage(session: Session, campaign: Campaign) -> AgentIdenti
     return max(stages, key=lambda stage: PIPELINE_ORDER.index(stage))
 
 
-def execution_readiness(session: Session, *, campaign: Campaign) -> ExecutionReadiness:
+def execution_readiness(
+    session: Session,
+    *,
+    campaign: Campaign,
+    prospective_stage: AgentIdentifier | None = None,
+) -> ExecutionReadiness:
     """Classify every in-scope Agent as blocking, holding, or fine.
 
     Capture is excluded: it is never auto-skipped (``schedule_next`` names it
     explicitly) and it is what makes a person exist at all.
+
+    ``prospective_stage`` asks the question a *future* enrolment needs answered.
+    Without it the scope comes only from contacts already enrolled, so an empty
+    Campaign reports nothing to lose — true of the Campaign, and false of the
+    contact about to be imported into it. That gap is the whole of the failure
+    this argument closes: create an empty campaign, opt it in, start it, import,
+    and every imported contact is terminally skipped by a check that had
+    correctly said there was nothing at stake an hour earlier. Callers deciding
+    whether an *enrolment* is safe pass the stage that contact will be aimed at;
+    callers deciding whether a *start* is safe pass nothing and keep the older,
+    narrower reading.
     """
 
-    furthest = _furthest_desired_stage(session, campaign)
-    if furthest is None:
+    stages = [
+        stage
+        for stage in (_furthest_desired_stage(session, campaign), prospective_stage)
+        if stage is not None
+    ]
+    if not stages:
         return ExecutionReadiness(blocking=(), holding=())
-    limit = PIPELINE_ORDER.index(furthest)
+    limit = max(PIPELINE_ORDER.index(stage) for stage in stages)
 
     blocking: list[AgentReadiness] = []
     holding: list[AgentReadiness] = []

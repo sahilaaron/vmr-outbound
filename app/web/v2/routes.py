@@ -1429,17 +1429,27 @@ def campaign_page(
     if _kb_on(settings) and campaign_record is not None:
         readiness = seller_readiness.campaign_report(db, campaign_record)
 
-    # What pressing Resume would do to the pipeline, said before it is pressed.
-    # Only meaningful while execution is still off: once it is on the walk has
-    # already happened, and reporting a stage as "would be skipped" then would
-    # describe the past as though it were still a choice.
+    # What the disabled skippable Agents would do to this campaign, said before
+    # anything is pressed.
+    #
+    # This used to be withheld once execution was on, on the reasoning that the
+    # walk had already happened and describing it would be describing the past.
+    # That reasoning had a hole exactly the size of the failure it caused: an
+    # empty campaign can be started safely, and every contact imported into it
+    # afterwards is burned on arrival, with the page saying nothing at all
+    # because execution was already on. So the question changes with the state
+    # rather than disappearing — while execution is off it is "what would
+    # starting do", and once it is on it is "what would enrolling do", which is
+    # why the running case asks with the stage a new enrolment would be aimed at.
     sequence_readiness = None
-    if (
-        campaign_record is not None
-        and not campaign_record.execution_enabled
-        and campaign_opted_in(campaign_record)
-    ):
-        sequence_readiness = agent_readiness.execution_readiness(db, campaign=campaign_record)
+    if campaign_record is not None and campaign_opted_in(campaign_record):
+        sequence_readiness = agent_readiness.execution_readiness(
+            db,
+            campaign=campaign_record,
+            prospective_stage=(
+                AgentIdentifier.SENDING if campaign_record.execution_enabled else None
+            ),
+        )
 
     # Two different questions, so two different numbers. The strip hint asks "is a
     # re-run likely to help here?" across all nine Agents, and answers it from
@@ -1856,6 +1866,21 @@ def campaign_import_confirm(
         )
     if campaign.status is CampaignStatus.ARCHIVED:
         return _redirect(base, err="An archived campaign cannot receive contacts.")
+    # Asked here as well as in the enrolment service, and not as belt and braces.
+    # `campaign_import.confirm` writes a batch and then commits each row in its
+    # own SAVEPOINT, catching only `SQLAlchemyError`; a refusal raised from
+    # enrolment part-way down the file would escape as a 500 with a batch already
+    # written and some rows already through. Asking before the first write makes
+    # the refusal what the operator needs it to be — whole, with the file still
+    # staged and nothing imported — and says it on the page they uploaded from.
+    if campaign.execution_enabled and campaign_opted_in(campaign):
+        readiness = agent_readiness.execution_readiness(
+            db, campaign=campaign, prospective_stage=AgentIdentifier.SENDING
+        )
+        if not readiness.runnable:
+            return _redirect(
+                f"{base}/staged/{staged_id}", err=readiness.enrolment_refusal_message()
+            )
 
     content = staging.read_staged_content(_staging_dir(), staged_id)
     try:
