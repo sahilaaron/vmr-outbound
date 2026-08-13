@@ -657,7 +657,16 @@ def hostile_import(db_session: Session) -> Any:
 
     def _build(prefix: str) -> dict[str, Any]:
         marker = f"{prefix}cmd|"
-        campaign = af.make_campaign(db_session, execution=True)
+        # Execution stays off. A *running* sequence campaign whose skippable
+        # Agents are disabled now refuses new enrolments outright, because the
+        # walk would step every imported contact past Research into a terminal
+        # SKIPPED. These tests are about the display boundary, not the pipeline:
+        # nothing below asserts on execution, and the sequence they render is
+        # generated and persisted directly rather than earned by a walk. So the
+        # campaign is left in the state the import is actually allowed to
+        # happen in, and the seven-message opt-in — which the contact page does
+        # read — is kept.
+        campaign = af.make_campaign(db_session, execution=False)
         campaign.cadence_config = {"sequence": {"enabled": True}}
         campaign.name = f"{marker}campaign"
         db_session.flush()
