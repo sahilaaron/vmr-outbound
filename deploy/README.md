@@ -93,21 +93,47 @@ healthy; enabling it earlier publishes a 502.
 
 ## The access boundary
 
-The application has no authentication. Its staging route table is 39 documented
-operations and includes unauthenticated state-changing calls — the whole `/api`
-surface, and root-level `POST /campaigns` from the unprefixed router in
-`app/api/routes.py`.
+Two boundaries, in series. They are not interchangeable, and the difference is
+what decides how you configure the outer one.
 
-So `vmr-staging.conf` **default-denies**. The only genuinely public path is the
-ACME challenge. Everything else, probes included, goes through an access snippet
-that ships as `deny all;`. A path allow-list would have been the wrong shape: it
-would have missed root-level `POST /campaigns`, and it would silently fail to
-cover whatever the next merge adds.
+**The application authenticates.** `app/core/auth/policy.py` is default-deny:
+only the health probes, the `/auth/*` sign-in surface and the `/static/` mount
+are anonymous. Everything else — the operator UI, the whole `/api` surface,
+root-level `POST /campaigns` from the unprefixed router in `app/api/routes.py`,
+`/docs`, `/redoc`, `/openapi.json` — needs a signed-in operator holding an active
+row in the `users` table. It also decides *which* operator: the administrator
+surface, `/api` and the provider-spend routes need an `ADMIN` account rather than
+merely a signed-in one (`is_admin_only_request`). Staging cannot start without
+that boundary configured — see `app/core/auth/startup.py` and
+`docs/HOSTED_AUTH.md`.
 
-`vmr-access.conf` supports an IP allow-list, temporary HTTP Basic Auth, or both.
-Neither the live snippet nor any htpasswd file is ever committed. This is a
-network boundary, not authentication — it buys time until authenticated remote
-access exists.
+**nginx is the outer network boundary.** `vmr-staging.conf` **default-denies**.
+The only genuinely public path is the ACME challenge. Everything else, probes
+included, goes through an access snippet that ships as `deny all;`. A path
+allow-list would have been the wrong shape: it would have missed root-level
+`POST /campaigns`, and it would silently fail to cover whatever the next merge
+adds.
+
+`vmr-access.conf` supports an IP allow-list, HTTP Basic Auth, or both. Neither
+the live snippet nor any htpasswd file is ever committed.
+
+Choose between them on infrastructure grounds — not on the belief that the
+application is unauthenticated, because it is not:
+
+* **An IP allow-list** is a real hardening win when the operator has a stable
+  address, and a liability when they do not. A beta operator on a residential
+  connection is locked out of their own deployment every time the ISP hands out
+  a new address, and the symptom is indistinguishable from an outage. Do not
+  treat it as the product's authentication mechanism; that is the account
+  directory's job.
+* **HTTP Basic Auth** puts a second credential prompt in front of Google
+  sign-in. Add it when a deployment genuinely wants an independent factor at the
+  network edge, and only over HTTPS — not to supply a login the application
+  already has. Two prompts for one person is a support burden, not a boundary.
+* **Opening `location /` to the Internet** so operators can reach the sign-in
+  page is a legitimate choice once the application boundary is in place. It is an
+  explicit decision for the maintainer, and it does not extend to the probe
+  snippet: `/version` leaks the running SHA and has no reason to be public.
 
 ## Two things this deployment gets right that are easy to get wrong
 

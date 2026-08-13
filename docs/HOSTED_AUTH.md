@@ -336,11 +336,22 @@ state-changing API routes that mount in every environment.
 | Environment | Contract |
 |---|---|
 | `local` / `development` / `test` / `ci` | Unchanged. Auth defaults off; nobody is pushed through Google to use localhost. Turning it on locally applies the same completeness checks. |
-| `staging` | `AUTH__ENABLED` is **mandatory** — because the application is reachable from the Internet, not because the workbench is on. Session secret, non-empty allow-list, complete Google client, HTTPS public origin and secure cookies are all required. `FEATURES__WORKBENCH` is then permitted. |
+| `staging` | `AUTH__ENABLED` is **mandatory** — because the application is reachable from the Internet, not because the workbench is on. A session secret, a **non-empty `AUTH__BOOTSTRAP_ADMIN_EMAIL`**, a complete Google client, an HTTPS public origin and secure cookies are all required. `FEATURES__WORKBENCH` is then permitted. |
 | `production` | `FEATURES__WORKBENCH` is refused outright: the production access policy is not decided, so it fails closed. Authentication is still mandatory for the API. |
 
 Every problem is reported at once, so first-time setup takes one restart rather
 than four. No value is ever echoed in the message.
+
+> **`AUTH__ALLOWED_OPERATOR_EMAILS` is not on that list, and must not be treated
+> as though it were.** The rule that required a non-empty allow-list was replaced
+> by the bootstrap-administrator rule when the authority moved to the `users`
+> table (`app/core/auth/startup.py`), and an empty `'[]'` is now correct on a
+> fresh deployment. Filling it in to satisfy a startup requirement that no longer
+> exists is actively harmful: the field validator refuses anything that is not a
+> well-formed ASCII address, so a placeholder like
+> `["REPLACE_WITH_OPERATOR_EMAIL"]` makes the process refuse to start — and under
+> `vmr-deploy` that surfaces at `alembic upgrade head`, *after* the database
+> backup and before the symlink moves.
 
 > **Deployment ordering.** A staging box that has no `AUTH__*` configuration will
 > now **refuse to start**. That is the intended behaviour and the reason this
@@ -372,14 +383,36 @@ and its own secret — see [`GMAIL_DRAFTS.md`](GMAIL_DRAFTS.md) §8.
 
 ## 7. Operating it
 
-**Adding an operator.** Add the address to `AUTH__ALLOWED_OPERATOR_EMAILS` in
-`/etc/vmr/vmr.env`, `systemctl restart vmr-web`. There is no screen and no table.
+**The `users` table is the authority.** Everything below follows from that. An
+account row grants access; configuration does not. `AUTH__ALLOWED_OPERATOR_EMAILS`
+is legacy bootstrap-seeding compatibility only — it creates rows on a first start
+after the accounts migration (`seed_from_allowlist`, which only ever *creates*)
+and is read nowhere on the request path. `is_approved()` survives in
+`app/core/auth/config.py` for that seeding decision and has no call site in the
+application.
 
-**Removing an operator.** Remove the address and restart. Their live session
-stops working on their next request.
+**Adding an operator.** An administrator creates the account at
+`/app/admin/users` and hands over the one-time password link it returns. No
+restart, no environment file, no editing `AUTH__ALLOWED_OPERATOR_EMAILS` — an
+address added there is seeded only in the narrow migration case described above
+and is not how operators are added.
+
+**Removing an operator — this is the part that used to be documented wrongly.**
+Removing the address from `AUTH__ALLOWED_OPERATOR_EMAILS` and restarting
+**revokes nothing**: it is not consulted when a request is authorised, and the
+account row it once created is still there and still active.
+
+The revocation action is **disabling the account** at `/app/admin/users`. That
+bumps the row's `auth_version`, and because every authenticated request resolves
+the account and compares that counter against the cookie's, the person's existing
+session is refused on their **next request** — with **no restart**, and without
+waiting for the 12-hour expiry. See *Sessions* above. The row is kept; accounts
+are never deleted.
 
 **Rotating the signing secret.** Replace `AUTH__SESSION_SECRET` and restart.
-Every operator signs in again. Do this if a cookie is known to be stolen.
+Every operator signs in again. That is the blunt instrument for "a cookie is
+known to be stolen and I do not know whose"; to revoke one named person, disable
+their account instead.
 
 **nginx.** `deploy/nginx/vmr-access.conf` ships as `deny all;`. With this
 boundary in place, `location /` may be opened to the Internet so operators can

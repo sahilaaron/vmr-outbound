@@ -31,10 +31,15 @@
 # `psycopg-binary` is a platform wheel; regenerate on the target platform if
 # that ever changes.
 #
-# `argon2-cffi-bindings` ships cp39-abi3 wheels tagged manylinux_2_28, so this
-# closure needs glibc >= 2.28. Staging is Ubuntu 24.04 (glibc 2.39), which
-# satisfies it with room to spare; every other binary wheel here is content
-# with manylinux_2_17. Note it before moving to an older base image.
+# Several pins here ship manylinux wheels, and their glibc floors differ from
+# each other and move with every upstream release. No floor is written down here
+# on purpose: a number in a comment goes stale silently, and a reader would act
+# on it as though something had checked it. The check that cannot go stale is
+# installation itself - pip refuses a wheel the platform cannot use, and
+# `vmr-deploy` installs this closure and then import-checks the release before
+# the symlink moves. So before changing the base image or the target platform,
+# run the REGENERATING recipe below on that platform: an unusable wheel fails
+# there, against the real thing, rather than against a comment.
 #
 # REGENERATING
 #   python3.11 -m venv /tmp/lockvenv
