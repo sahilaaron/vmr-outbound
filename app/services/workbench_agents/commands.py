@@ -88,8 +88,20 @@ _IN_FLIGHT_NOTES: dict[AgentControlStatus, str] = {
         "work paused by a domain block keeps its own reason."
     ),
     AgentControlStatus.PAUSED: "Claimable and leased work is held at paused; nothing is discarded.",
+    # This note used to end at "nothing is discarded", which was false in the one
+    # case an operator most needs it to be true. Disabling an Agent reconciles
+    # every Campaign Contact standing at it, and a *skippable* Agent's disabled
+    # stage was auto-skipped there — terminally, since SKIPPED has no outgoing
+    # transition. One click therefore discarded the stage for the whole cohort
+    # while promising the opposite. Reconciliation now holds that work instead,
+    # so the first sentence is true; the second says plainly what disabling still
+    # does to a Contact that arrives afterwards, rather than leaving the operator
+    # to discover it.
     AgentControlStatus.DISABLED: (
-        "No new work is claimed and in-flight work is held at paused; nothing is discarded."
+        "No new work is claimed and in-flight work is held at paused; work already "
+        "at this Agent holds there and resumes when it is enabled again. A Contact "
+        "that reaches a skippable Agent while it is disabled is still stepped over, "
+        "and that skip is permanent."
     ),
 }
 
