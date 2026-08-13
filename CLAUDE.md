@@ -14,13 +14,14 @@ human-approved 100-contact pilot campaign — not a platform.
    campaign-to-offering associations, or context readiness.
 6. `docs/PARALLEL_INTEGRATION.md` — integration authority, frozen base SHAs,
    ownership blocks, the gate sequence, and stacked-chain merge order, whenever
-   another thread is building concurrently or a branch is stacked. It is the
-   single definition of the gate sequence; the documents above defer to it
-   there.
+   another thread is building concurrently or a branch is stacked.
+7. `docs/PROPORTIONAL_VALIDATION.md` — **UAT-first delivery authority** for
+   builds, fixes, reviews, testing, CI, deployment, and successor repairs. Read
+   it before choosing validation depth or adding another process step.
 
 When instructions conflict: Sahil's latest explicit instruction > GOAL >
-AGENTS > CLAUDE > PROJECT_TRACKING > PARALLEL_INTEGRATION > existing
-conventions.
+AGENTS > PROPORTIONAL_VALIDATION > CLAUDE > PROJECT_TRACKING >
+PARALLEL_INTEGRATION > existing conventions.
 
 ## Operating model
 
@@ -37,7 +38,7 @@ conventions.
   actual diff and CI, records a PASS / PASS WITH CONDITIONS / FAIL / BLOCKED
   verdict, handles corrections and issue state, and merges only after Sahil's
   explicit approval. ChatGPT also owns the official Google Sheets tracker
-  update.
+  update and is accountable for keeping the path to UAT proportionate.
 
 Claude never grades its own work, updates the Sheet, merges, closes issues, or
 represents an unpushed local commit as present on GitHub.
@@ -59,18 +60,32 @@ represents an unpushed local commit as present on GitHub.
 
 ## Engineering defaults
 
+- **Every active build or fix should shorten the path to UAT.** UAT is the
+  destination, not a final ceremony after optional cleanup.
 - Smallest complete vertical slice authorized by `docs/GOAL.md`; no
-  opportunistic scope, refactors, or abstractions.
+  opportunistic scope, refactors, abstractions, or adjacent hardening.
+- **Validation is proportional to semantic delta and real blast radius.** A
+  narrow defect normally follows reproduce → smallest fix → failing test/file →
+  touched-file static checks → push → CI → deploy → UAT. Do not duplicate broad
+  CI locally, repeat a parent feature's full review, launch review-of-review
+  loops, or wait on optional suites without a concrete escalation trigger.
+- After one broad review of a substantial boundary, successor fixes get
+  **delta-only review** unless new evidence proves the blast radius widened.
+- When CI fails, inspect the failed job and exact failing tests first. Repair
+  only candidate-caused failures; rerun proven infrastructure flakes instead of
+  changing product code.
 - Deterministic rules live in backend services; AI output is advisory until
   validated. Features default off; dry-run defaults on.
 - Schema changes only via reversible Alembic migrations proven locally.
-- Checks before handoff: the gate sequence — commands in `docs/DEVELOPMENT.md`
-  §6, rule in `docs/PARALLEL_INTEGRATION.md`. On a stacked or parallel-built
-  branch, run them on the final assembled head. If they cannot be run, say
-  `Integration incomplete; do not publish yet`.
-- Many threads build; one thread integrates; one exact tree is validated. Work
-  only inside the declared ownership block, against the exact frozen base SHA —
-  never "the latest branch". Fixing one failing CI gate is not a correction.
-- Every handoff survives as a pushed branch or a verified bundle, with base and
-  head SHAs, bundle SHA-256, `git bundle verify` and `git merge-base` proof.
-- Out-of-scope ideas go to `docs/POST_LAUNCH_BACKLOG.md`, not into code.
+- The complete gate sequence in `docs/DEVELOPMENT.md` §6 and
+  `docs/PARALLEL_INTEGRATION.md` applies to substantial feature/integration
+  publication. It does **not** force a narrow successor fix to recreate CI
+  locally; `docs/PROPORTIONAL_VALIDATION.md` decides the minimum local gate.
+- Many threads may build; one thread integrates; one exact tree is validated.
+  Work only inside the declared ownership block, against the exact frozen base
+  SHA — never "the latest branch".
+- Every handoff survives as a pushed branch or verified bundle when publication
+  cannot happen directly. Do not create extra handoff ceremony when the branch
+  can simply be pushed and CI can run.
+- Out-of-scope ideas and non-blocking review findings go to the deferred backlog,
+  not into the active UAT path.
