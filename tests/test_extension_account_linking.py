@@ -1108,6 +1108,29 @@ def test_the_hosted_deployment_needs_no_legacy_credential_at_all(
 # J. Hostile input never becomes an exception
 # ---------------------------------------------------------------------------
 
+# A fixed identifier, deliberately not generated.
+#
+# These parameter lists used `uuid.uuid4()`, which is evaluated at *collection*
+# time. `scripts/ci_shards.py verify` collects the suite once for the whole run and
+# once per shard, then proves the union of the shards is exactly the suite — so a
+# value minted during collection makes the same test a different test on the second
+# pass, and nine cases appeared as both "omitted" and "extra" (CI #378). That is a
+# test-identity defect, not a product one, and the accounting was right to fail.
+#
+# Nothing here ever needed randomness. Each case pins a *shape* the parser must
+# refuse — a dashed UUID where 32 hex characters are required, uppercase hex, a
+# secret one character short or long, a non-base64url character, the sibling scheme
+# presented under the wrong one — and a shape is stated better by a constant, which
+# also makes the node id readable and the failure reproducible.
+#
+# The value is a sentinel no test ever inserts, so the "this session does not
+# exist" property the HTTP cases below rely on still holds.
+UNKNOWN_SESSION_UUID = uuid.UUID("00000000-0000-4000-8000-00000000dead")
+#: The 32-character lowercase hex form this scheme actually mints.
+UNKNOWN_SESSION_HEX = UNKNOWN_SESSION_UUID.hex
+#: The 36-character dashed form, which the scheme must refuse.
+UNKNOWN_SESSION_DASHED = str(UNKNOWN_SESSION_UUID)
+
 
 @pytest.mark.parametrize(
     "presented",
@@ -1117,10 +1140,10 @@ def test_the_hosted_deployment_needs_no_legacy_credential_at_all(
         f"Bearer {ACCESS_TOKEN_SCHEME}",
         f"Bearer {ACCESS_TOKEN_SCHEME}.deadbeef",
         f"Bearer {ACCESS_TOKEN_SCHEME}.{'z' * 32}.{'a' * 43}",
-        f"Bearer {ACCESS_TOKEN_SCHEME}.{uuid.uuid4()}.{'a' * 43}",
-        f"Bearer {REFRESH_TOKEN_SCHEME}.{uuid.uuid4().hex}.{'a' * 43}",
+        f"Bearer {ACCESS_TOKEN_SCHEME}.{UNKNOWN_SESSION_DASHED}.{'a' * 43}",
+        f"Bearer {REFRESH_TOKEN_SCHEME}.{UNKNOWN_SESSION_HEX}.{'a' * 43}",
         "Bearer " + "x" * 5000,
-        f"Basic {ACCESS_TOKEN_SCHEME}.{uuid.uuid4().hex}.{'a' * 43}",
+        f"Basic {ACCESS_TOKEN_SCHEME}.{UNKNOWN_SESSION_HEX}.{'a' * 43}",
     ],
 )
 def test_a_malformed_token_is_a_refusal_and_never_an_exception(
@@ -1147,12 +1170,12 @@ def test_a_malformed_token_is_a_refusal_and_never_an_exception(
         "",
         ".",
         "..",
-        f"{ACCESS_TOKEN_SCHEME}.{uuid.uuid4().hex}.{'a' * 43}é",
-        f"{ACCESS_TOKEN_SCHEME}.{uuid.uuid4().hex}.{'a' * 42}",
-        f"{ACCESS_TOKEN_SCHEME}.{uuid.uuid4().hex}.{'a' * 65}",
-        f"{ACCESS_TOKEN_SCHEME}.{str(uuid.uuid4())}.{'a' * 43}",
-        f"{ACCESS_TOKEN_SCHEME}.{uuid.uuid4().hex.upper()}.{'a' * 43}",
-        f"{ACCESS_TOKEN_SCHEME}.{uuid.uuid4().hex}.{'a' * 40}+/=",
+        f"{ACCESS_TOKEN_SCHEME}.{UNKNOWN_SESSION_HEX}.{'a' * 43}é",
+        f"{ACCESS_TOKEN_SCHEME}.{UNKNOWN_SESSION_HEX}.{'a' * 42}",
+        f"{ACCESS_TOKEN_SCHEME}.{UNKNOWN_SESSION_HEX}.{'a' * 65}",
+        f"{ACCESS_TOKEN_SCHEME}.{UNKNOWN_SESSION_DASHED}.{'a' * 43}",
+        f"{ACCESS_TOKEN_SCHEME}.{UNKNOWN_SESSION_HEX.upper()}.{'a' * 43}",
+        f"{ACCESS_TOKEN_SCHEME}.{UNKNOWN_SESSION_HEX}.{'a' * 40}+/=",
         "x" * 100_000,
     ],
 )
