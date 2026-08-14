@@ -73,9 +73,7 @@ def upgrade() -> None:
         sa.Column("id", sa.dialects.postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("campaign_id", sa.dialects.postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("user_id", sa.dialects.postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column(
-            "assigned_by_user_id", sa.dialects.postgresql.UUID(as_uuid=True), nullable=True
-        ),
+        sa.Column("assigned_by_user_id", sa.dialects.postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -105,9 +103,7 @@ def upgrade() -> None:
             "campaign_id", "user_id", name="uq_campaign_user_assignments_campaign_user"
         ),
     )
-    op.create_index(
-        "ix_campaign_user_assignments_campaign_id", ASSIGNMENTS, ["campaign_id"]
-    )
+    op.create_index("ix_campaign_user_assignments_campaign_id", ASSIGNMENTS, ["campaign_id"])
     op.create_index("ix_campaign_user_assignments_user_id", ASSIGNMENTS, ["user_id"])
 
 

@@ -165,7 +165,9 @@ class CampaignUserAssignment(Base):
 
     __tablename__ = "campaign_user_assignments"
     __table_args__ = (
-        UniqueConstraint("campaign_id", "user_id", name="uq_campaign_user_assignments_campaign_user"),
+        UniqueConstraint(
+            "campaign_id", "user_id", name="uq_campaign_user_assignments_campaign_user"
+        ),
         Index("ix_campaign_user_assignments_user_id", "user_id"),
         Index("ix_campaign_user_assignments_campaign_id", "campaign_id"),
     )
@@ -194,10 +196,7 @@ class CampaignUserAssignment(Base):
     )
 
     def __repr__(self) -> str:  # pragma: no cover - debug helper
-        return (
-            "CampaignUserAssignment("
-            f"campaign_id={self.campaign_id!r}, user_id={self.user_id!r})"
-        )
+        return f"CampaignUserAssignment(campaign_id={self.campaign_id!r}, user_id={self.user_id!r})"
 
 
 class CampaignContact(Base):

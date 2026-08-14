@@ -418,6 +418,83 @@
         {% endif %}
       </div>
 
+      {# Who can open this campaign. Administrators only — and that is a
+         courtesy here, not the control: `/app/admin/campaigns/{id}/assign` and
+         `/unassign` are refused server-side for anybody else, by the router's
+         `require_admin` and again inside the service. #}
+      {% if is_admin %}
+      <div class="v2-card">
+        <div class="v2-card-head tight"><h2>Who can use this campaign</h2></div>
+        <div class="v2-row tight">
+          <div class="v2-sidelist-top">
+            <b>Created by</b>
+            {% if access_owner %}
+            <span class="m">{{ access_owner.email | neutralize }}</span>
+            {% else %}
+            {{ tag('no recorded owner', '', small=true) }}
+            {% endif %}
+          </div>
+          {% if not access_owner %}
+          <div class="v2-hint">
+            This campaign predates campaign ownership, or was created outside a
+            signed-in session. Administrators can always open it; assign it to
+            somebody below to give them access.
+          </div>
+          {% endif %}
+        </div>
+
+        {% for person in access_people %}
+        <div class="v2-row tight">
+          <div class="v2-sidelist-top">
+            <b>{{ person.display_name | neutralize }}</b>
+            {% if person.is_creator %}{{ tag('creator', 'brand', small=true) }}{% endif %}
+            {% if person.role.value == 'admin' %}{{ tag('administrator', '', small=true) }}{% endif %}
+          </div>
+          <div class="v2-hint">
+            <span class="m">{{ person.email | neutralize }}</span>
+            {% if person.is_creator %}
+            · access comes from having created it, so it cannot be revoked here
+            {% else %}
+            · assigned {{ person.assigned_at | ago }}{% if person.assigned_by_email %}
+            by {{ person.assigned_by_email | neutralize }}{% endif %}
+            {% endif %}
+          </div>
+          {% if not person.is_creator %}
+          <form method="post" action="/app/admin/campaigns/{{ execution.campaign_id }}/unassign">
+            <input type="hidden" name="user_id" value="{{ person.user_id }}">
+            <input type="hidden" name="back" value="/app/campaigns/{{ execution.campaign_id }}">
+            <button class="btn small secondary" type="submit">Remove access</button>
+          </form>
+          {% endif %}
+        </div>
+        {% endfor %}
+
+        <div class="v2-row tight">
+          {% if assignable_users %}
+          <form method="post" action="/app/admin/campaigns/{{ execution.campaign_id }}/assign">
+            <label class="v2-sr" for="assign-user">Assign this campaign to</label>
+            <select id="assign-user" name="user_id" required>
+              <option value="">Choose an account…</option>
+              {% for candidate in assignable_users %}
+              <option value="{{ candidate.id }}">{{ candidate.email | neutralize }}</option>
+              {% endfor %}
+            </select>
+            <input type="hidden" name="back" value="/app/campaigns/{{ execution.campaign_id }}">
+            <button class="btn small primary" type="submit">Assign</button>
+          </form>
+          {% else %}
+          <div class="v2-hint">
+            Every active account already reaches this campaign. Administrators
+            see every campaign by role and are not listed here.
+          </div>
+          {% endif %}
+        </div>
+        <div class="v2-card-foot plain">
+          <a href="/app/admin/users">Manage accounts →</a>
+        </div>
+      </div>
+      {% endif %}
+
       <div class="v2-card">
         <div class="v2-card-head tight"><h2>Agents for this campaign</h2></div>
         {% for control in execution.controls %}
@@ -433,9 +510,11 @@
           </div>
         </div>
         {% endfor %}
+        {% if is_admin %}
         <div class="v2-card-foot plain">
           <a href="/app/agents">Open Agent settings →</a>
         </div>
+        {% endif %}
       </div>
 
       {% if kb_on %}

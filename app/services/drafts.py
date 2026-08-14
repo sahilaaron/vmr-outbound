@@ -249,14 +249,29 @@ def _row(
     )
 
 
-def queue_counts(session: Session, *, campaign_id: uuid.UUID | None = None) -> QueueCounts:
-    """Counts by decision state, for the filter chips and the progress bar."""
+def queue_counts(
+    session: Session,
+    *,
+    campaign_id: uuid.UUID | None = None,
+    campaign_ids: frozenset[uuid.UUID] | None = None,
+) -> QueueCounts:
+    """Counts by decision state, for the filter chips and the progress bar.
+
+    ``campaign_ids`` is the *authorization* restriction and is separate from
+    ``campaign_id``, which is the operator's filter. Passing ``None`` means no
+    restriction — an administrator, or a deployment with no accounts. Passing an
+    empty set means "no campaigns at all", and the counts come back zero rather
+    than unrestricted, which is the direction a set-membership filter has to fail
+    in for it to be a security control.
+    """
 
     statement = (
         select(DraftApproval.status, func.count(DraftVersion.id))
         .select_from(DraftVersion)
         .outerjoin(DraftApproval, DraftApproval.draft_version_id == DraftVersion.id)
     )
+    if campaign_ids is not None:
+        statement = statement.where(DraftVersion.campaign_id.in_(campaign_ids))
     if campaign_id is not None:
         statement = statement.where(DraftVersion.campaign_id == campaign_id)
     counts = {
@@ -274,11 +289,17 @@ def list_queue(
     session: Session,
     *,
     campaign_id: uuid.UUID | None = None,
+    campaign_ids: frozenset[uuid.UUID] | None = None,
     view: str = VIEW_AWAITING,
     limit: int = 50,
     offset: int = 0,
 ) -> ReviewQueue:
-    """A page of the review queue, newest draft first."""
+    """A page of the review queue, newest draft first.
+
+    ``campaign_ids`` restricts the queue to campaigns the caller may see; see
+    :func:`queue_counts` for why it is a separate parameter from ``campaign_id``
+    and why an empty set means nothing rather than everything.
+    """
 
     if view not in {name for name, _ in VIEWS}:
         view = VIEW_AWAITING
@@ -289,6 +310,9 @@ def list_queue(
         .select_from(DraftVersion)
         .outerjoin(DraftApproval, DraftApproval.draft_version_id == DraftVersion.id)
     )
+    if campaign_ids is not None:
+        statement = statement.where(DraftVersion.campaign_id.in_(campaign_ids))
+        count_statement = count_statement.where(DraftVersion.campaign_id.in_(campaign_ids))
     if campaign_id is not None:
         statement = statement.where(DraftVersion.campaign_id == campaign_id)
         count_statement = count_statement.where(DraftVersion.campaign_id == campaign_id)
@@ -318,7 +342,7 @@ def list_queue(
     )
     return ReviewQueue(
         rows=rows,
-        counts=queue_counts(session, campaign_id=campaign_id),
+        counts=queue_counts(session, campaign_id=campaign_id, campaign_ids=campaign_ids),
         total=total,
         campaign_id=campaign_id,
         view=view,

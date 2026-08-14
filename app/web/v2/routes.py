@@ -57,12 +57,16 @@ from app.models.enums import (
 )
 from app.models.pipeline import CampaignContactAgentState
 from app.models.suppression import Suppression
+from app.services import campaign_access, workbench_agents
 from app.services import campaigns as campaign_service
 from app.services import drafts as draft_service
-from app.services import workbench_agents
 from app.services.agents import readiness as agent_readiness
 from app.services.agents import rerun as agent_rerun
 from app.services.agents.registry import AGENT_SPECS, PIPELINE_ORDER
+from app.services.campaign_access import (
+    actor_from_request,
+    require_campaign_path_access,
+)
 from app.services.campaigns import CampaignError
 from app.services.captures import labels as capture_labels
 from app.services.captures import promotion as capture_promotion
@@ -96,7 +100,11 @@ from app.web.v2 import context as shell
 # once, here, rather than on ~100 individual handlers: a route added later is
 # covered the moment it is registered. It is inert for safe methods and inert
 # entirely when hosted authentication is disabled (local development).
-router = APIRouter(prefix="/app", include_in_schema=False, dependencies=[Depends(require_csrf)])
+router = APIRouter(
+    prefix="/app",
+    include_in_schema=False,
+    dependencies=[Depends(require_csrf), Depends(require_campaign_path_access)],
+)
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
@@ -1024,7 +1032,7 @@ def today_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     """
 
     counts = shell.attention_counts(db)
-    overviews = campaign_service.list_campaigns(db)
+    overviews = campaign_service.list_campaigns(db, actor=actor_from_request(request))
     draft_counts = draft_service.queue_counts(db)
     settings = get_settings()
 
@@ -1144,7 +1152,7 @@ def _campaign_needs_sentence(
 
 @router.get("/campaigns")
 def campaigns_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    overviews = campaign_service.list_campaigns(db)
+    overviews = campaign_service.list_campaigns(db, actor=actor_from_request(request))
     rows: list[dict[str, Any]] = []
     for overview in overviews:
         campaign_counts = shell.attention_counts(db, campaign_id=overview.campaign.id)
@@ -1211,6 +1219,10 @@ def campaign_create(
             status=CampaignStatus.DRAFT,
             allow_provisional_domains=bool(allow_provisional_domains),
             actor=draft_service.OPERATOR_ACTOR,
+            # The durable owner. `actor` above stays the audit string it has
+            # always been; this is the account that will still be able to open
+            # the campaign tomorrow, so it may only ever be a real users.id.
+            created_by_user_id=actor_from_request(request).user_id,
         )
     except CampaignError as exc:
         return _redirect("/app/campaigns/new", err=str(exc))
@@ -1259,6 +1271,13 @@ def campaign_edit_page(
             "sequence_enabled": campaign_opted_in(campaign),
             "sequences_on": _sequences_on(get_settings()),
             "sequence_cadence_days": ", ".join(str(day) for day in DEFAULT_ELAPSED_DAYS),
+            # Read-only here on purpose. Editing a campaign's settings and
+            # changing who may open it are different decisions with different
+            # audiences, so the edit form states the current answer and links to
+            # the panel that changes it rather than carrying a second control
+            # that only an administrator could use.
+            "access_owner": campaign_access.campaign_owner(db, campaign),
+            "access_people": campaign_access.campaign_people(db, campaign),
         },
     )
 
@@ -1400,6 +1419,10 @@ def campaign_page(
         except ValueError:
             selected = None
 
+    campaign = db.get(Campaign, identifier)
+    if campaign is None:
+        return _not_found(request, db, "That campaign does not exist.")
+
     reader = _reader(db)
     current = max(1, page)
     execution = reader.campaign_execution(
@@ -1496,11 +1519,19 @@ def campaign_page(
                 if selected
                 else f"/app/campaigns/{identifier}"
             ),
-            "campaigns": campaign_service.list_campaigns(db),
+            "campaigns": campaign_service.list_campaigns(db, actor=actor_from_request(request)),
             "offerings": offerings,
             "readiness": readiness,
             "sequence_readiness": sequence_readiness,
             "kb_on": _kb_on(settings),
+            # Who can open this campaign. Rendered for administrators only —
+            # `is_admin` is already in the shared context — and computed here
+            # rather than in the template so the page never issues a query per
+            # row. The two lists are separate facts: `access_people` is who has
+            # access and why, `assignable_users` is who could be given it.
+            "access_owner": campaign_access.campaign_owner(db, campaign),
+            "access_people": campaign_access.campaign_people(db, campaign),
+            "assignable_users": campaign_access.assignable_users(db, campaign),
         },
     )
 
@@ -2004,13 +2035,31 @@ def review_page(
     evidence for the address, and what the Knowledge Base authorised.
     """
 
+    # Authorization first, and separately from the operator's filter. `allowed`
+    # is None for an administrator (no restriction) and a concrete set otherwise;
+    # every list on this page is built through it, and every record resolved by
+    # id is checked against it, because a page that filters its list but honours
+    # a `?draft=` link into another team's campaign has not scoped anything.
+    actor = actor_from_request(request)
+    allowed = campaign_access.accessible_campaign_ids(db, actor)
     campaign_id = _uuid(campaign) if campaign else None
-    queue = draft_service.list_queue(db, campaign_id=campaign_id, view=view, limit=100)
+    if campaign_id is not None:
+        campaign_access.require_campaign_access(db, campaign_id, actor)
+    queue = draft_service.list_queue(
+        db, campaign_id=campaign_id, campaign_ids=allowed, view=view, limit=100
+    )
+
+    def _readable(candidate_campaign_id: uuid.UUID | None) -> bool:
+        return allowed is None or (
+            candidate_campaign_id is not None and candidate_campaign_id in allowed
+        )
 
     selected: draft_service.DraftRow | None = None
     requested = _uuid(draft) if draft else None
     if requested is not None:
         selected = draft_service.get_draft(db, requested)
+        if selected is not None and not _readable(selected.campaign_id):
+            selected = None
     if selected is None:
         selected = (
             queue.rows[0]
@@ -2046,6 +2095,7 @@ def review_page(
     sequence_queue = sequence_read.list_queue(
         db,
         campaign_id=campaign_id,
+        campaign_ids=allowed,
         view=sequence_view,
         limit=50,
     )
@@ -2054,7 +2104,7 @@ def review_page(
     # the filter chips too, leaving an operator with an approved sequence and no
     # way to navigate to it once the switch was off.
     if not _sequences_on(settings) and not sequence_read.any_sequence_exists(
-        db, campaign_id=campaign_id
+        db, campaign_id=campaign_id, campaign_ids=allowed
     ):
         sequence_queue = None
     chosen_sequence = _uuid(sequence) if sequence else None
@@ -2066,8 +2116,14 @@ def review_page(
         # sequence outside the current filter is shown expanded above a list
         # that does not include it -- which is the truthful arrangement.
         sequence_card = sequence_read.card_for_sequence(db, chosen_sequence)
+        if sequence_card is not None and not _readable(sequence_card.campaign_id):
+            # Resolving by id is deliberate (see above); honouring the id for a
+            # campaign this account cannot open is not.
+            sequence_card = None
     if sequence_card is not None:
         record = sequence_read.get_sequence(db, sequence_card.sequence_id)
+        if record is not None and not _readable(record.campaign_id):
+            record = None
         if record is not None:
             sequence_rows = sequence_read.message_rows(db, sequence=record)
             # One body, on request. Expanding a card must not become a
@@ -2122,7 +2178,7 @@ def review_page(
             "selected": selected,
             "execution": execution,
             "evidence": evidence,
-            "campaigns": campaign_service.list_campaigns(db),
+            "campaigns": campaign_service.list_campaigns(db, actor=actor_from_request(request)),
             "campaign_id": campaign_id,
             "agent_workbench_on": _agent_workbench_on(settings),
             "sequences_on": _sequences_on(settings),
@@ -2918,8 +2974,27 @@ def contact_page(
         return _not_found(request, db, "That contact does not exist.")
 
     settings = get_settings()
+    # A Contact is a permanent record and is not owned by a campaign — the same
+    # person can legitimately appear in several. What *is* campaign-scoped is the
+    # membership: its pipeline, its drafts, its sequence, its Agent history. So
+    # the page keeps showing the contact and narrows the memberships to the
+    # campaigns this account may open, rather than refusing the whole person
+    # because one of their memberships belongs to somebody else's campaign.
+    actor = actor_from_request(request)
+    allowed = campaign_access.accessible_campaign_ids(db, actor)
+    if allowed is not None:
+        # Narrow the view object itself, not a local copy: the template renders
+        # `detail.memberships` directly, so filtering only a local list would
+        # have scoped the code and not the page.
+        detail.memberships = [
+            (candidate, candidate_campaign)
+            for candidate, candidate_campaign in detail.memberships
+            if candidate.campaign_id in allowed
+        ]
     memberships = detail.memberships
     chosen = _uuid(campaign) if campaign else None
+    if chosen is not None:
+        campaign_access.require_campaign_access(db, chosen, actor)
     membership = None
     for candidate, _campaign in memberships:
         if chosen is None or candidate.campaign_id == chosen:
@@ -3314,7 +3389,9 @@ def knowledge_page(
             ctx["proof_points"] = seller_records.proof_points_for_offering(db, selected.id)
             ctx["claims"] = seller_records.restricted_claims_for_offering(db, selected.id)
             ctx["personas"] = seller_records.personas_for_offering(db, selected.id)
-            ctx["campaigns"] = seller_campaign_offerings.campaigns_for_offering(db, selected.id)
+            ctx["campaigns"] = seller_campaign_offerings.campaigns_for_offering(
+                db, selected.id, actor=actor_from_request(request)
+            )
     elif section == "proof-points":
         proof_points = seller_records.list_proof_points(db, include_archived=True)
         ctx["records"] = proof_points
@@ -3396,7 +3473,7 @@ def agents_page(
             "blurb": AGENT_BLURBS[selected],
             "phases": PHASES,
             "blurbs": AGENT_BLURBS,
-            "campaigns": campaign_service.list_campaigns(db),
+            "campaigns": campaign_service.list_campaigns(db, actor=actor_from_request(request)),
             "campaign_id": campaign_id,
         },
     )
@@ -3495,7 +3572,7 @@ def capture_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespons
             "pending": pending,
             "labels": labels,
             "unresolved": unresolved,
-            "campaigns": campaign_service.list_campaigns(db),
+            "campaigns": campaign_service.list_campaigns(db, actor=actor_from_request(request)),
         },
     )
 

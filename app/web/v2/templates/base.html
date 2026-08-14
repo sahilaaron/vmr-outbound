@@ -64,10 +64,17 @@
               <b>{{ operator_name }}</b>
               <span class="m v2-hint">{{ operator_email }}</span>
             </div>
+            {# Administrators only, and refused server-side as well as hidden
+               here: this screen carries the *global* Agent controls and a job
+               list that spans every campaign, neither of which is scoped to one
+               person's campaigns. Per-campaign Agent work stays on the campaign
+               page, which every assigned operator can reach. #}
+            {% if is_admin %}
             <a class="v2-menu-item" href="/app/agents">
               <b>Agent settings &amp; logs</b>
               <span>What each Agent may do, and what it did</span>
             </a>
+            {% endif %}
             <a class="v2-menu-item" href="/app/knowledge">
               <b>Knowledge Base</b>
               <span>What we sell and what we may say about it</span>

@@ -33,6 +33,7 @@ from app.models.import_batch import ImportBatch
 from app.models.seller_knowledge import CampaignOffering
 from app.services.agents.readiness import execution_readiness
 from app.services.audit import record_audit_event
+from app.services.campaign_access import CampaignActor, scope_campaign_statement
 from app.services.personalization.cadence import CADENCE_KEY, campaign_opted_in
 
 MAX_NAME_LEN = 255
@@ -173,10 +174,21 @@ def create_campaign(
     sending_settings: dict[str, Any] | None = None,
     allow_provisional_domains: bool = False,
     actor: str = "operator",
+    created_by_user_id: uuid.UUID | None = None,
 ) -> Campaign:
-    """Create a Campaign shell and validated operating context."""
+    """Create a Campaign shell and validated operating context.
+
+    ``created_by_user_id`` is the durable owner, and it is separate from
+    ``actor`` on purpose. ``actor`` is an audit string that has always been a
+    constant (``"operator"``) on most call paths; ownership decides who can open
+    the campaign tomorrow, so it may only ever be a real ``users.id``. Passing
+    ``None`` — a worker, a local development session, a test — creates a campaign
+    nobody owns, which administrators can still reach and a normal user reaches
+    only through an explicit assignment.
+    """
 
     campaign = Campaign(
+        created_by_user_id=created_by_user_id,
         name=_name(name),
         description=_optional_text(
             description, field_name="description", limit=MAX_DESCRIPTION_LEN
@@ -618,8 +630,22 @@ class CampaignOverview:
     pipeline_counts: dict[str, int] = field(default_factory=dict)
 
 
-def list_campaigns(session: Session) -> list[CampaignOverview]:
-    campaigns = session.scalars(select(Campaign).order_by(Campaign.created_at.desc())).all()
+def list_campaigns(session: Session, *, actor: CampaignActor) -> list[CampaignOverview]:
+    """Every campaign ``actor`` may see, newest first.
+
+    ``actor`` is required rather than defaulted, and the signature is the point.
+    This is the application's single campaign list-all; a default would have made
+    "show every campaign to everybody" what a caller gets by not thinking about
+    it, which is exactly the defect this slice removes. A caller that genuinely
+    wants everything — a worker, a reconciliation pass, a screen with no request
+    behind it — passes :data:`~app.services.campaign_access.UNENFORCED`, which is
+    a visible claim in a diff rather than an omission.
+    """
+
+    statement = scope_campaign_statement(
+        select(Campaign).order_by(Campaign.created_at.desc()), actor
+    )
+    campaigns = session.scalars(statement).all()
     member_counts: dict[uuid.UUID, int] = {
         campaign_id: count
         for campaign_id, count in session.execute(

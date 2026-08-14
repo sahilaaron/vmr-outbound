@@ -57,6 +57,7 @@ from app.services.admin_workbench.views import (
     DiagnosticsView,
 )
 from app.services.agents.registry import AGENT_SPECS, PIPELINE_ORDER
+from app.services.campaign_access import require_campaign_path_access
 from app.services.imports import display
 from app.services.seller.common import OPERATOR_ACTOR
 
@@ -65,7 +66,7 @@ from app.services.seller.common import OPERATOR_ACTOR
 # once, here, rather than on ~100 individual handlers: a route added later is
 # covered the moment it is registered. It is inert for safe methods and inert
 # entirely when hosted authentication is disabled (local development).
-router = APIRouter(dependencies=[Depends(require_csrf)])
+router = APIRouter(dependencies=[Depends(require_csrf), Depends(require_campaign_path_access)])
 
 _TEMPLATES_DIR = "app/web/templates"
 templates = Jinja2Templates(directory=_TEMPLATES_DIR)

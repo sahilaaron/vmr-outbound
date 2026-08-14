@@ -85,6 +85,11 @@ select = ["E", "F", "I", "UP", "B", "W"]
 "app/web/company_intelligence.py" = ["B008"]
 # And on the administrator's account-directory routes.
 "app/web/v2/admin_users.py" = ["B008"]
+# And on the administrator's campaign-assignment routes.
+"app/web/v2/admin_campaign_access.py" = ["B008"]
+# And on the campaign authorization guard, which is a FastAPI dependency
+# declared next to the rules it enforces rather than in a separate deps module.
+"app/services/campaign_access.py" = ["B008"]
 # And on the sign-in routes, which now take a database session because both
 # login paths resolve the caller against the `users` table.
 "app/web/auth_routes.py" = ["B008"]

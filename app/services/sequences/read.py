@@ -635,7 +635,12 @@ def card_for_sequence(session: Session, sequence_id: uuid.UUID) -> SequenceCardR
     )
 
 
-def _queue_statement(*, campaign_id: uuid.UUID | None, view: str) -> Select[Any]:
+def _queue_statement(
+    *,
+    campaign_id: uuid.UUID | None,
+    view: str,
+    campaign_ids: frozenset[uuid.UUID] | None = None,
+) -> Select[Any]:
     statement = (
         select(EmailSequence, Contact, Campaign, Company)
         .join(Contact, Contact.id == EmailSequence.contact_id)
@@ -643,6 +648,11 @@ def _queue_statement(*, campaign_id: uuid.UUID | None, view: str) -> Select[Any]
         .outerjoin(Company, Company.id == EmailSequence.company_id)
         .where(EmailSequence.superseded_at.is_(None))
     )
+    if campaign_ids is not None:
+        # The authorization restriction, separate from the operator's own
+        # ``campaign_id`` filter. ``None`` means unrestricted; an empty set means
+        # nothing, which is the direction this has to fail in.
+        statement = statement.where(EmailSequence.campaign_id.in_(campaign_ids))
     if campaign_id is not None:
         statement = statement.where(EmailSequence.campaign_id == campaign_id)
     if view != VIEW_ALL:
@@ -663,6 +673,7 @@ def list_queue(
     session: Session,
     *,
     campaign_id: uuid.UUID | None = None,
+    campaign_ids: frozenset[uuid.UUID] | None = None,
     view: str = VIEW_ALL,
     limit: int = 50,
     offset: int = 0,
@@ -676,7 +687,7 @@ def list_queue(
 
     if view not in {key for key, _label in VIEWS}:
         view = VIEW_ALL
-    statement = _queue_statement(campaign_id=campaign_id, view=view)
+    statement = _queue_statement(campaign_id=campaign_id, view=view, campaign_ids=campaign_ids)
     records = session.execute(
         statement.order_by(EmailSequence.created_at.desc()).limit(limit).offset(offset)
     ).all()
@@ -747,7 +758,12 @@ def reviewed_count(session: Session, *, campaign_id: uuid.UUID | None = None) ->
     return len(list_queue(session, campaign_id=campaign_id, view=VIEW_REVIEWED, limit=500).rows)
 
 
-def any_sequence_exists(session: Session, *, campaign_id: uuid.UUID | None = None) -> bool:
+def any_sequence_exists(
+    session: Session,
+    *,
+    campaign_id: uuid.UUID | None = None,
+    campaign_ids: frozenset[uuid.UUID] | None = None,
+) -> bool:
     """Whether any live sequence exists at all, for section visibility.
 
     One bounded existence query. It is what lets the Review page keep showing
@@ -757,6 +773,8 @@ def any_sequence_exists(session: Session, *, campaign_id: uuid.UUID | None = Non
     """
 
     statement = select(EmailSequence.id).where(EmailSequence.superseded_at.is_(None)).limit(1)
+    if campaign_ids is not None:
+        statement = statement.where(EmailSequence.campaign_id.in_(campaign_ids))
     if campaign_id is not None:
         statement = statement.where(EmailSequence.campaign_id == campaign_id)
     return session.scalar(statement) is not None

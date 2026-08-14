@@ -22,6 +22,11 @@ from app.core.auth.csrf import require_csrf
 from app.core.auth.extension import EXTENSION_REQUEST_HEADERS, is_extension_capture_request
 from app.core.config import get_settings
 from app.models.enums import CampaignStatus
+from app.services import campaign_access
+from app.services.campaign_access import (
+    actor_from_request,
+    require_campaign_path_access,
+)
 from app.services.campaigns import CampaignError, create_campaign
 from app.services.captures import intake as captures_intake
 from app.services.captures import labels as labels_service
@@ -49,7 +54,7 @@ from app.services.profiles import refresh as profile_refresh
 # once, here, rather than on ~100 individual handlers: a route added later is
 # covered the moment it is registered. It is inert for safe methods and inert
 # entirely when hosted authentication is disabled (local development).
-router = APIRouter(dependencies=[Depends(require_csrf)])
+router = APIRouter(dependencies=[Depends(require_csrf), Depends(require_campaign_path_access)])
 
 # --- Sales Navigator capture intake (DAT-009) --------------------------------
 
@@ -566,6 +571,37 @@ async def contact_capture_route(request: Request, db: Session = Depends(get_db))
             db, captures_intake.InvalidJsonError("request body must be a JSON object"), origin
         )
 
+    # Filing a capture into a Campaign is a write into that Campaign, so it is
+    # subject to the same rule as every other one. The check is here rather than
+    # inside the intake service because only the request knows who is asking.
+    #
+    # Today a capture credential carries no user, so `actor_from_request` returns
+    # an unidentified actor and this refuses nothing — which is the existing
+    # behaviour, deliberately kept while account linking is built on its own
+    # branch. The moment a request carries a resolvable user the same call fails
+    # closed, and the refusal is the intake contract's own refusal shape rather
+    # than a bare 403, so the extension renders it like any other rejected
+    # submission.
+    capture_actor = actor_from_request(request)
+    if capture_actor.is_identified:
+        requested_campaign = payload.get("campaign_id") if isinstance(payload, dict) else None
+        if requested_campaign not in (None, ""):
+            try:
+                requested_campaign_id = uuid.UUID(str(requested_campaign))
+            except (ValueError, TypeError):
+                requested_campaign_id = None
+            if requested_campaign_id is None or not campaign_access.may_access_campaign(
+                db, requested_campaign_id, capture_actor
+            ):
+                return _fail_contact_capture(
+                    db,
+                    captures_intake.UnauthorizedError(
+                        "the capture names a campaign this account may not use"
+                    ),
+                    origin,
+                    payload,
+                )
+
     try:
         result = captures_intake.stage_contact_captures(
             db,
@@ -717,7 +753,9 @@ class ImportSummaryOut(BaseModel):
 
 
 @router.post("/campaigns", response_model=CampaignOut, status_code=status.HTTP_201_CREATED)
-def create_campaign_route(payload: CampaignCreate, db: Session = Depends(get_db)) -> CampaignOut:
+def create_campaign_route(
+    request: Request, payload: CampaignCreate, db: Session = Depends(get_db)
+) -> CampaignOut:
     """Create a campaign shell that can receive an authorized import."""
 
     try:
@@ -726,6 +764,7 @@ def create_campaign_route(payload: CampaignCreate, db: Session = Depends(get_db)
             name=payload.name,
             description=payload.description,
             status=payload.status,
+            created_by_user_id=actor_from_request(request).user_id,
         )
     except CampaignError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

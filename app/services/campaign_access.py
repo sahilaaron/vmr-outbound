@@ -70,11 +70,12 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from fastapi import Request
+from fastapi import Depends, Request
 from sqlalchemy import Select, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_db as _get_db
 from app.models.campaign import Campaign, CampaignUserAssignment
 from app.models.enums import UserRole, UserState
 from app.models.user import User
@@ -235,11 +236,23 @@ def may_access_campaign(
 ) -> bool:
     """Whether ``actor`` may read or use the campaign with this id.
 
-    A campaign that does not exist is ``False`` for everyone, so a caller can use
-    this as the single check and does not need a separate existence test to avoid
-    a confusing refusal message.
+    **This answers access, not existence, and the two differ by role on
+    purpose.**
+
+    An administrator gets ``True`` for any well-formed id, including one that
+    matches no row, and issues no query at all. That is not a hole: an
+    administrator may reach every campaign that exists, so the only thing a
+    lookup could add is turning "no such campaign" into "no access", which is a
+    worse message for the one person who is entitled to the real one. Existence
+    is then the handler's business, where it already has a specific answer.
+
+    For everybody else, a campaign that does not exist and a campaign that
+    belongs to somebody else are the same ``False``, which is what stops this
+    function being an existence oracle for ids a caller is guessing at.
     """
 
+    if actor.is_admin:
+        return True
     if campaign_id is None:
         return False
     statement = select(Campaign.id).where(Campaign.id == campaign_id)
@@ -480,6 +493,47 @@ def unassign_user(
         context={"user_id": str(user_id), "user_email": user.email if user else None},
     )
     return True
+
+
+def require_campaign_path_access(request: Request, db: Session = Depends(_get_db)) -> None:
+    """Router-level gate for any route with a ``{campaign_id}`` path parameter.
+
+    Declared once per router rather than once per handler, deliberately and for
+    the reason ``require_admin`` gives about the same choice: a campaign route
+    added next month is scoped the moment it is registered, not when somebody
+    remembers to decorate it. Forty-odd handlers across five routers already name
+    a campaign in their path, and a per-handler check would have been forty
+    chances to forget.
+
+    Three behaviours worth stating, because each is a decision:
+
+    * **An administrator passes without a query.** The role already grants every
+      campaign, and refusing an administrator a campaign that does not exist
+      would replace the handler's clear "no such campaign" with a misleading
+      "no access".
+    * **A path parameter that is not a UUID is left alone.** It cannot identify a
+      campaign anybody has access to, and the handlers already answer it with a
+      404 or a redirect that says what was wrong. Turning a typo into a 403 would
+      be worse, not safer.
+    * **Everything else is refused before the handler body runs**, including
+      writes that carry a valid session and a valid CSRF token.
+
+    This is the *path* half only. A campaign named in a query string or a form
+    body is checked by the handler that reads it, because only the handler knows
+    which parameter carries it.
+    """
+
+    raw = (request.scope.get("path_params") or {}).get("campaign_id")
+    if raw is None:
+        return
+    actor = actor_from_request(request)
+    if actor.is_admin:
+        return
+    try:
+        campaign_id = uuid.UUID(str(raw))
+    except (ValueError, AttributeError, TypeError):
+        return
+    require_campaign_access(db, campaign_id, actor)
 
 
 def assignments_for_user(session: Session, user_id: uuid.UUID) -> Iterable[uuid.UUID]:

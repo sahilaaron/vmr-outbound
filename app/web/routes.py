@@ -58,7 +58,14 @@ from app.models.linkedin_profile import LinkedInProfileSnapshot
 from app.models.personalization_policy import PersonalizationPolicyVersion
 from app.models.verification_job import AgentJob
 from app.services import agent_studio as agent_studio_service
-from app.services import campaign_contacts, devtools, identity, workbench, workbench_agents
+from app.services import (
+    campaign_access,
+    campaign_contacts,
+    devtools,
+    identity,
+    workbench,
+    workbench_agents,
+)
 from app.services.agent_studio.capture_report import DurableCaptureReportReader
 from app.services.agent_studio.company_report import DurableCompanyReportReader
 from app.services.agent_studio.email_verification_report import EmailVerificationReportReader
@@ -68,6 +75,10 @@ from app.services.agent_studio.research_report import (
     ResearchReportReader,
 )
 from app.services.agents.registry import AGENT_SPECS
+from app.services.campaign_access import (
+    actor_from_request,
+    require_campaign_path_access,
+)
 from app.services.campaign_contacts import CampaignContactError
 from app.services.campaigns import (
     CampaignError,
@@ -125,7 +136,10 @@ from app.services.workbench_agents import views as workbench_views
 # once, here, rather than on ~100 individual handlers: a route added later is
 # covered the moment it is registered. It is inert for safe methods and inert
 # entirely when hosted authentication is disabled (local development).
-router = APIRouter(include_in_schema=False, dependencies=[Depends(require_csrf)])
+router = APIRouter(
+    include_in_schema=False,
+    dependencies=[Depends(require_csrf), Depends(require_campaign_path_access)],
+)
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 # The shared spreadsheet-neutralization boundary, so every environment that
@@ -335,7 +349,7 @@ def campaigns_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespo
         db,
         "campaigns.html",
         {
-            "campaigns": list_campaigns(db),
+            "campaigns": list_campaigns(db, actor=actor_from_request(request)),
             "active_nav": "campaigns",
             "page_title": "Campaigns",
         },
@@ -355,7 +369,13 @@ async def campaigns_create(request: Request, db: Session = Depends(get_db)) -> R
     except ValueError:
         status = CampaignStatus.DRAFT
     try:
-        campaign = create_campaign(db, name=name, description=description, status=status)
+        campaign = create_campaign(
+            db,
+            name=name,
+            description=description,
+            status=status,
+            created_by_user_id=actor_from_request(request).user_id,
+        )
     except CampaignError as exc:
         return _redirect("/campaigns", err=str(exc))
     except Exception:
@@ -473,7 +493,10 @@ def imports_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespons
 
     staged_dir = get_settings().staged_uploads_dir
     staged_entries = staging.list_staged_uploads(staged_dir)
-    campaign_names = {str(row.campaign.id): row.campaign.name for row in list_campaigns(db)}
+    campaign_names = {
+        str(row.campaign.id): row.campaign.name
+        for row in list_campaigns(db, actor=actor_from_request(request))
+    }
     staged_with_names = [(entry, campaign_names.get(entry.campaign_id)) for entry in staged_entries]
 
     return _render(
@@ -500,7 +523,7 @@ def import_new_page(request: Request, db: Session = Depends(get_db)) -> HTMLResp
         db,
         "import_new.html",
         {
-            "campaigns": list_campaigns(db),
+            "campaigns": list_campaigns(db, actor=actor_from_request(request)),
             "preselect_campaign": request.query_params.get("campaign_id"),
             "max_upload_bytes": get_settings().max_upload_bytes,
             "active_nav": "imports",
@@ -1615,7 +1638,7 @@ def contacts_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespon
             # Offered so a selection made here can be enrolled without leaving
             # the page. The list is still not required to view a contact: an
             # empty list simply hides the enrolment bar.
-            "campaigns": list_campaigns(db),
+            "campaigns": list_campaigns(db, actor=actor_from_request(request)),
             "active_nav": "contacts",
             "page_title": "Contacts",
         },
@@ -1639,6 +1662,9 @@ async def contacts_add_to_campaign(request: Request, db: Session = Depends(get_d
     campaign_id = _parse_uuid(str(form.get("campaign_id", "")))
     if campaign_id is None:
         return _redirect("/contacts", err="Choose a campaign to add the selected contacts to.")
+    # The campaign arrives in the form body, so the router-level path guard does
+    # not see it. Enrolment is a write into somebody's campaign; check it here.
+    campaign_access.require_campaign_access(db, campaign_id, actor_from_request(request))
 
     selected: list[uuid.UUID] = []
     for raw in form.getlist("contact_ids"):
@@ -3395,7 +3421,9 @@ def knowledge_base_offering_detail_page(
                 for record in seller_records.list_personas(db)
                 if record.id not in linked_ids["persona"]
             ],
-            "campaigns": seller_campaign_offerings.campaigns_for_offering(db, offering.id),
+            "campaigns": seller_campaign_offerings.campaigns_for_offering(
+                db, offering.id, actor=actor_from_request(request)
+            ),
         },
     )
 
