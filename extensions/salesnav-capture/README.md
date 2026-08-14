@@ -72,10 +72,12 @@ Minimum Chrome version: 116 (side panel API).
 | `sidePanel` | The review/controls UI |
 | `downloads` | JSON / CSV export |
 | `activeTab` + `scripting` | Inject the reader into the current tab if needed |
+| `identity` | `launchWebAuthFlow` for the one-click VMR Outbound sign-in that links this install to the operator's own account (see below) |
 | host `https://www.linkedin.com/sales/*` (required) | Read the results page the operator opened (read-only), narrowly scoped |
 | host `https://www.linkedin.com/in/*` (required, DAT-012) | Read the MAIN profile page the operator opened (read-only) |
 | host `https://www.linkedin.com/company/*` (required, DAT-012) | Read the company page the operator opened (read-only) |
-| host `http://127.0.0.1/*`, `http://localhost/*` (**optional**) | POST the submission to the local VMR backend / mock receiver, and read the label list and the existence-only lookup |
+| host the named hosted VMR deployment (**optional**) | POST the submission to the product's hosted backend and read the label list, campaigns and the existence-only lookup, under the account link |
+| host `http://127.0.0.1/*`, `http://localhost/*` (**optional**) | The same four routes against a local VMR backend / mock receiver, for development |
 
 The loopback hosts are declared as **optional** host permissions and are
 **requested explicitly, with a user gesture, before the first backend/mock
@@ -86,10 +88,40 @@ denied evidence in `docs/screenshots/` (`02_side_panel.png`,
 analytics, no third-party hosts. LinkedIn is a read surface; the extension never
 POSTs to it.
 
+## Connecting to VMR Outbound
+
+There is nothing to configure and nothing to paste. Captures go to VM
+Prospector's own hosted deployment, authorised by the operator's **own VMR
+Outbound account**:
+
+1. Open the panel. If the operator is already signed in to VMR Outbound and this
+   install is approved, it links itself silently — no window, no click.
+2. Otherwise the panel offers one action: **Sign in to VMR Outbound**. That runs
+   a first-party PKCE authorization-code flow through
+   `chrome.identity.launchWebAuthFlow`; VMR's own sign-in and consent pages are
+   the only thing the operator sees.
+3. The install then holds a short-lived access token (`vmre1.…`, in
+   `chrome.storage.session`, memory only) and a rotating refresh token
+   (`vmrr1.…`, in `chrome.storage.local`). **A Chrome restart re-authorizes from
+   the refresh token alone** — no re-entry of anything, ever.
+4. **Disconnect** on the connection screen revokes the link server-side.
+
+No shared secret is shown to, typed by, or stored for the operator. The refresh
+token is bound to one VMR user, one approved extension id and one installation
+id; the server rotates it on every use and revokes the link if an old one is
+replayed. `test/account-linking.test.js` holds all of this closed.
+
+The legacy `vmrx1` shared capture credential and the backend/mock target fields
+remain **only** behind a development gate: an object at `chrome.storage.local`
+key `vmr_dev_overrides` with `enabled: true`. Nothing in the extension writes
+that key — no control, no message — so it can only be created by hand from the
+extension's own devtools console on an unpacked build, and an ordinary
+staging/production install can neither see nor reach any of it.
+
 ## The side panel (VM Prospector)
 
 One shell, three automatically detected interfaces, and one dominant action per
-step. The shell is: header (product, connection state, settings) · detected-page
+step. The shell is: header (product, connection state, connection screen) · detected-page
 strip · three-step rail · one scrolling body · one sticky action footer.
 Designed at 360px, fluid from 320 to ~520.
 
@@ -100,7 +132,8 @@ Designed at 360px, fluid from 320 to ~520.
 | 3 | Saving → outcome | Saving → outcome | Saving → outcome |
 
 Shared states: classifying the page, unsupported page, sign-in / security check,
-page unavailable, loopback permission needed, archived drafts, settings.
+page unavailable, loopback permission needed, archived drafts, sign-in needed,
+connection screen.
 
 The listing read pass is **operator-cancellable** (DAT-018 D). While it runs the
 panel shows the rows loaded so far and a *Stop reading this page* control, which

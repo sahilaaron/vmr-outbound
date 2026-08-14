@@ -42,11 +42,20 @@ from app.core.auth.context import (
 from app.core.auth.extension import (
     EXTENSION_CREDENTIAL_LABEL,
     EXTENSION_KEY_ID_STATE_KEY,
+    EXTENSION_USER_ID_STATE_KEY,
     ExtensionAuthSettings,
     authenticate_capture_request,
     capture_preflight_headers,
+    is_contract_request,
+    single_request_origin,
+)
+from app.core.auth.extension_link import (
+    ExtensionLinkDirectory,
+    ExtensionLinkUnavailable,
+    authorize_capture_request,
 )
 from app.core.auth.policy import (
+    EXTENSION_LINK_PUBLIC_PATHS,
     REDIRECTABLE_METHODS,
     is_admin_only_request,
     is_anonymous_path,
@@ -268,9 +277,20 @@ class OperatorAuthenticationMiddleware:
         settings: AuthSettings,
         extension_settings: ExtensionAuthSettings | None = None,
         account_directory: AccountDirectory | None = None,
+        extension_link_directory: ExtensionLinkDirectory | None = None,
+        app_env: str | None = None,
     ) -> None:
         self.app = app
         self.settings = settings
+        # The legacy `vmrx1` shared capture credential is development
+        # compatibility and nothing else. It verifies only when this deployment
+        # says it is local, so a credential that leaks out of a developer's
+        # machine — or one still listed in a hosted environment file after the
+        # move to account linking — is worth exactly nothing against staging or
+        # production. `None` (an unknown environment) is *not* local: the
+        # unstated case has to be the closed one.
+        self.app_env = (app_env or "").strip().lower()
+        self.legacy_credentials_enabled = self.app_env == "local"
         # The account directory is a seam for the same reason `IdentityProvider`
         # is: the boundary must be testable without a database, and the live
         # implementation must not be constructed at import time. `None` here means
@@ -283,6 +303,12 @@ class OperatorAuthenticationMiddleware:
         # two are configured separately, revoked separately, and must never be
         # able to satisfy each other.
         self.extension_settings = extension_settings or ExtensionAuthSettings()
+        # The account-linked extension authority, resolved through the same kind
+        # of lazy, injectable seam as `AccountDirectory` above and for the same
+        # two reasons: importing this module must not open a connection, and the
+        # boundary must be exercisable without a database.
+        self._extension_link_directory = extension_link_directory
+        self._extension_link_directory_resolved = extension_link_directory is not None
         self.codec = (
             SessionCodec(settings.session_secret or "")
             if settings.enabled and settings.has_session_secret()
@@ -351,9 +377,26 @@ class OperatorAuthenticationMiddleware:
         # account row. Answering 503 to a perfectly valid capture merely because
         # the same browser also carried a stale session cookie would be an outage
         # invented out of an irrelevant fact.
-        extension_key = authenticate_capture_request(
-            scope, self.extension_settings, path=path, method=method
-        )
+        try:
+            extension_key, extension_user_id = self._resolve_extension(
+                scope, path=path, method=method
+            )
+        except ExtensionLinkUnavailable:
+            # A presented `vmre1` token that could not be checked. Refused, and
+            # refused as *unknown* rather than as *unauthorized*: telling the
+            # extension its link is dead would make it discard a perfectly good
+            # refresh token and demand a human sign-in over a database blip.
+            await self._respond(
+                scope,
+                send,
+                status=503,
+                error="extension_link_unavailable",
+                message=(
+                    "This extension authorization could not be verified right now. "
+                    "This is temporary — try again in a moment."
+                ),
+            )
+            return
 
         if outcome == _DIRECTORY_UNAVAILABLE and extension_key is None:
             # The account directory could not answer. This is *unknown*, not
@@ -387,6 +430,7 @@ class OperatorAuthenticationMiddleware:
             session = None
             account = None
         state[EXTENSION_KEY_ID_STATE_KEY] = extension_key
+        state[EXTENSION_USER_ID_STATE_KEY] = extension_user_id
         state["auth_credential"] = (
             EXTENSION_CREDENTIAL_LABEL
             if extension_key is not None
@@ -427,6 +471,7 @@ class OperatorAuthenticationMiddleware:
             if (
                 extension_key is None
                 and not is_safe_method(method)
+                and not self._is_extension_link_call(scope, path)
                 and _is_cross_site(scope, self.settings)
             ):
                 # Skipped for an authenticated extension write on purpose. This
@@ -492,6 +537,76 @@ class OperatorAuthenticationMiddleware:
             reset_current_operator(operator_token)
 
     # --- internals ----------------------------------------------------------
+
+    def _resolve_extension(
+        self, scope: Scope, *, path: str, method: str
+    ) -> tuple[str | None, str | None]:
+        """The extension credential authorising this request, if any.
+
+        Two schemes, one contract, and the contract is checked first for both so
+        that neither can widen it. Order matters only in that an explicitly
+        presented account-linked token is resolved before the legacy credential
+        is even considered — the two token formats cannot be confused (each
+        parser refuses the other's version segment), so this is about not doing
+        database work for a request that carries a ``vmrx1`` header.
+
+        ``vmrx1`` is additionally gated on this being a local deployment. In a
+        hosted environment it verifies nothing, which is the whole point: no
+        reusable shared secret may authorise a hosted capture.
+        """
+
+        if not is_contract_request(path, method):
+            return None, None
+
+        link = authorize_capture_request(
+            scope,
+            self.extension_settings,
+            self._link_directory() if self.extension_settings.link_enabled else None,
+            method=method,
+        )
+        if link is not None:
+            return link.key_id, str(link.user_id)
+
+        if not self.legacy_credentials_enabled:
+            return None, None
+        return (
+            authenticate_capture_request(scope, self.extension_settings, path=path, method=method),
+            None,
+        )
+
+    def _is_extension_link_call(self, scope: Scope, path: str) -> bool:
+        """Whether this is one of the two link endpoints an extension calls directly.
+
+        The cross-site backstop above exists to stop a *browser* replaying an
+        ambient cookie from another site, and it compares ``Origin`` against this
+        site's own origin — which a legitimate ``chrome-extension://`` caller can
+        never match. These two endpoints are called by the extension's service
+        worker with no cookie at all, so the backstop would refuse every one of
+        them for a property they cannot have.
+
+        The exemption is deliberately narrow in three ways at once: two exact
+        paths, only while account linking is switched on, and only for a request
+        whose ``Origin`` is an approved extension install. It grants no
+        authority — each endpoint still has to verify a code, a refresh secret or
+        an access token before it does anything.
+        """
+
+        if not self.extension_settings.link_enabled:
+            return False
+        if normalize_request_path(path) not in EXTENSION_LINK_PUBLIC_PATHS:
+            return False
+        return self.extension_settings.is_allowed_origin(single_request_origin(scope))
+
+    def _link_directory(self) -> ExtensionLinkDirectory:
+        """The extension link directory, resolved once and then reused."""
+
+        if not self._extension_link_directory_resolved:
+            from app.core.auth.extension_link import default_extension_link_directory
+
+            self._extension_link_directory = default_extension_link_directory()
+            self._extension_link_directory_resolved = True
+        assert self._extension_link_directory is not None
+        return self._extension_link_directory
 
     def _directory(self) -> AccountDirectory:
         """The account directory, resolved once and then reused.

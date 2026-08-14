@@ -1034,6 +1034,9 @@
     const state = await send({ type: "PROFILE_GET_STATE" });
     if (state && state.ok) {
       panel.setPrefs(state.prefs);
+      // The link state travels with every state read, so the sign-in prompt is
+      // right on a profile page opened first, not only on the listings path.
+      if (state.account) panel.renderAccount(state.account);
       if (state.metadata) panel.setMetadata(state.metadata);
       if (state.filingContext) panel.setFilingContext(state.filingContext);
       renderDraft(state.draftView);

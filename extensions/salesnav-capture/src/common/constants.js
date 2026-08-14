@@ -68,21 +68,6 @@
     LAST_RESULT: "sn_last_stage_result",
   };
 
-  // Default, overridable operator preferences. No secrets or remote URLs.
-  // Optional Campaign filing is stored separately from acquisition preferences.
-  const DEFAULT_PREFERENCES = {
-    // Local VMR backend base URL. Loopback only by default.
-    backendBaseUrl: "http://127.0.0.1:8000",
-    // Where a "Save" goes during development: "mock" | "backend".
-    sendTarget: "mock",
-    // Mock/local receiver used only for testing the send flow.
-    mockReceiverUrl: "http://127.0.0.1:8787/api/intake/contact-captures",
-    maxRecordsPerBatch: 500,
-    // Labels the operator most recently applied, offered again next time. Plain
-    // names only — the backend owns the canonical label registry.
-    recentLabels: [],
-  };
-
   // The hosted VMR deployments this extension may send to, named exactly. There
   // is no pattern, no wildcard and no operator-typed hostname here on purpose:
   // a send target is where reviewed personal data goes, and "whatever the
@@ -112,13 +97,87 @@
     /^https:\/\/srv1885453\.hstgr\.cloud$/,
   ];
 
-  // ---- Hosted capture credential (Beta) --------------------------------------
+  // Product-configured operator preferences.
   //
-  // A hosted VMR deployment is on the Internet, so the intake it exposes is
-  // authenticated. The credential is a VMR-application bearer secret issued per
-  // install: it is NOT the operator's hosted sign-in cookie, NOT a Google token,
-  // and NOT a Gmail grant. It authorises one thing — submitting captures on the
-  // enumerated intake contract — and it is revocable server-side by key id.
+  // `backendBaseUrl` is NOT an operator field. The hosted deployment above is
+  // the product default and the ordinary panel has no control that can change
+  // it; only the development override (see DEV_OVERRIDES below) can, and that
+  // override cannot be reached from any shipped UI. `sendTarget`/`mockReceiverUrl`
+  // exist for the same development path — the ordinary default sends captures to
+  // the product's hosted backend, authorised by the operator's own account link.
+  const DEFAULT_PREFERENCES = {
+    backendBaseUrl: HOSTED_BACKEND_ORIGINS[0],
+    // "backend" | "mock". "mock" is reachable only under a development override.
+    sendTarget: "backend",
+    // Development-only receiver (tools/mock-receiver.js). Never used unless a
+    // development override switches `sendTarget` to "mock".
+    mockReceiverUrl: "http://127.0.0.1:8787/api/intake/contact-captures",
+    maxRecordsPerBatch: 500,
+    // Labels the operator most recently applied, offered again next time. Plain
+    // names only — the backend owns the canonical label registry.
+    recentLabels: [],
+  };
+
+  // ---- Account link (PKCE authorization code, first-party) --------------------
+  //
+  // Hosted capture is authorised by the operator's own VMR Outbound account, not
+  // by a shared secret anybody types. The extension runs a PKCE authorization-code
+  // flow against the hosted app through `chrome.identity.launchWebAuthFlow`, and
+  // holds two opaque, rotating, DB-backed tokens:
+  //
+  //   access token   `vmre1.<session id>.<secret>`  ~15 minutes, held in
+  //                  `chrome.storage.session` (memory only, never on disk)
+  //   refresh token  `vmrr1.<session id>.<secret>`  ~30 days, ROTATES on every
+  //                  use, held in `chrome.storage.local` so a browser restart
+  //                  restores access with no human action
+  //
+  // A refresh token is not a shared secret: it belongs to exactly one install,
+  // is replaced on every use (a replay revokes the link server-side), and is
+  // never shown to or typed by anybody.
+  const ACCOUNT_LINK_PATHS = {
+    AUTHORIZE: "/extension/authorize",
+    TOKEN: "/extension/token",
+    REVOKE: "/extension/revoke",
+  };
+
+  const ACCOUNT_LINK = {
+    SCOPE: "capture",
+    // Refresh rather than gamble when this little of the access token's life is
+    // left, so a request never races its own expiry.
+    MIN_ACCESS_REMAINING_MS: 60000,
+    // Only used if the server omits `expires_in`; the server is authoritative.
+    FALLBACK_ACCESS_TTL_SECONDS: 900,
+    ACCESS_TOKEN_SCHEME: "vmre1",
+    REFRESH_TOKEN_SCHEME: "vmrr1",
+    // The extension's own redirect target, as `chrome.identity` mints it.
+    REDIRECT_HOST_SUFFIX: ".chromiumapp.org",
+  };
+
+  const ACCOUNT_STORAGE = {
+    // chrome.storage.local, non-secret: a stable per-install id so one VMR user
+    // can link several browsers and revoke them individually.
+    INSTALLATION_ID: "vmr_installation_id",
+    // chrome.storage.local: { sessionId, refreshToken, accountEmail, scope,
+    // linkedAt }. Persisted deliberately — this is what makes a browser restart
+    // require nothing from the operator.
+    ACCOUNT_LINK: "vmr_account_link",
+    // chrome.storage.session: { accessToken, expiresAt }. Never written to disk.
+    ACCESS_TOKEN: "vmr_access_token",
+    // chrome.storage.local: the development override gate. Nothing in any
+    // shipped UI writes this key, and no message handler sets it: it can only be
+    // created by hand from the extension's own devtools console on an unpacked
+    // build. An ordinary staging/production install can never reach it.
+    DEV_OVERRIDES: "vmr_dev_overrides",
+  };
+
+  // ---- Legacy `vmrx1` capture credential (development compatibility only) -----
+  //
+  // Superseded by the account link above. The backend keeps parsing this scheme
+  // only when APP_ENV=local, so it is retained here for local/development
+  // compatibility and for `test/config-parity.test.js`, which proves the two
+  // definitions of the scheme cannot drift. It is NOT part of the ordinary path:
+  // no shipped panel control sets it, the worker refuses to store one unless the
+  // development override is present, and hosted capture never depends on it.
   //
   // Presented as `Authorization: Bearer vmrx1.<key_id>.<secret>`.
   const CREDENTIAL_SCHEME = "vmrx1";
@@ -127,14 +186,9 @@
   // authority on whether a credential is real.
   const CREDENTIAL_PATTERN = /^vmrx1\.[a-z0-9][a-z0-9._-]{0,62}\.[A-Za-z0-9_-]{32,}$/;
 
-  // Where the credential lives: `chrome.storage.session`, not `local`.
-  //
-  // `session` is in-memory for the browser session, is never written to disk,
-  // and defaults to TRUSTED_CONTEXTS — so no content script running on a
-  // LinkedIn page can read it even if that page is hostile. The cost is real and
-  // deliberate: the operator re-enters the credential after a Chrome restart.
-  // For an internal Beta credential that is the right trade, and the settings
-  // screen says so plainly rather than letting it look like a bug.
+  // Where the legacy credential lives when a developer sets one:
+  // `chrome.storage.session`, never `local`. In-memory for the browser session,
+  // never written to disk, and unreadable from a content script.
   const CREDENTIAL_STORAGE = {
     CAPTURE_CREDENTIAL: "vmr_capture_credential",
   };
@@ -272,6 +326,9 @@
     STORAGE,
     PROFILE_STORAGE,
     CONTACT_STORAGE,
+    ACCOUNT_STORAGE,
+    ACCOUNT_LINK,
+    ACCOUNT_LINK_PATHS,
     CREDENTIAL_STORAGE,
     CREDENTIAL_SCHEME,
     CREDENTIAL_PATTERN,

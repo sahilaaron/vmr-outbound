@@ -177,29 +177,29 @@
     };
   }
 
-  // A hosted refusal is about the CREDENTIAL, and the operator can only act if
-  // they are told which of the three things went wrong. The backend answers all
-  // three with a deliberately identical body — it must not tell a caller whether
-  // a key id exists — so the classification here is by status, and each message
-  // names every cause rather than guessing one.
+  // A hosted refusal is about this install's AUTHORIZATION, and the operator can
+  // only act if they are told which of the causes went wrong. The backend answers
+  // all of them with a deliberately identical body — it must not tell a caller
+  // whether a session id exists — so the classification here is by status, and
+  // each message names every cause rather than guessing one.
   //
-  //   401: the middleware saw no usable credential — absent, malformed, wrong
-  //        secret, or revoked.
-  //   403: the credential verified but this request is not authorised — a
+  //   401: the middleware saw no usable authorization — expired, revoked, or (on
+  //        a development install) a missing/wrong legacy credential.
+  //   403: the authorization verified but this request is not permitted — a
   //        deployment whose approved-origin list does not name this install, or
   //        a route outside the capture contract.
   const CREDENTIAL_STATUS_MESSAGES = {
     401: {
-      headline: "Hosted VMR did not accept the capture credential.",
+      headline: "Hosted VMR did not accept this install's authorization.",
       detail:
-        "It may be missing, mistyped, or revoked. Re-paste it in Settings; if it still " +
-        "fails, ask for a new one.",
+        "The account link may have expired or been revoked. Sign in to VMR Outbound " +
+        "again from the connection panel, then retry.",
     },
     403: {
       headline: "Hosted VMR refused this extension.",
       detail:
-        "The credential was read but this install is not approved for capture. Send the " +
-        "extension ID from Settings so it can be added, then retry.",
+        "The authorization was read but this extension ID is not approved for capture. " +
+        "Ask whoever administers the deployment to approve it, then retry.",
     },
   };
 
@@ -235,19 +235,63 @@
         return { code: "origin_not_allowed", headline: "Send target must be loopback (127.0.0.1 / localhost) or an approved VMR deployment.", detail: "", canRetry: false };
       case "permission_denied":
         return { code: "permission_denied", headline: "Access to the send target was not granted. Approve the permission prompt, then retry.", detail: "", canRetry: true };
+      // The account link, not a credential: nothing was sent, and the same
+      // reviewed draft retries unchanged after one sign-in.
+      case "account_link_required":
+        return {
+          code: "account_link_required",
+          headline: "Sign in to VMR Outbound to capture.",
+          detail:
+            "VM Prospector saves into your own VMR Outbound account. Signing in takes one " +
+            "click and is remembered — including after you restart Chrome.",
+          canRetry: true,
+        };
+      case "account_link_unavailable":
+        return {
+          code: "account_link_unavailable",
+          headline: "VMR Outbound could not authorise this capture just now.",
+          detail: "Nothing was sent. Try again shortly.",
+          canRetry: true,
+        };
+      case "sign_in_failed":
+        return {
+          code: "sign_in_failed",
+          headline: "Sign-in did not complete.",
+          detail: "The window was closed, or VMR Outbound declined this install. Try again.",
+          canRetry: true,
+        };
+      case "account_link_not_hosted":
+        return {
+          code: "account_link_not_hosted",
+          headline: "This install is pointed at a development backend.",
+          detail: "Account linking applies to hosted VMR only.",
+          canRetry: false,
+        };
+      // Development path only: the gate is on, and neither an account link nor a
+      // legacy credential is configured. An ordinary install cannot reach this —
+      // it is told to sign in instead.
       case "credential_missing":
         return {
           code: "credential_missing",
-          headline: "Hosted VMR needs a capture credential.",
-          detail: "Open Settings, paste the credential you were issued, then save again.",
+          headline: "This development install has no capture credential.",
+          detail:
+            "Sign in to VMR Outbound, or set a credential under the development overrides " +
+            "in Settings, then save again.",
           // Nothing was sent, and the same reviewed draft retries unchanged once
-          // the credential is in place.
+          // one of the two is in place.
           canRetry: true,
         };
       case "credential_malformed":
         return { code: "credential_malformed", headline: "That does not look like a VMR capture credential.", detail: "It should start with \"vmrx1.\". Copy the whole line you were issued.", canRetry: false };
       case "credential_storage_unavailable":
         return { code: "credential_storage_unavailable", headline: "This browser cannot hold the capture credential securely.", detail: "Chrome 116 or newer is required.", canRetry: false };
+      case "dev_mode_required":
+        return {
+          code: "dev_mode_required",
+          headline: "Capture credentials belong to development builds only.",
+          detail: "This install captures under your VMR Outbound account instead.",
+          canRetry: false,
+        };
       case "company_capture_local_only":
         return { code: "company_capture_local_only", headline: "Company evidence capture is local-backend only.", detail: "Contact capture works against hosted VMR; company evidence does not yet.", canRetry: false };
       // `timeout` and `network_error` describe the transport, not the target.

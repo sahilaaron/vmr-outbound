@@ -20,6 +20,11 @@ const BACKGROUND = path.join(__dirname, "..", "src", "background");
  *   tabs: array of tab objects returned by chrome.tabs.query
  *   onTabMessage: (tabId, message) => response | throws  (the content script)
  *   storage: initial chrome.storage.local contents
+ *   sessionStorage: initial chrome.storage.session contents (null = no such API)
+ *   onAuthFlow: (details) => redirect URL | throws  (chrome.identity, the
+ *     hosted app's authorize endpoint and its redirect back to the extension).
+ *     Absent means the flow cannot complete — which is exactly what a browser
+ *     with nobody signed in does to `{interactive:false}`.
  */
 function createWorker(options) {
   const o = options || {};
@@ -55,6 +60,9 @@ function createWorker(options) {
   }
 
   const listeners = { message: [], installed: [], startup: [] };
+  // Every launchWebAuthFlow the worker attempted, so a test can assert that a
+  // restart re-authorized with ZERO prompts rather than merely that it worked.
+  const authFlows = [];
 
   function addListener(bucket) {
     return { addListener: (fn) => listeners[bucket].push(fn) };
@@ -94,8 +102,25 @@ function createWorker(options) {
       },
     },
     permissions: {
-      contains: () => Promise.resolve(true),
-      request: () => Promise.resolve(true),
+      // `hostPermission: false` models an operator who has not approved the
+      // optional origin yet — the worker never requests one itself.
+      contains: () => Promise.resolve(o.hostPermission !== false),
+      request: () => Promise.resolve(o.hostPermission !== false),
+    },
+    identity: {
+      // Exactly what Chrome mints for an extension: the id it was loaded under.
+      getRedirectURL: () => "https://test-extension.chromiumapp.org/",
+      launchWebAuthFlow: (details) => {
+        authFlows.push(details);
+        if (!o.onAuthFlow) {
+          return Promise.reject(new Error("user interaction required"));
+        }
+        try {
+          return Promise.resolve(o.onAuthFlow(details));
+        } catch (e) {
+          return Promise.reject(e);
+        }
+      },
     },
     downloads: { download: () => Promise.resolve(1) },
     sidePanel: { setPanelBehavior: () => Promise.resolve() },
@@ -151,7 +176,7 @@ function createWorker(options) {
     });
   }
 
-  return { chrome, dispatch, store, sessionStore, tabMessages, injected, sandbox };
+  return { chrome, dispatch, store, sessionStore, tabMessages, injected, authFlows, sandbox };
 }
 
 const SALES_TAB = {
@@ -161,4 +186,39 @@ const SALES_TAB = {
   title: "Search",
 };
 
-module.exports = { createWorker, SALES_TAB };
+const constants = require("../src/common/constants.js");
+
+/**
+ * What `chrome.storage` looks like on an install that is already linked to a
+ * VMR Outbound account: a rotating refresh token on disk, a live access token in
+ * memory. This is the ordinary state of a working install, so any test whose
+ * subject is NOT authorization starts from it rather than re-deriving it.
+ *
+ * `expiresInMs: 0` models the state right after a browser restart — the access
+ * token is gone and only the persisted refresh token remains.
+ */
+function linkedAccount(options) {
+  const o = options || {};
+  const expiresInMs = o.expiresInMs === undefined ? 15 * 60 * 1000 : o.expiresInMs;
+  const local = {
+    [constants.ACCOUNT_STORAGE.INSTALLATION_ID]: o.installationId || "11111111-2222-4333-8444-555555555555",
+    [constants.ACCOUNT_STORAGE.ACCOUNT_LINK]: {
+      sessionId: o.sessionId || "0123456789abcdef0123456789abcdef",
+      refreshToken: o.refreshToken || "vmrr1.0123456789abcdef0123456789abcdef.RefreshSecretAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      accountEmail: o.accountEmail || "operator@example.com",
+      scope: "capture",
+      linkedAt: "2026-01-01T00:00:00.000Z",
+    },
+  };
+  const session = {};
+  if (expiresInMs > 0) {
+    session[constants.ACCOUNT_STORAGE.ACCESS_TOKEN] = {
+      accessToken:
+        o.accessToken || "vmre1.0123456789abcdef0123456789abcdef.AccessSecretAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      expiresAt: Date.now() + expiresInMs,
+    };
+  }
+  return { local, session };
+}
+
+module.exports = { createWorker, SALES_TAB, linkedAccount };

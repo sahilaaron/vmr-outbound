@@ -50,6 +50,23 @@
 
       <!-- ============ body ============ -->
       <main class="app-body" id="app-body">
+        <!-- Shown ONLY when this install is not linked to a VMR Outbound
+             account. That is the single action an operator ever takes to set
+             the extension up, and it appears above whatever they are doing
+             because nothing can be saved until it is done. Once linked it never
+             appears again — not after a restart, not after a token expires. -->
+        <section class="callout" data-tone="warning" id="signin-card" hidden>
+          <span class="eyebrow step-label">Connect to VMR Outbound</span>
+          <div class="callout-body" id="signin-message">
+            Sign in once to save captured contacts into your VMR Outbound account.
+          </div>
+          <div class="badge-row">
+            <button id="signin-btn" class="btn btn-sm" type="button">
+              Sign in to VMR Outbound
+            </button>
+          </div>
+        </section>
+
         <!-- Shown ONLY while campaign-era drafts are still recoverable from
              local storage. Downloading them is the only way to get them back,
              so this is a required operator action, not a status notice. -->
@@ -288,52 +305,38 @@
           </div>
         </section>
 
-        <!-- ---- S7 · settings and help ---- -->
+        <!-- ---- S7 · connection ----
+             There is nothing to configure: captures go to VM Prospector's own
+             hosted deployment, authorised by the operator's VMR Outbound
+             account. This screen states which account that is and offers the
+             only two actions that exist — connect, and disconnect.
+
+             The development overrides are NOT in this markup on purpose. They
+             are built by sidepanel.js into #dev-settings, and only when the
+             development gate is present, so an ordinary panel carries no trace
+             of them in its DOM — not even in a comment. -->
         <section class="view" data-view="settings" id="settings" hidden>
-          <div class="field">
-            <label class="field-label" for="send-target">Where captures go</label>
-            <select id="send-target">
-              <option value="mock">Mock receiver (test)</option>
-              <option value="backend">Local VMR backend</option>
-            </select>
-          </div>
-          <div class="field">
-            <label class="field-label" for="backend-url">VMR backend base URL</label>
-            <input id="backend-url" class="input" type="text" placeholder="http://127.0.0.1:8000" />
-          </div>
-          <div class="field">
-            <label class="field-label" for="capture-credential">
-              Hosted capture credential
-            </label>
-            <input
-              id="capture-credential"
-              class="input"
-              type="password"
-              autocomplete="off"
-              spellcheck="false"
-              placeholder="vmrx1.…"
-            />
-            <div class="badge-row">
-              <span class="v" id="credential-state">Not set</span>
-              <button id="credential-save" class="btn btn-sm" type="button">Set</button>
-              <button id="credential-clear" class="btn btn-sm" type="button">Clear</button>
+          <div class="box" id="account-card">
+            <div class="line">
+              <span class="t" id="account-state">Checking your VMR Outbound connection…</span>
+              <span id="account-badge"></span>
             </div>
-            <p id="credential-feedback" class="p tiny muted" aria-live="polite">
-              Needed only for a hosted VMR backend. Held in memory for this browser session
-              only — Chrome clears it on restart, so it is entered again next time.
+            <div class="kv">
+              <span class="k">Signed in as</span>
+              <span class="v" id="account-email">—</span>
+            </div>
+            <p class="p tiny muted" id="account-note">
+              Captures are saved into your own VMR Outbound account. The connection is
+              remembered, including after you restart Chrome.
             </p>
-          </div>
-          <div class="field">
-            <span class="field-label">This extension's ID</span>
-            <p class="p tiny mono" id="extension-id">unknown</p>
-            <p class="p tiny muted">
-              Hosted VMR accepts captures only from approved extension IDs. Send this one to
-              whoever configures the deployment.
-            </p>
-          </div>
-          <div class="field">
-            <label class="field-label" for="mock-url">Mock receiver URL</label>
-            <input id="mock-url" class="input" type="text" placeholder="http://127.0.0.1:8787/…" />
+            <div class="badge-row">
+              <button id="account-connect" class="btn btn-sm" type="button" hidden>
+                Sign in to VMR Outbound
+              </button>
+              <button id="account-disconnect" class="linkbtn muted" type="button" hidden>
+                Disconnect
+              </button>
+            </div>
           </div>
           <div class="field">
             <label class="field-label" for="max-records">Most prospects per batch</label>
@@ -346,13 +349,14 @@
             </div>
             <div class="kv">
               <span class="k">Version</span>
-              <span class="v mono" id="settings-version">2.0.0</span>
+              <span class="v mono" id="settings-version">2.1.0</span>
             </div>
           </div>
+          <div id="dev-settings" hidden></div>
           <p class="p tiny muted">
-            Only loopback origins and approved VMR deployments are permitted. No LinkedIn
-            credential, cookie, or session is ever read or stored. Nothing is transmitted
-            without pressing Save.
+            Captures go only to the approved VM Prospector deployment. No LinkedIn credential,
+            cookie, or session is ever read or stored. Nothing is transmitted without pressing
+            Save.
           </p>
         </section>
 

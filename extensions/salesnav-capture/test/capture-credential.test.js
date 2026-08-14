@@ -1,18 +1,27 @@
 "use strict";
 /**
- * The hosted capture credential, exercised through the REAL service worker.
+ * The LEGACY `vmrx1` capture credential, exercised through the REAL service
+ * worker.
  *
- * Three properties are worth a test here, and they are the three that would be
+ * Hosted capture is authorised by the operator's VMR Outbound account link now
+ * (test/account-linking.test.js owns that). This file keeps the legacy path
+ * honest, because it still exists for local/development compatibility, and adds
+ * the property that makes it safe to keep at all: it is unreachable without the
+ * development gate.
+ *
+ * Four properties are worth a test here, and they are the ones that would be
  * silently wrong if this were only reviewed by eye:
  *
- *  1. The credential is attached to a hosted request and to nothing else. A
+ *  1. It is refused outright on an ordinary install. No gate, no credential —
+ *     an operator cannot store one, so there is no shared secret to leak.
+ *  2. Behind the gate it is attached to a hosted request and to nothing else. A
  *     loopback send must stay byte-identical to what it was, because local
  *     development has no authenticated intake and quietly starting to send an
  *     `Authorization` header there would be a behaviour change nobody asked for.
- *  2. The credential never leaves the worker except in that header. The panel
+ *  3. The credential never leaves the worker except in that header. The panel
  *     is told whether one is held and never what it is, so there is nothing for
  *     the DOM, a screenshot or a stored draft to carry.
- *  3. It lives in `chrome.storage.session`, not `local`. The harness models the
+ *  4. It lives in `chrome.storage.session`, not `local`. The harness models the
  *     two areas separately precisely so this can be asserted rather than
  *     assumed.
  */
@@ -25,6 +34,12 @@ const handoff = require("../src/common/handoff.js");
 const HOSTED_BASE = constants.HOSTED_BACKEND_ORIGINS[0];
 const LOOPBACK_BASE = "http://127.0.0.1:8000";
 const CREDENTIAL = "vmrx1.beta-laptop.3fVQx8Zk2nLp7Rw6TyUiOaSdFgHjKlZxCvBnM4qWeRt";
+
+// The one thing that unlocks the legacy path: an object written by hand at
+// `chrome.storage.local` key `vmr_dev_overrides`. Nothing in the extension ever
+// writes it — no panel control, no message handler — so an ordinary
+// staging/production install cannot reach any of the behaviour below.
+const DEV_GATE = { [constants.ACCOUNT_STORAGE.DEV_OVERRIDES]: { enabled: true } };
 
 /** One reviewed profile draft, enough for the worker to build a submission. */
 function profileDraft() {
@@ -55,7 +70,12 @@ function profileDraft() {
   };
 }
 
-/** A worker whose fetch records every call and answers with `response`. */
+/**
+ * A worker whose fetch records every call and answers with `response`.
+ *
+ * `dev: false` models an ordinary install; every other test in this file is
+ * about the developer path and therefore starts with the gate present.
+ */
 function workerWith(options) {
   const calls = [];
   const o = options || {};
@@ -69,6 +89,7 @@ function workerWith(options) {
         },
         [constants.PROFILE_STORAGE.DRAFT_PROFILE]: profileDraft(),
       },
+      o.dev === false ? {} : DEV_GATE,
       o.storage
     ),
     fetch: (url, init) => {
@@ -93,9 +114,38 @@ function authHeader(call) {
   return headers.Authorization || headers.authorization || null;
 }
 
-// --- 1. Which requests carry the credential ----------------------------------
+// --- 0. The gate: an ordinary install has no legacy path at all ---------------
 
-test("a hosted capture carries the credential as a bearer header", async () => {
+test("an ordinary install cannot store a legacy credential at all", async () => {
+  const { worker } = workerWith({ base: HOSTED_BASE, dev: false });
+  const set = await worker.dispatch({ type: "SET_CAPTURE_CREDENTIAL", credential: CREDENTIAL });
+  assert.equal(set.ok, false);
+  assert.equal(set.error, "dev_mode_required");
+  // Refused before storage is touched: there is no shared secret on this
+  // install to leak, expire, or have to re-enter after a restart.
+  assert.equal(JSON.stringify(worker.sessionStore), "{}");
+  const state = await worker.dispatch({ type: "GET_CREDENTIAL_STATE" });
+  assert.equal(state.hasCredential, false);
+  assert.equal(state.devMode, false);
+});
+
+test("an ordinary install ignores a legacy credential even if one is present", async () => {
+  // Belt and braces: a credential planted in session storage (an older build,
+  // a restored profile) must not authorise anything once the gate is gone.
+  const { worker, calls } = workerWith({
+    base: HOSTED_BASE,
+    dev: false,
+    sessionStorage: { [constants.CREDENTIAL_STORAGE.CAPTURE_CREDENTIAL]: CREDENTIAL },
+  });
+  const r = await worker.dispatch({ type: "SAVE_CONTACT", target: "backend" });
+  assert.equal(r.ok, false);
+  assert.equal(r.error, "account_link_required", JSON.stringify(r));
+  assert.equal(calls.length, 0, "nothing may be sent under a legacy credential");
+});
+
+// --- 1. Which requests carry the credential (development gate present) --------
+
+test("a hosted capture carries the development credential as a bearer header", async () => {
   const { worker, calls } = workerWith({
     base: HOSTED_BASE,
     sessionStorage: { [constants.CREDENTIAL_STORAGE.CAPTURE_CREDENTIAL]: CREDENTIAL },
