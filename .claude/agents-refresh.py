@@ -125,7 +125,9 @@ def main() -> int:
 
     total = sum(len(a["description"]) for a in manifest["agents"])
     print(f"library:  {library}")
-    print(f"selected: {len(manifest['agents'])} of {manifest['library_agent_count']} library agents")
+    selected = len(manifest["agents"])
+    library_count = manifest["library_agent_count"]
+    print(f"selected: {selected} of {library_count} library agents")
     print(f"combined description footprint: {total} chars (~{total // 4} tokens)")
 
     if not drift:
