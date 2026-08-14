@@ -121,7 +121,7 @@ Observed downstream state after capture recovery:
 
 The visible error `Company research is switched off for this deployment` is a real effective-state result, not a data/capture bug.
 
-A separate UAT operator-controls branch is being built to move ordinary operational controls into the Admin product surface rather than requiring VPS `.env` editing. Until that work merges and deploys, current live behavior remains environment/control-layer dependent.
+A separate UAT operator-controls branch has now completed implementation and local validation to move ordinary operational controls into the Admin product surface rather than requiring VPS `.env` editing. It is still unmerged and not live.
 
 ## 6. Authentication and users
 
@@ -132,7 +132,7 @@ Hosted access authority is the durable `users` table.
 - Accounts may use any working business or personal email address; they are not restricted to `verifiedmarketresearch.com`.
 - Google proves identity where used; the VMR user row grants access.
 - Password setup uses an admin-issued one-time link.
-- Current merged password minimum is still 15 characters; a UAT repair to reduce it to 8 is in development and is not yet current production behavior.
+- Current merged password minimum is still 15 characters; the completed operator-controls candidate reduces it to 8, but that behavior is not current until the branch is reconciled, reviewed, merged and deployed.
 
 PR #275 changes extension authorization so VM Prospector is linked to the operator's VMR account rather than a manually pasted shared capture credential. The user-facing extension documentation on `main` reflects this newer model.
 
@@ -162,24 +162,50 @@ Current product invariants remain:
 - no scheduler/polling/reply-detection sending loop exists in the current path;
 - Gmail draft creation is a handoff to the user's mailbox, after which the operator controls sending manually.
 
-## 9. Work currently in development, not yet current product truth
+## 9. Operator-controls candidate — completed, not yet current product truth
 
-Branch: `feat/uat-operator-controls`
+Branch: `feat/uat-operator-controls`  
+Original base: `d9750b008919bf2bfe42a848b0b454eeedd66f1f`  
+Candidate head: `a84d9800809836a5ff757431f471bbcedf2e1303`
 
-The active UAT repair is building three product changes:
+The candidate completed the requested UAT changes:
 
-1. reduce password minimum from 15 to 8 characters;
-2. campaign ownership and multi-user assignment, with Admin global visibility and normal-user campaign scoping;
-3. durable Admin-operated product controls for ordinary operational switches so normal operation does not require VPS `.env` edits.
+1. password minimum `15 → 8`, with max 256, Argon2id, rate limits, setup-link semantics and session invalidation unchanged;
+2. Campaign creator ownership plus multi-user assignment;
+3. Admin global Campaign visibility; USER visibility limited to Campaigns they created or were assigned;
+4. server-side campaign authorization across campaign-id, membership-id, draft/sequence and form/query seams;
+5. durable Admin-operated operational settings with an explicit classification of operator controls versus env/deployment-only settings;
+6. effective-state model: deployment capability **AND** Admin operational setting **AND** Agent/Campaign control where applicable;
+7. enabling Company Research from `/admin/configuration` resumes only jobs paused for `feature_disabled` through the supported `resume_paused` path;
+8. `GET /app/agents` remains Admin-only as a global operational surface.
 
-The branch also found and repaired two directly related authorization defects during testing:
+Historical Campaigns deliberately keep `created_by_user_id = NULL`; they remain Admin-visible and are not assigned guessed owners. Admin can explicitly assign users. Creator access does not depend on an assignment row.
 
-- cross-campaign review approvals were insufficiently scoped;
-- an empty review queue could fall back to another campaign's awaiting draft.
+Two additive migrations were produced:
 
-`GET /app/agents` is intentionally being treated as an Admin-only global operational surface; authorized users retain per-campaign Agent actions inside campaign routes.
+- `c1f4a90b7d38` — campaign ownership + `campaign_user_assignments`;
+- `e2b7c0d94a15` — `operational_settings`.
 
-Do not describe any of this branch as merged/live until its final handoff, CI, review, merge and deployment are complete.
+The branch found and repaired four directly related defects during validation:
+
+- a USER could approve another Campaign's review draft;
+- an empty review queue could render another Campaign's awaiting draft;
+- seven `/api/campaign-contacts/{id}/…` routes were not campaign-scoped because they were keyed by membership id rather than campaign id;
+- the first Admin Configuration write could be silently overwritten by a concurrent blank-version form submission.
+
+Final local validation reported on `a84d980...`:
+
+- `pytest tests/`: **3955 passed, 0 failed, 0 errors, 0 skipped**;
+- Ruff clean;
+- Ruff format clean;
+- strict mypy clean;
+- Alembic single head `e2b7c0d94a15`;
+- `alembic check` no drift;
+- migration upgrade → downgrade → upgrade round trip clean.
+
+The supplied incremental bundle advertises exact head `a84d980...`, requires prerequisite `d9750b...`, and its SHA-256 was independently checked as `7efd8df9ea776e55c5bb29b6341525d2e6dd29620abf85aa2ddf9770b08dca9d`.
+
+**Important integration state:** this candidate was built from `d9750b...`, while current `main` is now `c1bd054e...` after PR #275. It must be reconciled with current main by a normal merge (no rebase/squash/history rewrite), then receive focused authorization/configuration review and GitHub CI before merge. Do not describe it as merged/live before those gates complete.
 
 ## 10. UX / IA redesign status
 
@@ -190,7 +216,7 @@ The audit should use:
 - the actual current Hosted Beta UI as the live experience;
 - this document as current product/runtime context;
 - the merged-but-not-yet-live extension-account-linking state as a known near-term delta;
-- `feat/uat-operator-controls` as known work in flight, not as current live behavior.
+- the completed-but-unmerged operator-controls candidate as known near-term behavior, not as current live behavior.
 
 The audit should not waste time reporting already-known engineering defects as if newly discovered, but it may critique the product model and UX consequences of those areas.
 
