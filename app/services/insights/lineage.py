@@ -1,9 +1,31 @@
-"""Exact, read-only Research lineage for an Insights execution.
+"""Which Research knowledge an Insights execution reads, and what it recorded.
 
-The Company's currently selected dossier is deliberately never a fallback.  A
-job either names (or has an ancestor that names) the Research execution whose
-committed submission and dossier it consumed, or that historical fact is
-unavailable.
+Two questions that look alike and are not, answered by two functions:
+
+* :func:`current_state` — *what should this run use?* The Company's **current
+  eligible** Research knowledge at the moment Insights executes.
+* :func:`recorded` — *what did a run actually use?* Read-only provenance for one
+  historical Insights job, taken from what that execution itself recorded.
+
+The distinction is the product contract. Research is not a campaign-execution
+artefact that downstream Agents bind to: it is an independent, continuously
+enrichable Company knowledge function that may run today, tomorrow, every day,
+or outside any campaign. Insights therefore reads the Company's currently
+selected dossier and the sourced facts committed alongside it, and records that
+selection on its own result. A later Research run does not retroactively
+invalidate an older Insights result, and an older Research run is not a
+prerequisite an Insights rerun must reproduce.
+
+Lineage answers "what did this run use?". Lineage never answers "may this Agent
+run at all?".
+
+*Current* is not *latest-row-blindly*. The authority is the Company's own
+selection — the one ``CompanyDossierVersion`` marked ``is_current`` — together
+with the immutable submission behind it and the Research execution whose
+durable output names exactly that pair. Nothing here relaxes evidence
+eligibility, citation rules or Research authority; a Company with no selected
+dossier, or a selected dossier no Research execution committed, still has no
+usable Research knowledge and Insights still blocks truthfully.
 """
 
 from __future__ import annotations
@@ -15,10 +37,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.company_dossier import CompanyDossierVersion, CompanyResearchSubmission
-from app.models.enums import AgentIdentifier, AgentJobStatus
+from app.models.enums import AgentIdentifier
 from app.models.verification_job import AgentJob
-
-MAX_ANCESTORS = 16
+from app.services.companies import dossiers
 
 
 @dataclass(frozen=True)
@@ -37,143 +58,125 @@ def _uuid(value: object) -> uuid.UUID | None:
         return None
 
 
-def _research_ancestor(session: Session, start: AgentJob | None) -> AgentJob | None:
-    current = start
-    seen: set[uuid.UUID] = set()
-    for _ in range(MAX_ANCESTORS):
-        if current is None or current.id in seen:
-            return None
-        seen.add(current.id)
-        if current.agent_id is AgentIdentifier.RESEARCH:
-            return current
-        current = session.get(AgentJob, current.parent_job_id) if current.parent_job_id else None
-    return None
-
-
-def _from_research_job(
+def _committing_research_job(
     session: Session,
     *,
-    research_job: AgentJob,
     company_id: uuid.UUID,
-    campaign_id: uuid.UUID | None,
-    campaign_contact_id: uuid.UUID | None,
-    contact_id: uuid.UUID | None,
-) -> ResearchLineage | None:
-    if (
-        research_job.agent_id is not AgentIdentifier.RESEARCH
-        or research_job.status is not AgentJobStatus.SUCCEEDED
-        or research_job.campaign_id != campaign_id
-        or research_job.campaign_contact_id != campaign_contact_id
-        or research_job.contact_id != contact_id
-    ):
+    dossier: CompanyDossierVersion,
+) -> AgentJob | None:
+    """The Research execution whose durable output committed exactly this dossier.
+
+    Needed because the sourced facts a dossier rests on are keyed per Research
+    execution (``research:<job id>:...``), so reading the dossier without its
+    facts would offer Insights a prompt it could not source a single claim from.
+
+    No filter on the job's own terminal status, deliberately. ``job.result`` is
+    written by ``jobs.mark_completed`` and by nothing else, so a row that names
+    this submission and version *is* a completed commit; re-asserting that
+    through the status column would put an execution-status gate back in front
+    of Company knowledge. Newest first: a re-run that re-committed the same
+    reading also re-read its sources, and its facts are the fresher ones.
+    """
+
+    return session.scalars(
+        select(AgentJob)
+        .where(
+            AgentJob.agent_id == AgentIdentifier.RESEARCH,
+            AgentJob.result["company_id"].astext == str(company_id),
+            AgentJob.result["submission_id"].astext == str(dossier.submission_id),
+            AgentJob.result["dossier_version"].astext == str(dossier.version_number),
+        )
+        .order_by(
+            AgentJob.finished_at.desc().nulls_last(),
+            AgentJob.created_at.desc(),
+            AgentJob.id.desc(),
+        )
+    ).first()
+
+
+def current_state(session: Session, *, company_id: uuid.UUID) -> ResearchLineage | None:
+    """The Company's current eligible Research knowledge, as one coherent snapshot.
+
+    Read once at the start of an execution and used for its duration, so a
+    Research run that commits mid-execution cannot split one Insights result
+    across two states of the world.
+    """
+
+    dossier = dossiers.current_version(session, company_id=company_id)
+    if dossier is None:
         return None
-    result = research_job.result or {}
-    if _uuid(result.get("company_id")) != company_id:
-        return None
-    submission_id = _uuid(result.get("submission_id"))
-    version_number = result.get("dossier_version")
-    if submission_id is None or not isinstance(version_number, int):
-        return None
-    submission = session.get(CompanyResearchSubmission, submission_id)
+    submission = session.get(CompanyResearchSubmission, dossier.submission_id)
     if submission is None or submission.company_id != company_id:
         return None
-    dossier = session.scalars(
-        select(CompanyDossierVersion).where(
-            CompanyDossierVersion.company_id == company_id,
-            CompanyDossierVersion.submission_id == submission.id,
-            CompanyDossierVersion.version_number == version_number,
-        )
-    ).one_or_none()
-    if dossier is None:
+    research_job = _committing_research_job(session, company_id=company_id, dossier=dossier)
+    if research_job is None:
         return None
     return ResearchLineage(research_job=research_job, submission=submission, dossier=dossier)
 
 
-def resolve(
+def recorded(
     session: Session,
     *,
     insights_job: AgentJob,
     company_id: uuid.UUID,
 ) -> ResearchLineage | None:
-    """Resolve only the exact Research artifacts used by one Insights job."""
+    """The Research artefacts one Insights execution recorded having used.
+
+    Historical, never a substitute for :func:`current_state`: the answer here is
+    whatever that run wrote down, so a later Research run cannot change it. The
+    durable result is preferred over the queued input reference, because only
+    the result was written *after* the input was selected.
+
+    An execution that recorded nothing has no provenance, and that is reported
+    as unavailable rather than reconstructed from the Company's present state.
+    """
 
     if insights_job.agent_id is not AgentIdentifier.INSIGHTS:
         return None
-    reference = insights_job.input_reference or {}
-    if "research_job_id" in reference:
-        pinned_id = _uuid(reference.get("research_job_id"))
-        research_job = session.get(AgentJob, pinned_id) if pinned_id else None
-    elif isinstance(insights_job.result, dict) and "research_job_id" in insights_job.result:
-        pinned_id = _uuid(insights_job.result.get("research_job_id"))
-        research_job = session.get(AgentJob, pinned_id) if pinned_id else None
-    else:
-        parent = (
-            session.get(AgentJob, insights_job.parent_job_id)
-            if insights_job.parent_job_id
-            else None
-        )
-        research_job = _research_ancestor(session, parent)
-    if research_job is None:
-        return None
-    lineage = _from_research_job(
-        session,
-        research_job=research_job,
-        company_id=company_id,
-        campaign_id=insights_job.campaign_id,
-        campaign_contact_id=insights_job.campaign_contact_id,
-        contact_id=insights_job.contact_id,
-    )
-    if lineage is None:
-        return None
-
-    # New jobs carry redundant immutable pins.  If any is present it must agree;
-    # a malformed or cross-linked pin is an unavailable lineage, never a cue to
-    # attach the Company's latest dossier.
-    expected: dict[str, uuid.UUID] = {
-        "research_submission_id": lineage.submission.id,
-        "research_dossier_version_id": lineage.dossier.id,
-    }
-    for source in (reference, insights_job.result or {}):
-        for key, authoritative in expected.items():
-            if key in source and _uuid(source.get(key)) != authoritative:
-                return None
-        if (
-            "research_dossier_version" in source
-            and source.get("research_dossier_version") != lineage.dossier.version_number
-        ):
-            return None
-        if (
-            "dossier_version" in source
-            and source.get("dossier_version") != lineage.dossier.version_number
-        ):
-            return None
-    return lineage
+    for source in (insights_job.result, insights_job.input_reference):
+        if not isinstance(source, dict):
+            continue
+        lineage = _from_record(session, source, company_id=company_id)
+        if lineage is not None:
+            return lineage
+    return None
 
 
-def pins_from_ancestor(
+#: The result key and the input-reference key for the same fact. Insights writes
+#: the first pair on its own output; queued jobs written before this contract
+#: carry the second, and both must still read.
+_SUBMISSION_KEYS = ("submission_id", "research_submission_id")
+_DOSSIER_KEYS = ("dossier_version_id", "research_dossier_version_id")
+
+
+def _first_uuid(source: dict[str, object], keys: tuple[str, ...]) -> uuid.UUID | None:
+    for key in keys:
+        value = _uuid(source.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _from_record(
     session: Session,
+    source: dict[str, object],
     *,
-    parent_job: AgentJob | None,
     company_id: uuid.UUID,
-) -> dict[str, object]:
-    """Build immutable lineage pins while a new Insights job is queued."""
-
-    research_job = _research_ancestor(session, parent_job)
-    if research_job is None:
-        return {}
-    lineage = _from_research_job(
-        session,
-        research_job=research_job,
-        company_id=company_id,
-        campaign_id=research_job.campaign_id,
-        campaign_contact_id=research_job.campaign_contact_id,
-        contact_id=research_job.contact_id,
-    )
-    if lineage is None:
-        return {}
-    return {
-        "research_job_id": str(lineage.research_job.id),
-        "research_submission_id": str(lineage.submission.id),
-        "research_dossier_version_id": str(lineage.dossier.id),
-        "research_dossier_version": lineage.dossier.version_number,
-    }
+) -> ResearchLineage | None:
+    research_job_id = _uuid(source.get("research_job_id"))
+    submission_id = _first_uuid(source, _SUBMISSION_KEYS)
+    dossier_id = _first_uuid(source, _DOSSIER_KEYS)
+    if research_job_id is None or submission_id is None or dossier_id is None:
+        return None
+    research_job = session.get(AgentJob, research_job_id)
+    submission = session.get(CompanyResearchSubmission, submission_id)
+    dossier = session.get(CompanyDossierVersion, dossier_id)
+    if research_job is None or submission is None or dossier is None:
+        return None
+    if research_job.agent_id is not AgentIdentifier.RESEARCH:
+        return None
+    if submission.company_id != company_id or dossier.company_id != company_id:
+        return None
+    if dossier.submission_id != submission.id:
+        return None
+    return ResearchLineage(research_job=research_job, submission=submission, dossier=dossier)

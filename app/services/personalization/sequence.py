@@ -47,12 +47,12 @@ from sqlalchemy.orm import Session
 
 from app.models.campaign import Campaign, CampaignContact
 from app.models.company import Company
-from app.models.company_dossier import CompanyDossierVersion
 from app.models.contact import Contact
 from app.models.email_sequence import SEQUENCE_LENGTH
 from app.models.enums import SequenceMessagePurpose, SequenceMessageType
 from app.models.insight import Insight
 from app.models.personalization_policy import PersonalizationPolicyVersion
+from app.services.companies import dossiers
 from app.services.personalization import generation
 from app.services.personalization.cadence import SequenceCadence, resolve_cadence
 from app.services.personalization.generation import ContextDecision, PreviewError
@@ -199,15 +199,15 @@ def _lineage(
     first one changed.
     """
 
-    dossier = session.execute(
-        select(CompanyDossierVersion.id, CompanyDossierVersion.version_number)
-        .where(CompanyDossierVersion.company_id == company.id)
-        .order_by(CompanyDossierVersion.version_number.desc())
-        .limit(1)
-    ).first()
+    # The Company's *current* selection, not the highest version number. An
+    # operator who reinstates an earlier interpretation has said which reading
+    # the Company stands behind, and a sequence that recorded a superseded one
+    # would name evidence the Company does not consider authoritative.
+    dossier = dossiers.current_version(session, company_id=company.id)
     research: dict[str, Any] = {
-        "dossier_id": str(dossier[0]) if dossier else None,
-        "dossier_version": int(dossier[1]) if dossier else None,
+        "dossier_id": str(dossier.id) if dossier else None,
+        "dossier_version": dossier.version_number if dossier else None,
+        "submission_id": str(dossier.submission_id) if dossier else None,
         "available": dossier is not None,
     }
 

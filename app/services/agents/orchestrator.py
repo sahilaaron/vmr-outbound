@@ -35,7 +35,6 @@ from app.services.agents.controls import CAMPAIGN_EXECUTION_SOURCE, effective_co
 from app.services.agents.registry import get_agent_spec
 from app.services.audit import record_audit_event
 from app.services.campaign_contacts import refresh_eligibility
-from app.services.insights.lineage import pins_from_ancestor
 from app.services.pipeline import (
     agent_state,
     append_event,
@@ -477,16 +476,14 @@ def schedule_next(
         "global_control_version": control.global_version,
         "campaign_control_version": control.campaign_version,
     }
-    if agent_id is AgentIdentifier.INSIGHTS:
-        contact = session.get(Contact, membership.contact_id)
-        if contact is not None and contact.company_id is not None:
-            input_reference.update(
-                pins_from_ancestor(
-                    session,
-                    parent_job=parent_job,
-                    company_id=contact.company_id,
-                )
-            )
+    # No Research artefacts are pinned here. Insights used to be queued with the
+    # exact submission and dossier its predecessor committed, which turned a
+    # queue-time prediction into an execution prerequisite: a Contact whose
+    # Research had since been re-run, or whose ancestry the queue could not walk,
+    # blocked at Insights even though the Company's Research knowledge was sitting
+    # right there. Insights now selects the Company's current eligible Research
+    # state when it runs and records that selection on its own result, so
+    # provenance is written after the input is chosen rather than guessed before.
 
     job, created = jobs.enqueue_job(
         session,

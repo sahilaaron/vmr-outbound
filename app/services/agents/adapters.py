@@ -1089,26 +1089,22 @@ class InsightsAgentAdapter:
                 "company_missing",
                 "Insights needs the permanent Company the Company Agent resolves.",
             )
-        lineage = insights_lineage.resolve(
-            context.session,
-            insights_job=context.job,
-            company_id=company.id,
-        )
-        if lineage is None:
+        research = insights_lineage.current_state(context.session, company_id=company.id)
+        if research is None:
             raise AgentBlocked(
-                "research_lineage_unavailable",
-                "Insights needs the exact committed Research submission and dossier for this "
-                "execution. Current Company state is not a historical substitute.",
+                "research_knowledge_unavailable",
+                "Insights needs current Company Research knowledge: a selected dossier version "
+                "and the Research execution that committed it. This Company has neither yet.",
             )
 
         dossier = {
-            name: getattr(lineage.dossier, name)
+            name: getattr(research.dossier, name)
             for name in dossiers.SECTION_COLUMNS
-            if getattr(lineage.dossier, name) is not None
+            if getattr(research.dossier, name) is not None
         }
         catalog = employee_size.research_evidence_catalog(
             context.session,
-            research_job_id=lineage.research_job.id,
+            research_job_id=research.research_job.id,
             company_id=company.id,
         )
         prompt_catalog = employee_size.bounded_prompt_catalog(catalog)
@@ -1213,7 +1209,7 @@ class InsightsAgentAdapter:
                     idempotency_key=f"insights-agent:{context.job.id}:{index}",
                     actor=context.worker_id,
                     producer_job_id=context.job.id,
-                    dossier_version_id=lineage.dossier.id,
+                    dossier_version_id=research.dossier.id,
                     derivation_version=f"{answer.producer}/{answer.producer_version}"[:64],
                 )
             except InsightError as exc:
@@ -1250,7 +1246,7 @@ class InsightsAgentAdapter:
                     idempotency_key=f"insights-agent:{context.job.id}:unknown:{index}",
                     actor=context.worker_id,
                     producer_job_id=context.job.id,
-                    dossier_version_id=lineage.dossier.id,
+                    dossier_version_id=research.dossier.id,
                     derivation_version=f"{answer.producer}/{answer.producer_version}"[:64],
                 )
             except InsightError:
@@ -1261,7 +1257,7 @@ class InsightsAgentAdapter:
             context.session,
             company_id=company.id,
             insights_job=context.job,
-            dossier=lineage.dossier,
+            dossier=research.dossier,
             catalog=prompt_catalog,
             model_output=answer.payload.get("employee_size"),
             actor=context.worker_id,
@@ -1286,10 +1282,10 @@ class InsightsAgentAdapter:
 
         output = {
             "company_id": str(company.id),
-            "research_job_id": str(lineage.research_job.id),
-            "submission_id": str(lineage.submission.id),
-            "dossier_version_id": str(lineage.dossier.id),
-            "dossier_version": lineage.dossier.version_number,
+            "research_job_id": str(research.research_job.id),
+            "submission_id": str(research.submission.id),
+            "dossier_version_id": str(research.dossier.id),
+            "dossier_version": research.dossier.version_number,
             "insights_stored": len(stored),
             "claims_dropped": len(dropped),
             "unknowns_recorded": len(unknown_texts),
