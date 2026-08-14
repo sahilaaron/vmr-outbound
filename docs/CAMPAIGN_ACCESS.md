@@ -105,23 +105,47 @@ passes — the same trade `require_admin` next door already makes.
 
 ## The extension
 
-A capture credential proves an *installation*, not a person: it carries no user
-id and no role. Account linking is being built on a separate branch
-(`fix/uat-extension-account-linking`), which is not merged here.
+Two kinds of credential, and they are answered differently.
 
-Until it lands:
+An **account-linked token** (`vmre1`, PR #275) names a VMR account. The
+authentication middleware verifies it on every request, refuses it the moment the
+account is disabled or the link is revoked, and records the owner in the request
+scope under `EXTENSION_USER_ID_STATE_KEY`. It deliberately does **not** write
+`operator_role` or `operator_user_id`, because those are the keys `require_admin`
+and the operator surfaces read, and an extension token must never assert an
+operator's authority outside `EXTENSION_CAPTURE_CONTRACT`.
 
-* `GET /api/campaigns` keeps today's behaviour for a credential with no linked
-  user. Narrowing it to nothing would break the shipped extension.
-* Filing a capture into a campaign calls `may_access_campaign`, which refuses as
-  soon as a user *is* resolvable and is not entitled to it.
+`actor_from_request(request, session)` therefore reads the extension key and
+resolves that account's *current* role and state from the `users` table on the
+request. So:
 
-When the branch lands it has one thing to do: put the resolved user id and role
-into the request scope the way the session middleware already does
-(`operator_user_id`, `operator_role`, `auth_enforced`). Every rule above then
-applies to the extension with no further change, `GET /api/campaigns` returns
-only that user's campaigns, and filing into an unauthorized campaign fails
-closed.
+* `GET /api/campaigns` returns exactly the campaigns the linked operator can
+  reach — the same `scope_campaign_statement` answers it.
+* Filing a capture into a campaign they cannot reach fails closed, with the
+  intake contract's own refusal shape rather than a bare 403, so the extension
+  renders it like any other rejected submission instead of discarding a good
+  refresh token.
+* A linked **administrator** keeps global campaign visibility, because the role
+  is read from the account rather than from the token — and it buys nothing
+  outside the four routes, since `require_admin` reads a key that stays `None`
+  for every extension request.
+* Assignment changes take effect on the next call with the same token. Nothing
+  about visibility is baked into the token.
+
+Called without a session, `actor_from_request` still returns an *identified*
+actor carrying the user id, but never an administrator. That is the safe
+direction: the caller sees the operator's own campaigns rather than everybody's.
+
+A **legacy configured credential** (`vmrx1`) proves an installation and names no
+account. It is local-development only and verifies nothing hosted. It resolves to
+`UNIDENTIFIED_EXTENSION`, and `GET /api/campaigns` keeps its historical unscoped
+answer for that case alone — narrowing it would break the extension in the one
+place it is still allowed to be used. `tests/test_extension_campaign_overlap.py`
+pins that exemption, so removing it later is a visible failure rather than a
+silent change.
+
+The four routes are unchanged by any of this: `POST /api/intake/contact-captures`
+and the three reads the panel makes before an operator commits.
 
 ## The administrator's screen
 

@@ -1,10 +1,13 @@
 # UAT operator controls + campaign ownership repair — handoff
 
 **Branch** `feat/uat-operator-controls`
-**Base** `origin/main` at `d9750b0e` (PR #274)
-**Head** `b929bb7` — five commits, listed per requirement below
-**Migrations** `c1f4a90b7d38` (campaign ownership + assignment),
-`e2b7c0d94a15` (operational settings). Both additive, single head.
+**Original base** `d9750b0e` (PR #274)
+**Reconciled with** `origin/main` at `c1bd054e` (PR #275, account-linked VM
+Prospector auth), merged normally — no rebase, no squash, no force-push, and no
+change to #275's history
+**Head** — see the reconciliation section at the end for the final SHA
+**Migrations** `c2d81f4a6b93` (main's, untouched) → `c1f4a90b7d38` (campaign
+ownership + assignment) → `e2b7c0d94a15` (operational settings). Single head.
 
 Nothing merged, nothing deployed, no VPS or runtime file touched. The separate
 `fix/uat-extension-account-linking` branch was not inspected, not merged, not
@@ -415,3 +418,122 @@ The other two were real, and both were copy rather than behaviour:
    read.
 
 **UAT OPERATOR CONTROLS READY FOR REVIEW**
+
+
+---
+
+# Reconciliation with current main (PR #275)
+
+`origin/main` at `c1bd054e` merged into the branch with an ordinary merge commit.
+No rebase, no squash, no force-push, and nothing in PR #275's history rewritten.
+One conflict, in `tests/test_route_authorization.py`, resolved by hand.
+
+## Alembic
+
+Both sides wrote a migration against `b45732880eff`, which would have left two
+heads:
+
+* main — `c2d81f4a6b93`, extension account linking (two new tables, alters
+  nothing);
+* this branch — `c1f4a90b7d38` → `e2b7c0d94a15`.
+
+The operator-controls pair is **unpublished**: neither has run anywhere, so no
+deployment's `alembic_version` names them and none can be mid-way through the old
+order. They are therefore **re-parented** onto main's revision rather than joined
+by a merge revision, which is the cleaner history and the one this project's
+convention prefers:
+
+```
+b45732880eff → c2d81f4a6b93 → c1f4a90b7d38 → e2b7c0d94a15
+```
+
+`c2d81f4a6b93` is not modified in any way. The two migrations touch nothing in
+common — one adds two extension tables, the other a `campaigns` column and a
+grant table — so the re-parenting states a sequence, not a dependency, and the
+re-parenting note is written into `c1f4a90b7d38`'s own docstring.
+
+Proof, run against a scratch database on the reconciled tree:
+
+| Check | Result |
+| --- | --- |
+| `alembic heads` | single — `e2b7c0d94a15` |
+| `alembic upgrade head` | clean, in the order above |
+| `alembic check` | no new upgrade operations detected |
+| `alembic downgrade -1` ×2 | back to `c2d81f4a6b93`, main's head, exactly |
+| `alembic upgrade head` again | clean |
+| `alembic check` again | clean |
+
+## Extension + campaign authorization
+
+**The one real overlap, and it needed a fix.** PR #275 records the linked account
+under its own scope key and deliberately leaves `operator_role` and
+`operator_user_id` unset for an extension request, so that a token can never
+assert operator authority anywhere. Read naively by this branch's campaign layer,
+that made every account-linked token *unidentified* — and `GET /api/campaigns`
+would have stayed unscoped for exactly the callers #275 had just given an
+identity to.
+
+`actor_from_request(request, session)` now reads the extension key and resolves
+that account's **current** role and state from the `users` table on the request —
+the same discipline the middleware uses for a cookie. `require_admin` still reads
+a key that is `None` for every extension request, so campaign visibility is the
+only thing this grants.
+
+Proved in `tests/test_extension_campaign_overlap.py`, eight tests over the real
+PKCE consent flow and the real database, using #275's own fixtures:
+
+| Requirement | Test |
+| --- | --- |
+| account-linked auth still works | `…_still_authenticates_and_captures` |
+| `GET /api/campaigns` scoped to the linked USER | `…_omits_somebody_elses_campaign` |
+| ADMIN stays global | `…_linked_administrator_returns_every_campaign` |
+| visibility is per request, not baked into the token | `…_assigning_then_unassigning_changes_the_next_call…` |
+| capture filing fails closed, writes nothing | `…_refused_and_writes_nothing` |
+| revoke / disable kills authority | `…_refuses_at_the_boundary` |
+| exactly four routes, nothing leaked | `…_reaches_the_four_contract_routes_and_nothing_else` |
+| legacy `vmrx1` exemption pinned | `…_still_gets_the_historical_unscoped_list` |
+
+The contract table is asserted whole, and an **administrator's** linked token is
+driven against seven forbidden surfaces — `/admin`, `/admin/configuration`,
+`POST /gmail/connect`, `/app/admin/users`, user creation, an agent-control POST
+and a Sending-adjacent POST — each refused, and each refusal asserted to be *not*
+a campaign refusal. So "sees every campaign" is proved to buy nothing else.
+
+Every rule was verified by mutation. Reverting `_extension_actor` to the
+pre-reconciliation behaviour kills five of the eight.
+
+Extension auth itself was not redesigned: no route added to the contract, no
+change to token issue, refresh, revoke or the disabled-account check.
+
+**Two behaviours worth announcing, both intended:**
+
+1. A freshly linked normal USER with no campaigns sees an **empty picker**. That
+   is a real change for hosted extension users versus the old unscoped list —
+   they need a campaign of their own or an assignment before the picker offers
+   anything.
+2. `contact_capture_route` skips the campaign check for an unidentified actor.
+   For a linked token whose owner has gone inactive that would be a hole, except
+   the middleware refuses such a request with 401 before the handler is entered.
+   The safety of that line depends on middleware ordering, not on the handler —
+   worth knowing if either is ever reordered.
+
+## Route classification
+
+Both sides moved the operator-reachable count and the conflict was exactly there.
+Main added `GET`/`POST /extension/authorize` (87 → 89); this branch withheld
+`GET /app/agents` (−1). Resolved to **88**, with both movements recorded in the
+test's own docstring so neither is lost.
+
+## Validation after reconciliation
+
+| Gate | Result |
+| --- | --- |
+| overlap + security suites | 466 passed (extension linking, capture auth, route authorization, campaign authorization, admin configuration, user accounts, extension↔campaign overlap) |
+| changed trust-boundary suites | 655 passed (hosted auth, hosted auth templates, v2 customer UI, admin workbench, Gmail drafts, phase 2 API, API, agent studio policy rendering, campaign pipeline web, email sequence web) |
+| `ruff check` / `ruff format --check` | clean |
+| `mypy app` strict | clean, 282 files |
+| Alembic | as tabled above |
+| CI shard accounting | **4052 tests**, union of shards equals the suite, 0 omitted, 0 collected twice |
+
+No 70-minute local full suite was re-run. The pre-merge candidate completed
+3955 / 0, and **GitHub CI is the broad regression authority after push.**
