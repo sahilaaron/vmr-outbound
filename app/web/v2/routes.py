@@ -408,7 +408,11 @@ def _render(
 ) -> HTMLResponse:
     settings = get_settings()
     features = operational.effective_flags(db, settings)
-    counts = shell.attention_counts(db)
+    # The nav badge is the same claim the Today card makes, in two characters, so
+    # it is answered by the same authorization. An unscoped badge would keep
+    # advertising a deployment's backlog on every page of the product even after
+    # the page itself started telling the truth.
+    counts = shell.attention_counts(db, actor=actor_from_request(request, db))
     name, email, initials = shell.operator_identity(db, settings)
     shared: dict[str, Any] = {
         "app_env": settings.app_env,
@@ -1062,14 +1066,24 @@ def today_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     unavailable rather than filling them in.
     """
 
-    counts = shell.attention_counts(db)
-    overviews = campaign_service.list_campaigns(db, actor=actor_from_request(request))
-    draft_counts = draft_service.queue_counts(db)
+    actor = actor_from_request(request, db)
+    allowed = campaign_access.accessible_campaign_ids(db, actor)
+    counts = shell.attention_counts(db, actor=actor)
+    overviews = campaign_service.list_campaigns(db, actor=actor)
+    draft_counts = draft_service.queue_counts(db, campaign_ids=allowed)
     settings = get_settings()
 
-    reader = _reader(db) if _agent_workbench_on(db, settings) else None
+    # The Agent queue reader counts jobs across every campaign in the deployment
+    # and has no per-operator form. Shown to an administrator, whose scope it
+    # genuinely is, and withheld from everybody else rather than relabelled: a
+    # strip that mixes this operator's drafts with the deployment's running jobs
+    # is the same falsehood the cards below were carrying.
+    reader = _reader(db) if _agent_workbench_on(db, settings) and allowed is None else None
     queue = reader.overview().queue if reader is not None else None
 
+    # Contacts and Companies are permanent records rather than campaign work, and
+    # the product already lets any operator browse both, so these stay global.
+    # They are stated as what is on file, never as what is waiting on the reader.
     contacts_total = db.scalar(select(func.count(Contact.id))) or 0
     companies_total = db.scalar(select(func.count(Company.id))) or 0
     confirmed = db.scalar(select(func.count(Contact.id)).where(Contact.email.is_not(None))) or 0
@@ -1077,6 +1091,8 @@ def today_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     campaign_rows: list[dict[str, Any]] = []
     for overview in overviews:
         campaign = overview.campaign
+        # No actor needed: `list_campaigns` already decided this operator may see
+        # this campaign, so the campaign id is itself the authorization.
         campaign_counts = shell.attention_counts(db, campaign_id=campaign.id)
         campaign_rows.append(
             {
@@ -1153,6 +1169,10 @@ def today_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
             "confirmed_addresses": confirmed,
             "queue": queue,
             "agent_workbench_on": _agent_workbench_on(db, settings),
+            # Whether an empty campaign list means "this deployment has none" or
+            # only "none is yours". The two are different facts and the second
+            # must never be told as the first.
+            "campaign_scope_restricted": allowed is not None,
         },
     )
 
@@ -3146,8 +3166,15 @@ def contact_page(
     # the page keeps showing the contact and narrows the memberships to the
     # campaigns this account may open, rather than refusing the whole person
     # because one of their memberships belongs to somebody else's campaign.
-    actor = actor_from_request(request)
+    actor = actor_from_request(request, db)
     allowed = campaign_access.accessible_campaign_ids(db, actor)
+    # Counted before the filter, and it is the whole of the fix below. Scoping a
+    # list is correct; letting the *scoped* list stand in for the person's actual
+    # participation is not. A Contact enrolled in a campaign this account cannot
+    # open was being described as "In 0 campaigns · no Agent has run for them ·
+    # enrol them to start the chain", which is false and invites the duplicate
+    # outreach the enrolment rules exist to prevent.
+    membership_total = len(detail.memberships)
     if allowed is not None:
         # Narrow the view object itself, not a local copy: the template renders
         # `detail.memberships` directly, so filtering only a local list would
@@ -3158,6 +3185,10 @@ def contact_page(
             if candidate.campaign_id in allowed
         ]
     memberships = detail.memberships
+    # The minimum truthful aggregate: *that* there is participation elsewhere,
+    # never which campaign, whose it is, or what stage it reached. One integer
+    # is enough to stop an unsafe enrolment and carries no campaign identity.
+    hidden_memberships = membership_total - len(memberships)
     chosen = _uuid(campaign) if campaign else None
     if chosen is not None:
         campaign_access.require_campaign_access(db, chosen, actor)
@@ -3217,6 +3248,10 @@ def contact_page(
             "active_nav": "contacts",
             "page_title": detail.full_name,
             "detail": detail,
+            # How many of this person's memberships this account may not open.
+            # The template uses it to avoid saying zero when the answer is
+            # "some, and not yours to see".
+            "hidden_memberships": hidden_memberships,
             "intel": intel,
             "execution": execution,
             "steps": steps,
@@ -3714,6 +3749,7 @@ def capture_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespons
     """What the capture extension does, and what it has actually captured."""
 
     settings = get_settings()
+    capture_actor = actor_from_request(request, db)
     # The effective controls: promotion and automatic domain resolution are
     # administrator-controlled, so this page must report what is actually on.
     enabled = operational.effective_flags(db, settings).enabled()
@@ -3741,7 +3777,13 @@ def capture_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespons
             "pending": pending,
             "labels": labels,
             "unresolved": unresolved,
-            "campaigns": campaign_service.list_campaigns(db, actor=actor_from_request(request)),
+            "campaigns": campaign_service.list_campaigns(db, actor=capture_actor),
+            # See `today.html`: an empty picker because nothing was assigned to
+            # this account is not the same fact as an empty picker because the
+            # deployment has no campaign, and only one of them is knowable here.
+            "campaign_scope_restricted": (
+                campaign_access.accessible_campaign_ids(db, capture_actor) is not None
+            ),
         },
     )
 

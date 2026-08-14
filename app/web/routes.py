@@ -27,6 +27,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.core.auth.admin import is_admin_request
 from app.core.auth.csrf import register_csrf, require_csrf
 from app.core.config import Settings, get_settings
 from app.models.campaign import Campaign, CampaignContact
@@ -240,6 +241,11 @@ def _render(
         "local_env": settings.app_env.lower() == "local",
         "database_ok": _database_ok(db),
         "open_reviews": open_reviews,
+        # The same server-side role decision the middleware enforces, read from
+        # the request scope rather than recomputed. Templates on this router use
+        # it to stop offering controls that are already refused — see the two
+        # provider-spend buttons in `_capture_resolution.html`.
+        "is_admin": is_admin_request(request),
         "flash_ok": request.query_params.get("ok"),
         "flash_err": request.query_params.get("err"),
     }

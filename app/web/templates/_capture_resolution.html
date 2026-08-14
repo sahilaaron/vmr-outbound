@@ -11,7 +11,16 @@
    imported without context, so anything the route puts in the template namespace is
    invisible in here. Passing it by name also makes the dependency legible at the call
    site, the way `lookup_available` already is. #}
-{% macro resolution_card(resolution, lookup_available, auto_available=false, decision=none, history=[], readiness=none) %}
+{# `is_admin` is passed by name for the same reason `readiness` is: this macro is
+   imported without context, so the route's `is_admin` is invisible in here. It
+   gates the two controls on this page that call logo.dev — `company/lookup` and
+   `company/resolve` — which `app/core/auth/policy.py` classifies as
+   administrator-only provider spend. The refusal is the middleware's and is not
+   moved here; what changes is that a normal operator is no longer shown a button
+   whose only possible outcome is a 403. The decision controls beside them
+   (`confirm`, `correct`, `reject`, `promote`) are deliberately the operator's
+   own and are not gated. #}
+{% macro resolution_card(resolution, lookup_available, auto_available=false, decision=none, history=[], readiness=none, is_admin=true) %}
 {% set promotion = resolution.promotion %}
 {% set record = resolution.record %}
 
@@ -61,11 +70,13 @@
   </div>
 
   <div class="row gap wrap" style="padding: 0 12px 12px;">
+    {% if is_admin %}
     <form method="post" action="/contact-captures/{{ resolution.snapshot.id }}/company/resolve">
       <button class="btn" type="submit" {% if not auto_available %}disabled{% endif %}>
         {% if decision %}Re-run automatic resolution{% else %}Resolve domain automatically{% endif %}
       </button>
     </form>
+    {% endif %}
     <form method="post" action="/contact-captures/{{ resolution.snapshot.id }}/company/correct" class="row gap">
       <input class="input" type="text" name="domain" placeholder="correct domain, e.g. example.com" />
       <input class="input" type="text" name="note" placeholder="why?" />
@@ -77,7 +88,7 @@
       <button class="btn btn-ghost" type="submit">Correct to unresolved</button>
     </form>
   </div>
-  {% if not auto_available %}
+  {% if is_admin and not auto_available %}
   <p class="small muted-text" style="padding: 0 12px 12px;">
     Automatic resolution is switched off for this workbench. Corrections still apply, and
     the manual controls below are unaffected.
@@ -294,11 +305,13 @@
 <div class="table-wrap">
   <div class="toolbar"><strong class="small">Actions</strong></div>
   <div class="row gap wrap" style="padding: 12px;">
+    {% if is_admin %}
     <form method="post" action="/contact-captures/{{ resolution.snapshot.id }}/company/lookup">
       <button class="btn" type="submit" {% if not lookup_available %}disabled{% endif %}>
         {% if record and record.lookup_attempts %}Retry domain lookup{% else %}Run domain lookup{% endif %}
       </button>
     </form>
+    {% endif %}
     <form method="post" action="/contact-captures/{{ resolution.snapshot.id }}/company/confirm" class="row gap">
       <input type="hidden" name="decision" value="manual" />
       <input class="input" type="text" name="domain" placeholder="example.com" />
@@ -315,7 +328,7 @@
       </button>
     </form>
   </div>
-  {% if not lookup_available %}
+  {% if is_admin and not lookup_available %}
   <p class="small muted-text" style="padding: 0 12px 12px;">
     The domain lookup is unavailable (enrichment disabled or no provider key configured). You can
     still enter a domain by hand or leave this capture pending.

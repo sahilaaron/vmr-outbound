@@ -20,7 +20,9 @@
       </p>
     </div>
     <div class="v2-title-actions">
-      <a class="v2-btn" href="/companies/{{ detail.company.id }}">Open in admin Workbench</a>
+      {# See `contact.html`: the record behind it is operator work, the Workbench
+         shell is not, and the button says the second. #}
+      {% if is_admin %}<a class="v2-btn" href="/companies/{{ detail.company.id }}">Open in admin Workbench</a>{% endif %}
     </div>
   </div>
 

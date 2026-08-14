@@ -28,7 +28,18 @@
         {% else %}
           <span class="v2-fact err">No address has been built for this person yet</span>
         {% endif %}
+        {% if not hidden_memberships %}
         <span class="v2-fact">In {{ detail.memberships | length }} campaign{{ '' if detail.memberships | length == 1 else 's' }}</span>
+        {% else %}
+        {# Never "In 0 campaigns" when the honest answer is "in one you cannot
+           see". The count of the hidden ones is the whole of what crosses the
+           boundary — naming them would hand an unassigned account the campaign
+           identity the scoping just withheld. #}
+        {% if detail.memberships %}
+        <span class="v2-fact">In {{ detail.memberships | length }} campaign{{ '' if detail.memberships | length == 1 else 's' }} you can open</span>
+        {% endif %}
+        <span class="v2-fact warn">Also active in {{ hidden_memberships }} campaign{{ '' if hidden_memberships == 1 else 's' }} you do not have access to</span>
+        {% endif %}
         {% if detail.labels %}
         <span class="v2-fact">Labels: {{ detail.labels | map(attribute='name') | join(', ') }}</span>
         {% endif %}
@@ -43,7 +54,12 @@
         {{ 'Read the draft' if latest_draft.decision else 'Review draft' }}
       </a>
       {% endif %}
-      <a class="v2-btn" href="/contacts/{{ detail.contact.id }}">Open in admin Workbench</a>
+      {# The legacy contact page stays USER-reachable on purpose (it is the
+         record surface, not an administrative one), but the Workbench shell
+         around it is an administrator's tool and offering it by that name to
+         an operator who has no business in it advertises authority they do not
+         hold. Same gate `agents.html` already uses for its Workbench link. #}
+      {% if is_admin %}<a class="v2-btn" href="/contacts/{{ detail.contact.id }}">Open in admin Workbench</a>{% endif %}
     </div>
   </div>
 
@@ -92,6 +108,13 @@
         {% elif not agent_workbench_on %}
           {{ empty('The Agent monitor is off in this environment',
             'The per-contact stage ledger is what this panel reads. Turn on FEATURES__AGENT_WORKBENCH to see it.') }}
+        {% elif not membership and hidden_memberships %}
+          {# Enrolled, and being worked on, somewhere this account cannot open.
+             So no stage ledger is shown and no enrolment is invited — telling
+             this operator to "start the chain" would be inviting the second
+             outreach to a person who is already in one. #}
+          {{ empty('Already in a campaign you do not have access to',
+            'This person is enrolled elsewhere in this deployment, so Agents may already have run for them. That campaign is not yours to open, and nothing about it is shown here. Ask an administrator before enrolling them again.') }}
         {% elif not membership %}
           {{ empty('Not in a campaign',
             'This person is captured and permanent, but no campaign has enrolled them, so no Agent has run for them. Enrol them into a campaign to start the chain.') }}

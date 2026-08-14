@@ -25,6 +25,9 @@
           {% if campaigns %}
             {{ campaigns | length }} campaign{{ '' if campaigns | length == 1 else 's' }} available in
             the panel's picker.
+          {% elif campaign_scope_restricted %}
+            No campaign is yours yet, so a capture you file will arrive unfiled. An administrator
+            can assign you one.
           {% else %}
             No campaign exists yet, so a capture will arrive unfiled.
           {% endif %}
@@ -82,7 +85,13 @@
             </td>
             <td class="v2-note">{{ (snapshot.profile_fields or {}).get('company_name') or 'none read' }}</td>
             <td class="m v2-nowrap">{{ snapshot.ingested_at | ago }}</td>
-            <td class="num"><a class="v2-btn small" href="/contact-captures/{{ snapshot.id }}">Resolve in admin</a></td>
+            {# Deciding what a capture's company evidence means is the operator's
+               own work and the only approval a capture's domain ever gets, so
+               this link stays for every role. It is *not* "in admin": calling it
+               that told an operator they were being handed administrator
+               authority to do their own job. The page's two provider-spend
+               buttons are the administrator's, and they are gated there. #}
+            <td class="num"><a class="v2-btn small" href="/contact-captures/{{ snapshot.id }}">Resolve company</a></td>
           </tr>
           {% endfor %}
         </tbody>

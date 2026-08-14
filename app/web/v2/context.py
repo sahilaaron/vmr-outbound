@@ -4,6 +4,12 @@ Two things live here and nowhere else: the navigation model the design specifies
 and the "what wants you" counts the navigation badges carry. Both are computed from
 committed state — a badge that over-reports would send the operator looking for
 work that is not there, so every count has a query behind it.
+
+Every count is also *authorization-scoped*, which is a stronger claim than
+"computed from committed state" and the one that was missing. A badge reading
+110 to a USER whose campaign list is empty is not merely a wrong number: it
+tells that operator 110 decisions are theirs to make, and every one of them is
+refused the moment they follow the link. See :func:`attention_counts`.
 """
 
 from __future__ import annotations
@@ -25,7 +31,7 @@ from app.models.enums import (
     DomainResolutionState,
     PipelineStageStatus,
 )
-from app.services import drafts, identity
+from app.services import campaign_access, drafts, identity
 from app.services.resolution import service as resolution_service
 from app.services.seller import profile as seller_profile
 
@@ -109,41 +115,86 @@ def _safe(fn: Any, default: int = 0) -> int:
         return default
 
 
-def attention_counts(session: Session, *, campaign_id: uuid.UUID | None = None) -> AttentionCounts:
-    """Count the things that need a human, scoped to one campaign or to all."""
+def attention_counts(
+    session: Session,
+    *,
+    campaign_id: uuid.UUID | None = None,
+    actor: campaign_access.CampaignActor | None = None,
+) -> AttentionCounts:
+    """Count the things that need a human, scoped to one campaign or to all.
+
+    Two different restrictions, and keeping them apart is the whole of this
+    signature. ``campaign_id`` is the *filter* a page chose. ``actor`` is the
+    *authorization*, and it is what stops this function reporting a deployment's
+    work as one operator's.
+
+    ``actor=None`` means unrestricted and is what a caller that has already
+    established its own authority passes — the per-campaign loops below the
+    campaign list, where ``require_campaign_access`` or a scoped
+    ``list_campaigns`` already decided the operator may see that campaign. Every
+    caller rendering a *global* number passes the request's real actor.
+
+    For a restricted actor the campaign-derived counts are narrowed to the
+    campaigns they created or were assigned, and an empty set yields zero rather
+    than everything — the direction a set-membership filter has to fail in.
+
+    The three counts that are not campaign work at all — ambiguous identity
+    reviews, unresolved captures, companies with no domain — are queues over
+    permanent records shared by the whole deployment. They are reported to an
+    administrator and withheld from a restricted actor, not because a USER may
+    not do that work (they may; ``/review`` and the capture pages stay
+    reachable) but because this number is rendered as "decisions only you can
+    make", and a shared backlog is not that. Withholding under-reports; the
+    alternative over-claimed, which is the failure being repaired.
+    """
+
+    restricted_to: frozenset[uuid.UUID] | None = None
+    if actor is not None:
+        restricted_to = campaign_access.accessible_campaign_ids(session, actor)
+
+    def _scope_membership(statement: Any) -> Any:
+        if restricted_to is not None:
+            statement = statement.where(CampaignContact.campaign_id.in_(restricted_to))
+        if campaign_id is not None:
+            statement = statement.where(CampaignContact.campaign_id == campaign_id)
+        return statement
 
     def _drafts() -> int:
-        return drafts.queue_counts(session, campaign_id=campaign_id).awaiting
+        return drafts.queue_counts(
+            session, campaign_id=campaign_id, campaign_ids=restricted_to
+        ).awaiting
 
     def _ambiguous() -> int:
-        if campaign_id is not None:
+        if campaign_id is not None or restricted_to is not None:
             return 0
         return identity.count_open_reviews(session)
 
     def _unresolved() -> int:
-        if campaign_id is not None:
+        if campaign_id is not None or restricted_to is not None:
             return 0
         return len(resolution_service.unresolved_captures(session, limit=500))
 
     def _blocked() -> int:
-        statement = select(func.count(CampaignContact.id)).where(
-            CampaignContact.eligibility_status == CampaignContactEligibility.BLOCKED
+        statement = _scope_membership(
+            select(func.count(CampaignContact.id)).where(
+                CampaignContact.eligibility_status == CampaignContactEligibility.BLOCKED
+            )
         )
-        if campaign_id is not None:
-            statement = statement.where(CampaignContact.campaign_id == campaign_id)
         return session.scalar(statement) or 0
 
     def _failed() -> int:
-        statement = select(func.count(CampaignContact.id)).where(
-            CampaignContact.pipeline_status.in_(
-                (PipelineStageStatus.FAILED, PipelineStageStatus.BLOCKED)
+        statement = _scope_membership(
+            select(func.count(CampaignContact.id)).where(
+                CampaignContact.pipeline_status.in_(
+                    (PipelineStageStatus.FAILED, PipelineStageStatus.BLOCKED)
+                )
             )
         )
-        if campaign_id is not None:
-            statement = statement.where(CampaignContact.campaign_id == campaign_id)
         return session.scalar(statement) or 0
 
     def _no_domain() -> int:
+        if restricted_to is not None:
+            return 0
         return session.scalar(select(func.count(Company.id)).where(Company.domain.is_(None))) or 0
 
     return AttentionCounts(

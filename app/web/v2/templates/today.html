@@ -106,6 +106,12 @@
       </div>
       {% endfor %}
     </div>
+    {% elif campaign_scope_restricted %}
+      {# Not "there are none": this account may simply not have been given one,
+         and stating the deployment's state from this account's view would be a
+         guess dressed as a fact. #}
+      {{ empty('No campaign is yours yet',
+        'You can create a campaign, or an administrator can assign you one that already exists.') }}
     {% else %}
       {{ empty('No campaigns yet', 'A campaign is what enrols captured people into the pipeline. Create one, then enrol contacts into it.') }}
     {% endif %}
