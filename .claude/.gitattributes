@@ -1,0 +1,8 @@
+# Agent files under .claude/agents/ are byte-for-byte copies of the upstream agent
+# library, which is stored with LF endings. `.claude/agents-refresh.py` compares the
+# project copy against the library source as bytes, so a CRLF checkout on Windows
+# would make every agent report as drifted and `--apply` would rewrite all of them
+# on every run.
+#
+# Force LF regardless of the checkout platform or core.autocrlf setting.
+* text eol=lf
