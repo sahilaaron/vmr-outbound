@@ -46,29 +46,42 @@ PR #275 is merged and changes VM Prospector hosted authentication:
 
 Treat that as imminent product behavior but not live evidence until deployed and browser-UAT proven.
 
-## Known engineering repair in progress
+## Completed engineering candidate — not merged/live yet
 
 Branch:
 
 `feat/uat-operator-controls`
 
-This branch is **not** current product truth yet.
+Candidate head:
 
-It is implementing:
+`a84d9800809836a5ff757431f471bbcedf2e1303`
+
+This branch is **not** current product truth yet. It was built from the currently live `d9750b...` baseline and still needs reconciliation with current `main` (`c1bd054e...`), focused review, GitHub CI, merge and deployment.
+
+It implements:
 
 - password minimum 8 instead of 15;
 - Campaign creator ownership;
 - multi-user Campaign assignment;
 - Admin sees all Campaigns;
 - normal user sees only created/assigned Campaigns;
+- historical ownerless Campaigns remain Admin-only until explicitly assigned;
 - server-side campaign/review/membership authorization;
 - Admin-operable ordinary product controls instead of requiring `.env` edits for routine operation;
-- supported recovery for work paused because a product control is off;
+- explicit deployment-capability AND Admin-setting AND Agent/Campaign-control effective-state semantics;
+- supported recovery for Research jobs paused because Company Research is off;
 - `/app/agents` as an Admin-only global operational surface.
 
-Testing on that branch also found and repaired directly related authorization gaps in review decisions, review fallback rendering and CampaignContact-id routes.
+The candidate also found and repaired directly related authorization/concurrency gaps:
 
-Do not waste the audit merely rediscovering those defects. You may still critique whether the resulting interaction/IA is understandable.
+- a normal USER could approve another Campaign's review draft;
+- an empty review queue could render another Campaign's awaiting draft;
+- seven `/api/campaign-contacts/{id}/…` routes were not campaign-scoped because they were keyed by membership id;
+- a first Admin Configuration write could be silently overwritten by another blank-version form submission.
+
+Final local validation on that candidate reported **3955 passed, 0 failed, 0 errors, 0 skipped**, plus clean Ruff/format/strict-mypy and additive migration round-trip proof.
+
+Do not waste the audit merely rediscovering those known engineering defects. You may still critique whether the resulting role model, assignment flow, configuration IA and operational terminology are understandable.
 
 ## Product invariants
 
@@ -161,4 +174,4 @@ Produce:
 7. redesign principles;
 8. product decisions/questions that must be settled before high-fidelity UI work.
 
-After the operator-controls branch is eventually deployed, perform a short delta audit of the new Campaign ownership/assignment and Admin configuration experiences rather than restarting the whole audit.
+After the operator-controls candidate is eventually deployed, perform a short delta audit of the new Campaign ownership/assignment and Admin configuration experiences rather than restarting the whole audit.
