@@ -2,7 +2,7 @@
 
 ## Product outcome
 
-The current architecture moves a permanent Contact through one observable, controllable pipeline to one human-reviewed immutable email draft.
+The current architecture moves a permanent Contact through one observable, controllable pipeline until that Contact is Ready for Sending: a generated, validated seven-message sequence held as immutable versions.
 
 ```text
 Capture
@@ -13,10 +13,12 @@ Capture
 → Verification
 → Insights
 → Personalization
-→ Human review
+→ Ready for Sending
 ```
 
-Sending is a registered future stage but is not implemented in the current MVP.
+No stage waits for a human. Readiness is computed from the artifact — current, non-superseded message versions on a live sequence that generated and validated — not from anyone having read or approved it. Reading, inspecting and editing the messages are optional and change nothing about readiness.
+
+Sending is a registered future stage but is not implemented in the current MVP. Sending is manual: nothing leaves the system without a person doing it.
 
 See [`CURRENT_MVP.md`](CURRENT_MVP.md) for current delivery and acceptance status.
 
@@ -27,7 +29,8 @@ The product has two server-rendered presentation layers over the same services a
 ### Customer application
 
 - Route prefix: `/app`; `/` redirects here.
-- Workflow-oriented views for Today, Campaigns, Review, Contacts, Companies, Knowledge Base, Agents, Capture and Suppressions.
+- Workflow-oriented views for Today, Campaigns, Emails, Contacts, Companies, Knowledge Base, Agents, Capture and Suppressions.
+- Today is a compact operational overview — contacts processing, contacts ready for sending, contacts VMR could not prepare, and per-campaign progress — rather than a task inbox. Emails is the reading surface at `/app/review`.
 - Own router, templates and `v2.css`.
 - Unsupported features are displayed as unavailable rather than populated with invented data.
 
@@ -109,7 +112,7 @@ Versioned research output. Raw submissions and sourced evidence remain separate 
 
 ### DraftVersion and DraftApproval
 
-`DraftVersion` is immutable. `DraftApproval` records a human approve/discard decision against one exact version. Approval is not sending authority by itself.
+`DraftVersion` is immutable. `DraftApproval` records a human approve/discard decision against one exact version, and exists only where a person actually decided; its absence is not a pending decision. Approval is not sending authority by itself.
 
 ## Agent pipeline
 
@@ -122,7 +125,7 @@ Versioned research output. Raw submissions and sourced evidence remain separate 
 | 4 | Email | Generate approved candidates in deterministic order |
 | 5 | Verification | Commit exact-address provider evidence |
 | 6 | Insights | Derive cited interpretation from persisted evidence |
-| 7 | Personalization | Generate one immutable Campaign-specific draft |
+| 7 | Personalization | Generate the immutable Campaign-specific message versions |
 | 8 | Sending | Disabled contract; post-MVP provider extension |
 
 ## Research boundary
@@ -216,6 +219,8 @@ It records:
 
 The application must be able to explain what happened and what should happen next without reconstructing truth from process logs.
 
+These statuses are the durable state machine and stay exactly as they are. On customer surfaces they are diagnostics: a failed, blocked or retrying stage is the system's own work to resolve, is never presented as a customer task, and never carries a count that reads as arrears. Recovery — job retry, pause, resume, skip-stage, lease repair — lives in the Admin Workbench. The customer-facing status vocabulary is the three words in `docs/CUSTOMER_OPERATING_MODEL.md`: Processing, Ready for Sending, Could not prepare.
+
 ## Current write-path choices
 
 To preserve one authoritative implementation per high-risk action:
@@ -226,14 +231,17 @@ To preserve one authoritative implementation per high-risk action:
 - Suppression creation remains on the admin surface.
 - The customer application reads these records and links to the authoritative action where needed.
 
-## Review contract
+## Emails contract
 
-The customer Review surface:
+The customer surface at `/app/review`, reached in the navigation as **Emails**,
+is a reading surface rather than a queue. It:
 
-- reads current immutable draft versions;
+- reads current immutable message and draft versions;
 - shows relevant Research, Verification and Insight evidence;
+- requires nothing before a Contact counts as Ready for Sending;
+- writes an edit as a new immutable version;
+- records approve/discard with audit history when a person actually decides;
 - refuses approval of a superseded version;
-- records approve/discard with audit history;
 - performs no send.
 
 ## Trust and safety boundaries
@@ -290,14 +298,13 @@ Included:
 - ordered email discovery and live exact-address verification;
 - evidence-backed Insights and Personalization;
 - customer-facing v2 application;
-- exact-version human approve/discard.
+- generated, validated message sequences that reach Ready for Sending without human action, with optional reading, editing and exact-version approve/discard.
 
 Post-MVP:
 
 - provider sending and outcome synchronization;
 - scoring and Saved Audience criteria;
 - extension Campaign auto-add;
-- multi-email cadence generation;
-- replies, sequences and analytics;
+- replies, provider-side sequencing and analytics;
 - arbitrary workflow construction;
 - multi-tenant SaaS.

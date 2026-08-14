@@ -112,7 +112,13 @@ Draft only after eligibility, verification, suppression, and score gates pass.
 - A draft is never an approval and never permission to schedule.
 
 Any edit creates a new immutable draft version. Approval must reference the exact
-version and approver.
+version and approver, and may only be recorded for a decision a person actually
+made. Nothing may write one on a human's behalf.
+
+A generated, validated sequence is usable without any of that: it is Ready for
+Sending as soon as it exists, so the absence of an approval is not a pending
+task and never blocks the pipeline. What approval still governs is sending, and
+sending is done by hand. See `docs/CUSTOMER_OPERATING_MODEL.md`.
 
 ## Minimal MCP Boundary
 

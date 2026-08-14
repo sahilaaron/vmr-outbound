@@ -222,11 +222,11 @@ needs and which Gmail would otherwise assign. It is not a threading claim — se
 ## 5. Sequence correctness
 
 The action lives on the **contact page**, which renders all seven bodies, and
-deliberately not on the review queue, which renders one at a time. Offering it
-there would let an operator put six bodies they have not read into a real
-mailbox with one click — exactly the gap between "approved by default" and
-"read" that the review model exists to keep visible. The review queue names the
-connected mailbox and links to the contact page instead.
+deliberately not on the Emails surface at `/app/review`, which renders one at a
+time. Offering it there would let an operator put six bodies they have not read
+into a real mailbox with one click — exactly the gap between "approved by
+default" and "read" that this split exists to keep visible. The Emails surface
+names the connected mailbox and links to the contact page instead.
 
 The action carries the exact `version_ids` the page rendered, the same way bulk
 approval does. If that set is not exactly the set of current versions stored
@@ -252,6 +252,11 @@ still meaning a human acted, default approval still distinct from human
 approval. **Approval does not become send authority, and it does not become
 draft authority either** — creating a draft is a separate, explicit operator
 action.
+
+Nor is drafting a step anything waits on. A sequence is Ready for Sending when
+it is generated and validated (`docs/CUSTOMER_OPERATING_MODEL.md`); creating
+Gmail drafts is one convenient way to use it, offered to an operator who has
+connected a mailbox, and a sequence nobody drafts is no less complete.
 
 ### Editing after a draft exists
 

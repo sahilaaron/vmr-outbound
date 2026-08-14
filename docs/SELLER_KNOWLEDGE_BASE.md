@@ -12,7 +12,7 @@ cannot do yet. Design rationale is in
 | Why it can be trusted | Because the operator asserts it | It cannot be — it is cited, never obeyed |
 | What it carries | The statement | Source URL, retrieval time, confidence, freshness |
 | Who may write it | Only an operator | The research pipeline |
-| Approval | Entering it *is* the approval | Deterministic gates, review queue for anomalies |
+| Approval | Entering it *is* the approval | Deterministic gates; an anomaly is recorded with its reason, not queued for anyone to clear |
 
 Restricted claims are the sharpest case. A restricted claim is **policy** that a
 future drafting step is meant to obey. A researched insight is a **report** of

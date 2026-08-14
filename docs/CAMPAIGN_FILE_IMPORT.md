@@ -109,6 +109,18 @@ resolves to L.L.Bean, keeps `AGILENT TECHNOLOGIES` as source evidence, and shows
 a `supplied_company_name_conflict` warning. If a real Agilent is already on file
 and the signals genuinely disagree, the row is held instead.
 
+### What "held" is, and what it is not
+
+Holding is a **data-truth** mechanism. A row whose identity is ambiguous is
+recorded with the exact reason it was held, and nothing is merged on a guess —
+that is the whole point, and it is not negotiable.
+
+It is not a queue anybody has to work off. A held row is an outcome the import
+reached, kept with its reason so it can be resolved later by whoever wants to;
+resolving it is optional and can be deferred indefinitely. The rest of the file
+imports and enrols normally, and the contacts that did resolve carry on through
+the pipeline without waiting for it.
+
 ## 5. The imported-email truth model
 
 `imported_contact_emails` holds one record per address slot per source row.
@@ -201,6 +213,10 @@ type at most: no stack trace, no driver text, no repetition of the row's address
 Batch counts: imported, matched existing, already in campaign, skipped
 duplicate, review required, suppressed, failed.
 
+These describe what the file did. They are a record of one import, not a
+running total of arrears, and none of them is a number anybody is expected to
+drive to zero.
+
 ## 10. File security
 
 Filenames are sanitized (both separator conventions, traversal segments,
@@ -282,8 +298,9 @@ the enum types. No value is added to an existing enum type, because
   headers is accepted and labelled "Apollo-compatible" rather than refused.
 * No operator-driven column mapping on this path. The generic mapped importer at
   `/imports` still exists for files this reader does not recognize.
-* Review-required rows are recorded and visible on the batch page; resolving
-  them is the existing DAT-004 review path and is not extended here.
+* Review-required rows are recorded with their reason and visible on the batch
+  page; resolving them is optional, deferrable, and goes through the existing
+  DAT-004 path, which is not extended here.
 * Delimiter detection is not attempted: a semicolon-delimited CSV will fail
   header recognition with the actionable missing-header message rather than
   being silently misread.

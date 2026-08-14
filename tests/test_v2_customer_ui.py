@@ -134,7 +134,7 @@ def test_root_lands_on_the_customer_interface(client: TestClient) -> None:
 def test_root_followed_through_renders_today(client: TestClient) -> None:
     response = client.get("/")
     assert response.status_code == 200
-    assert "Where the work stands" in response.text
+    assert "Where your contacts stand" in response.text
 
 
 def test_admin_workbench_kept_its_overview_at_its_own_address(client: TestClient) -> None:
@@ -274,12 +274,17 @@ def test_unknown_ids_render_the_not_found_page_not_a_crash(client: TestClient) -
 # ---------------------------------------------------------------------------
 
 
-def test_today_marks_sending_and_replies_unavailable_rather_than_zero(
+def test_today_marks_sending_unavailable_rather_than_zero(
     client: TestClient, scenario: workbench_scenario.Scenario
 ) -> None:
+    """Sending carries no number, because sending is not automatic here.
+
+    The reply slot went with the "overnight" strip the operational overview
+    replaced; there is still no inbound channel and nothing claims otherwise.
+    """
+
     body = client.get("/app").text
-    assert "sending is not built" in body
-    assert "no inbound channel" in body
+    assert "sending is manual" in body
     assert "not built yet" in body
 
 
@@ -315,7 +320,7 @@ def test_review_never_shows_a_confidence_score(
     _make_draft(db_session, scenario)
     body = client.get("/app/review").text
     assert "not scored" in body
-    assert "no auto-send" in body or "waits for your approval" in body
+    assert "sending is manual" in body
 
 
 def test_approving_says_that_nothing_was_sent(
@@ -444,11 +449,19 @@ def test_the_queue_can_be_scoped_to_one_campaign(
     assert scoped.rows[0].campaign_id == scenario.campaign.id
 
 
-def test_review_badge_counts_only_what_is_waiting(
+def test_an_undecided_draft_puts_no_badge_in_the_customer_nav(
     client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
 ) -> None:
+    """The nav used to badge Review with the undecided-draft count.
+
+    It no longer badges anything. The service still counts undecided drafts —
+    Admin needs that — but the customer shell does not carry the number, because
+    an unread draft is not work the customer owes the system.
+    """
+
     _make_draft(db_session, scenario)
-    assert "Review" in client.get("/app").text
+    body = client.get("/app").text
+    assert "v2-nav-badge" not in body
     counts = draft_service.queue_counts(db_session)
     assert counts.awaiting == 1
 
@@ -1208,8 +1221,15 @@ def test_the_capture_page_reports_intake_state_without_claiming_a_connection(
 
 
 def test_the_shell_carries_the_designs_three_nav_groups(client: TestClient) -> None:
+    """Three groups, and "Emails" where "Review" used to be.
+
+    The destination is unchanged; the name is not. "Review" named a queue the
+    customer was expected to clear. "Emails" names what is actually there — the
+    generated messages, readable whenever they want them.
+    """
+
     body = client.get("/app").text
-    for label in ("Today", "Campaigns", "Review", "Contacts", "Companies", "Knowledge Base"):
+    for label in ("Today", "Campaigns", "Emails", "Contacts", "Companies", "Knowledge Base"):
         assert f">{label}" in body or label in body
 
 

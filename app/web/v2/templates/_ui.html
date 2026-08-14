@@ -18,6 +18,19 @@
 {# The one honest answer for anything the product cannot yet measure. #}
 {% macro unbuilt(label='not built yet') %}<span class="v2-unbuilt" title="This product does not produce this figure yet. It is shown as unavailable rather than as a number.">{{ label }}</span>{% endmacro %}
 
+{#
+  The customer's whole contact vocabulary: Processing, Ready for Sending, Could
+  not prepare. One macro so no page can invent a fourth word, and no page can
+  colour "could not prepare" as an alarm — it is an outcome the system reached,
+  not work anybody owes. The detailed Agent statuses below remain for
+  diagnostics; they are not what the customer is asked to operate.
+#}
+{% macro customer_state(status, labels, tones, small=false) %}
+  {%- if status is none -%}{{ tag('Not in a campaign', '', small=small) }}
+  {%- else -%}{{ tag(labels[status], tones[status], small=small) }}
+  {%- endif -%}
+{% endmacro %}
+
 {# ---------- state vocabularies (all read straight from Phase 2 enums) ---------- #}
 
 {% macro stage_status(status) %}

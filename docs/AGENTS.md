@@ -12,6 +12,12 @@ The system combines:
 - bounded AI judgment for research, classification, scoring support, and drafting;
 - explicit human approval before any outreach is scheduled.
 
+That approval boundary sits at sending and nowhere earlier. Execution is
+autonomous until a Contact is Ready for Sending: the pipeline never waits for a
+customer to approve a generated message, and failed, blocked or retrying Agent
+work is the system's own to resolve rather than a task the customer owes it.
+`docs/CUSTOMER_OPERATING_MODEL.md` is the authority on that line.
+
 ## Required Read Order
 
 Before changing the repository, read:
@@ -215,10 +221,13 @@ Preserve this operating sequence:
 9. Contacts meeting the configured threshold may enter research.
 10. Research evidence is stored with provenance.
 11. Outreach readiness is assessed.
-12. A personalized draft is created as an immutable version.
-13. A human approves one exact draft version.
-14. Eligibility is checked again before scheduling.
-15. Only approved and currently eligible contacts may be scheduled in Saleshandy.
+12. Personalized messages are created as immutable versions.
+13. The contact becomes Ready for Sending without a human step; reading, editing
+    and recording a decision against one exact version remain available and
+    optional.
+14. Eligibility is checked again before anything is scheduled.
+15. Only contacts a human has explicitly approved for sending, and that are
+    currently eligible, may be scheduled in Saleshandy.
 16. Outcomes return to the database and update workflow and suppression state.
 
 The initial research threshold is an absolute score of **85/100**, not the top
@@ -244,6 +253,9 @@ The initial research threshold is an absolute score of **85/100**, not the top
 - Editing an approved draft invalidates that approval.
 - Never contact an opted-out, suppressed, hard-bounced, or legally excluded address.
 - Never fabricate evidence, sources, verification outcomes, scores, or claims.
+- Never fabricate a human decision. An approval or review row may only be
+  written for something a person actually did; the absence of one means nobody
+  acted, not that somebody must.
 - Catch-all means uncertainty; it does not prove a mailbox exists.
 - A domain email pattern may rank candidates but cannot verify a different mailbox.
 - AI output is advisory until validated by deterministic rules and stored evidence.

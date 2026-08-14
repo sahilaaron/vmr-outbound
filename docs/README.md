@@ -2,6 +2,7 @@
 
 ## Current planning sources
 
+- [The customer operating model](CUSTOMER_OPERATING_MODEL.md) — the authority on the customer operating model: what the customer does, what the system does, and why VMR Outbound is autonomous until Ready for Sending. Where another active document disagrees with it, it is right and the other one is stale.
 - [Delivery reconciliation — 2026-08-09](DELIVERY_RECONCILIATION_2026_08_09.md) — current coordination record and repository-convergence checkpoint.
 - [Next delivery model](NEXT_DELIVERY_MODEL.md) — current delivery order from merged VPS foundation through authenticated hosted Beta, Chrome Extension capture and real-contact manual-copy acceptance.
 - [Decision 0010: Hosted manual-copy Beta before Gmail](decisions/0010-hosted-manual-copy-beta-before-gmail.md) — current priority: make the real hosted Campaign/Contact/seven-message workflow usable with real contacts before Gmail integration.

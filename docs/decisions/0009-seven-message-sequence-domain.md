@@ -57,6 +57,8 @@ The accepted final product contract is Option C:
 
 This reconciles the original sequence domain with the Beta operating model without rewriting historical draft storage.
 
+`docs/CUSTOMER_OPERATING_MODEL.md` later stated the same position for the customer surface: a generated, validated sequence is Ready for Sending with no human action, and the surface it is read on is a reading surface rather than a queue. That document changed no rule in this ADR — it removed the customer-facing framing that contradicted them.
+
 ### 9. Corrections after adversarial review
 
 Independent hostile review of the original implementation found several defects that changed domain rules:
