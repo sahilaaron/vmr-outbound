@@ -468,13 +468,21 @@ def test_insights_blocks_when_nothing_survives_the_evidence_gate(db_session: Ses
 
 
 def test_insights_needs_research_first(db_session: Session) -> None:
+    """Absence of Research knowledge is still a truthful block, never a thin success.
+
+    The reason changed with the input contract — Insights no longer demands the
+    exact submission a predecessor committed — but the refusal did not. A Company
+    with no selected dossier has nothing sourced to reason over, and reasoning
+    anyway is the one failure this stage exists to prevent.
+    """
+
     campaign, _, contact = _records(db_session)
     context = _context(
         db_session, campaign=campaign, contact=contact, agent_id=AgentIdentifier.INSIGHTS
     )
     with pytest.raises(AgentBlocked) as caught:
         InsightsAgentAdapter(thinker_factory=lambda _s: ScriptedThinker()).execute(context)
-    assert caught.value.code == "research_lineage_unavailable"
+    assert caught.value.code == "research_knowledge_unavailable"
 
 
 # --- Personalization --------------------------------------------------------

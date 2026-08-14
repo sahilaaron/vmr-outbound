@@ -22,7 +22,7 @@ from app.services.agent_studio.research_report import _safe_text, _safe_url
 from app.services.agents import jobs as agent_jobs
 from app.services.insights import employee_size
 from app.services.insights import evidence as insight_evidence
-from app.services.insights.lineage import ResearchLineage, resolve
+from app.services.insights.lineage import ResearchLineage, recorded
 from app.services.personalization import policy as personalization_policy
 
 
@@ -252,8 +252,11 @@ class DurableInsightsReportReader:
         if result_company is not None and str(contact.company_id) != result_company:
             return None
 
+        # What this execution recorded having used, never the Company's present
+        # state: a later Research run must not silently re-attribute an older
+        # Insights result to evidence it never saw.
         lineage = (
-            resolve(self.session, insights_job=job, company_id=company.id) if company else None
+            recorded(self.session, insights_job=job, company_id=company.id) if company else None
         )
         insights = self._job_insights(job, company)
         current_employee = (
@@ -287,7 +290,9 @@ class DurableInsightsReportReader:
             "Dropped proposals exist only in this job's bounded result, not a global claim ledger.",
         ]
         if lineage is None:
-            unavailable.append("Exact Research submission and dossier lineage is unavailable.")
+            unavailable.append(
+                "This execution recorded no Research submission or dossier provenance."
+            )
         if not insights:
             unavailable.append("No Insight can be attributed to this exact historical execution.")
 
@@ -542,7 +547,8 @@ class DurableInsightsReportReader:
         if lineage is None and not claims:
             return (
                 InsightsReportState.UNAVAILABLE,
-                "Neither exact Research lineage nor historical job output is durably available.",
+                "Neither recorded Research provenance nor historical job output is durably "
+                "available.",
             )
         complete_claims = bool(claims) and all(
             claim.evidence or claim.status in {"unavailable", "unresolved", "stale"}
@@ -551,7 +557,8 @@ class DurableInsightsReportReader:
         if job.finished_at is not None and lineage is not None and complete_claims:
             return (
                 InsightsReportState.COMPLETE,
-                "The execution, exact Research lineage, claims and evidence are durably available.",
+                "The execution, its recorded Research provenance, claims and evidence are "
+                "durably available.",
             )
         return (
             InsightsReportState.PARTIAL,
