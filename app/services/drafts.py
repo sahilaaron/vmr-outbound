@@ -142,7 +142,10 @@ VIEW_DISCARDED = "discarded"
 VIEW_ALL = "all"
 
 VIEWS: tuple[tuple[str, str], ...] = (
-    (VIEW_AWAITING, "Waiting for you"),
+    # Not "Waiting for you". The absence of a decision on a legacy draft means
+    # nobody has read it, which is a fact about the draft, not an arrears figure
+    # for the customer. Reading is optional under the customer operating model.
+    (VIEW_AWAITING, "Not reviewed"),
     (VIEW_APPROVED, "Approved"),
     (VIEW_DISCARDED, "Discarded"),
     (VIEW_ALL, "All"),

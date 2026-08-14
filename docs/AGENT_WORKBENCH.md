@@ -10,6 +10,16 @@ answers, on one screen: what is every Agent doing, which Campaigns are
 progressing, which Campaign Contacts are blocked, what needs a decision, and
 what can safely be controlled.
 
+**Everything on this page is an administrator and diagnostic surface.** The
+blocked counts, the retry backlog, the failure lists and the retry / pause /
+resume / skip-stage controls exist for whoever operates the system, and they
+stay exactly as described. The customer application carries none of this
+framing: under [`CUSTOMER_OPERATING_MODEL.md`](CUSTOMER_OPERATING_MODEL.md) a
+blocked job or a failed stage is status the customer may read, never a task
+they are asked to clear, and routine recovery is not something they perform.
+The contract governs the customer surface only; nothing in it blinds an
+operator here.
+
 It is a **read-and-command surface**. It owns no execution vocabulary and no
 state. Phase 2 owns the Agent registry, the execution and job states, the
 controls, the Campaign overrides, the pipeline stages, the retry lifecycle and

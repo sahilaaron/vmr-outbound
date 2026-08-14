@@ -14,6 +14,15 @@ does at `/app`, with deeper operational information behind every row. Nobody
 has to begin from a UUID, an Agent registry entry, a raw Agent Job or an
 implementation-specific report.
 
+**This is an administrator and diagnostic surface throughout.** The attention
+items, the failures inbox, the needs-attention filters and the corrective
+actions below belong to whoever operates the system, and they are correct here.
+The equivalent framing was deliberately removed from the customer application:
+under [`CUSTOMER_OPERATING_MODEL.md`](CUSTOMER_OPERATING_MODEL.md) a blocked
+job, a failed stage or an unread sequence is status the customer may look at,
+never work assigned to them. Nothing in that contract narrows what an
+administrator sees here.
+
 ## Terminology
 
 | Term | Meaning |
@@ -54,7 +63,7 @@ with a visible reason.
 | Agent/Stages | `/admin/stages`, `/admin/stages/{agent}` | Operator layer over the Agent registry: control state and provenance, queue and stage counts, workers, Campaign overrides, recent completions/failures, average duration where reliably measurable. |
 | File imports | `/admin/imports/{batch_id}` | One campaign-bound contact file import (IMP-001): the batch and every row it produced — Contact and Company resolution with the evidence that decided each, the supplied Company name beside the resolved one, the imported address, and the Email/Verification bypasses. Read-only; importing and re-importing stay on the campaign import screens. Linked from the Campaign detail **File imports** panel. |
 | Failures | `/admin/failures` | The exceptions inbox: committed stage failures, blocked Contacts, failed Jobs not represented by a stage row, and stale leases — normalized, categorised from committed fields only, each row leading to its diagnosis. Plus file-import rows that were refused or held: those never became a Campaign Contact, so they carry no stage and no Job and appear nowhere else. |
-| Review | `/admin/review` | Read-only visibility into Personalization output and decisions. Approve/discard stays in the Customer queue at `/app/review`; the Workbench never decides. |
+| Review | `/admin/review` | Read-only visibility into Personalization output and decisions. Approve/discard stays on the customer surface at `/app/review`, reached there as **Emails** — a reading surface where deciding is optional and gates nothing. The Workbench never decides. |
 | Providers & Usage | `/admin/providers` | Claude CLI, MillionVerifier, Logo.dev, DeBounce: configured or not, feature switches, ledger-recorded usage windows, last use and last failure. Secrets never render. |
 | Configuration | `/admin/configuration` | Read-only home for the effective configuration: dry-run, feature switches, global Agent controls with provenance, Campaign overrides, active immutable policy versions, Research fallback bounds. Each row links to its authoritative write surface. |
 | System | `/admin/system` | Job counts, stale leases, alembic revision, application version, audit tail, raw Job search by UUID. |
@@ -76,7 +85,8 @@ here (their authoritative surfaces remain where they were):
 
 * suppression release — suppression is authoritative over every stage and is
   never released from the Workbench;
-* draft approval or discard — Customer review queue only;
+* draft approval or discard — the customer Emails surface at `/app/review` only,
+  where it records a real human decision and is never required;
 * Agent control and override writes — legacy monitor and Agent Studio;
 * policy creation/activation, credential rotation — Agent Studio;
 * campaign create/edit — legacy Campaigns workflow (linked in place);

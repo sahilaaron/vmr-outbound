@@ -1,21 +1,25 @@
 # VMR Outbound Agent — working rules
 
 Private, agent-assisted outbound sales system. Immediate objective: one safe,
-human-approved 100-contact pilot campaign — not a platform.
+human-approved 100-contact pilot campaign — not a platform. The approval in that
+sentence is the send: execution runs on its own until a Contact is Ready for
+Sending, and the human boundary sits at sending rather than inside the pipeline.
 
 ## Read order (before changing the repository)
 
 1. `docs/GOAL.md` — authorized milestone, acceptance criteria, non-goals.
-2. `docs/AGENTS.md` — permanent engineering and safety rules.
-3. `docs/CLAUDE.md` — AI judgment boundaries, MCP limits, research/draft contracts.
-4. `docs/PROJECT_TRACKING.md` — management tracker and handoff rules.
-5. `docs/SELLER_KNOWLEDGE_BASE.md` — the seller-side knowledge base (KB-001),
+2. `docs/CUSTOMER_OPERATING_MODEL.md` — what the customer does, what the system
+   does, and why execution is autonomous until Ready for Sending.
+3. `docs/AGENTS.md` — permanent engineering and safety rules.
+4. `docs/CLAUDE.md` — AI judgment boundaries, MCP limits, research/draft contracts.
+5. `docs/PROJECT_TRACKING.md` — management tracker and handoff rules.
+6. `docs/SELLER_KNOWLEDGE_BASE.md` — the seller-side knowledge base (KB-001),
    when the work touches offerings, proof points, restricted claims, personas,
    campaign-to-offering associations, or context readiness.
-6. `docs/PARALLEL_INTEGRATION.md` — integration authority, frozen base SHAs,
+7. `docs/PARALLEL_INTEGRATION.md` — integration authority, frozen base SHAs,
    ownership blocks, the gate sequence, and stacked-chain merge order, whenever
    another thread is building concurrently or a branch is stacked.
-7. `docs/PROPORTIONAL_VALIDATION.md` — **UAT-first delivery authority** for
+8. `docs/PROPORTIONAL_VALIDATION.md` — **UAT-first delivery authority** for
    builds, fixes, reviews, testing, CI, deployment, and successor repairs. Read
    it before choosing validation depth or adding another process step.
 

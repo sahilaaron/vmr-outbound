@@ -8,10 +8,12 @@ It extends the permanent Contact, Company, Campaign, Collection/Label, verificat
 
 - The execution backbone and domain model are merged.
 - The complete draft-producing Campaign pipeline is merged through PR #232.
-- The customer-facing v2 application and Review surface are delivered in PR #233.
+- The customer-facing v2 application and its reading surface for generated output are delivered in PR #233.
 - Sending remains registered but disabled because no production provider adapter exists.
 
 See [`CURRENT_MVP.md`](CURRENT_MVP.md) for the current product boundary and acceptance plan.
+
+The pipeline below runs on its own. [`CUSTOMER_OPERATING_MODEL.md`](CUSTOMER_OPERATING_MODEL.md) is the authority on where the customer's work starts and stops: VMR Outbound is autonomous until Ready for Sending, and no Agent state described here is a task the customer has to work off.
 
 ## Domain ownership
 
@@ -124,7 +126,9 @@ all.
 
 Turning it on releases nothing by itself. Work already refused is recovered
 through the existing per-stage re-run, which names every Contact it would touch
-before it runs.
+before it runs. That re-run is an administrator affordance and part of
+operational recovery; it is not a step the customer performs to make a Contact
+progress.
 
 ## Insights and Personalization
 
@@ -324,7 +328,9 @@ The customer application provides:
 - Company dossier and evidence;
 - Agent state and logs;
 - Knowledge Base views;
-- Review of exact immutable drafts.
+- reading of exact immutable drafts and generated sequences, reached from the navigation as **Emails**.
+
+Agent state and logs are shown on `/app` as observability. They explain what VMR did; they do not hand the customer nine stages to operate.
 
 The two surfaces share services and models, not templates or stylesheets.
 
@@ -336,6 +342,8 @@ The Review service reads immutable DraftVersion rows and records one human appro
 - Discard is a recorded invalidation, not deletion.
 - Approval does not send.
 - Sending has no adapter.
+
+Deciding is optional. A decision is recorded only when a person actually makes one, and nothing downstream waits on it: readiness is computed from the generated artifact, not from a human click. The seven-message sequence domain carries the same rule as an invariant — see [`EMAIL_SEQUENCE.md`](EMAIL_SEQUENCE.md) §9.
 
 ## Current vertical acceptance path
 
@@ -349,10 +357,11 @@ real authorized Contact
 → live exact-address Verification
 → real Claude CLI Insights
 → real Claude CLI Personalization
-→ immutable DraftVersion
-→ `/app/review`
-→ human approve or discard
+→ immutable DraftVersion or sequence message versions
+→ Ready for Sending
 ```
+
+The path ends at Ready for Sending because that is where the system's work ends. Reading the output at `/app/review`, editing it, and recording an approve or discard against an exact version are all available and all optional; none of them is part of the acceptance verdict.
 
 No Research, Verification, Insights or Personalization success may be simulated for the live acceptance verdict.
 

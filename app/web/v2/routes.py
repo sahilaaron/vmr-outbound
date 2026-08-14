@@ -57,7 +57,7 @@ from app.models.enums import (
 )
 from app.models.pipeline import CampaignContactAgentState
 from app.models.suppression import Suppression
-from app.services import campaign_access, workbench_agents
+from app.services import campaign_access, customer_status, workbench_agents
 from app.services import campaigns as campaign_service
 from app.services import drafts as draft_service
 from app.services.agents import readiness as agent_readiness
@@ -408,7 +408,6 @@ def _render(
 ) -> HTMLResponse:
     settings = get_settings()
     features = operational.effective_flags(db, settings)
-    counts = shell.attention_counts(db)
     name, email, initials = shell.operator_identity(db, settings)
     shared: dict[str, Any] = {
         "app_env": settings.app_env,
@@ -416,8 +415,10 @@ def _render(
         # page renders inside reports what an administrator has switched on.
         "features_enabled": features.enabled(),
         "database_ok": _database_ok(db),
-        "attention": counts,
-        "nav_groups": shell.nav_groups(counts),
+        # No attention counts and no nav badges. The customer shell reports where
+        # to go, never how far behind somebody is: internal machine work is not
+        # a customer backlog. See docs/CUSTOMER_OPERATING_MODEL.md.
+        "nav_groups": shell.nav_groups(),
         "operator_name": name,
         "operator_email": email,
         "operator_initials": initials,
@@ -912,99 +913,59 @@ def _agent_open_counts(db: Session, campaign_id: uuid.UUID) -> dict[str, tuple[i
 
 
 @dataclass(frozen=True)
-class DecisionGroup:
-    """One thing only a person can settle."""
+class SetupNeed:
+    """Something the CUSTOMER genuinely has to supply or switch on.
 
-    count: int
+    Deliberately a different type from anything the pipeline reports. The old
+    screen had one "Needs a decision from you" panel that mixed
+    *you-have-not-configured-this* with *the-Research-Agent-failed*, and the
+    second kind is not the customer's work at all. Keeping them in separate
+    types is what stops them being summed again.
+
+    Nothing derived from an Agent job, a stage status, an error class or a
+    provider outcome may ever be constructed here.
+    """
+
     title: str
     detail: str
-    primary_label: str
-    primary_href: str
-    secondary_label: str | None = None
-    secondary_href: str | None = None
+    action_label: str | None = None
+    action_href: str | None = None
 
 
-def _decision_groups(
-    db: Session, counts: shell.AttentionCounts, *, campaign_id: uuid.UUID | None
-) -> tuple[DecisionGroup, ...]:
-    """The design's "Needs a decision from you" panel, from real backlogs."""
+def _campaign_setup_needs(campaign: Campaign, *, enrolled: int) -> tuple[SetupNeed, ...]:
+    """Campaign configuration the customer owns, and only that.
 
-    groups: list[DecisionGroup] = []
-    scope = f"?campaign={campaign_id}" if campaign_id else ""
-    if counts.drafts_awaiting:
-        groups.append(
-            DecisionGroup(
-                count=counts.drafts_awaiting,
-                title="Drafts waiting for your read",
+    Two conditions qualify, and the bar they had to clear is: could the customer
+    fix it themselves, right now, from this page? Nothing else is listed —
+    notably not "this campaign names no offerings", because the readiness report
+    itself calls that association optional, and a screen that asks for optional
+    configuration is inventing an obligation.
+    """
+
+    needs: list[SetupNeed] = []
+    if enrolled == 0:
+        needs.append(
+            SetupNeed(
+                title="No contacts yet",
                 detail=(
-                    "Written, checked against your Knowledge Base limits, and held. Nothing "
-                    "is sent on its own — every draft waits for you."
+                    "VMR starts working the moment somebody is enrolled. Capture "
+                    "people from Sales Navigator or import a file."
                 ),
-                primary_label="Start reviewing",
-                primary_href=f"/app/review{scope}",
+                action_label="Import contacts",
+                action_href=f"/app/campaigns/{campaign.id}/imports",
             )
         )
-    if counts.blocked_contacts:
-        groups.append(
-            DecisionGroup(
-                count=counts.blocked_contacts,
-                title="Contacts the pipeline will not carry",
+    if not campaign.execution_enabled and campaign.status is not CampaignStatus.ARCHIVED:
+        needs.append(
+            SetupNeed(
+                title="This campaign is paused",
                 detail=(
-                    "Each carries a recorded blocking reason — suppression, a missing "
-                    "company, or an identity nothing could resolve. They are held rather "
-                    "than guessed at."
-                ),
-                primary_label="See what is holding them",
-                primary_href=(
-                    f"/app/campaigns/{campaign_id}?eligibility=blocked"
-                    if campaign_id
-                    else "/app/contacts?view=all"
+                    "Nothing new is prepared while it is paused. Resume it and VMR "
+                    "carries on from wherever each contact stands."
                 ),
             )
         )
-    if counts.failed_stages:
-        groups.append(
-            DecisionGroup(
-                count=counts.failed_stages,
-                title="Stages that stopped",
-                detail=(
-                    "A stage that failed terminally will fail the same way on a retry, so "
-                    "nothing retries it automatically. The cause is recorded on each one."
-                ),
-                primary_label="Open the pipeline",
-                primary_href=(f"/app/campaigns/{campaign_id}" if campaign_id else "/app/campaigns"),
-            )
-        )
-    if counts.unresolved_domains:
-        groups.append(
-            DecisionGroup(
-                count=counts.unresolved_domains,
-                title="No website could be found",
-                detail=(
-                    "Every candidate domain was rejected with a reason. Without a website "
-                    "there is no format to build an address from, so these people cannot be "
-                    "emailed at all until one is entered."
-                ),
-                primary_label="Resolve them",
-                primary_href="/contact-captures/pending",
-                secondary_label="See the companies",
-                secondary_href="/app/companies?view=unresolved_domain",
-            )
-        )
-    if counts.ambiguous_imports:
-        groups.append(
-            DecisionGroup(
-                count=counts.ambiguous_imports,
-                title="Two people could be the same person",
-                detail=(
-                    "Nothing was merged. Merging the wrong two records is not reversible by "
-                    "a retry, so it is always yours to confirm."
-                ),
-                primary_label="Review the matches",
-                primary_href="/review",
-            )
-        )
-    return tuple(groups)
+    return tuple(needs)
 
 
 def _activity_lines(events: Sequence[agent_views.ActivityView]) -> list[dict[str, Any]]:
@@ -1054,21 +1015,24 @@ def _activity_lines(events: Sequence[agent_views.ActivityView]) -> list[dict[str
 @router.get("")
 @router.get("/")
 def today_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    """What happened, and what wants you.
+    """A compact operational overview. Not an inbox.
 
-    The design's stat strip counts overnight sends, replies and bounces. None of
-    those exist, so the strip carries what the pipeline genuinely did — contacts
-    captured, mailboxes confirmed, drafts written — and marks the sending measures
-    unavailable rather than filling them in.
+    This page used to open with "110 things want you" over a card headed
+    "Decisions only you can make", summing drafts nobody had read, contacts the
+    eligibility rules had blocked, stages that had failed, captures whose domain
+    lookup had not resolved and identity matches nothing could settle. Four of
+    those five are machine outcomes, the same contact could be counted in more
+    than one of them, and none of them was work the customer had been asked to
+    do. VMR Outbound is autonomous until Ready for Sending, so the page now
+    reports where contacts stand and leaves it there.
+
+    Nothing here manufactures urgency. "Could not prepare" carries no alarm tone
+    and no call to action, because it is an outcome the system reached, not an
+    obligation the customer incurred.
     """
 
-    counts = shell.attention_counts(db)
     overviews = campaign_service.list_campaigns(db, actor=actor_from_request(request))
-    draft_counts = draft_service.queue_counts(db)
     settings = get_settings()
-
-    reader = _reader(db) if _agent_workbench_on(db, settings) else None
-    queue = reader.overview().queue if reader is not None else None
 
     contacts_total = db.scalar(select(func.count(Contact.id))) or 0
     companies_total = db.scalar(select(func.count(Company.id))) or 0
@@ -1077,65 +1041,24 @@ def today_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     campaign_rows: list[dict[str, Any]] = []
     for overview in overviews:
         campaign = overview.campaign
-        campaign_counts = shell.attention_counts(db, campaign_id=campaign.id)
+        campaign_progress = customer_status.progress(db, campaign_id=campaign.id)
         campaign_rows.append(
             {
                 "campaign": campaign,
                 "contacts": overview.contact_count,
-                "drafts_awaiting": campaign_counts.drafts_awaiting,
-                "blocked": campaign_counts.blocked_contacts,
-                "failed": campaign_counts.failed_stages,
-                "pipeline_counts": overview.pipeline_counts,
-                "needs": _campaign_needs_sentence(campaign_counts, overview),
+                "progress": campaign_progress,
+                "state": _campaign_progress_sentence(campaign, campaign_progress),
             }
         )
 
-    cards: list[dict[str, Any]] = []
-    if draft_counts.awaiting:
-        cards.append(
-            {
-                "tone": "",
-                "count": draft_counts.awaiting,
-                "title": "Drafts waiting for your read",
-                "detail": (
-                    "Each one was written inside your Knowledge Base limits and held. There "
-                    "is no auto-send in this product: a draft goes nowhere until you "
-                    "approve it, and approving it records your decision."
-                ),
-                "cta": "Start reviewing",
-                "href": "/app/review",
-            }
-        )
-    decisions_now = counts.total - counts.drafts_awaiting
-    if decisions_now:
-        cards.append(
-            {
-                "tone": "warn",
-                "count": decisions_now,
-                "title": "Decisions only you can make",
-                "detail": (
-                    "Blocked contacts, stopped stages, companies with no website and "
-                    "identities that matched two people. Everything the system could settle "
-                    "safely, it already did."
-                ),
-                "cta": "See them",
-                "href": "/app/campaigns",
-            }
-        )
-    if not cards:
-        cards.append(
-            {
-                "tone": "quiet",
-                "count": 0,
-                "title": "Nothing is waiting on you",
-                "detail": (
-                    "No draft is held for a read and no contact is blocked. Capture more "
-                    "people, or let the Agents work through what is already enrolled."
-                ),
-                "cta": "Open capture",
-                "href": "/app/capture",
-            }
-        )
+    # Summed from the same projection the campaign rows use, so the header and
+    # the table can never disagree.
+    overall = customer_status.CustomerProgress(
+        total=sum(row["progress"].total for row in campaign_rows),
+        processing=sum(row["progress"].processing for row in campaign_rows),
+        ready_for_sending=sum(row["progress"].ready_for_sending for row in campaign_rows),
+        could_not_prepare=sum(row["progress"].could_not_prepare for row in campaign_rows),
+    )
 
     return _render(
         request,
@@ -1145,35 +1068,36 @@ def today_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
             "active_nav": "today",
             "page_title": "Today",
             "today": datetime.now(UTC),
-            "cards": cards,
+            "progress": overall,
+            "status_labels": customer_status.STATUS_LABELS,
+            "status_notes": customer_status.STATUS_NOTES,
             "campaign_rows": campaign_rows,
-            "draft_counts": draft_counts,
             "contacts_total": contacts_total,
             "companies_total": companies_total,
             "confirmed_addresses": confirmed,
-            "queue": queue,
             "agent_workbench_on": _agent_workbench_on(db, settings),
         },
     )
 
 
-def _campaign_needs_sentence(
-    counts: shell.AttentionCounts, overview: campaign_service.CampaignOverview
+def _campaign_progress_sentence(
+    campaign: Campaign, progress: customer_status.CustomerProgress
 ) -> str:
-    parts: list[str] = []
-    if counts.drafts_awaiting:
-        parts.append(f"{_plural(counts.drafts_awaiting, 'draft')} waiting for you")
-    if counts.blocked_contacts:
-        parts.append(f"{_plural(counts.blocked_contacts, 'contact')} held")
-    if counts.failed_stages:
-        parts.append(f"{_plural(counts.failed_stages, 'stage')} stopped")
-    if not parts:
-        if not overview.campaign.execution_enabled:
-            return "Execution is off, so no Agent will claim work for this campaign."
-        if overview.contact_count == 0:
-            return "No contacts enrolled yet."
-        return "Nothing is waiting on you."
-    return " · ".join(parts)
+    """What a campaign row says about itself — a fact, never an instruction.
+
+    The sentence this replaced was assembled from "N drafts waiting for you",
+    "N contacts held" and "N stages stopped". All three read as arrears.
+    """
+
+    if progress.total == 0:
+        return "No contacts enrolled yet."
+    if not campaign.execution_enabled:
+        return "Paused — nothing new is being prepared."
+    if progress.processing:
+        return f"VMR is preparing {_plural(progress.processing, 'contact')}."
+    if progress.ready_for_sending:
+        return "Every contact that could be prepared is ready."
+    return "Nothing is in progress."
 
 
 # ---------------------------------------------------------------------------
@@ -1186,22 +1110,27 @@ def campaigns_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespo
     overviews = campaign_service.list_campaigns(db, actor=actor_from_request(request))
     rows: list[dict[str, Any]] = []
     for overview in overviews:
-        campaign_counts = shell.attention_counts(db, campaign_id=overview.campaign.id)
+        progress = customer_status.progress(db, campaign_id=overview.campaign.id)
         rows.append(
             {
                 "campaign": overview.campaign,
                 "contacts": overview.contact_count,
                 "pipeline_counts": overview.pipeline_counts,
                 "state_counts": overview.state_counts,
-                "counts": campaign_counts,
-                "needs": _campaign_needs_sentence(campaign_counts, overview),
+                "progress": progress,
+                "state": _campaign_progress_sentence(overview.campaign, progress),
             }
         )
     return _render(
         request,
         db,
         "campaigns.html",
-        {"active_nav": "campaigns", "page_title": "Campaigns", "rows": rows},
+        {
+            "active_nav": "campaigns",
+            "page_title": "Campaigns",
+            "rows": rows,
+            "status_labels": customer_status.STATUS_LABELS,
+        },
     )
 
 
@@ -1472,7 +1401,10 @@ def campaign_page(
         open_counts=_agent_open_counts(db, identifier),
         progress=_stage_progress(db, identifier),
     )
-    counts = shell.attention_counts(db, campaign_id=identifier)
+    # Three customer-facing numbers, from one projection, instead of the five
+    # overlapping backlogs the old "Needs a decision from you" panel counted.
+    progress = customer_status.progress(db, campaign_id=identifier)
+    contact_statuses = customer_status.statuses_for_campaign(db, campaign_id=identifier)
     selected_tile = next((tile for tile in tiles if tile.selected), None)
 
     offerings = (
@@ -1550,8 +1482,12 @@ def campaign_page(
             "rerun_candidates": rerun_candidates,
             "rerun_spends": (selected in agent_rerun.SPENDS_PER_CONTACT) if selected else False,
             "rerun_ceiling": agent_rerun.MAX_PER_RERUN,
-            "decisions": _decision_groups(db, counts, campaign_id=identifier),
-            "attention_here": counts,
+            "progress": progress,
+            "contact_statuses": contact_statuses,
+            "status_labels": customer_status.STATUS_LABELS,
+            "status_notes": customer_status.STATUS_NOTES,
+            "status_tones": customer_status.STATUS_TONES,
+            "setup_needs": _campaign_setup_needs(campaign, enrolled=execution.enrolled_contacts),
             "activity": _activity_lines(execution.recent_events),
             "page": current,
             "pages": _pages(execution.contact_total),
@@ -2142,19 +2078,27 @@ def review_page(
     request: Request,
     db: Session = Depends(get_db),
     campaign: str | None = None,
-    view: str = draft_service.VIEW_AWAITING,
+    # The default view is everything, not the undecided ones. Opening on
+    # "not reviewed" made the page a queue whose length was the customer's
+    # arrears; opening on "all" makes it what it is — a reading surface.
+    view: str = draft_service.VIEW_ALL,
     draft: str | None = None,
     sequence: str | None = None,
     step: str | None = None,
     sview: str | None = None,
 ) -> HTMLResponse:
-    """Read a draft, and decide.
+    """Read the generated emails. Deciding on them is optional.
+
+    Nothing on this page is a prerequisite for anything. A generated, valid
+    seven-message sequence is Ready for Sending the moment it is written — no
+    approval, no review row, no click. This surface exists so the messages can be
+    read, copied and edited by anyone who wants to, which is why it is reached
+    from the nav as "Emails" rather than "Review".
 
     The design shows a confidence score and an auto-send threshold. Neither exists:
-    there is no scoring service and no sending, so nothing here is scored and
-    nothing goes out without this decision. What the panel *can* show is real and
-    more useful — the sourced claims the draft was allowed to use, the verification
-    evidence for the address, and what the Knowledge Base authorised.
+    there is no scoring service and no sending. What the panel *can* show is real
+    and more useful — the sourced claims the draft was allowed to use, the
+    verification evidence for the address, and what the Knowledge Base authorised.
     """
 
     # Authorization first, and separately from the operator's filter. `allowed`
@@ -3187,6 +3131,15 @@ def contact_page(
     sequence_details: tuple[sequence_read.MessageDetail, ...] = ()
     sequence_record = None
     sequence_availability = SequenceAvailability(state=SEQUENCE_STATE_FEATURE_OFF)
+    # The one word this page leads with, in the customer's vocabulary. The nine
+    # per-Agent steps below it stay exactly as they were: they are observability,
+    # and a person who wants to know where their contact got to should be able to
+    # look. They are not a checklist anybody is expected to work through.
+    contact_state = (
+        customer_status.status_for_membership(db, campaign_contact_id=membership.id)
+        if membership is not None
+        else None
+    )
     if membership is not None:
         # Looked up regardless of the switches: an existing sequence is shown
         # and explained, never hidden.
@@ -3221,6 +3174,10 @@ def contact_page(
             "execution": execution,
             "steps": steps,
             "membership": membership,
+            "contact_state": contact_state,
+            "status_labels": customer_status.STATUS_LABELS,
+            "status_notes": customer_status.STATUS_NOTES,
+            "status_tones": customer_status.STATUS_TONES,
             "latest_draft": latest_draft,
             "agent_workbench_on": _agent_workbench_on(db, settings),
             "sequences_on": _sequences_on(db, settings) or sequence_record is not None,

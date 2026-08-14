@@ -3,54 +3,47 @@
 {% block content %}
 <div class="v2-page narrow">
 
+  {#
+    This page used to open with a count of "things that want you" and a card
+    headed "Decisions only you can make". Both are gone, and their absence is the
+    product: VMR Outbound is autonomous until Ready for Sending, so failed jobs,
+    blocked stages and unread messages are the system's work, not the customer's
+    backlog. What is left is an overview — where contacts stand, and nothing that
+    reads as arrears.
+  #}
   <div class="v2-head">
     <div>
       <h1 class="v2-h1 big">{{ today.strftime('%A, %d %B') if today else 'Today' }}</h1>
       <p class="v2-lede">
-        {% if draft_counts.awaiting or attention.total %}
-          {{ attention.total }} thing{{ '' if attention.total == 1 else 's' }} want you.
+        {% if progress.has_contacts %}
+          VMR is preparing {{ plural(progress.processing, 'contact') }};
+          {{ progress.ready_for_sending }} ready for sending.
         {% else %}
-          Nothing is waiting on you right now.
+          No contacts are enrolled yet. Create a campaign and add people; VMR takes it from there.
         {% endif %}
         The pipeline has {{ plural(contacts_total, 'person', 'people') }} and
         {{ plural(companies_total, 'company', 'companies') }} on file.
       </p>
     </div>
     <div class="v2-note">
-      <div>No sending exists yet, so nothing goes out on its own.</div>
-      <div class="v2-hint">Every message waits for your approval in Review.</div>
+      <div>VMR works on its own until a contact is Ready for Sending.</div>
+      <div class="v2-hint">Sending is manual and happens outside this build.</div>
     </div>
   </div>
 
-  <div class="v2-today-cards">
-    {% for card in cards %}
-    <div class="v2-today-card {{ card.tone }}">
-      <div class="v2-today-num">{{ card.count }}</div>
-      <div class="v2-today-body">
-        <h2>{{ card.title }}</h2>
-        <p>{{ card.detail }}</p>
-      </div>
-      <a class="v2-btn primary" href="{{ card.href }}">{{ card.cta }}</a>
-    </div>
-    {% endfor %}
-  </div>
-
-  {# The design's overnight strip. Sends, replies and bounces are not measurable
-     in this product, so those slots say so instead of carrying a number. #}
-  <h2 class="v2-section-title">Where the work stands</h2>
+  <h2 class="v2-section-title">Where your contacts stand</h2>
   <div class="v2-card">
     <div class="v2-stat-strip">
+      {{ stat(status_labels['processing'], progress.processing | thousands, 'VMR is working', '') }}
+      {{ stat(status_labels['ready_for_sending'], progress.ready_for_sending | thousands, 'seven messages written', 'ok') }}
+      {{ stat(status_labels['could_not_prepare'], progress.could_not_prepare | thousands, 'no messages will be produced', '') }}
       {{ stat('People on file', contacts_total | thousands, 'captured permanently', 'find') }}
       {{ stat('With an address', confirmed_addresses | thousands, 'built and stored', 'find') }}
-      {{ stat('Drafts written', draft_counts.total | thousands, draft_counts.awaiting ~ ' waiting for you', 'write') }}
-      {{ stat('Decided', draft_counts.decided | thousands, draft_counts.approved ~ ' approved', 'write') }}
-      {% if agent_workbench_on and queue %}
-        {{ stat('In the queue', queue.open_work | thousands, queue.running ~ ' running now', 'ok') }}
-        {{ stat('Stopped', queue.failed | thousands, queue.terminal_failures ~ ' terminal', 'err') }}
-      {% endif %}
-      {{ stat_unbuilt('Sent', 'sending is not built') }}
-      {{ stat_unbuilt('Replies', 'no inbound channel') }}
+      {{ stat_unbuilt('Sent', 'sending is manual') }}
       <div class="v2-strip-foot">counted now, from committed state</div>
+    </div>
+    <div class="v2-card-foot plain">
+      {{ status_notes['could_not_prepare'] }} Nothing here is waiting on a decision from you.
     </div>
   </div>
 
@@ -64,10 +57,10 @@
             <th>Campaign</th>
             <th>State</th>
             <th class="num">Contacts</th>
-            <th class="num">Drafts waiting</th>
-            <th class="num">Sent</th>
-            <th class="num">Replies</th>
-            <th>Needs you</th>
+            <th class="num">Processing</th>
+            <th class="num">Ready for Sending</th>
+            <th class="num">Could not prepare</th>
+            <th>Progress</th>
           </tr>
         </thead>
         <tbody>
@@ -82,10 +75,10 @@
             </td>
             <td>{{ campaign_state(row.campaign.status, row.campaign.execution_enabled) }}</td>
             <td class="num m">{{ row.contacts | thousands }}</td>
-            <td class="num m">{{ row.drafts_awaiting }}</td>
-            <td class="num">{{ unbuilt('—') }}</td>
-            <td class="num">{{ unbuilt('—') }}</td>
-            <td class="v2-note">{{ row.needs }}</td>
+            <td class="num m">{{ row.progress.processing }}</td>
+            <td class="num m">{{ row.progress.ready_for_sending }}</td>
+            <td class="num m">{{ row.progress.could_not_prepare }}</td>
+            <td class="v2-note">{{ row.state }}</td>
           </tr>
           {% endfor %}
         </tbody>
@@ -100,9 +93,9 @@
         <div class="v2-chipline">
           {{ campaign_state(row.campaign.status, row.campaign.execution_enabled) }}
           {{ tag(row.contacts ~ ' contacts') }}
-          {% if row.drafts_awaiting %}{{ tag(row.drafts_awaiting ~ ' drafts waiting', 'brand') }}{% endif %}
+          {% if row.progress.ready_for_sending %}{{ tag(row.progress.ready_for_sending ~ ' ready for sending', 'ok') }}{% endif %}
         </div>
-        <p class="v2-note">{{ row.needs }}</p>
+        <p class="v2-note">{{ row.state }}</p>
       </div>
       {% endfor %}
     </div>

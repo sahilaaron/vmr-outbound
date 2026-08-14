@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_ui.html" import stat, stat_unbuilt, tag, unbuilt, dot, campaign_state, stage_status, stage_tone, control_state, empty, pager, readiness_state %}
+{% from "_ui.html" import stat, stat_unbuilt, tag, unbuilt, dot, campaign_state, customer_state, stage_status, stage_tone, control_state, empty, pager, readiness_state %}
 {% block content %}
 
 <div class="v2-camp-head">
@@ -33,7 +33,7 @@
           <span class="sep">·</span>
           <span>settings version <b class="m">{{ execution.settings_version }}</b></span>
           <span class="sep">·</span>
-          <span>every draft waits for your approval — there is no auto-send</span>
+          <span>VMR works on its own until a contact is Ready for Sending</span>
           {% if execution.suppressed_contacts %}
           <span class="sep">·</span>
           <span><b class="m">{{ execution.suppressed_contacts }}</b> suppressed and never contacted</span>
@@ -94,13 +94,9 @@
           </button>
         </form>
         <span class="v2-btn is-disabled" title="No sending adapter is registered, so there is no sending to stop.">Stop sending</span>
-        {% if attention_here.drafts_awaiting %}
-        <a class="v2-btn primary" href="/app/review?campaign={{ execution.campaign_id }}">
-          Review {{ attention_here.drafts_awaiting }} draft{{ '' if attention_here.drafts_awaiting == 1 else 's' }}
-        </a>
-        {% else %}
-        <a class="v2-btn" href="/app/review?campaign={{ execution.campaign_id }}">Review queue</a>
-        {% endif %}
+        {# Reading the generated emails is optional, so this is a plain link with
+           no count on it. A number here would be a backlog badge by another name. #}
+        <a class="v2-btn" href="/app/review?campaign={{ execution.campaign_id }}">Read the emails</a>
       </div>
     </div>
   </div>
@@ -109,12 +105,13 @@
      measures carry no number because there is no sending. #}
   <div class="v2-stat-strip">
     {{ stat('Enrolled', execution.enrolled_contacts | thousands, 'contacts', 'find') }}
-    {{ stat('Completed the chain', execution.completed_contacts | thousands, execution.progress_percent ~ '% of enrolled', 'find') }}
-    {{ stat('In the queue', execution.queue.open_work | thousands, execution.queue.running ~ ' running now', 'write') }}
-    {{ stat('Stopped', execution.queue.failed | thousands, execution.queue.terminal_failures ~ ' terminal', 'err') }}
-    {{ stat('Held', execution.blocked_contacts | thousands, 'need a decision', 'err') }}
-    {{ stat('Drafts waiting', attention_here.drafts_awaiting | thousands, 'for your read', 'write') }}
-    {{ stat_unbuilt('Sent', 'no sending adapter') }}
+    {{ stat(status_labels['processing'], progress.processing | thousands, 'VMR is working', '') }}
+    {{ stat(status_labels['ready_for_sending'], progress.ready_for_sending | thousands, 'seven messages written', 'ok') }}
+    {{ stat(status_labels['could_not_prepare'], progress.could_not_prepare | thousands, 'no messages will be produced', '') }}
+    {% if execution.suppressed_contacts %}
+    {{ stat('Suppressed', execution.suppressed_contacts | thousands, 'never contacted', '') }}
+    {% endif %}
+    {{ stat_unbuilt('Sent', 'sending is manual') }}
     <div class="v2-strip-foot">counted now · this page refreshes itself</div>
   </div>
 </div>
@@ -126,7 +123,8 @@
       <h2>Pipeline <span class="v2-muted">— the 9 Agents every contact passes through</span></h2>
       <div class="v2-note push">
         The number is how many have got <b>past</b> that Agent, so the row reads as a funnel.
-        What is happening right now is underneath it.
+        What is happening right now is underneath it. This strip is here so you can see the
+        work — VMR runs all nine stages itself and none of them is yours to operate.
       </div>
     </div>
     <ol class="v2-pipe">
@@ -274,25 +272,36 @@
       </div>
       {% endif %}
 
-      {# Run this Agent again. Offered only where something is actually stopped, so the
-         control never invites a click that can do nothing — which is also why a contact
-         a suppression is holding is listed but has no button: the count stays honest
-         and the reason is stated instead. #}
+      {#
+        Re-running an Agent is operational recovery, not part of the customer
+        workflow. VMR is autonomous until Ready for Sending: a routine machine
+        failure is VMR's to retry, and asking a customer to press "run again" is
+        asking them to operate the pipeline. So the *control* is administrator
+        only from here on.
+
+        What is NOT gated is the explanation: any user who can open this campaign
+        still sees which contacts stopped here and why, because that is status
+        they are entitled to. The server route is unchanged and its authorization
+        is untouched — this is a UI affordance decision, and the deeper recovery
+        tools stay where they belong, in the Admin Workbench.
+      #}
       {% if rerun_candidates %}
       {% set runnable = rerun_candidates | selectattr('runnable') | list %}
       <div class="v2-rerun">
         <div class="v2-rerun-head">
           <b>{{ rerun_candidates | length }} contact{{ '' if rerun_candidates | length == 1 else 's' }} stopped here.</b>
-          {%- if runnable %}
-          Once you have fixed the cause — a setting, a domain, a website that is back —
+          {%- if runnable and is_admin %}
+          Once the cause is fixed — a setting, a domain, a website that is back —
           run the {{ selected_tile.label }} Agent again.
+          {%- elif runnable %}
+          VMR retries what it can on its own. The recorded reason for each one is below.
           {%- elif rerun_candidates | length == 1 %}
           It cannot be re-run: something that outranks a re-run is holding it.
           {%- else %}
           None of them can be re-run: each is held by something that outranks it.
           {%- endif %}
         </div>
-        {% if runnable %}
+        {% if runnable and is_admin %}
         <form class="v2-inline-form" method="post"
               action="/app/campaigns/{{ execution.campaign_id }}/agents/{{ selected_stage }}/rerun">
           <input type="hidden" name="back"
@@ -327,7 +336,7 @@
               <span class="v2-note">
                 {{ (candidate.reason_detail or candidate.reason_code or 'No reason was recorded.') | nice }}
               </span>
-              {% if candidate.runnable %}
+              {% if candidate.runnable and is_admin %}
               <form method="post"
                     action="/app/campaigns/{{ execution.campaign_id }}/agents/{{ selected_stage }}/rerun">
                 <input type="hidden" name="campaign_contact_id" value="{{ candidate.campaign_contact_id }}">
@@ -335,7 +344,7 @@
                        value="/app/campaigns/{{ execution.campaign_id }}?stage={{ selected_stage }}">
                 <button class="v2-btn small" type="submit">Run again</button>
               </form>
-              {% else %}
+              {% elif not candidate.runnable %}
               <span class="v2-rerun-held">{{ candidate.standing_block }}</span>
               {% endif %}
             </div>
@@ -352,8 +361,9 @@
             <tr>
               <th>Contact</th>
               <th>Company</th>
+              <th>Status</th>
               <th>Sequence</th>
-              <th>Where it stands</th>
+              <th>Progress detail</th>
               <th class="num">Changed</th>
               <th></th>
             </tr>
@@ -368,6 +378,9 @@
               </td>
               <td>
                 <div>{{ (row.company_label | neutralize) or '—' }}</div>
+              </td>
+              <td class="v2-nowrap">
+                {{ customer_state(contact_statuses.get(row.campaign_contact_id), status_labels, status_tones) }}
               </td>
               <td class="v2-nowrap">
                 {% if seq %}
@@ -413,6 +426,9 @@
             <span class="when">{{ row.updated_at | ago }}</span>
           </div>
           <div class="v2-sub">{{ (row.company_label | neutralize) or '—' }}</div>
+          <div class="v2-chipline">
+            {{ customer_state(contact_statuses.get(row.campaign_contact_id), status_labels, status_tones, small=true) }}
+          </div>
           <div class="v2-sub">{{ seq.label if seq else sequence_absent_label }}{% if seq and seq.edited %} · {{ seq.edited }} edited{% endif %}</div>
           <div class="v2-cell-state v2-chipline">
             {{ dot(stage_tone(row.pipeline_status), row.pipeline_status.value == 'running') }}
@@ -441,38 +457,64 @@
 
     <div class="v2-aside">
 
+      {#
+        This card used to be headed "Needs a decision from you" and counted five
+        separate backlogs — unread drafts, blocked contacts, stopped stages,
+        unresolved domains and ambiguous identity matches. Four of the five were
+        machine outcomes, and one real contact could appear in several at once.
+        None of them was work the customer had been given. What replaces it is
+        the same three numbers the rest of the product uses, said as fact.
+      #}
       <div class="v2-card">
-        <div class="v2-card-head tight {{ 'alert' if decisions else '' }}">
-          <h2>Needs a decision from you</h2>
-          {% if decisions %}
-          <span class="m v2-note">{{ decisions | length }} group{{ '' if decisions | length == 1 else 's' }}</span>
-          {% endif %}
+        <div class="v2-card-head tight">
+          <h2>Where contacts stand</h2>
+          <span class="m v2-note">{{ progress.total }} enrolled</span>
         </div>
-        {% for decision in decisions %}
+        <div class="v2-card-body">
+          <div class="v2-chipline">
+            {{ tag(status_labels['processing'] ~ ' — ' ~ progress.processing, '') }}
+            {{ tag(status_labels['ready_for_sending'] ~ ' — ' ~ progress.ready_for_sending, 'ok') }}
+            {{ tag(status_labels['could_not_prepare'] ~ ' — ' ~ progress.could_not_prepare, '') }}
+          </div>
+          <p class="v2-note">{{ status_notes['ready_for_sending'] }}</p>
+          <p class="v2-note">{{ status_notes['could_not_prepare'] }}</p>
+        </div>
+        <div class="v2-card-foot plain">
+          Failures and retries inside the pipeline are VMR's to handle. Nothing on this
+          page is waiting on a decision from you.
+        </div>
+      </div>
+
+      {#
+        Kept strictly separate from everything above. These are the only two
+        things on this screen the CUSTOMER genuinely owns, and mixing them back
+        into a machine-failure count is the exact mistake this redesign undoes.
+      #}
+      {% if setup_needs %}
+      <div class="v2-card">
+        <div class="v2-card-head tight">
+          <h2>Your setup</h2>
+        </div>
+        {% for need in setup_needs %}
         <div class="v2-decision">
           <div class="v2-decision-top">
-            <span class="v2-decision-count">{{ decision.count }}</span>
             <div>
-              <div class="v2-decision-title">{{ decision.title }}</div>
-              <div class="v2-decision-detail">{{ decision.detail }}</div>
+              <div class="v2-decision-title">{{ need.title }}</div>
+              <div class="v2-decision-detail">{{ need.detail }}</div>
             </div>
           </div>
+          {% if need.action_label %}
           <div class="v2-btn-row">
-            <a class="v2-btn small primary" href="{{ decision.primary_href }}">{{ decision.primary_label }}</a>
-            {% if decision.secondary_label %}
-            <a class="v2-btn small" href="{{ decision.secondary_href }}">{{ decision.secondary_label }}</a>
-            {% endif %}
+            <a class="v2-btn small" href="{{ need.action_href }}">{{ need.action_label }}</a>
           </div>
+          {% endif %}
         </div>
         {% endfor %}
         <div class="v2-card-foot plain">
-          {% if decisions %}
-            Everything else the system could settle safely, it already did.
-          {% else %}
-            Nothing needs you here. Everything the system could settle safely, it did.
-          {% endif %}
+          These are settings you control. They are not pipeline failures.
         </div>
       </div>
+      {% endif %}
 
       <div class="v2-card">
         <div class="v2-card-head tight calm">

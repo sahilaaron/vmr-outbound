@@ -14,11 +14,12 @@
   <div class="v2-seq-head">
     <h1 class="v2-h1">Sequences</h1>
     <p class="v2-lede">
-      Each card is one contact's seven-message sequence, written as one unit and approved
-      as written. Open a card to read the messages one at a time. Reviewing is optional —
-      nothing is held up waiting for you — and confirming a message records your judgement
-      against that exact version so it can be told apart from the default. Nothing is sent
-      either way: there is no sending path and no mailbox connected to this build.
+      Each card is one contact's seven-message sequence, written as one unit and ready as
+      written. Nothing here is a queue and nothing is waiting on you: a generated,
+      validated sequence is Ready for Sending the moment VMR writes it, whether or not
+      anybody opens it. Reading, editing and confirming are all optional, and confirming
+      records your judgement against that exact version so it can be told apart from the
+      default. Sending is manual and happens outside this build.
     </p>
   </div>
 
@@ -199,7 +200,9 @@
         <div class="v2-chipline">
           {% if row.approved %}{{ tag('approved', 'ok', small=true) }}
           {% elif row.discarded %}{{ tag('discarded', 'err', small=true) }}
-          {% else %}{{ tag('waiting for you', 'brand', small=true) }}{% endif %}
+          {# Not "waiting for you". Nobody has read it, which is a fact about the
+             draft rather than an obligation on the reader. #}
+          {% else %}{{ tag('not reviewed', '', small=true) }}{% endif %}
           {% if not row.is_current %}{{ tag('superseded', 'warn', small=true) }}{% endif %}
         </div>
       </a>
@@ -209,9 +212,9 @@
       {% endif %}
     </div>
     <div class="v2-rq-foot">
-      <div>There is no auto-send: every draft waits for your approval.</div>
+      <div>These are legacy single drafts, kept readable. Reading them is optional.</div>
       <div>Approving records your decision against this exact version.</div>
-      <div>An approved draft is still not sent — no sending adapter exists.</div>
+      <div>Nothing here is sent automatically — sending is manual.</div>
     </div>
   </div>
 

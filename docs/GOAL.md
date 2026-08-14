@@ -1,12 +1,12 @@
 # Current Goal
 
-Deliver and accept one cohesive Contact-to-approved-draft MVP.
+Deliver and accept one cohesive Contact-to-Ready-for-Sending MVP.
 
 ## Defining outcome
 
-> **An operator can capture an authorized LinkedIn or Sales Navigator prospect, enrol the permanent Contact into a Campaign, run sourced research, exact-address verification, evidence-backed Insights and Personalization, and approve or discard one exact immutable draft version.**
+> **An operator can capture an authorized LinkedIn or Sales Navigator prospect and enrol the permanent Contact into a Campaign, and VMR then runs sourced research, exact-address verification, evidence-backed Insights and Personalization on its own until that Contact is Ready for Sending — a generated, validated message sequence held as immutable versions, which the operator may read, edit and send by hand.**
 
-The current MVP ends at a trustworthy human-approved draft. It does not include sending-provider submission or outcome synchronization.
+The current MVP ends at Ready for Sending. Nothing in the pipeline waits for a human: the messages are usable the moment they are generated and validated, and reading, editing or recording a decision against a version is optional. Sending stays manual, and the MVP does not include sending-provider submission or outcome synchronization.
 
 ## Canonical operating flow
 
@@ -17,14 +17,14 @@ The current MVP ends at a trustworthy human-approved draft. It does not include 
 5. Generate email candidates in the fixed policy order.
 6. Verify one exact address through the durable Verification Agent.
 7. Generate derived Insights from persisted evidence through the bounded Claude CLI seam.
-8. Generate one Campaign-specific immutable draft through Personalization.
-9. Present the evidence and exact draft in the customer Review surface.
-10. Record a human approve or discard decision against that exact version.
+8. Generate the Campaign-specific messages through Personalization, each held as an immutable version.
+9. Report the Contact as Ready for Sending once the generated messages exist and validate, with no human step in between.
+10. Present the evidence and the generated messages for optional reading, editing and an optional recorded decision, and leave the sending itself to a person.
 
 ## Product surfaces
 
-- `/` and `/app` — customer-facing application.
-- `/app/review` — exact-version draft review and decision.
+- `/` and `/app` — customer-facing application. Today is a compact operational overview: contacts processing, contacts ready for sending, contacts VMR could not prepare, and campaign progress.
+- `/app/review` — reached in the customer navigation as **Emails**. A reading surface for the generated messages and their evidence, with optional editing and an optional exact-version decision. It is not a queue to clear.
 - `/admin` — Workbench for low-level jobs, controls, retries and authoritative write paths.
 
 The customer application and Workbench share services and models but keep separate presentation layers.
@@ -73,7 +73,7 @@ The Email Agent enqueues one child Verification Agent Job at a time and resumes 
 - **Company research** is reusable by permanent Company.
 - **Sourced facts** remain separate from derived Insights.
 - **DraftVersion** is immutable.
-- **Approval** is a human decision against one exact DraftVersion.
+- **Approval** is a real human decision against one exact DraftVersion, recorded only when somebody actually acts. Readiness never waits on it, and it is never fabricated.
 - **Suppression** remains authoritative over every downstream stage.
 
 ## Current operating choices
@@ -92,8 +92,8 @@ The product is accepted when one operator can:
 - merge and run the customer application on top of the Campaign pipeline;
 - process one authorized real Contact using real website research, live MillionVerifier and real Claude CLI calls;
 - inspect the Company dossier, source evidence, Verification decision and derived Insights;
-- see one exact immutable draft in `/app/review`;
-- approve or discard it and confirm the audit record;
+- see the Contact reach Ready for Sending with no human action, and read the generated messages in `/app/review`;
+- optionally edit a message or record a decision against one exact version, and confirm the audit record;
 - confirm that no sending side effect exists;
 - process a controlled 10–20 Contact batch with understandable retries, failures, blocks and partial outcomes;
 - operate `/app` and `/admin` without duplicate canonical records or hidden pipeline state.

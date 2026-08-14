@@ -32,13 +32,18 @@ Sales Navigator / source page
 → Insights
 → Personalization
 → exactly seven generated messages
-→ operator inspects each message
+→ Ready for Sending
+→ operator optionally reads each message
 → optional immutable edit
 → Copy Subject / Copy Body / Copy Full Email
 → operator performs outreach manually outside VMR
 ```
 
 This hosted manual-copy Beta is the current definition of done.
+
+Everything up to Ready for Sending is VMR's own work and needs nobody. The
+operator takes over there. [`CUSTOMER_OPERATING_MODEL.md`](CUSTOMER_OPERATING_MODEL.md)
+is the authority on that boundary.
 
 **Gmail draft integration is postponed until after the operator has personally used and accepted this exact workflow with real contacts.** Google Sheets and Campaign CSV/XLSX export are also not current launch gates.
 
@@ -116,13 +121,18 @@ The first operator must prove the actual browser workflow with real contacts:
 1. authenticate to hosted VMR;
 2. capture a real prospect with the Chrome Extension;
 3. confirm the Contact lands in the intended Campaign;
-4. observe the Contact move through the Agent stages;
-5. inspect Research, Company Intelligence, Insights and Personalization outcomes as exposed by the product;
-6. open the Contact and see all seven messages;
-7. verify exact subject/body copy behavior in the real browser;
-8. optionally edit one message and confirm immutable N+1 versioning/current-version behavior;
-9. manually copy the selected outreach content and use it outside VMR;
-10. record any UAT defects found in real operation.
+4. wait while the Contact moves through the Agent stages, doing nothing to advance it;
+5. confirm the Contact reaches Ready for Sending;
+6. optionally inspect Research, Company Intelligence, Insights and Personalization outcomes as exposed by the product;
+7. open the Contact and see all seven messages, usable as they stand;
+8. verify exact subject/body copy behavior in the real browser;
+9. optionally edit one message and confirm immutable N+1 versioning/current-version behavior;
+10. manually copy the selected outreach content and use it outside VMR;
+11. record any UAT defects found in real operation.
+
+No approval step appears in this list, and none is missing from it. The seven
+messages are usable when they are generated; an approve or discard recorded
+along the way is a real human decision and changes nothing about readiness.
 
 Passing this flow is the current-cycle definition of done.
 

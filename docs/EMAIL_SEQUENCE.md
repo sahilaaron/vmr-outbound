@@ -12,6 +12,12 @@ mailbox polling, no scheduler and no sending adapter. Approving a message
 records a decision about text; it creates no draft anywhere and grants no
 authority to deliver anything.
 
+**A generated, validated sequence is complete as generated.** Approval is not
+part of that — §9 has always said so, and
+[`CUSTOMER_OPERATING_MODEL.md`](CUSTOMER_OPERATING_MODEL.md) is the contract
+that now says the same thing about the customer surface, which is reached as
+**Emails** rather than as a queue.
+
 **One piece of §15 now exists, and only one.** #267 added *draft-only* Gmail
 integration: an operator connects a mailbox through a separate consent screen
 and explicitly clicks Create Gmail drafts, and VMR writes one Gmail draft per
@@ -348,7 +354,7 @@ With either off, the Personalization Agent writes exactly the single
 output keys, and no sequence row is created on any path.
 
 **Off stops generation, not disclosure.** An existing sequence stays fully
-visible on both the Review queue and the Contact page when the deployment switch
+visible on both the Emails surface and the Contact page when the deployment switch
 is turned off or the Campaign opts out — with its messages, its lineage, its
 edits and every recorded decision. Hiding seven approved messages and seven
 human decisions is not the same as disabling a feature.
@@ -369,7 +375,7 @@ every existing Campaign produces.
 
 **Rollout path.** Enable the deployment flag with no Campaign opted in — nothing
 changes. Opt one pilot Campaign in and generate for a handful of contacts. Read
-the sequences in Review, note which validation warnings recur, adjust the
+the sequences under Emails, note which validation warnings recur, adjust the
 Personalization policy rather than the validator where the wording is the
 problem. Widen Campaign by Campaign. Single-draft mode stays available
 indefinitely; there is no step at which it is removed.
@@ -435,7 +441,7 @@ after the data is deleted deliberately.
 
 ## 14. Read models and performance
 
-No list page loads a message body. The Review queue issues a bounded number of
+No list page loads a message body. The Emails list issues a bounded number of
 statements regardless of page size: the sequences, the position-1 subjects with
 their excerpts **cut in SQL**, and the per-sequence decision tallies as one
 grouped query. The card read model has no body field at all, so the bound is
@@ -475,7 +481,8 @@ above.
 ### The approved operating model
 
 1. Personalization generates all seven messages in VMR.
-2. The operator reviews and approves them in VMR.
+2. The operator reads them in VMR, and edits or discards any they want to
+   change. Neither is required — the seven are approved as generated.
 3. VMR creates **only the currently actionable message** as a Gmail draft.
 4. The operator sends that draft manually from Gmail.
 5. A synchronization service detects that it was sent.
@@ -642,7 +649,7 @@ draft is created. No sender identity is hardcoded into sequence persistence.
   request carrying neither is allowed, so scripted local tools keep working.
   This is a cross-site guard, not authentication — the workbench still has none,
   by design, and refuses to boot outside `APP_ENV=local`.
-- **No performance index** was added for the Review queue. At pilot scale the
+- **No performance index** was added for the Emails list. At pilot scale the
   filter and sort are a sub-2 ms sequential scan; adding a migration for it now
   would collide with the Campaign Import reconciliation for no present benefit.
   Revisit once superseded-row volume is real.

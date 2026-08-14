@@ -7,18 +7,18 @@
 
 The current VMR Outbound Agent MVP is complete as a product build when one operator can:
 
-> capture an authorized LinkedIn or Sales Navigator prospect, enrol the permanent Contact into a Campaign, run the Contact through sourced Company research, exact-address email verification, evidence-backed Insights and Personalization, and approve or discard one exact immutable draft version.
+> capture an authorized LinkedIn or Sales Navigator prospect and enrol the permanent Contact into a Campaign, and leave VMR to run that Contact through sourced Company research, exact-address email verification, evidence-backed Insights and Personalization on its own until it is Ready for Sending — a generated, validated seven-message sequence held as immutable versions.
 
-The MVP ends at a trustworthy human-approved draft. It does **not** send email.
+The MVP ends at Ready for Sending. Nothing in the pipeline waits for a person: the sequence is usable as soon as it is generated and validated, and reading it, editing it or recording a decision against one exact version is optional. It does **not** send email, and sending is manual.
 
-SalesHandy/provider submission, delivery events, replies, bounces, opt-outs, sequences and analytics are post-MVP work.
+SalesHandy/provider submission, delivery events, replies, bounces, opt-outs, provider-side sequencing and analytics are post-MVP work.
 
 ## Product surfaces
 
 | Route | Role |
 | --- | --- |
-| `/` and `/app` | Customer-facing application and daily operating surface |
-| `/app/review` | Exact-version draft review, approve/discard and evidence inspection |
+| `/` and `/app` | Customer-facing application. Today is a compact operational overview: contacts processing, contacts ready for sending, contacts VMR could not prepare, and campaign progress |
+| `/app/review` | Reached in the customer navigation as **Emails**: a reading surface for the generated messages and their evidence, with optional editing and an optional exact-version approve/discard |
 | `/admin` | Operator/admin Workbench for low-level controls, jobs, retries and authoritative write paths |
 | `/admin/agents/studio` | Global Agent inspection plus Agent-specific Admin modules; never exposed in `/app` |
 
@@ -35,8 +35,10 @@ Capture
 → Verification
 → Insights
 → Personalization
-→ Human review
+→ Ready for Sending
 ```
+
+Readiness is a projection over the artifact — current, non-superseded message versions on a live sequence that generated and validated — rather than a record of anyone having looked at it. `app/services/customer_status.py` computes it.
 
 `Sending` remains registered so the pipeline can extend without another domain redesign, but it has no production adapter and is disabled.
 
@@ -133,8 +135,10 @@ nothing about verification credits.
 - Knowledge Base editing remains on `/admin`; the customer interface reads it.
 - Capture-domain decisions and suppression creation retain one authoritative admin write path.
 - Missing capabilities are shown as unavailable rather than represented with invented data.
-- A generated draft is not approved. Approval is recorded against one exact immutable `DraftVersion`.
-- Approval does not send email.
+- A generated, validated sequence is Ready for Sending on its own. No approval is required to make it usable, and a decision row exists only where a person actually decided; the absence of one is not a queue.
+- A decision is still recorded against one exact immutable version, and an edit still writes a new version.
+- Approval does not send email. Nothing is sent automatically, and sending happens outside automatic execution.
+- Failed, blocked and retrying Agent work is operational recovery, shown as status and diagnostics rather than as a customer task. The customer-facing rerun control is administrator-only; deeper recovery stays in the Admin Workbench.
 
 ## Not built
 
@@ -142,15 +146,13 @@ The current product does not provide:
 
 - SalesHandy or another sending-provider adapter;
 - delivery, reply, bounce or opt-out synchronization;
-- sending, replies, sequences or analytics backends;
+- sending, replies, provider-side sequencing or analytics backends;
 - auto-send;
 - deterministic fit/confidence scoring;
 - Saved Audience criteria and snapshot generation;
-- extension Campaign auto-add;
-- multi-email cadence generation;
-- draft editing.
+- extension Campaign auto-add.
 
-These are not hidden launch blockers for the current draft-producing MVP. They remain explicit post-MVP work.
+These are not hidden launch blockers for the current message-producing MVP. They remain explicit post-MVP work.
 
 ## Acceptance remaining
 
@@ -161,8 +163,8 @@ The implementation is assembled, but green CI is not operating acceptance.
    - real website research;
    - real MillionVerifier decision;
    - real Claude CLI Insights and Personalization;
-   - exact draft visible in `/app/review`;
-   - approve or discard recorded in audit history;
+   - the Contact reaching Ready for Sending with no human action, and the generated messages visible in `/app/review`;
+   - any optional edit, approve or discard recorded in audit history;
    - no sending side effect.
 3. Run a controlled 10–20 Contact batch and verify:
    - worker claims and concurrency;

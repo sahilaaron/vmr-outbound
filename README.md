@@ -30,7 +30,7 @@ authoritative delivery and validation policy.
 
 ## Current MVP
 
-The current MVP produces a trustworthy human-approved email draft:
+The current MVP takes a Contact to **Ready for Sending** without asking the customer for anything:
 
 ```text
 Capture authorized prospect
@@ -39,10 +39,12 @@ Capture authorized prospect
 → discover and verify an exact email
 → generate evidence-backed Insights
 → generate Campaign-specific Personalization
-→ approve or discard one exact immutable draft
+→ generate and validate the seven-message sequence
 ```
 
-It does **not** send email. SalesHandy/provider submission, delivery events, replies, sequences and analytics are post-MVP work.
+VMR Outbound is autonomous up to that line. It does not wait for anyone to approve a message: a generated, validated seven-message sequence is Ready for Sending the moment it is written, and reading, inspecting or editing it is optional. Internal retries, failures and blocked stages are the system's work, not a customer task list.
+
+It does **not** send email. Sending is manual and happens outside automatic execution. SalesHandy/provider submission, delivery events, replies, provider-side sequencing and analytics are post-MVP work.
 
 See [`docs/CURRENT_MVP.md`](docs/CURRENT_MVP.md) for the authoritative status, limitations and acceptance plan.
 
@@ -59,7 +61,7 @@ Green CI proves the implementation gates. It does not replace live website, Mill
 | Route | Purpose |
 | --- | --- |
 | `/` and `/app` | Customer-facing application |
-| `/app/review` | Review evidence and approve/discard an exact immutable draft version |
+| `/app/review` | The generated emails, reached in the customer navigation as **Emails**: a reading surface for the messages and their evidence, with optional editing and an optional exact-version decision |
 | `/admin` | Operator/admin Workbench for jobs, controls, retries and authoritative write paths |
 
 The v2 customer interface and Workbench share services and models but use separate routers, templates and stylesheets.
@@ -105,7 +107,7 @@ Live MillionVerifier use on the Agent path requires an enabled Verification cont
 - **Collection** — reusable Contact grouping; the extension may call it a Label.
 - **Agent Job** — resumable, inspectable unit of work with attempts, errors, leases and audit history.
 - **DraftVersion** — immutable Campaign-specific draft output.
-- **DraftApproval** — human decision against one exact draft version.
+- **DraftApproval** — a real human decision against one exact draft version, written only when somebody actually decides. Its absence is not a pending obligation and does not hold anything back.
 
 Campaign membership never owns or duplicates the permanent Contact or Company.
 
@@ -120,12 +122,11 @@ Campaign membership never owns or duplicates the permanent Contact or Company.
 ## Not built
 
 - sending-provider integration and outcome synchronization;
-- sending, replies, sequences and analytics backends;
+- sending, replies, provider-side sequencing and analytics backends;
 - deterministic fit/confidence scoring;
 - Saved Audience criteria;
 - extension Campaign auto-add;
-- multi-email cadence generation;
-- draft editing or auto-send.
+- auto-send.
 
 ## Windows quick start
 
@@ -159,6 +160,7 @@ The first live acceptance should use one Contact before increasing batch size.
 ## Governing documents
 
 - [`docs/PROPORTIONAL_VALIDATION.md`](docs/PROPORTIONAL_VALIDATION.md) — UAT-first delivery, review and validation authority
+- [`docs/CUSTOMER_OPERATING_MODEL.md`](docs/CUSTOMER_OPERATING_MODEL.md) — what the customer does, what the system does, and where Ready for Sending sits between them
 - [`docs/CURRENT_MVP.md`](docs/CURRENT_MVP.md) — current product and acceptance truth
 - [`docs/GOAL.md`](docs/GOAL.md) — authorized MVP outcome
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — current data and Agent architecture

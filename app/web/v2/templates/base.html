@@ -41,8 +41,10 @@
           {% if not loop.first %}<span class="v2-navsep" aria-hidden="true"></span>{% endif %}
           {% for item in group.items %}
           <a class="v2-navlink {{ 'active' if item.key == active_nav else '' }}" href="{{ item.href }}">
+            {# No badge. Customer navigation reports where to go, never how far
+               behind somebody is — internal machine work is not a customer
+               backlog. See docs/CUSTOMER_OPERATING_MODEL.md. #}
             {{ item.label }}
-            {% if item.badge %}<span class="v2-nav-badge {{ item.badge_tone }}">{{ item.badge }}</span>{% endif %}
           </a>
           {% endfor %}
         </div>

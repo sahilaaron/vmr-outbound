@@ -185,8 +185,15 @@ to fabricate it. No schema migration or guessed backfill was required.
 
 ## Operator workflow
 
-`/contact-captures/pending` lists every capture without a contact. Opening one
-shows the person, current title, captured company name, LinkedIn company hint,
+`/contact-captures/pending` is a diagnostic and recovery surface for whoever
+operates the system, sitting behind `FEATURES__WORKBENCH` with the rest of them.
+It exists so an unresolved capture can be inspected and finished by hand when
+automation declined to decide — not as a worklist handed to the customer. A
+capture that stays pending is a recorded outcome with a reason, and it holds
+nothing else up.
+
+It lists every capture without a contact. Opening one shows
+the person, current title, captured company name, LinkedIn company hint,
 capture source, labels, note, identity warnings, and the company-resolution
 status — then offers: run or retry the lookup, confirm a candidate, enter a
 domain by hand, reject a candidate with a reason, leave it unresolved, and
