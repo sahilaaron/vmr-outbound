@@ -36,16 +36,44 @@ The policy
 Length first, composition never. NIST SP 800-63B is explicit that composition
 rules ("one uppercase, one digit, one symbol") push people toward predictable
 substitutions and *reduce* real entropy, and that periodic expiry without
-evidence of compromise does the same. So: a 15-character minimum for accounts
+evidence of compromise does the same. So: an 8-character minimum for accounts
 that authenticate by password, at least 64 characters accepted, every printable
 character permitted including spaces, paste and autofill supported by the form,
 no expiry, and a bounded blocklist of the passwords an online attacker actually
 tries first.
 
+Eight rather than fifteen
+-------------------------
+This started at fifteen, which is what NIST recommends when a password is the
+only factor and nothing else is done about guessing. Hosted Beta UAT showed what
+that number costs in practice: operators being onboarded through a one-time setup
+link could not choose a password they would actually remember, which pushes
+people to write one down — the failure the rule exists to prevent.
+
+Eight is the NIST SP 800-63B **minimum** for a user-chosen memorised secret. It
+is a floor, and it is defensible here only because the controls that really
+resist guessing at this length are unchanged:
+
+* **Argon2id at the OWASP configuration is untouched.** An offline guess still
+  costs 19 MiB and two iterations.
+* **Sign-in rate limiting is untouched** (``app/core/auth/ratelimit.py``), so the
+  online guessing rate stays bounded whatever the length is.
+* **There is no public signup.** Every account is created by an administrator and
+  activated through a single-use setup link, so the directory cannot be
+  enumerated by registering.
+* **The blocklist now does more work than it did**, because the passwords an
+  online attacker tries first are mostly short. The list below was written to
+  survive exactly this change — see the note above it — and its short entries are
+  the ones that matter at eight.
+
+Nothing else about the policy moves: the 256-character maximum, the Argon2id
+parameters, the one-time setup-link behaviour, and every password/session
+invalidation rule are the same as before.
+
 The blocklist is deliberately small and local. A full compromised-password corpus
 means either a large data file in the repository or a network call to a range API
 on the login path, and neither earns its place in a Beta whose real defence
-against guessing is the 15-character minimum plus rate limiting.
+against guessing is Argon2id, rate limiting and the absence of public signup.
 """
 
 from __future__ import annotations
@@ -57,10 +85,11 @@ from argon2 import PasswordHasher
 from argon2 import exceptions as argon2_exceptions
 
 #: Shortest password accepted for an account that signs in with a password.
-#: Fifteen rather than eight: this is a single-factor path with no second factor
-#: behind it, and length is the only control that scales against offline
-#: cracking.
-MIN_PASSWORD_CHARS = 15
+#: Eight, the NIST SP 800-63B minimum for a user-chosen memorised secret. See the
+#: module docstring for why this moved down from fifteen and what carries the
+#: weight instead — Argon2id, sign-in rate limiting, no public signup, and the
+#: blocklist below.
+MIN_PASSWORD_CHARS = 8
 
 #: Longest password accepted. Well above the 64 the policy requires, and bounded
 #: only so that an unbounded body cannot be turned into a CPU-exhaustion vector
@@ -91,8 +120,51 @@ _HASHER = PasswordHasher(
 #: Entries shorter than `MIN_PASSWORD_CHARS` are still listed: the length rule
 #: already refuses them, and listing them keeps the blocklist meaningful if the
 #: minimum is ever lowered.
+#:
+#: That last sentence became load-bearing when the minimum moved from fifteen to
+#: eight. At fifteen, most of the passwords an online attacker tries first were
+#: refused by length before this set was ever consulted; at eight they are not,
+#: so the eight-to-fourteen-character band below was added deliberately rather
+#: than left to the length rule. It is still a bounded local list and not a
+#: corpus — it covers the head of the public breach lists and the values this
+#: project's own docs and fixtures could plausibly leak into a deployment, which
+#: is what an *online* attacker with a rate limiter in front of them can reach.
 _COMMON_PASSWORDS: frozenset[str] = frozenset(
     {
+        # --- the eight-to-fourteen band, live since the minimum became eight ---
+        "12345678",
+        "123456789",
+        "1234567891",
+        "12341234",
+        "1q2w3e4r",
+        "qwerty123",
+        "qwertyui",
+        "qwertyuiop",
+        "asdfghjkl",
+        "zaq12wsx",
+        "passw0rd",
+        "password!",
+        "welcome1",
+        "iloveyou",
+        "letmein1",
+        "letmein123",
+        "admin123",
+        "admin1234",
+        "sunshine",
+        "princess",
+        "football",
+        "baseball",
+        "monkey123",
+        "dragon123",
+        "trustno1",
+        "starwars",
+        "whatever",
+        "secret123",
+        "changeit",
+        "changeme1",
+        "vmr123456",
+        "vmroutbound1",
+        # --- the original list ---
         "password",
         "password1",
         "password123",

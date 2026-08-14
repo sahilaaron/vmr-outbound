@@ -182,7 +182,7 @@ response through which it is readable. `app/core/auth/passwords.py` records why
 Argon2id rather than bcrypt (72-byte truncation collides with the 64+ character
 requirement) or PBKDF2 (not memory-hard).
 
-Policy: minimum 15 characters, at least 64 accepted, every character permitted
+Policy: minimum 8 characters, at least 64 accepted, every character permitted
 including spaces, no composition rules, no expiry, and a bounded blocklist of
 obviously common values. The forms support autofill and paste and carry the
 `autocomplete` tokens password managers key on.
