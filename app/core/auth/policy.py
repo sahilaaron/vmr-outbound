@@ -332,6 +332,24 @@ _ADMIN_ONLY_UNSAFE_PATTERNS: tuple[re.Pattern[str], ...] = (
     # are enabled, and the resume preflight tells them what is missing -- but
     # changing a global control is administration.
     re.compile(r"^/app/agents/[^/]+/control$"),
+    # The campaign live opt-in. Campaign-scoped rather than platform-wide, so it
+    # is not the rule above wearing a different path — but it is the switch that
+    # authorises every metered thing the pipeline can do for one campaign at
+    # once. Research fetches other organisations' websites and may spend the
+    # Claude fallback, Verification spends MillionVerifier credits per contact,
+    # and Insights and Personalization spend model budget per contact; all four
+    # refuse until this is on. That is the same authority as the three
+    # provider-spend carve-outs above, granted for a whole cohort in one press
+    # rather than one contact at a time, so it sits with the administrators who
+    # hold the deployment's credentials.
+    #
+    # Reading it stays with the operator, deliberately and for the same reason
+    # `/verification` does: the campaign page shows every operator whether the
+    # opt-in is on, because an Agent that is enabled and still refusing every job
+    # is precisely what an operator has to be able to see and name. Only the verb
+    # moved. A campaign path parameter also means `require_campaign_path_access`
+    # has already scoped the request to a campaign the caller may use.
+    re.compile(r"^/app/campaigns/[^/]+/agents/[^/]+/live$"),
 )
 
 

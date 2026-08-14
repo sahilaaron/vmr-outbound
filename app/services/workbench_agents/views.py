@@ -127,10 +127,27 @@ class ControlView:
     campaign_version: int | None = None
     updated_by: str | None = None
     updated_at: datetime | None = None
+    #: Registry fact: this Agent refuses to execute until the effective Agent
+    #: configuration carries ``{"live": true}``.
+    requires_live_opt_in: bool = False
+    #: Whether that opt-in is actually present in the effective configuration.
+    #: Always ``False`` where the Agent has no such requirement, so a screen never
+    #: has to distinguish "off" from "not applicable" without being told.
+    live_opt_in: bool = False
 
     @property
     def campaign_scoped(self) -> bool:
         return self.source == "campaign_override"
+
+    @property
+    def live_opt_in_missing(self) -> bool:
+        """Enabled, and still unable to do anything.
+
+        The exact state that made 18 Campaign Contacts sit at Research returning
+        ``research_not_live`` while every screen showed the Agent as enabled.
+        """
+
+        return self.requires_live_opt_in and not self.live_opt_in
 
     @property
     def blocked_by_campaign_execution(self) -> bool:

@@ -773,6 +773,10 @@ class StageTile:
     selected: bool
     control_status: str
     implemented: bool
+    #: Enabled, and still refusing every job because this campaign has not opted
+    #: in to live work for it. Carried onto the tile because it is invisible
+    #: otherwise: the Agent reads as running while nothing it claims can succeed.
+    live_opt_in_missing: bool = False
 
     @property
     def waiting(self) -> int:
@@ -829,6 +833,7 @@ def _stage_tiles(
                 selected=selected is agent_id,
                 control_status=(control.status.value if control else spec.default_status.value),
                 implemented=spec.implemented,
+                live_opt_in_missing=bool(control and control.live_opt_in_missing),
             )
         )
     return tuple(tiles)
@@ -1513,6 +1518,13 @@ def campaign_page(
     if selected is not None:
         rerun_candidates = agent_rerun.candidates(db, campaign_id=identifier, agent_id=selected)
 
+    # The selected Agent's own control, so the stage panel can show this
+    # campaign's live opt-in where the Agent has one. Picked out of the controls
+    # the execution view already carries rather than read again.
+    selected_control = next(
+        (control for control in execution.controls if control.agent_id is selected), None
+    )
+
     # Sequence presence for the whole roster in one query, keyed by the
     # membership id the roster row already carries. Looked up regardless of the
     # feature switch, for the reason the Contact page does the same: a sequence
@@ -1533,6 +1545,7 @@ def campaign_page(
             "tiles": tiles,
             "selected_tile": selected_tile,
             "selected_stage": selected.value if selected else None,
+            "selected_control": selected_control,
             "failure_counts": failures,
             "rerun_candidates": rerun_candidates,
             "rerun_spends": (selected in agent_rerun.SPENDS_PER_CONTACT) if selected else False,
@@ -1661,6 +1674,81 @@ def campaign_agent_rerun(
     if not outcome.accepted:
         return _redirect(destination, err=message)
     return _redirect(destination, ok=message)
+
+
+@router.post("/campaigns/{campaign_id}/agents/{agent_id}/live")
+def campaign_agent_live_opt_in(
+    campaign_id: str,
+    agent_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    live: str = Form(""),
+    expected_version: str = Form(""),
+    reason: str = Form(""),
+    back: str = Form(""),
+) -> RedirectResponse:
+    """Let this campaign's Agent do real, outside work — or stop letting it.
+
+    Four Agents refuse to execute until the campaign's effective configuration
+    carries ``{"live": true}``: Research, Verification, Insights and
+    Personalization. Until this route existed the product had no way to say it.
+    The switch was reachable only through the Phase 2 API or the database, so a
+    campaign could show every Agent enabled while every job it claimed came back
+    ``research_not_live`` — which is what held 18 Campaign Contacts at Research.
+
+    It is deliberately *not* the status control. Status decides whether an Agent
+    may claim work; this decides whether the work it claims may reach a provider,
+    another organisation's website or a metered model. Both are versioned, both
+    are campaign-scoped, and neither implies the other — see
+    ``WorkbenchCommands.set_campaign_live_opt_in``.
+
+    ``expected_version`` travels through untouched for the reason the status
+    control gives: two people on the same campaign must not be able to overwrite
+    each other silently.
+    """
+
+    identifier = _uuid(campaign_id)
+    if identifier is None:
+        return _redirect("/app/campaigns", err="That is not a campaign id.")
+    try:
+        target = AgentIdentifier(agent_id)
+    except ValueError:
+        return _redirect(f"/app/campaigns/{identifier}", err="That is not an Agent.")
+
+    destination = back or f"/app/campaigns/{identifier}?stage={target.value}"
+    # A blank version means the page saw no campaign override at all, which is a
+    # claim about the world rather than a missing value. Coercing it to 0 would
+    # turn a conflict into a silent overwrite.
+    raw_version = expected_version.strip()
+    version: int | None
+    if not raw_version:
+        version = None
+    else:
+        try:
+            version = int(raw_version)
+        except ValueError:
+            return _redirect(destination, err="That control version is not a number.")
+
+    wanted = live.lower() in {"1", "true", "on", "yes"}
+    try:
+        outcome = workbench_agents.WorkbenchCommands(db).set_campaign_live_opt_in(
+            identifier,
+            target,
+            live=wanted,
+            expected_version=version,
+            reason=reason or None,
+        )
+    except workbench_agents.WorkbenchCommandError as exc:
+        db.rollback()
+        return _redirect(f"/app/campaigns/{identifier}", err=str(exc))
+    # Committed either way. A refusal writes exactly one thing — the audit event
+    # recording that somebody asked and was told no — and that record is the
+    # point: "who tried to make this campaign spend, and when" is a question the
+    # trail has to be able to answer, not only "who succeeded".
+    db.commit()
+    if not outcome.accepted:
+        return _redirect(destination, err=outcome.summary)
+    return _redirect(destination, ok=outcome.summary)
 
 
 # ---------------------------------------------------------------------------

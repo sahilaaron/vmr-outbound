@@ -137,6 +137,17 @@ def _company_label(contact: Contact | None) -> str | None:
     return " · ".join(parts) if parts else None
 
 
+def _live_in(config: dict[str, Any]) -> bool:
+    """Whether a configuration carries the live opt-in, read exactly as an adapter reads it.
+
+    ``is True`` rather than truthiness, because that is what the adapters test.
+    A stored ``"true"`` or ``1`` does not run the Agent, so it must not show as
+    though it would.
+    """
+
+    return config.get(agent_controls.LIVE_CONFIG_KEY) is True
+
+
 def _retryable_failure(job: AgentJob) -> bool:
     return bool((job.error or {}).get("retryable", False))
 
@@ -206,6 +217,7 @@ class PhaseTwoWorkbenchReader:
     ) -> ControlView:
         spec = get_agent_spec(agent_id)
         global_status = global_control.status if global_control else spec.default_status
+        global_config = dict(global_control.config or {}) if global_control else {}
         if campaign is None:
             return ControlView(
                 agent_id=agent_id,
@@ -220,6 +232,12 @@ class PhaseTwoWorkbenchReader:
                 campaign_version=None,
                 updated_by=global_control.updated_by if global_control else None,
                 updated_at=global_control.updated_at if global_control else None,
+                requires_live_opt_in=spec.requires_live_opt_in,
+                # Unscoped, so the only configuration in play is the global one.
+                # This answers for the global control and says nothing about any
+                # Campaign: the opt-in is a Campaign decision, and the scoped
+                # branch below is where a Campaign's own answer comes from.
+                live_opt_in=spec.requires_live_opt_in and _live_in(global_config),
             )
         effective = agent_controls.effective_control(
             self._session, campaign=campaign, agent_id=agent_id
@@ -237,6 +255,11 @@ class PhaseTwoWorkbenchReader:
             campaign_version=effective.campaign_version,
             updated_by=global_control.updated_by if global_control else None,
             updated_at=global_control.updated_at if global_control else None,
+            requires_live_opt_in=spec.requires_live_opt_in,
+            # The *effective* configuration, which is the global one with this
+            # Campaign's override merged over it — the same value the adapter
+            # reads when it decides whether to refuse.
+            live_opt_in=spec.requires_live_opt_in and _live_in(effective.config),
         )
 
     def _job_view(

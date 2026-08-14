@@ -19,6 +19,20 @@ class AgentSpec:
     max_attempts: int = 3
     retry_base_seconds: float = 30.0
     retry_cap_seconds: float = 900.0
+    #: Whether this Agent refuses to execute until the Campaign's effective Agent
+    #: configuration contains ``{"live": true}``.
+    #:
+    #: A registry *fact*, not a setting: it records that the adapter itself asks
+    #: for a per-Campaign opt-in before it will reach a provider, fetch another
+    #: organisation's website, or spend model budget. Enabling the Agent is not
+    #: enough, which is exactly why it needs to be visible — an Agent shown as
+    #: enabled while every job it claims returns ``research_not_live`` is a
+    #: screen telling an operator something untrue.
+    #:
+    #: The adapters remain the authority for their own refusal; this flag only
+    #: says which of them have one. ``tests/test_campaign_live_opt_in.py`` pins
+    #: the two together so the flag cannot drift from the code that enforces it.
+    requires_live_opt_in: bool = False
 
 
 _SPECS = (
@@ -60,6 +74,7 @@ _SPECS = (
         # genuinely stuck Contact stops rather than looping.
         max_attempts=3,
         retry_base_seconds=60.0,
+        requires_live_opt_in=True,
     ),
     AgentSpec(
         AgentIdentifier.EMAIL,
@@ -82,6 +97,7 @@ _SPECS = (
         (AgentIdentifier.EMAIL,),
         AgentControlStatus.DISABLED,
         True,
+        requires_live_opt_in=True,
     ),
     AgentSpec(
         AgentIdentifier.INSIGHTS,
@@ -93,6 +109,7 @@ _SPECS = (
         skippable=True,
         max_attempts=3,
         retry_base_seconds=60.0,
+        requires_live_opt_in=True,
     ),
     AgentSpec(
         AgentIdentifier.PERSONALIZATION,
@@ -107,6 +124,7 @@ _SPECS = (
         skippable=True,
         max_attempts=3,
         retry_base_seconds=60.0,
+        requires_live_opt_in=True,
     ),
     AgentSpec(
         AgentIdentifier.SENDING,
@@ -121,6 +139,12 @@ _SPECS = (
 
 AGENT_SPECS = {spec.identifier: spec for spec in _SPECS}
 PIPELINE_ORDER = tuple(spec.identifier for spec in _SPECS)
+
+#: Every Agent that refuses to run without the Campaign's live opt-in, in pipeline
+#: order. Derived from the specs rather than written out a second time.
+LIVE_OPT_IN_AGENTS: tuple[AgentIdentifier, ...] = tuple(
+    spec.identifier for spec in _SPECS if spec.requires_live_opt_in
+)
 
 
 def get_agent_spec(agent_id: AgentIdentifier) -> AgentSpec:

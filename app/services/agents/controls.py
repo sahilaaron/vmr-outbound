@@ -236,6 +236,95 @@ def set_campaign_override(
     return override
 
 
+#: The one configuration key an Agent adapter reads as "this Campaign has asked
+#: for real work". Research, Verification, Insights and Personalization each
+#: refuse to execute until the *effective* config carries it — see
+#: ``AgentSpec.requires_live_opt_in``.
+LIVE_CONFIG_KEY: Final = "live"
+
+
+def campaign_live_opt_in(
+    session: Session,
+    *,
+    campaign: Campaign,
+    agent_id: AgentIdentifier,
+) -> bool:
+    """Whether this Campaign's effective Agent config permits live execution."""
+
+    control = effective_control(session, campaign=campaign, agent_id=agent_id)
+    return control.config.get(LIVE_CONFIG_KEY) is True
+
+
+def set_campaign_live_opt_in(
+    session: Session,
+    *,
+    campaign_id: uuid.UUID,
+    agent_id: AgentIdentifier,
+    live: bool,
+    actor: str = "operator",
+    reason: str | None = None,
+) -> CampaignAgentOverride:
+    """Grant or withdraw one Campaign's live opt-in for one Agent.
+
+    Deliberately *not* a second control surface. It writes the same
+    ``CampaignAgentOverride`` row :func:`set_campaign_override` writes, through
+    the same function, with the same version, audit event and validation — the
+    only thing it decides is one key in ``config``.
+
+    Three properties are the whole design:
+
+    * **Status is carried, never chosen.** An Agent's status and its
+      configuration are separate decisions, so an opt-in must not double as a
+      pause or a resume. The status written is the one this Campaign already had:
+      the override's if it has one, otherwise the status it inherits from the
+      global control or the registry default. The temporary DISABLED that
+      ``effective_control`` reports while a Campaign's execution switch is off is
+      deliberately *not* read here — persisting it would turn a reversible pause
+      into a stored decision.
+    * **Nothing else in the config is touched.** Research's ``workers``,
+      ``worker_options`` and ``claude_fallback`` keys survive an opt-in being
+      turned on and off again.
+    * **Turning it off writes ``false`` rather than deleting the key.** Removing
+      it would silently re-inherit a global ``live`` if one is ever set, which is
+      the opposite of what an operator who switched this Campaign off asked for.
+      It also discards nothing: jobs, evidence and stage history are untouched,
+      and the Agent simply refuses the next execution as it did before.
+    """
+
+    spec = get_agent_spec(agent_id)
+    if not spec.requires_live_opt_in:
+        raise AgentControlError(
+            f"{spec.display_name} has no live opt-in; it does not read that configuration."
+        )
+    if session.get(Campaign, campaign_id) is None:
+        raise AgentControlError(f"campaign {campaign_id} does not exist")
+
+    override = session.scalars(
+        select(CampaignAgentOverride).where(
+            CampaignAgentOverride.campaign_id == campaign_id,
+            CampaignAgentOverride.agent_id == agent_id,
+        )
+    ).one_or_none()
+    if override is not None:
+        status = override.status
+        config = dict(override.config or {})
+    else:
+        global_control = session.get(AgentControl, agent_id)
+        status = global_control.status if global_control else spec.default_status
+        config = {}
+    config[LIVE_CONFIG_KEY] = live
+
+    return set_campaign_override(
+        session,
+        campaign_id=campaign_id,
+        agent_id=agent_id,
+        status=status,
+        config=config,
+        actor=actor,
+        reason=reason,
+    )
+
+
 def clear_campaign_override(
     session: Session,
     *,
