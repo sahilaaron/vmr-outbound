@@ -1,9 +1,14 @@
 # UAT operator controls + campaign ownership repair — handoff
 
-Branch `feat/uat-operator-controls`, based on `origin/main` at
-`d9750b0` (PR #274). Nothing merged, nothing deployed, no VPS or runtime file
-touched. The separate `fix/uat-extension-account-linking` branch was not
-inspected, not merged and not modified.
+**Branch** `feat/uat-operator-controls`
+**Base** `origin/main` at `d9750b0e` (PR #274)
+**Head** `b929bb7` — five commits, listed per requirement below
+**Migrations** `c1f4a90b7d38` (campaign ownership + assignment),
+`e2b7c0d94a15` (operational settings). Both additive, single head.
+
+Nothing merged, nothing deployed, no VPS or runtime file touched. The separate
+`fix/uat-extension-account-linking` branch was not inspected, not merged, not
+copied from and not modified.
 
 Three requirements from real Hosted Beta UAT, in commit order.
 
@@ -94,6 +99,11 @@ campaign**; a normal user reaches one only after an explicit assignment.
 * **Query/form parameters**, checked in the handler that reads them:
   `/app/review?campaign=`, `/app/contacts/{id}?campaign=`,
   `POST /contacts/add-to-campaign`, `POST /api/intake/contact-captures`.
+* **Membership-keyed routes.** The same dependency also fires on a
+  `{campaign_contact_id}` path parameter, resolving the membership to its
+  campaign. That covers the seven `/api/campaign-contacts/{id}/...` routes —
+  read, pause, resume, archive, retry, skip a stage, read the pipeline — which
+  name campaign work without spelling the campaign out, and any added later.
 * **Id-keyed review writes** — approve/discard of a draft, all three sequence
   message writes, sequence approve, and sequence Gmail drafts.
 * **Lists** — `list_campaigns` and `campaigns_for_offering` take a *required*
@@ -103,6 +113,22 @@ campaign**; a normal user reaches one only after an explicit assignment.
 Refusals are one shape from one handler:
 `{"error": "campaign_access_denied", "status": 403}`. 403 rather than 404 for the
 reason `AdminRequiredError` already records.
+
+### Assignment semantics, confirmed
+
+* **The creator keeps access without an assignment row**, and keeps it if an
+  assignment row for them is deleted — creator access comes from
+  `created_by_user_id`, which the OR clause reads independently. Pinned by
+  `test_a_creator_keeps_access_when_an_assignment_row_for_them_is_removed`.
+* **Any number of users per campaign**, and any number of campaigns per user.
+* **Unassigning a non-creator removes their access on the very next request**,
+  with no sign-out and no expiry to wait for.
+* **Disabling an account transfers nothing.** `set_state` touches only `state`
+  and `auth_version`; `created_by_user_id` and every assignment row survive, so
+  reactivating restores exactly the access the account had. Pinned by
+  `test_disabling_an_account_transfers_neither_ownership_nor_assignments`.
+* The admin panel offers no unassign button against the creator, because there
+  is nothing there to revoke.
 
 ### Two defects found while testing, both real, both fixed
 
@@ -305,10 +331,37 @@ boundary rather than the campaign one), `tests/test_user_accounts.py`,
 `tests/test_model_domain_lookup.py`, `tests/test_verification_web.py`,
 `tests/test_capture_page_agreement.py`.
 
-Gates on the branch head: `ruff check` clean, `ruff format --check` clean,
-`mypy app` strict clean (279 files), `alembic heads` single, `alembic check`
-clean, migration round trip clean. Focused suites green. **GitHub CI is the broad
-regression authority after push.**
+### Gates on the branch head `b929bb7`
+
+| Gate | Result |
+| --- | --- |
+| `pytest tests/` | **3955 passed, 0 failed, 0 errors, 0 skipped** (22m 52s) |
+| `ruff check .` | clean |
+| `ruff format --check .` | clean, 417 files |
+| `mypy app` (strict) | clean, 279 files |
+| `alembic heads` | single — `e2b7c0d94a15` |
+| `alembic check` | no drift from the models |
+| migration round trip | upgrade → downgrade → upgrade clean, both revisions |
+
+**A note on the first full-suite run, because its log is misleading.** It
+reported 8 failures and 1 error. Seven of those were an artefact of running two
+pytest processes against the same database: `tests/conftest.py::_isolate_database`
+truncates every table after every test, so a background suite and a foreground
+run wipe each other's rows. Re-run serially, `tests/test_resolution_web.py` is
+green untouched.
+
+The other two were real, and both were copy rather than behaviour:
+
+* `test_web_lookup_without_key_is_refused_before_any_call` expected a generic
+  "enrichment is not enabled"; the shared `operational.refusal()` message
+  introduced later is *more* specific and names `LOGO_DEV_API_KEY`. The
+  assertion now checks for that.
+* `test_refuses_when_no_key` had been changed to expect the control to refuse.
+  That was the momentary regression the local/dev simulator allowance corrected —
+  local behaviour is unchanged from `main`, and the test now pins that with the
+  reasoning written out.
+
+**GitHub CI remains the broad regression authority after push.**
 
 ---
 
