@@ -361,13 +361,38 @@ def get_draft(session: Session, draft_version_id: uuid.UUID) -> DraftRow | None:
     return _row(draft, contact, campaign, approval, current=current, memberships=memberships)
 
 
-def first_awaiting(session: Session, *, campaign_id: uuid.UUID | None = None) -> DraftRow | None:
-    """The draft the queue opens on."""
+def first_awaiting(
+    session: Session,
+    *,
+    campaign_id: uuid.UUID | None = None,
+    campaign_ids: frozenset[uuid.UUID] | None = None,
+) -> DraftRow | None:
+    """The draft the queue opens on.
 
-    page = list_queue(session, campaign_id=campaign_id, view=VIEW_AWAITING, limit=1)
+    ``campaign_ids`` carries the caller's authorization restriction and must be
+    passed wherever ``list_queue`` is passed it. This is the fallback the review
+    page uses when nothing is selected, so an unrestricted call here would open
+    somebody else's draft — with its subject, body and evidence panel — on a page
+    whose own list was correctly scoped, which is the one place a scoped list can
+    still leak.
+    """
+
+    page = list_queue(
+        session,
+        campaign_id=campaign_id,
+        campaign_ids=campaign_ids,
+        view=VIEW_AWAITING,
+        limit=1,
+    )
     if page.rows:
         return page.rows[0]
-    page = list_queue(session, campaign_id=campaign_id, view=VIEW_ALL, limit=1)
+    page = list_queue(
+        session,
+        campaign_id=campaign_id,
+        campaign_ids=campaign_ids,
+        view=VIEW_ALL,
+        limit=1,
+    )
     return page.rows[0] if page.rows else None
 
 

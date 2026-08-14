@@ -267,6 +267,7 @@ def build_sequence(
     email: str | None = None,
     without_email: bool = False,
     sequence_enabled: bool = True,
+    owner_user_id: uuid.UUID | str | None = None,
 ) -> SequenceFixture:
     """One Campaign Contact with a complete, live, seven-message sequence.
 
@@ -274,6 +275,15 @@ def build_sequence(
     purpose: these tests are about what happens *after* a sequence exists, and
     driving a model call to obtain one would couple every Gmail assertion to the
     Personalization prompt.
+
+    ``owner_user_id`` sets ``Campaign.created_by_user_id``. It exists because
+    campaigns now have owners: a signed-in USER reaches only the campaigns they
+    created or were assigned, so a fixture campaign with no owner is one the test
+    operator cannot open, and the whole Gmail flow would be asserted against a
+    403 rather than against Gmail. Passing the operator's account id makes the
+    fixture describe the situation these tests are actually about — an operator
+    working on their own campaign. Left ``None``, the campaign is ownerless,
+    which is what a pre-migration campaign looks like.
     """
 
     company = Company(name="Kiln Systems", domain="kiln.example", industry="Industrial technology")
@@ -283,6 +293,7 @@ def build_sequence(
         status=CampaignStatus.ACTIVE,
         execution_enabled=True,
         cadence_config={"sequence": {"enabled": True}} if sequence_enabled else {},
+        created_by_user_id=(uuid.UUID(str(owner_user_id)) if owner_user_id is not None else None),
     )
     db.add_all([company, campaign])
     db.flush()

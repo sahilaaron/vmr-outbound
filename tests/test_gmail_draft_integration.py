@@ -233,6 +233,47 @@ def _sign_in_as(
     return csrf
 
 
+def _grant_campaign_access(
+    session: Session, campaign_id: uuid.UUID, account: SeededAccount
+) -> None:
+    """Assign a fixture campaign to a second operator.
+
+    Used by the multi-operator tests below. Without it those tests would now be
+    refused at the campaign boundary before they ever reached the Gmail one, and
+    would be asserting the wrong refusal — the point of each of them is that a
+    mailbox belongs to one account *even when* both operators can legitimately
+    work on the same campaign.
+    """
+
+    from app.models.campaign import CampaignUserAssignment
+
+    session.add(CampaignUserAssignment(campaign_id=campaign_id, user_id=uuid.UUID(account.user_id)))
+    session.commit()
+
+
+def _default_operator_id(session: Session) -> str:
+    """The account id of the default approved operator, seeding it if needed.
+
+    Campaigns have owners now, and a signed-in USER reaches only the campaigns
+    they created or were assigned. Every fixture campaign in this file is
+    therefore given to *this* account, because that is the situation these tests
+    are about: one operator working on their own campaign, and the question being
+    asked is about Gmail rather than about campaign access. A fixture campaign
+    with no owner would make the whole file assert against a campaign refusal.
+
+    Seeding here rather than assuming a prior `_seed_operator()` call keeps the
+    helper usable before sign-in as well as after it, which is the order several
+    of these tests use.
+    """
+
+    from app.models.user import User
+
+    existing = session.scalar(select(User).where(User.email_normalized == APPROVED_EMAIL))
+    if existing is not None:
+        return str(existing.id)
+    return _seed_operator().user_id
+
+
 def _signed_in(client: TestClient) -> str:
     """Sign the client in as the default approved operator, and return its CSRF."""
 
@@ -590,7 +631,9 @@ def test_no_gmail_secret_reaches_a_rendered_page(
     client, oauth, _ = hosted
     csrf = _signed_in(client)
     _connect(client, oauth, csrf)
-    fixture = build_sequence(committed_session)
+    fixture = build_sequence(
+        committed_session, owner_user_id=_default_operator_id(committed_session)
+    )
     committed_session.commit()
 
     page = client.get(f"/app/contacts/{fixture.contact.id}?campaign={fixture.campaign.id}")
@@ -686,7 +729,9 @@ def _grant_for(
 @pytest.fixture()
 def service_setup(committed_session: Session) -> tuple[Any, GmailMailboxGrant, GmailSettings]:
     settings = gmail_settings()
-    fixture = build_sequence(committed_session)
+    fixture = build_sequence(
+        committed_session, owner_user_id=_default_operator_id(committed_session)
+    )
     grant = _grant_for(committed_session, settings=settings)
     committed_session.commit()
     return fixture, grant, settings
@@ -889,7 +934,11 @@ def test_a_suppressed_contact_is_never_drafted_to(
 
 def test_a_contact_without_an_address_drafts_nothing(committed_session: Session) -> None:
     settings = gmail_settings()
-    fixture = build_sequence(committed_session, without_email=True)
+    fixture = build_sequence(
+        committed_session,
+        without_email=True,
+        owner_user_id=_default_operator_id(committed_session),
+    )
     grant = _grant_for(committed_session, settings=settings)
     committed_session.commit()
 
@@ -1453,7 +1502,9 @@ def test_the_page_offers_connect_when_no_mailbox_is_connected(
 
     client, _oauth, _transport = hosted
     _signed_in(client)
-    fixture = build_sequence(committed_session)
+    fixture = build_sequence(
+        committed_session, owner_user_id=_default_operator_id(committed_session)
+    )
     committed_session.commit()
 
     page = client.get(f"/app/contacts/{fixture.contact.id}?campaign={fixture.campaign.id}")
@@ -1468,7 +1519,9 @@ def test_the_page_shows_the_connected_mailbox_and_the_create_action(
     client, oauth, _transport = hosted
     csrf = _signed_in(client)
     _connect(client, oauth, csrf)
-    fixture = build_sequence(committed_session)
+    fixture = build_sequence(
+        committed_session, owner_user_id=_default_operator_id(committed_session)
+    )
     committed_session.commit()
 
     page = client.get(f"/app/contacts/{fixture.contact.id}?campaign={fixture.campaign.id}")
@@ -1494,7 +1547,9 @@ def test_the_review_page_does_not_offer_the_draft_action(
     client, oauth, _transport = hosted
     csrf = _signed_in(client)
     _connect(client, oauth, csrf)
-    fixture = build_sequence(committed_session)
+    fixture = build_sequence(
+        committed_session, owner_user_id=_default_operator_id(committed_session)
+    )
     committed_session.commit()
 
     page = client.get(f"/app/review?sequence={fixture.sequence.id}")
@@ -1512,7 +1567,9 @@ def test_the_one_click_route_creates_the_drafts_and_reports_honestly(
     client, oauth, transport = hosted
     csrf = _signed_in(client)
     _connect(client, oauth, csrf)
-    fixture = build_sequence(committed_session)
+    fixture = build_sequence(
+        committed_session, owner_user_id=_default_operator_id(committed_session)
+    )
     committed_session.commit()
 
     response = client.post(
@@ -1549,7 +1606,9 @@ def test_the_one_click_route_refuses_without_a_connected_mailbox(
 ) -> None:
     client, _oauth, transport = hosted
     csrf = _signed_in(client)
-    fixture = build_sequence(committed_session)
+    fixture = build_sequence(
+        committed_session, owner_user_id=_default_operator_id(committed_session)
+    )
     committed_session.commit()
 
     response = client.post(
@@ -1568,7 +1627,9 @@ def test_the_one_click_route_is_refused_cross_site(
     client, oauth, transport = hosted
     csrf = _signed_in(client)
     _connect(client, oauth, csrf)
-    fixture = build_sequence(committed_session)
+    fixture = build_sequence(
+        committed_session, owner_user_id=_default_operator_id(committed_session)
+    )
     committed_session.commit()
 
     response = client.post(
@@ -1598,7 +1659,9 @@ def test_the_feature_does_not_exist_while_the_switch_is_off(
     setattr(app.state, GMAIL_PROVIDER_STATE_KEY, transport)
     client = TestClient(app, base_url=STAGING_ORIGIN, follow_redirects=False)
     csrf = _signed_in(client)
-    fixture = build_sequence(committed_session)
+    fixture = build_sequence(
+        committed_session, owner_user_id=_default_operator_id(committed_session)
+    )
     committed_session.commit()
 
     assert (
@@ -1800,7 +1863,11 @@ def test_an_unusable_recipient_is_a_refusal_rather_than_a_crash(committed_sessio
     """A non-ASCII local part used to escape as `MessageDefect` and 500."""
 
     settings = gmail_settings()
-    fixture = build_sequence(committed_session, email="jose@kiln.example")
+    fixture = build_sequence(
+        committed_session,
+        email="jose@kiln.example",
+        owner_user_id=_default_operator_id(committed_session),
+    )
     fixture.contact.email = "jos\u00e9@kiln.example"
     grant = _grant_for(committed_session, settings=settings)
     committed_session.commit()
@@ -1835,7 +1902,9 @@ def test_one_operator_never_sees_another_operators_mailbox(
     oauth.mailbox_address = "shared-outbox@vmr.example"
     csrf = _signed_in(client)
     _connect(client, oauth, csrf)
-    fixture = build_sequence(committed_session)
+    fixture = build_sequence(
+        committed_session, owner_user_id=_default_operator_id(committed_session)
+    )
     committed_session.commit()
 
     client.post(
@@ -1847,9 +1916,14 @@ def test_one_operator_never_sees_another_operators_mailbox(
 
     # A second account, with no mailbox of its own, opens the same contact. They
     # must not learn where the first operator drafted.
-    other_cookie, _ = _session_cookie(
-        email="second@vmr.example", subject="operator-google-subject-2"
-    )
+    #
+    # They are *assigned* the campaign first, deliberately. Without the
+    # assignment the campaign boundary would refuse them and this test would be
+    # asserting that rule instead of the one it is about: a Gmail mailbox belongs
+    # to one account even when two operators legitimately share the campaign.
+    second = _seed_operator(email="second@vmr.example", subject="operator-google-subject-2")
+    _grant_campaign_access(committed_session, fixture.campaign.id, second)
+    other_cookie, _ = _session_cookie(second, subject="operator-google-subject-2")
     client.cookies.set(SESSION_COOKIE_NAME, other_cookie, domain=STAGING_HOST)
     page = client.get(f"/app/contacts/{fixture.contact.id}?campaign={fixture.campaign.id}")
     assert page.status_code == 200
@@ -1926,7 +2000,9 @@ def test_a_password_authenticated_operator_can_connect_and_draft(
     assert grant.operator_subject is None
     assert grant.operator_email == "password-only@vmr.example"
 
-    fixture = build_sequence(committed_session)
+    # Owned by *this* operator: the test is about a password-authenticated
+    # account working its own campaign end to end.
+    fixture = build_sequence(committed_session, owner_user_id=operator.user_id)
     committed_session.commit()
 
     page = client.get(f"/app/contacts/{fixture.contact.id}?campaign={fixture.campaign.id}")
@@ -1960,11 +2036,17 @@ def test_a_second_operator_can_neither_use_nor_disconnect_the_first_ones_mailbox
     owner_csrf = _sign_in_as(client, owner)
     _connect(client, oauth, owner_csrf)
 
-    fixture = build_sequence(committed_session)
+    fixture = build_sequence(
+        committed_session, owner_user_id=_default_operator_id(committed_session)
+    )
     committed_session.commit()
     settings = gmail_settings()
 
     stranger = _seed_operator(email="stranger@vmr.example", subject="google-sub-stranger")
+    # Assigned the campaign on purpose: the refusals below must come from the
+    # Gmail ownership rule, not from the campaign one. A stranger who could not
+    # open the campaign at all would prove nothing about mailboxes.
+    _grant_campaign_access(committed_session, fixture.campaign.id, stranger)
     stranger_csrf = _sign_in_as(client, stranger, subject="google-sub-stranger")
     stranger_id = uuid.UUID(stranger.user_id)
 
@@ -2095,7 +2177,9 @@ def test_an_administrator_does_not_inherit_another_users_mailbox(
         == "disconnected"
     )
 
-    fixture = build_sequence(committed_session)
+    fixture = build_sequence(
+        committed_session, owner_user_id=_default_operator_id(committed_session)
+    )
     committed_session.commit()
     page = client.get(f"/app/contacts/{fixture.contact.id}?campaign={fixture.campaign.id}")
     assert page.status_code == 200
@@ -2162,7 +2246,9 @@ def test_a_disabled_accounts_open_session_cannot_touch_gmail(
     operator = _seed_operator(email="soon-disabled@vmr.example", subject="google-sub-disabled")
     csrf = _sign_in_as(client, operator)
     _connect(client, oauth, csrf)
-    fixture = build_sequence(committed_session)
+    fixture = build_sequence(
+        committed_session, owner_user_id=_default_operator_id(committed_session)
+    )
     committed_session.commit()
     assert client.get("/app/review").status_code == 200
 

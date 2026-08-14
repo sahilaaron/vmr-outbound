@@ -2064,7 +2064,7 @@ def review_page(
         selected = (
             queue.rows[0]
             if queue.rows
-            else draft_service.first_awaiting(db, campaign_id=campaign_id)
+            else draft_service.first_awaiting(db, campaign_id=campaign_id, campaign_ids=allowed)
         )
 
     settings = get_settings()
@@ -2354,6 +2354,7 @@ def review_approve(
     identifier = _uuid(draft_id)
     if identifier is None:
         return _redirect("/app/review", err="That is not a draft id.")
+    _require_review_access(request, db, _draft_campaign_id(db, identifier))
     try:
         draft_service.approve(
             db,
@@ -2384,6 +2385,7 @@ def review_discard(
     identifier = _uuid(draft_id)
     if identifier is None:
         return _redirect("/app/review", err="That is not a draft id.")
+    _require_review_access(request, db, _draft_campaign_id(db, identifier))
     try:
         draft_service.discard(
             db,
@@ -2564,6 +2566,43 @@ def _sequence_id_for_version(db: Session, version_id: uuid.UUID) -> uuid.UUID | 
     return version.sequence_id if version is not None else None
 
 
+def _require_review_access(request: Request, db: Session, campaign_id: uuid.UUID | None) -> None:
+    """Refuse a review write against a campaign this account may not use.
+
+    The review routes are keyed by a *draft* or *sequence* id, not by a campaign
+    id, so the router-level path guard never sees them — it only fires on a
+    ``{campaign_id}`` path parameter. The review page itself is scoped, including
+    its ``?draft=`` and ``?sequence=`` deep links, so the ids are not on offer;
+    but hiding an id is a courtesy and this is the control.
+
+    It matters more here than almost anywhere else on the surface. Approval is
+    the human authorisation the whole pipeline waits for: an approved draft is a
+    statement that a named person read this exact version and is willing for it
+    to go out. Letting somebody outside the campaign record that statement would
+    put a signature on work they were never shown.
+
+    ``campaign_id`` of ``None`` means the target could not be resolved at all —
+    a deleted or bogus id — and is left to the handler, which already answers it
+    with a specific message.
+    """
+
+    if campaign_id is None:
+        return
+    campaign_access.require_campaign_access(db, campaign_id, actor_from_request(request))
+
+
+def _draft_campaign_id(db: Session, draft_version_id: uuid.UUID) -> uuid.UUID | None:
+    row = draft_service.get_draft(db, draft_version_id)
+    return row.campaign_id if row is not None else None
+
+
+def _sequence_campaign_id(db: Session, sequence_id: uuid.UUID | None) -> uuid.UUID | None:
+    if sequence_id is None:
+        return None
+    record = sequence_read.get_sequence(db, sequence_id)
+    return record.campaign_id if record is not None else None
+
+
 @router.post("/review/sequence/messages/{version_id}/approve")
 def sequence_message_approve(
     version_id: str,
@@ -2582,9 +2621,9 @@ def sequence_message_approve(
         return _redirect(target, err=CROSS_SITE_REFUSAL)
     if _oversized(request):
         return _redirect(target, err=OVERSIZED_REFUSAL)
-    refusal = _sequence_write_refusal(
-        db, get_settings(), sequence_id=_sequence_id_for_version(db, identifier)
-    )
+    sequence_id_for_message = _sequence_id_for_version(db, identifier)
+    _require_review_access(request, db, _sequence_campaign_id(db, sequence_id_for_message))
+    refusal = _sequence_write_refusal(db, get_settings(), sequence_id=sequence_id_for_message)
     if refusal is not None:
         return _redirect(target, err=refusal)
     try:
@@ -2624,9 +2663,9 @@ def sequence_message_discard(
         return _redirect(target, err=CROSS_SITE_REFUSAL)
     if _oversized(request):
         return _redirect(target, err=OVERSIZED_REFUSAL)
-    refusal = _sequence_write_refusal(
-        db, get_settings(), sequence_id=_sequence_id_for_version(db, identifier)
-    )
+    sequence_id_for_message = _sequence_id_for_version(db, identifier)
+    _require_review_access(request, db, _sequence_campaign_id(db, sequence_id_for_message))
+    refusal = _sequence_write_refusal(db, get_settings(), sequence_id=sequence_id_for_message)
     if refusal is not None:
         return _redirect(target, err=refusal)
     try:
@@ -2665,9 +2704,9 @@ def sequence_message_edit(
         return _redirect(target, err=CROSS_SITE_REFUSAL)
     if _oversized(request):
         return _redirect(target, err=OVERSIZED_REFUSAL)
-    refusal = _sequence_write_refusal(
-        db, get_settings(), sequence_id=_sequence_id_for_version(db, identifier)
-    )
+    sequence_id_for_message = _sequence_id_for_version(db, identifier)
+    _require_review_access(request, db, _sequence_campaign_id(db, sequence_id_for_message))
+    refusal = _sequence_write_refusal(db, get_settings(), sequence_id=sequence_id_for_message)
     if refusal is not None:
         return _redirect(target, err=refusal)
     try:
@@ -2716,6 +2755,7 @@ def sequence_approve(
         return _redirect(target, err=CROSS_SITE_REFUSAL)
     if _oversized(request):
         return _redirect(target, err=OVERSIZED_REFUSAL)
+    _require_review_access(request, db, _sequence_campaign_id(db, identifier))
     refusal = _sequence_write_refusal(db, get_settings(), sequence_id=identifier)
     if refusal is not None:
         return _redirect(target, err=refusal)
@@ -2782,6 +2822,7 @@ def sequence_create_gmail_drafts(
         return _redirect(target, err=CROSS_SITE_REFUSAL)
     if _oversized(request):
         return _redirect(target, err=OVERSIZED_REFUSAL)
+    _require_review_access(request, db, _sequence_campaign_id(db, identifier))
     # A sequence that is read-only for review is read-only for drafting too.
     # Creating a draft from a sequence whose feature switch or campaign opt-in
     # has since been turned off would take a *more* consequential action than
