@@ -1,173 +1,111 @@
-# VMR Outbound Agent — Next Delivery Model
+# Next Delivery Model
 
-Last updated: 2026-08-09
+Last updated: 2026-08-15
 
-## Authoritative baseline
+## Governing customer outcome
 
-The current merged application baseline is `main` at `139f6e80d51b573d023bbd3eeb405c6aef268bfd` (PR #252).
+The current hosted Beta target is:
 
-It includes:
+> **Create Campaign → Capture/add Contacts → VMR works autonomously → Ready for Sending → customer handles sending manually.**
 
-- Campaign Contact File Import (IMP-001);
-- Production Hardening;
-- Chrome Extension pre-auth preparation;
-- the final seven-message Personalization sequence;
-- the Beta 1 operator UI;
-- the post-Beta VPS staging foundation.
+The customer must not be asked to operate internal Agent stages, clear generic approval queues or repair routine machine failures.
 
-Sending remains unavailable.
+See [`CUSTOMER_OPERATING_MODEL.md`](CUSTOMER_OPERATING_MODEL.md).
 
-## Locked current-cycle outcome
-
-The current cycle is complete only when the first internal operator can personally use the real hosted application with real contacts through this flow:
+## Hosted Beta flow
 
 ```text
-Sales Navigator / source page
-→ VMR Chrome Extension capture over HTTPS
-→ authenticated VMR staging application
-→ Campaign / Contact
-→ contact progresses through Agent stages
-→ Research
-→ Company Intelligence
-→ Insights
-→ Personalization
-→ exactly seven generated messages
-→ operator inspects each message
-→ optional immutable edit
-→ Copy Subject / Copy Body / Copy Full Email
-→ operator performs outreach manually outside VMR
+Authenticated VMR customer
+→ create/configure Campaign
+→ capture real prospects through VMR Contact Capture or supported import/add path
+→ Contacts process through Agents automatically
+→ successful Contacts become Ready for Sending
+→ customer opens a Contact/sequence
+→ sees exactly seven generated messages
+→ optionally edits/copies/creates Gmail drafts
+→ sends manually outside automatic VMR execution
 ```
 
-This hosted manual-copy Beta is the current definition of done.
-
-**Gmail draft integration is postponed until after the operator has personally used and accepted this exact workflow with real contacts.** Google Sheets and Campaign CSV/XLSX export are also not current launch gates.
-
-## Current product contract
-
-For every qualifying Campaign Contact, VMR produces exactly seven messages with cadence:
+Default sequence cadence:
 
 `0, 3, 7, 12, 18, 25, 35` days.
 
-The ratified review rule is:
+## Customer responsibility
 
-- absence of `EmailSequenceMessageReview` means approved by default;
-- a review row exists only when a human acts;
-- editing creates a new immutable N+1 message version;
-- editing does not fabricate an approval/review row;
-- generated, human-edited and regenerated origin remains auditable;
-- approved does not mean sendable or sent.
+The customer owns:
 
-The application is the primary operator surface. Beta 1 exposes all seven messages, exact subject/body text, copy controls, sequence state and basic immutable editing.
+- Campaign creation/setup;
+- Contact capture/import/addition;
+- any explicit Campaign-level consent required for paid/live work;
+- optional inspection/editing of generated messages;
+- manual sending-related action once ready.
 
-Imported identity/projection values retain formula-safety boundaries. Actual email subject/body text is displayed and copied exactly and is not spreadsheet-neutralized.
+The customer does not own routine Agent retry/recovery, provider/model failure handling or generic pipeline exception triage.
 
-## Immediate delivery order
+## Machine responsibility
 
-### 1. Prove the merged VPS foundation on the real host
+VMR owns the path from captured Campaign Contact to Ready for Sending:
 
-Deploy exact approved `main` to the VPS and prove infrastructure behavior:
+- identity and Company resolution under policy;
+- reusable Company Research;
+- email discovery;
+- exact-address Verification;
+- Insights;
+- Personalization;
+- seven-message sequence validation;
+- safe retry/recovery behavior.
 
-- PostgreSQL topology and migrations;
-- `/healthz`, `/readyz`, `/version`;
-- nginx configuration and HTTPS;
-- systemd web/worker services;
-- logging;
-- backup/restore path;
-- release switching and rollback;
-- reboot survival;
-- default-deny application exposure until authenticated operator access exists.
+If VMR cannot produce the package, the customer-facing result is **Could not prepare**, with optional details. It is not automatically a personal task.
 
-This first deployment is an infrastructure smoke test only. It is not the operator UAT milestone.
+## Research model
 
-### 2. Add authenticated hosted operator access
+Research continuously enriches reusable Company knowledge and may run repeatedly over time.
 
-The merged Beta UI is already built, but `/app` and `/admin` are deliberately local-only today. Replace that temporary localhost-era restriction with a stronger hosted rule rather than simply weakening it.
+Insights consumes current eligible Research/Company knowledge when it starts. Personalization consumes current eligible Research + Insights when it starts. Historical versions are provenance, not predecessor-job gates.
 
-Required behavior:
+## Ready for Sending
 
-- local development remains intentionally easy;
-- staging may expose `/app` and `/admin` only under a valid authenticated internal-user/session boundary;
-- anonymous remote application writes are refused;
-- cookie-session writes have appropriate CSRF protection;
-- issue #247 or its successor is resolved before operator exposure;
-- Google/Workspace sign-in may authenticate the operator, but it must not imply Gmail mailbox access.
+A Contact is ready when it remains eligible and unsuppressed and the usable outbound package exists under current policy, including:
 
-The goal of this step is practical: the operator can open the private HTTPS staging URL, sign in, and use Campaigns, Contacts, Agent state and seven-message UI in a real browser.
+- usable Research/Company knowledge;
+- an accepted address under Verification policy;
+- completed Insights;
+- completed Personalization;
+- complete validated seven-message sequence.
 
-### 3. Enable secure Chrome Extension remote capture
+No human approval click is required.
 
-Move the merged extension from pre-auth/local preparation to production-style staging capture.
+## Review/edit
 
-Required boundary:
+Generated messages may be inspected and edited, but this is optional.
 
-- stable extension distribution/ID decision;
-- VMR-specific bearer/session authentication;
-- HTTPS capture endpoint;
-- Authorization-aware CORS and pinned extension origin;
-- deliberate removal/replacement of the current local-only remote-capture gate;
-- no Google identity token or Gmail mailbox token in the extension.
+A human review row means a person actually acted. Absence of a review row is not a backlog and does not keep a Contact from Ready for Sending.
 
-The extension authenticates only to VMR.
+Edits preserve immutable version history.
 
-### 4. Run real-contact end-to-end acceptance
+## Gmail draft integration
 
-The first operator must prove the actual browser workflow with real contacts:
+Gmail draft creation is an optional explicit action after messages exist. It is not automatic sending.
 
-1. authenticate to hosted VMR;
-2. capture a real prospect with the Chrome Extension;
-3. confirm the Contact lands in the intended Campaign;
-4. observe the Contact move through the Agent stages;
-5. inspect Research, Company Intelligence, Insights and Personalization outcomes as exposed by the product;
-6. open the Contact and see all seven messages;
-7. verify exact subject/body copy behavior in the real browser;
-8. optionally edit one message and confirm immutable N+1 versioning/current-version behavior;
-9. manually copy the selected outreach content and use it outside VMR;
-10. record any UAT defects found in real operation.
+The Gmail adapter cannot send. The customer sends manually.
 
-Passing this flow is the current-cycle definition of done.
+Gmail consent remains separate from VMR sign-in and Chrome extension authentication.
 
-### 5. Reassess Gmail only after hosted Beta acceptance
+## Automatic sending
 
-Gmail draft integration remains architecturally valid but is explicitly postponed.
+Automatic sending, automatic cadence execution, reply detection and automatic follow-up scheduling remain outside the current customer contract.
 
-Only after the hosted manual-copy workflow has been personally used with real contacts should the next delivery decision be made about:
+Do not introduce them as an incidental consequence of Ready for Sending.
 
-- separate Gmail mailbox authorization;
-- operator-triggered draft creation;
-- durable Gmail draft lineage/idempotency;
-- later thread/cadence/reply behavior.
+## UAT priority
 
-No Gmail work should delay the hosted Beta milestone above.
+Prove the real hosted path with real Contacts:
 
-## Chrome Extension production integration
+1. Campaign setup;
+2. extension/import capture;
+3. autonomous pipeline progress;
+4. Ready for Sending;
+5. seven-message inspection/edit/copy or Gmail draft creation;
+6. manual sending action.
 
-The merged extension work is pre-auth preparation only. Production remote capture still requires a stable extension distribution/ID decision, VMR authentication, an HTTPS capture endpoint, Authorization-aware CORS/origin pinning and deliberate relaxation of the current local-only capture gate.
-
-The extension must authenticate only to VMR. It must never receive Google identity or Gmail mailbox tokens.
-
-## Deferred work
-
-- Gmail mailbox authorization and Gmail draft synchronization until after hosted manual-copy Beta acceptance;
-- automatic sending;
-- automatic Gmail cadence/follow-up creation;
-- Gmail sent/reply/thread monitoring;
-- Campaign CSV/XLSX snapshot export unless operator use justifies it;
-- Google Sheets live synchronization unless a concrete need survives internal use;
-- broad provider sending infrastructure;
-- Broadcast Campaign mode;
-- broader CRM/workflow expansion.
-
-## Non-negotiable boundaries
-
-- contact-first records remain independent of Campaign ownership;
-- Research remains authoritative evidence;
-- Company Intelligence is bounded, company-scoped context and cannot become independent proof;
-- imported email is carried input, not discovered/provider-verified truth;
-- successful seven-message generation is approved by default, with optional human intervention;
-- edits preserve immutable version history;
-- approval is distinct from sendability/delivery state;
-- the application is authoritative for sequence/message/version state;
-- remote operator access must be authenticated before `/app` or `/admin` are exposed in staging;
-- the Chrome extension authenticates to VMR only;
-- Gmail remains a separate future permission boundary;
-- no external provider action may fabricate verification, delivery or send status.
+UAT should also prove that failed/blocked machine state appears as status/diagnostics rather than being inflated into a customer-facing "Needs you" workload.

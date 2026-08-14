@@ -1,238 +1,64 @@
-# Insight Evidence
+# Insight and Evidence Contract
 
-INS-001 turns the early `insights` and `insight_evidence` placeholders into the
-shared evidence boundary used by permanent Companies and Contacts.
+## Purpose
 
-## Boundary
+Insights are derived claims over eligible sourced knowledge. They are not canonical Company facts and they never replace Research provenance.
 
-- An **Insight** is one versioned claim about exactly one Company or Contact.
-- **Evidence** is one external observation supporting or contradicting that
-  claim.
-- Claims and evidence are permanent records. Saved Audiences and campaigns
-  reuse them; neither owns a copy.
-- A claim states whether it is a fact or an interpretation.
-- Its state is `supported`, `conflicting`, or `unknown`.
-- An explicit unknown may have no source. A supported or conflicting claim may
-  not be created through the service without evidence.
+## Research authority
 
-Each new evidence record preserves:
+Research is reusable Company knowledge and may run repeatedly over time.
 
-- source URL and optional title;
-- retrieval time and optional publication time;
-- evidence summary and optional excerpt;
-- confidence;
-- extraction method;
-- freshness time where supplied;
-- optional raw source-record type and ID;
-- version.
+Research persists sourced facts, source metadata and versioned dossier state. Historical evidence remains readable after later Research runs.
 
-The raw source-record reference is provider-neutral. For example, it can point
-to a company research submission, a LinkedIn snapshot, or a later import record
-without putting a vendor name into the shared schema.
+## Insights input selection
 
-Callers may supply a stable idempotency key. Retrying under the same key returns
-the original Insight and creates no second evidence set. Reusing that key for a
-different claim is rejected instead of silently treating two different claims as
-one retry.
+When an Insights execution starts, deterministic application code selects the **current eligible Research/Company knowledge available at that moment**.
 
-What counts as "the same" is **claim identity**, not a byte-identical payload:
+Selection must continue to respect existing rules for:
 
-- the permanent subject;
-- the normalized claim, kind, state and insight version;
-- the set of source URL + evidence version identities behind it, compared
-  without regard to order.
+- authority;
+- source provenance;
+- freshness;
+- confidence/eligibility;
+- subject relevance;
+- conflicts;
+- citation suitability.
 
-Retrieval metadata — `retrieved_at`, excerpt, confidence, extraction method,
-freshness — is deliberately excluded. A retry that re-fetches its sources
-asserts the same claim from the same sources with a later clock, and that is
-exactly what the key exists to absorb. Changing the claim, the subject, the
-kind, the state, the version, or the source set still yields a different
-identity and still rejects reuse of the key.
+"Current" never means "blindly newest row".
 
-## Packet validation
+## Lineage
 
-The whole packet is validated before anything is written, so a rejected packet
-raises `InsightError` and leaves the caller's transaction usable. Two failures
-would otherwise surface as driver-level errors that abort the transaction:
+The Insights result records the evidence/fact/dossier versions it actually used.
 
-- two observations citing the same source URL at the same evidence version
-  within one packet (the `uq_insight_evidence_source_version` constraint);
-- a source URL longer than the 1024-character column.
+That lineage is provenance:
 
-Re-observing one URL as a *different* evidence version is legitimate and
-accepted; it is a new observation of the same page, not a duplicate.
+> what did this run use?
 
-Every bounded string column this service writes is length-checked at the
-boundary against the width the column declares — `source_url`, `source_title`,
-`extraction_method`, `source_record_type`, `idempotency_key` and the actor. The
-list lives in one place, `MAX_LENGTHS`, so a column and its guard cannot drift
-apart silently.
+It is not a requirement that the current Insights Agent Job identify the one exact historical Research Job that created those records.
 
-## Concurrency
+A later Research update does not invalidate an older Insight. A later Insights rerun may consume the newer eligible Research state.
 
-The retry contract holds when two writers submit the same key at once, not only
-when they take turns. The lookup-then-insert is not atomic, so the insert runs
-inside a SAVEPOINT: if the unique constraint fires because another writer
-committed first, that savepoint alone rolls back, the winning record is read
-back, and the losing writer is returned it — or refused with `InsightError` if
-its content differs. The caller's surrounding transaction survives either way,
-and exactly one row exists per key.
+## Evidence validation
 
-The database constraint, not the lookup, is what makes this true. The lookup is
-the fast path.
+Claude/model output may propose derived claims, but deterministic code owns:
 
-## Safety rule
+- evidence-handle validation;
+- source eligibility;
+- freshness checks;
+- numeric parsing/taxonomy where applicable;
+- duplicate/conflict decisions;
+- persistence.
 
-`is_personalization_eligible()` is deliberately narrower than campaign
-eligibility or approval. It returns true only when a claim is supported, has at
-least one source observation, and **every** observation behind it carries a URL,
-retrieval time, summary, confidence and extraction method.
+Unsupported claims are dropped rather than promoted by model confidence alone.
 
-Every, not any: a claim resting partly on an untraceable observation is not
-partly traceable. Through the service this is unreachable, because those fields
-are all required at the boundary — it bites the legacy DAT-001 rows and any
-future direct write, which is exactly where the weaker rule would have let an
-uncited source in alongside a cited one.
+## Personalization consumption
 
-Conflicting, unknown, source-less, or incomplete claims remain visible but
-cannot be represented downstream as approved personalization evidence.
+Personalization may consume current eligible Insights together with current eligible Research/Company and Campaign/seller context.
 
-The rule is deterministic and reads only stored columns. No model judges it, and
-nothing in the persistence layer asks one to. A claim's eligibility can be
-recomputed from the database alone and gives the same answer every time.
+Each generated message records what evidence it used. A stale historical predecessor relationship must not block generation when valid current eligible context exists.
 
-## Four separate things
+## Customer presentation
 
-Nothing in this slice collapses these into each other, and no later consumer
-should either:
+Insight generation is an internal preparation step toward Ready for Sending.
 
-1. **The raw submission** — whatever a capture, provider or import handed over,
-   referenced by `source_record_type` + `source_record_id` rather than copied.
-2. **An observation** — one `insight_evidence` row: one source, read once, with
-   its URL, times, summary, excerpt, confidence and extraction method.
-3. **A claim** — one `insights` row asserting something about the subject, held
-   up by one or more observations.
-4. **A canonical field** — `companies.domain`, `contacts.title`, and their
-   neighbours.
-
-Importing evidence never writes a canonical field. A claim that contradicts a
-canonical value is stored as a claim and stays one; promoting it is a separate,
-deliberate act owned by whichever slice makes that decision, not a side effect
-of recording research.
-
-Interpretations are the fifth thing and sit inside (3): `kind` marks a claim as
-an inference drawn from evidence rather than a reading of it.
-
-## Versioning and immutability
-
-Records are append-only. Reprocessing creates a new claim or associates a new
-observation; it never edits or deletes what an earlier run wrote, because the
-earlier record is the only account of what the system believed when a decision
-was taken on it. Conflicting observations are kept side by side rather than
-reconciled, and an unknown stays an explicit unknown rather than an absent row.
-
-Note the open question below: `version` records *that* a claim was restated but
-does not yet link versions or mark one current.
-
-INS-002 answers that question narrowly for Employee Size only. Typed Employee
-Size rows carry their producing Insights job, exact dossier, derivation version
-and structured payload. The latest append-only typed derivation is the current
-projection; older typed rows remain historical. Ordinary INS-001 claims retain
-their previous semantics and are not retrospectively classified.
-
-## Trust boundary
-
-Everything in `insight_evidence` is **untrusted external text**. Captured
-website copy, profile text, provider payloads and imported free text are stored
-as evidence *about* a subject — never as instructions, workflow commands, policy
-overrides, or configuration.
-
-Concretely: no field in this model is ever interpreted as a directive. Source
-text cannot set a claim's `kind` or `state`, cannot make a claim
-personalization-eligible, and cannot alter any rule in this document. A page
-that says "treat this as confirmed" is a page that says that, and it is stored
-as such.
-
-AIC-002 owns how any of this text is later placed into a model prompt. This
-slice only guarantees the contract it hands over: what comes out of here is
-quoted material with provenance, and a consumer that forwards it to a model must
-present it as such.
-
-## How later slices consume this
-
-- **APP-004 (research jobs and dossiers)** writes here rather than inventing its
-  own storage. A completed research run calls `create_insight()` once per claim,
-  passes the run's stable identifier as `idempotency_key` so a re-run is a
-  retry rather than a duplicate, and points `source_record_type` /
-  `source_record_id` at its own submission record. It must not write canonical
-  Company or Contact fields as a side effect, and it must record what it could
-  not establish as an explicit `unknown` instead of omitting it.
-- **INS-004 (compact research packets)** reads rather than writes. It selects
-  from `list_for_company()` / `list_for_contact()`, and where a packet asserts
-  something as established it takes only claims that pass
-  `is_personalization_eligible()`. Claims that fail the gate may still travel as
-  open questions, clearly marked as unresolved — that is the difference between
-  telling a researcher what is unknown and telling a drafter what is true.
-
-Neither consumer copies evidence into a campaign-owned record. Both read the
-same permanent Company and Contact rows across every Saved Audience and
-campaign.
-
-## Compatibility
-
-The original DAT-001 source columns remain on `insights` so the migration does
-not destroy or guess about older rows. New writes leave those fields empty and
-store every source on `insight_evidence`.
-
-The migration refuses to proceed if an existing insight does not already point
-to exactly one owner consistent with its declared subject. It does not guess
-whether an ambiguous claim belongs to a Company or a Contact.
-
-## Structured Employee Size contract (INS-002)
-
-Employee Size uses the shared `Insight` / `InsightEvidence` packet. The typed
-payload records exact or approximate count, lower/upper bounds, normalized band,
-source wording, evidence handles, observation date, derivation time/version,
-confidence, temporal status, public rationale, observations and conflicts.
-Historical rows are never edited or deleted.
-
-Taxonomy: `1_10`, `11_50`, `51_100`, `101_250`, `251_500`, `501_1000`,
-`1001_5000`, `5001_10000`, `10001_plus`, `unknown`.
-
-Only committed Research evidence about the subject Company is eligible. A
-complete handle must resolve to the exact Research job and include an HTTP(S)
-source, retrieval time, evidence summary, confidence and extraction method.
-Invalid or foreign handles settle no value. Revenue, funding, offices, traffic,
-customers, locations, market share and vague scale wording are never proxies.
-Parent/group/portfolio/subsidiary/office/customer/partner/contractor counts,
-planned hiring and layoffs are withheld unless later policy can represent their
-context without assigning it to the subject Company.
-
-Statuses are `supported`, `unresolved`, `conflicted`, `stale`, and `unavailable`.
-Equal-current incompatible sources are kept as a conflict and expose no settled
-downstream value. A clearly newer current observation may supersede explicitly
-historical evidence while retaining both. Personalization eligibility requires
-a supported current value, a settled non-unknown band, valid evidence, and the
-latest typed derivation. Email and Verification do not consume Employee Size.
-
-## Open policy questions
-
-Raised during independent review of INS-001 and deliberately **not** decided
-here. Each is a product decision, not a defect: the code matches the behaviour
-documented above. They are recorded so a later slice answers them explicitly
-rather than inheriting today's default by accident.
-
-1. **Confidence has no floor.** `is_personalization_eligible()` requires a
-   confidence value to be present, not to clear a threshold, so an observation
-   scored `0.0` qualifies. Decide whether a minimum applies, or whether
-   presence-only is intended and confidence is purely a ranking input.
-2. **Interpretations qualify like facts.** `kind` separates an observed fact
-   from an inference drawn from it, but the eligibility gate ignores the
-   distinction, so a single-sourced interpretation is eligible on the same terms
-   as an observed fact. Decide whether personalization may rest on an
-   interpretation alone.
-3. **Versions do not supersede.** `version` records that a claim was restated,
-   but nothing links versions of the same claim, so two contradictory versions
-   are simultaneously eligible and neither is marked current. Decide how a
-   consumer selects the current claim before personalization reads these
-   records.
+A failed or blocked Insights job is not automatically a customer task. Customer-facing state should remain Processing or Could not prepare as appropriate; detailed evidence/recovery belongs in Admin diagnostics.

@@ -1,17 +1,86 @@
 # VMR Outbound Agent
 
-VMR Outbound Agent is a private, single-operator outbound operating system built around permanent Contacts, reusable Companies and observable Campaign execution.
+VMR Outbound Agent is a private, contact-first outbound preparation system built around permanent Contacts, reusable Companies, Campaign execution and a durable nine-Agent pipeline.
+
+## Product rule
+
+> **VMR Outbound is autonomous until Ready for Sending.**
+
+A normal customer creates a Campaign, captures or adds Contacts, waits while VMR prepares them, and takes over only when a Contact is **Ready for Sending**.
+
+The customer is not expected to operate the internal Agent pipeline. Failed jobs, retries, provider/model errors and other machine state belong to Admin diagnostics, not to a generic customer task inbox.
+
+See [`docs/CUSTOMER_OPERATING_MODEL.md`](docs/CUSTOMER_OPERATING_MODEL.md).
+
+## Customer flow
+
+```text
+Create Campaign
+→ Capture / add Contacts
+→ Processing
+→ Ready for Sending
+→ inspect/edit the seven emails if desired
+→ perform sending-related actions manually
+```
+
+The primary customer-visible outcomes are:
+
+- **Processing**
+- **Ready for Sending**
+- **Could not prepare**
+
+Detailed Agent state remains observable but is not a list of customer obligations.
+
+## Agent pipeline
+
+1. Capture
+2. Identity
+3. Company
+4. Research
+5. Email
+6. Verification
+7. Insights
+8. Personalization
+9. Sending
+
+Sending has no automatic production adapter. Gmail draft creation, where enabled, is an explicit customer action and still does not send.
+
+## Ready for Sending
+
+A Contact becomes Ready for Sending when the Campaign Contact remains eligible and unsuppressed and the system has produced the usable outbound package required by policy, including a usable verified address, completed Insights and a validated seven-message sequence.
+
+The default sequence cadence is:
+
+`0, 3, 7, 12, 18, 25, 35` days.
+
+A human approval click is **not** required for readiness. Optional inspection and editing remain available; edits create new immutable versions.
+
+## Research and knowledge
+
+Research is reusable Company knowledge. It may run repeatedly and enrich the Company over time with sourced facts, structured fields and newer dossier versions.
+
+Insights consumes the current eligible Research/Company knowledge available when it runs. Personalization consumes the current eligible Research and Insights state available when it runs. Lineage records what a run used; it is not a predecessor-job gate.
+
+## Product surfaces
+
+| Surface | Purpose |
+| --- | --- |
+| `/app` | customer workflow: Campaigns, Contacts, progress, Ready for Sending |
+| Campaign / Contact sequence views | inspect/edit the seven generated messages |
+| `/admin` | diagnostics, Agent controls, failures, retries, provider state and recovery |
+
+A Review route may exist for compatibility, but Review is not a mandatory customer queue and must not control readiness.
 
 ## Delivery principle
 
 The project optimizes for the **shortest safe path to real UAT**.
 
-For a narrow fix, the normal path is:
+For a narrow fix:
 
 ```text
 reproduce
 → smallest correct fix
-→ directly affected test/file
+→ focused proof
 → touched-file static checks
 → push
 → GitHub CI
@@ -20,148 +89,37 @@ reproduce
 → real UAT
 ```
 
-Do not duplicate broad CI locally, restart a whole-feature review for a tiny
-successor patch, or delay UAT for optional validation without a named risk that
-the extra step uniquely reduces. Substantial security, spend, migration, data-loss
-or sending-boundary changes still receive proportionate deeper review.
+Do not duplicate broad CI locally or restart whole-feature reviews for narrow successor repairs without a named risk that requires it.
 
-[`docs/PROPORTIONAL_VALIDATION.md`](docs/PROPORTIONAL_VALIDATION.md) is the
-authoritative delivery and validation policy.
-
-## Current MVP
-
-The current MVP produces a trustworthy human-approved email draft:
-
-```text
-Capture authorized prospect
-→ resolve Contact and Company
-→ gather sourced Company research
-→ discover and verify an exact email
-→ generate evidence-backed Insights
-→ generate Campaign-specific Personalization
-→ approve or discard one exact immutable draft
-```
-
-It does **not** send email. SalesHandy/provider submission, delivery events, replies, sequences and analytics are post-MVP work.
-
-See [`docs/CURRENT_MVP.md`](docs/CURRENT_MVP.md) for the authoritative status, limitations and acceptance plan.
-
-## Delivery status
-
-- **Campaign pipeline:** PR #232, merged into `main`.
-- **Customer-facing v2 application:** PR #233.
-- **Operating acceptance:** one real Contact followed by a controlled 10–20 Contact batch.
-
-Green CI proves the implementation gates. It does not replace live website, MillionVerifier and Claude CLI acceptance.
-
-## Product surfaces
-
-| Route | Purpose |
-| --- | --- |
-| `/` and `/app` | Customer-facing application |
-| `/app/review` | Review evidence and approve/discard an exact immutable draft version |
-| `/admin` | Operator/admin Workbench for jobs, controls, retries and authoritative write paths |
-
-The v2 customer interface and Workbench share services and models but use separate routers, templates and stylesheets.
-
-## Agent pipeline
-
-1. **Capture Agent** — existing contact-first capture and promotion path.
-2. **Identity Agent** — authoritative LinkedIn identity convergence.
-3. **Company Agent** — permanent Company and domain linking.
-4. **Research Agent** — deterministic registered workers that persist sourced evidence.
-5. **Email Agent** — ordered candidate generation.
-6. **Verification Agent** — durable exact-address verification.
-7. **Insights Agent** — Claude CLI interpretation of persisted evidence.
-8. **Personalization Agent** — Claude CLI generation of an immutable draft.
-9. **Sending Agent** — registered but disabled; no production adapter exists.
-
-The common worker uses the durable PostgreSQL Agent Job queue and supports parallel, Agent-scoped pools.
-
-## Research and AI boundary
-
-Research gathers evidence and writes the raw submission, a versioned dossier and sourced fact records. It does not use a language model and does not rewrite canonical Company fields.
-
-Claude is used only by Insights and Personalization through one bounded thinking seam. Both run with `allowed_tools=()` and cannot verify email, change controls, approve their own draft or send.
-
-## Email policy
-
-The Email Agent tries at most three candidates and stops after the first verified result:
-
-1. `firstname.lastname`
-2. `firstname`
-3. `finitiallastname`
-
-It enqueues one child Verification Agent Job at a time and resumes from the committed Verification outcome.
-
-Live MillionVerifier use on the Agent path requires an enabled Verification control on an execution-enabled Campaign, valid credentials, and effective Verification Agent configuration containing `{"live": true}`. Simulated evidence cannot complete a live Campaign stage. `FEATURES__MILLIONVERIFIER` gates the legacy `/verification` console routes and the smoke script only — it is not read on the Agent path and is not a spend brake, and neither is `DRY_RUN`.
+See [`docs/PROPORTIONAL_VALIDATION.md`](docs/PROPORTIONAL_VALIDATION.md).
 
 ## Core objects
 
 - **Contact** — permanent canonical person.
 - **Company** — permanent reusable organization.
-- **Campaign** — Campaign-specific operating context and Agent controls.
-- **Campaign Contact** — Campaign membership, pipeline state and draft boundary.
-- **Collection** — reusable Contact grouping; the extension may call it a Label.
-- **Agent Job** — resumable, inspectable unit of work with attempts, errors, leases and audit history.
-- **DraftVersion** — immutable Campaign-specific draft output.
-- **DraftApproval** — human decision against one exact draft version.
+- **Campaign** — Campaign-specific context and execution controls.
+- **Campaign Contact** — Campaign membership and pipeline state.
+- **Agent Job** — durable resumable work unit.
+- **Company dossier / evidence** — versioned sourced Research knowledge.
+- **Email Sequence** — seven logical messages with immutable message versions.
+- **Human review/edit records** — audit of real human actions; not a readiness prerequisite.
 
-Campaign membership never owns or duplicates the permanent Contact or Company.
+## Non-negotiable boundaries
 
-## Current operating choices
-
-- Capture remains Campaign-independent.
-- Campaign enrolment is explicit and reversible through the Workbench, including bulk enrolment.
-- Knowledge Base editing remains on `/admin`; the customer interface reads it.
-- Capture-domain decisions and suppression creation retain one authoritative admin write path.
-- Unsupported capabilities are shown as unavailable instead of being represented with fabricated metrics or actions.
-
-## Not built
-
-- sending-provider integration and outcome synchronization;
-- sending, replies, sequences and analytics backends;
-- deterministic fit/confidence scoring;
-- Saved Audience criteria;
-- extension Campaign auto-add;
-- multi-email cadence generation;
-- draft editing or auto-send.
-
-## Windows quick start
-
-```bat
-cd "C:\Users\sahil\Personal Data\VMR Data - Laptop\Outbound Agent\vmr-outbound"
-git checkout feat/v2-customer-ui
-git pull
-run_vmr_app_v2.bat
-```
-
-Start the worker in another CMD window:
-
-```bat
-cd "C:\Users\sahil\Personal Data\VMR Data - Laptop\Outbound Agent\vmr-outbound"
-run_vmr_worker.bat 8
-```
-
-The first live acceptance should use one Contact before increasing batch size.
-
-## Technology
-
-- Python 3.11+
-- FastAPI and Jinja
-- SQLAlchemy 2
-- PostgreSQL
-- Alembic
-- Pydantic Settings
-- Pytest, Ruff and mypy
-- Manifest V3 Chrome extension using plain JavaScript
+- Contact-first ownership: Campaigns never own the permanent Contact.
+- Suppressions and legal/eligibility exclusions always win.
+- Verification truth comes from the verification boundary, never model assertion.
+- Research evidence remains sourced; missing evidence stays missing.
+- AI output is bounded and deterministically validated.
+- No automatic send authority is implied by generation, readiness, review or editing.
+- Secrets never enter source, prompts, logs, screenshots, fixtures or Git history.
 
 ## Governing documents
 
-- [`docs/PROPORTIONAL_VALIDATION.md`](docs/PROPORTIONAL_VALIDATION.md) — UAT-first delivery, review and validation authority
-- [`docs/CURRENT_MVP.md`](docs/CURRENT_MVP.md) — current product and acceptance truth
-- [`docs/GOAL.md`](docs/GOAL.md) — authorized MVP outcome
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — current data and Agent architecture
-- [`docs/PRODUCTION_HARDENING.md`](docs/PRODUCTION_HARDENING.md) — HTTP, runtime and staging safety contracts
-- [`docs/PHASE_2_EXECUTION_MODEL.md`](docs/PHASE_2_EXECUTION_MODEL.md) — durable queue and pipeline contract
-- [`docs/PROJECT_TRACKING.md`](docs/PROJECT_TRACKING.md) — management tracking rules
+- [`docs/CUSTOMER_OPERATING_MODEL.md`](docs/CUSTOMER_OPERATING_MODEL.md) — authoritative customer workflow and Ready for Sending contract
+- [`docs/GOAL.md`](docs/GOAL.md) — current product goal
+- [`docs/CURRENT_MVP.md`](docs/CURRENT_MVP.md) — current product boundary and UAT target
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — data, Agent and knowledge architecture
+- [`docs/PHASE_2_EXECUTION_MODEL.md`](docs/PHASE_2_EXECUTION_MODEL.md) — durable execution model
+- [`docs/EMAIL_SEQUENCE.md`](docs/EMAIL_SEQUENCE.md) — seven-message sequence contract
+- [`docs/PROPORTIONAL_VALIDATION.md`](docs/PROPORTIONAL_VALIDATION.md) — UAT-first delivery policy

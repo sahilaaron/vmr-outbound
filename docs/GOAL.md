@@ -1,33 +1,51 @@
 # Current Goal
 
-Deliver and accept one cohesive Contact-to-approved-draft MVP.
+## Governing outcome
 
-## Defining outcome
+> **VMR Outbound is autonomous until Ready for Sending.**
 
-> **An operator can capture an authorized LinkedIn or Sales Navigator prospect, enrol the permanent Contact into a Campaign, run sourced research, exact-address verification, evidence-backed Insights and Personalization, and approve or discard one exact immutable draft version.**
+The product goal is to let a normal customer create a Campaign, capture or add Contacts, and wait while VMR autonomously prepares each Contact until it either becomes **Ready for Sending** or the system truthfully reports that it **Could not prepare** the Contact.
 
-The current MVP ends at a trustworthy human-approved draft. It does not include sending-provider submission or outcome synchronization.
+The customer does not operate the internal Agent pipeline and does not clear a generic approval/retry/task queue.
 
-## Canonical operating flow
+See [`CUSTOMER_OPERATING_MODEL.md`](CUSTOMER_OPERATING_MODEL.md).
 
-1. Capture a person into a permanent Contact without requiring a Campaign.
-2. Resolve Contact identity, Company identity and Company domain honestly.
-3. Enrol the permanent Contact into a Campaign explicitly and idempotently.
-4. Run deterministic Company research and persist the raw submission, versioned dossier and sourced facts.
-5. Generate email candidates in the fixed policy order.
-6. Verify one exact address through the durable Verification Agent.
-7. Generate derived Insights from persisted evidence through the bounded Claude CLI seam.
-8. Generate one Campaign-specific immutable draft through Personalization.
-9. Present the evidence and exact draft in the customer Review surface.
-10. Record a human approve or discard decision against that exact version.
+## Defining customer flow
 
-## Product surfaces
+```text
+Create / configure Campaign
+→ Capture or add Contacts
+→ VMR processes autonomously
+→ Ready for Sending
+→ inspect/edit sequence if desired
+→ customer performs sending-related actions manually
+```
 
-- `/` and `/app` — customer-facing application.
-- `/app/review` — exact-version draft review and decision.
-- `/admin` — Workbench for low-level jobs, controls, retries and authoritative write paths.
+The normal customer responsibilities are limited to:
 
-The customer application and Workbench share services and models but keep separate presentation layers.
+1. Campaign creation/configuration;
+2. Contact capture/import/addition;
+3. monitoring progress when useful;
+4. optional inspection/editing once messages exist;
+5. manual sending-related action after Ready for Sending.
+
+A Campaign may require one explicit setup/consent choice for live paid work. That is Campaign configuration, not stage-by-stage operation.
+
+## Ready for Sending
+
+A Contact is Ready for Sending when the current Campaign Contact is eligible and unsuppressed and the current policy has produced the usable outbound package, including:
+
+- usable Company/Research knowledge;
+- a usable address accepted by Verification policy;
+- completed Insights;
+- completed Personalization;
+- exactly seven valid sequence messages.
+
+Default cadence:
+
+`0, 3, 7, 12, 18, 25, 35` days.
+
+Human approval is not required. A generated valid sequence is not a customer backlog merely because nobody reviewed it.
 
 ## Locked Agent order
 
@@ -41,89 +59,55 @@ The customer application and Workbench share services and models but keep separa
 8. Personalization
 9. Sending
 
-Sending is registered for compatibility with the durable pipeline but has no production adapter and remains disabled.
+The order is execution structure, not a list of user tasks.
 
-## Agent boundaries
+## Research model
 
-- Capture, identity, Company linking, suppression, verification, job state and approval are deterministic authority.
-- Research gathers evidence through registered workers and does not use Claude.
-- Insights and Personalization use the bounded thinking seam with `allowed_tools=()`.
-- No model may verify an address, override suppression, change Agent controls, approve its own draft or send.
-- Missing, provisional and insufficient-evidence states remain explicit.
+Research is reusable Company knowledge and may run independently and repeatedly over time.
 
-## Email policy
+Each Research run may add sourced facts, structured Company knowledge and newer dossier versions. Historical evidence remains available.
 
-The seeded generic pattern policy begins in this order and stops after the first
-verified result:
+Insights uses the current eligible Research/Company state available when Insights starts. Personalization uses the current eligible Research + Insights state available when Personalization starts. Provenance records what each run used; it must not require one exact historical predecessor execution in order to run.
 
-1. `firstname.lastname`
-2. `firstname`
-3. `finitiallastname`
+## Human intervention
 
-Agent Studio may activate a new immutable bounded ordering and may place learned
-Company-domain formats first. Employee size does not select or sequence formats.
-Each candidate still receives one child Verification job at a time.
+The system may request a specific user-owned input only when the customer genuinely must supply or change something, for example missing Campaign configuration or required live-work consent.
 
-The Email Agent enqueues one child Verification Agent Job at a time and resumes from the committed Verification outcome.
+Internal failures are not customer work. Failed jobs, blocked jobs, retries, provider errors, model errors and recovery mechanics belong primarily to `/admin` diagnostics.
 
-## Data ownership
+## Sending boundary
 
-- **Contact** and **Company** are permanent canonical records.
-- **Campaign Contact** owns Campaign-specific pipeline state and draft output.
-- **Company research** is reusable by permanent Company.
-- **Sourced facts** remain separate from derived Insights.
-- **DraftVersion** is immutable.
-- **Approval** is a human decision against one exact DraftVersion.
-- **Suppression** remains authoritative over every downstream stage.
+The current product does not automatically send outreach.
 
-## Current operating choices
+Gmail draft creation, where enabled, is explicit and manual. The customer sends manually. Generation, readiness, optional review and optional editing do not grant automatic send authority.
 
-The MVP deliberately uses the shortest truthful operating path:
+## Acceptance criteria
 
-- Campaign enrolment is explicit and reversible through the Workbench, including bulk enrolment.
-- Knowledge Base editing remains on `/admin`; the customer interface reads it.
-- Capture-domain decisions and suppression creation retain one authoritative admin write path.
-- Unsupported features are marked unavailable rather than represented with fake values or controls.
+The product is accepted when a real hosted customer can:
 
-## MVP acceptance criteria
+- create/configure a Campaign;
+- capture real authorized Contacts through the Chrome extension or supported import/add path;
+- observe Contacts progressing without stage-by-stage intervention;
+- see successful Contacts reach Ready for Sending;
+- inspect the seven-message sequence for a ready Contact;
+- optionally edit one message and see immutable version history preserved;
+- perform the next sending-related action manually;
+- see terminally unsuccessful Contacts as Could not prepare rather than as a manufactured personal task queue;
+- use Admin diagnostics separately when operational debugging is necessary.
 
-The product is accepted when one operator can:
+The real UAT must also prove website Research, live Verification and real Claude CLI work where those capabilities are enabled.
 
-- merge and run the customer application on top of the Campaign pipeline;
-- process one authorized real Contact using real website research, live MillionVerifier and real Claude CLI calls;
-- inspect the Company dossier, source evidence, Verification decision and derived Insights;
-- see one exact immutable draft in `/app/review`;
-- approve or discard it and confirm the audit record;
-- confirm that no sending side effect exists;
-- process a controlled 10–20 Contact batch with understandable retries, failures, blocks and partial outcomes;
-- operate `/app` and `/admin` without duplicate canonical records or hidden pipeline state.
+## Non-goals for this milestone
 
-Green CI alone does not meet this acceptance gate.
+- automatic sending;
+- automatic follow-up scheduling;
+- automatic reply detection;
+- a customer-facing Agent control room;
+- a generic human approval queue;
+- a generic workflow builder;
+- multi-tenant SaaS;
+- turning every internal failure into customer work.
 
-## Explicitly post-MVP
+## Delivery principle
 
-The current MVP does not require:
-
-- SalesHandy or another sending-provider adapter;
-- delivery, reply, bounce or opt-out synchronization;
-- sending, replies, sequences or analytics backends;
-- deterministic fit/confidence scoring;
-- Saved Audience criteria and snapshots;
-- extension Campaign auto-add;
-- multi-email cadence generation;
-- draft editing or auto-send;
-- autonomous LinkedIn navigation;
-- a general workflow builder;
-- multi-tenant SaaS.
-
-Post-MVP work must be activated from measured operating evidence rather than allowed to obscure whether the assembled draft-producing product is usable.
-
-## Immediate sequence
-
-1. Merge PR #233 after CI and local route checks.
-2. Complete the one-Contact live acceptance.
-3. Complete the controlled 10–20 Contact batch.
-4. Record an explicit MVP verdict.
-5. Only then begin provider sending under #174 and the controlled send-capable pilot under #96.
-
-See [`CURRENT_MVP.md`](CURRENT_MVP.md) for the current implementation map and traceability.
+Use the shortest safe path to real UAT. Narrow fixes get focused proof, touched-file checks, GitHub CI and live UAT. Add broader review/testing only for a named risk or widened blast radius.

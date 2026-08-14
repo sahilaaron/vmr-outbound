@@ -1,30 +1,28 @@
 # Current MVP
 
-**Status date:** 2 August 2026
-**Authoritative delivery:** PR #232 merged; PR #233 is the customer-interface merge gate.
+**Status date:** 15 August 2026
 
-## MVP outcome
+## Authoritative product contract
 
-The current VMR Outbound Agent MVP is complete as a product build when one operator can:
+> **VMR Outbound is autonomous until Ready for Sending.**
 
-> capture an authorized LinkedIn or Sales Navigator prospect, enrol the permanent Contact into a Campaign, run the Contact through sourced Company research, exact-address email verification, evidence-backed Insights and Personalization, and approve or discard one exact immutable draft version.
+The customer creates/configures a Campaign, captures or adds Contacts, and lets VMR prepare them. Internal Agent execution is observable but is not a stage-by-stage customer workflow.
 
-The MVP ends at a trustworthy human-approved draft. It does **not** send email.
+The customer takes over once a Contact reaches **Ready for Sending**.
 
-SalesHandy/provider submission, delivery events, replies, bounces, opt-outs, sequences and analytics are post-MVP work.
+See [`CUSTOMER_OPERATING_MODEL.md`](CUSTOMER_OPERATING_MODEL.md).
 
-## Product surfaces
+## Customer-visible lifecycle
 
-| Route | Role |
-| --- | --- |
-| `/` and `/app` | Customer-facing application and daily operating surface |
-| `/app/review` | Exact-version draft review, approve/discard and evidence inspection |
-| `/admin` | Operator/admin Workbench for low-level controls, jobs, retries and authoritative write paths |
-| `/admin/agents/studio` | Global Agent inspection plus Agent-specific Admin modules; never exposed in `/app` |
+The primary lifecycle is deliberately small:
 
-The customer interface and Workbench share the existing service and model layers. They use separate routers, templates and stylesheets.
+- **Processing** — VMR is still preparing the Contact.
+- **Ready for Sending** — the usable outbound package has been produced.
+- **Could not prepare** — VMR reached a terminal condition and could not produce the package.
 
-## Current pipeline
+Detailed queue, Agent and provider states remain in Admin diagnostics.
+
+## Pipeline
 
 ```text
 Capture
@@ -35,154 +33,122 @@ Capture
 → Verification
 → Insights
 → Personalization
-→ Human review
+→ Ready for Sending
 ```
 
-`Sending` remains registered so the pipeline can extend without another domain redesign, but it has no production adapter and is disabled.
+`Sending` remains the ninth registered Agent boundary, but there is no automatic production sending adapter.
 
-## Agent status
+The nine Agents describe internal execution, not nine customer tasks.
 
-| Agent | Current implementation | Status |
-| --- | --- | --- |
-| Capture | Existing intake/promotion paths plus durable exact-execution reporting | Operational; live report acceptance pending |
-| Identity | Shared Agent adapter over authoritative identity services | Operational |
-| Company | Exact permanent-Company linking, canonical-domain gates and durable execution lineage | Operational; live acceptance pending |
-| Research | Registered deterministic research workers | Operational; live acceptance pending |
-| Email | Deterministic candidate policy | Operational |
-| Verification | Durable exact-address verification using the existing MillionVerifier boundary | Operational; live authority required |
-| Insights | One bounded no-tools thinking call plus deterministic evidence validation and Employee Size normalization | Operational; live acceptance pending |
-| Personalization | Claude CLI through the bounded thinking seam, `allowed_tools=()` and immutable Personalization Policy versions | Operational; live acceptance pending |
-| Sending | Contract only | Disabled; post-MVP |
+## Current Agent roles
 
-## Research authority
+| Agent | Role |
+| --- | --- |
+| Capture | preserve authorized source observations and permanent Contact intake |
+| Identity | converge captures on the correct permanent person |
+| Company | link the reusable permanent Company and usable domain |
+| Research | continuously enrich reusable Company knowledge with sourced evidence |
+| Email | generate bounded address candidates |
+| Verification | establish exact-address verification truth under provider policy |
+| Insights | derive evidence-backed useful claims from current eligible knowledge |
+| Personalization | generate the seven-message Campaign-specific sequence |
+| Sending | disabled automatic-send boundary |
 
-Research gathers source-backed evidence. The worker-based RES-001 Research adapter is authoritative.
+## Research and knowledge
 
-It writes:
+Research is reusable across Contacts and Campaigns and may run repeatedly over a Company's lifetime. A later Research run may add facts, structured fields or a newer dossier without invalidating older historical evidence.
 
-- the raw worker submission;
-- one versioned Company dossier;
-- sourced INS-001 evidence records;
-- an operator-facing outcome derived from what the workers actually found.
+Insights selects the current eligible Research/Company knowledge at the start of its execution. Personalization selects the current eligible Research + Insights state at the start of its execution.
 
-Research does not use a language model and does not silently rewrite canonical Company fields. Claude first enters the pipeline at Insights, after evidence has been persisted.
+Historical versioning and lineage remain valuable for provenance. They answer **what this run used**; they do not require an exact historical predecessor job merely to permit execution.
 
-Capture reuses the existing immutable LinkedIn snapshots, staged import rows,
-promotion decisions, suppression ledger and Campaign filing services. Future
-extension, import and manual/API outcomes pin a bounded historical projection in
-one terminal Capture Agent Job; no second Capture queue or workflow was added.
-Admin Studio separates captured execution values and exact Contact/Campaign
-Contact lineage from today's Contact, merge survivor, labels, memberships and
-suppression state. Older telemetry that was never stored remains explicitly
-partial or unavailable. Capture hands permanent-person work to Identity and
-captured employer evidence to Company without absorbing either authority.
+## Email and Verification
 
-The Company Agent reuses the existing permanent Company, capture candidate and
-append-only domain-decision systems. New jobs durably pin the historical
-Company/domain, exact decision ids, effective provisional-domain policy and
-Research handoff. Admin Studio shows that execution separately from current
-capture and Company aggregate state. `confirmed`, `provisional`, `unresolved`
-and report-only `provider_only` remain distinct; unresolved blocks Research,
-while provisional may start Research and reaches later stages only when the
-Campaign's existing setting permits it. Company Intelligence remains outside
-this pipeline slice.
+The Email Agent uses the active bounded candidate policy and stops at the first address accepted by the Verification boundary.
 
-Insights pins the exact Research job, raw submission and dossier it consumed,
-stores attributable claims through the shared evidence model, and derives an
-append-only structured Employee Size fact. Supported Employee Size uses fixed
-v1 bands from `1_10` through `10001_plus`; exact counts remain absent when only
-a range or approximation is supported. Conflicted, stale, unresolved and
-unavailable values are visible but ineligible downstream. Email candidate order
-and Verification waterfall behavior do not use Employee Size.
+Live provider work requires the applicable Campaign/deployment controls and credentials. Provider/model spend consent is configuration, not a recurring customer approval workflow.
 
-## Email and verification policy
+## Seven-message sequence
 
-The Email Agent attempts no more than three candidates in one fixed versioned order:
+Personalization produces one coherent seven-message sequence in one bounded generation outcome.
 
-1. `firstname.lastname`
-2. `firstname`
-3. `finitiallastname`
+Default elapsed days:
 
-It enqueues one child Verification Agent Job at a time and stops immediately after the first verified result.
+`0, 3, 7, 12, 18, 25, 35`
 
-A live MillionVerifier result on the Agent path requires:
+The generated sequence is usable by default when validation succeeds.
 
-- an `ENABLED` Verification Agent control on an execution-enabled Campaign;
-- effective Verification Agent configuration containing `{"live": true}`;
-- a real, non-test provider credential — `MILLIONVERIFIER_API_KEY` or an active
-  Agent Studio credential.
+A human review row means a human actually acted. The absence of one means no human action occurred; it does **not** mean the sequence is waiting for approval.
 
-Simulated evidence cannot complete a live Campaign stage.
+Optional edits create new immutable message versions. Historical versions and real human decisions remain auditable.
 
-`FEATURES__MILLIONVERIFIER` is **not** in that list, and this page previously
-said it was. The flag gates the legacy `/verification` console routes and the
-smoke script; it is never read on the Agent path
-(`app/services/agents/adapters.py` → `app/services/verification/waterfall.py` →
-`provider.py`). Turning it off closes the console and leaves the Agent free to
-spend.
+## Ready for Sending
 
-`DRY_RUN` does not gate it either. `DRY_RUN` is about sending, and the overview
-banner reading "no real email can be scheduled" is true about sending and says
-nothing about verification credits.
+A Campaign Contact is Ready for Sending when it remains eligible and unsuppressed and the current policy has produced the usable outbound package, including:
+
+- usable Research/Company knowledge;
+- an accepted address under Verification policy;
+- completed Insights;
+- completed Personalization;
+- a complete valid seven-message sequence.
+
+Human approval is not part of this readiness calculation.
+
+## Customer surfaces
+
+| Surface | Customer purpose |
+| --- | --- |
+| `/app` | overview of Campaigns and progress |
+| Campaign | Processing / Ready for Sending / Could not prepare plus optional detail |
+| Contact | permanent record and generated sequence |
+| sequence/message view | optional inspection and immutable editing |
+| Knowledge Base | seller/Campaign setup context |
+
+A compatibility Review route may exist, but Review is not a mandatory backlog or progression gate.
+
+## Admin surface
+
+`/admin` is the operational control room for detailed Agent jobs, failures, blocks, retries, providers, controls, resolution internals and recovery.
+
+Machine failure state belongs here rather than being summed into a customer-facing "Needs you" inbox.
+
+## Sending boundary
+
+Automatic sending is not built.
+
+Where Gmail draft creation is enabled, the customer explicitly creates drafts and sends manually. No generation, readiness, default approval state or optional edit triggers a send.
 
 ## Current operating choices
 
 - Contacts and Companies are permanent and Campaign-independent.
-- Campaign Contact owns Campaign-specific execution state and draft output.
-- Campaign enrolment is currently explicit and reversible through the Workbench, including bulk enrolment with refusal accounting.
-- Knowledge Base editing remains on `/admin`; the customer interface reads it.
-- Capture-domain decisions and suppression creation retain one authoritative admin write path.
-- Missing capabilities are shown as unavailable rather than represented with invented data.
-- A generated draft is not approved. Approval is recorded against one exact immutable `DraftVersion`.
-- Approval does not send email.
+- Campaign Contact owns Campaign-specific execution/projection state.
+- Research is Company-scoped reusable knowledge.
+- Suppression and legal/eligibility exclusions remain authoritative.
+- Missing evidence stays missing; provider/model output does not fabricate truth.
+- Customer intervention is requested only for genuine customer-owned setup/input.
+- Internal recovery is an Admin/system concern.
 
-## Not built
+## UAT acceptance
 
-The current product does not provide:
+A hosted UAT passes when a real customer can:
 
-- SalesHandy or another sending-provider adapter;
-- delivery, reply, bounce or opt-out synchronization;
-- sending, replies, sequences or analytics backends;
-- auto-send;
-- deterministic fit/confidence scoring;
-- Saved Audience criteria and snapshot generation;
-- extension Campaign auto-add;
-- multi-email cadence generation;
-- draft editing.
+1. create/configure a Campaign;
+2. capture real authorized Contacts;
+3. observe autonomous progress without routine stage intervention;
+4. see successful Contacts become Ready for Sending;
+5. inspect all seven messages for a ready Contact;
+6. optionally edit and preserve immutable version history;
+7. manually perform the next sending-related action;
+8. see unsuccessful Contacts truthfully as Could not prepare, not as a fabricated personal task queue.
 
-These are not hidden launch blockers for the current draft-producing MVP. They remain explicit post-MVP work.
+Real UAT must exercise the real website/provider/model boundaries that are enabled for the Campaign.
 
-## Acceptance remaining
+## Explicitly not required
 
-The implementation is assembled, but green CI is not operating acceptance.
-
-1. Merge PR #233 after CI and local route checks.
-2. Run one authorized real Contact end to end:
-   - real website research;
-   - real MillionVerifier decision;
-   - real Claude CLI Insights and Personalization;
-   - exact draft visible in `/app/review`;
-   - approve or discard recorded in audit history;
-   - no sending side effect.
-3. Run a controlled 10–20 Contact batch and verify:
-   - worker claims and concurrency;
-   - retries and failed/blocked state;
-   - partial research outcomes;
-   - provider/model spend boundaries;
-   - usability of `/app` and `/admin` during execution.
-4. Record an explicit pass, conditional pass or blocked verdict.
-
-## Traceability
-
-- Authoritative MVP epic: #202
-- Campaign pipeline: PR #232
-- Customer interface and Review: PR #233
-- Shared Agent contract: #223
-- Workbench controls: #221
-- Research: #160 and #173
-- Email Agent: #224
-- Verification Agent: #225
-- Insights: #212
-- AI trust hardening: #181
-- MVP acceptance and later pilot: #96
-- Post-MVP sending: #174
+- human approval before readiness;
+- customer clearing of failed/blocked Agent jobs;
+- automatic sending;
+- automatic follow-up scheduling;
+- automatic reply detection;
+- a customer-facing Agent control room;
+- a generic workflow builder.
