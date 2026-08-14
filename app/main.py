@@ -17,6 +17,7 @@ from app.api.routes import router as api_router
 from app.core.auth.accounts import AccountDirectory
 from app.core.auth.admin import AdminRequiredError
 from app.core.auth.csrf import CsrfError
+from app.core.auth.extension_link import ExtensionLinkDirectory
 from app.core.auth.identity import IdentityProvider
 from app.core.auth.middleware import OperatorAuthenticationMiddleware
 from app.core.auth.startup import HostedAuthConfigurationError, validate_hosted_auth_settings
@@ -27,6 +28,7 @@ from app.core.runtime import validate_runtime_settings
 from app.services.campaign_access import CampaignAccessError
 from app.web.auth_routes import IDENTITY_PROVIDER_STATE_KEY
 from app.web.auth_routes import router as auth_router
+from app.web.extension_link_routes import router as extension_link_router
 from app.web.gmail_routes import router as gmail_router
 
 # Compatibility alias. The old name described a rule that no longer exists —
@@ -44,6 +46,7 @@ def create_app(
     readiness_probe: ReadinessProbe | None = None,
     identity_provider: IdentityProvider | None = None,
     account_directory: AccountDirectory | None = None,
+    extension_link_directory: ExtensionLinkDirectory | None = None,
 ) -> FastAPI:
     """Application factory.
 
@@ -52,6 +55,12 @@ def create_app(
     the authentication boundary can be exercised without a database. Left as
     ``None`` the middleware resolves the database-backed directory lazily, so
     building an app never opens a connection as a side effect.
+
+    ``extension_link_directory`` is the third of the same kind, and it exists for
+    the same reason: it answers "which VMR account does this ``vmre1`` token
+    belong to, and is that account still active", it reads
+    ``extension_sessions``, and it is resolved lazily so that importing or
+    building the application opens nothing.
     """
 
     settings = settings or get_settings()
@@ -145,6 +154,13 @@ def create_app(
         settings=settings.auth,
         extension_settings=settings.extension_auth,
         account_directory=account_directory,
+        extension_link_directory=extension_link_directory,
+        # The environment is passed in rather than re-read, because exactly one
+        # decision depends on it inside the boundary: the legacy `vmrx1` shared
+        # capture credential verifies only when this is a local deployment. In
+        # staging and production it is worth nothing, whatever an environment
+        # file still lists.
+        app_env=settings.app_env,
     )
     app.add_middleware(CanonicalTrustedHostMiddleware, allowed_hosts=settings.trusted_hosts)
     app.add_middleware(
@@ -279,6 +295,19 @@ def create_app(
     # These routes are deliberately *not* on the anonymous allow-list in
     # `app/core/auth/policy.py`. The Gmail callback is not a sign-in path.
     app.include_router(gmail_router)
+
+    # Extension account linking. Mounted unconditionally for the same reason the
+    # Gmail router is: the default-deny boundary then covers it whatever the
+    # feature switch says, an anonymous caller gets the same answer here as on
+    # any other path, and the deployment's feature state is not readable from
+    # whether a path 404s. Every route on it refuses outright when
+    # `EXTENSION_AUTH__LINK_ENABLED` is false.
+    #
+    # `POST /extension/token` and `POST /extension/revoke` are the only paths on
+    # this router that are not session-authenticated, and both are recorded
+    # explicitly in `app/core/auth/policy.py` with the reasoning. The two
+    # `/extension/authorize` routes are ordinary signed-in operator pages.
+    app.include_router(extension_link_router)
 
     app.include_router(phase2_router)
     app.include_router(api_router)

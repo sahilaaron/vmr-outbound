@@ -557,14 +557,18 @@ test("a denied loopback permission is not reported as an unreachable backend", a
   assert.equal(p.$("conn-text").textContent, "Not allowed yet");
 });
 
-// --- the hosted capture credential -------------------------------------------
+// --- the connection screen ----------------------------------------------------
 //
-// The credential is the one secret this panel ever handles, so what is asserted
-// here is mostly what must NOT be on screen. A value that can be read back out
-// of the DOM is a value in every screenshot, every screen share, and every
-// saved page.
-
-const CREDENTIAL = "vmrx1.beta-laptop.3fVQx8Zk2nLp7Rw6TyUiOaSdFgHjKlZxCvBnM4qWeRt";
+// There is no credential in this panel any more, and no backend field: hosted
+// capture is authorised by the operator's own VMR Outbound account link. What is
+// asserted here is the two facts the screen is allowed to state — connected or
+// not, and to which account — and the two actions that exist.
+//
+// The old assertions in this section covered the "Hosted capture credential"
+// field: that it was a password input, that a held credential was never restored
+// into it, that a refused paste was still cleared. They are gone with the field
+// itself; test/account-linking.test.js now asserts the stronger property that no
+// such control exists in the panel at all.
 
 async function settingsPanel(extra) {
   const p = await panelOn(SURFACES.SALESNAV_SEARCH, extra);
@@ -574,78 +578,67 @@ async function settingsPanel(extra) {
   return p;
 }
 
-test("settings states whether a credential is held, and never shows it", async () => {
+test("the connection screen names the account captures are saved into", async () => {
   const p = await settingsPanel({
-    GET_CREDENTIAL_STATE: { ok: true, hasCredential: true, storageAvailable: true },
+    GET_ACCOUNT_STATE: { ok: true, account: { connected: true, accountEmail: "operator@example.com" } },
   });
-  assert.equal(p.$("credential-state").textContent, "Set for this session");
-  assert.equal(
-    p.document.body.innerHTML.includes(CREDENTIAL),
-    false,
-    "nothing may render the credential"
-  );
-  // The field is a password input and starts empty: a held credential is never
-  // restored into it, so there is nothing to reveal or copy back out.
-  assert.equal(p.$("capture-credential").type, "password");
-  assert.equal(p.$("capture-credential").value, "");
+  assert.equal(p.$("account-state").textContent, "Connected to VMR Outbound");
+  assert.equal(p.$("account-email").textContent, "operator@example.com");
+  // Nothing to sign in to; the only action left is leaving.
+  assert.equal(p.$("account-connect").hidden, true);
+  assert.equal(p.$("account-disconnect").hidden, false);
+  assert.equal(p.$("signin-card").hidden, true);
 });
 
-test("an unset credential says so rather than looking configured", async () => {
+test("an unlinked install offers exactly one action, and says why", async () => {
   const p = await settingsPanel({
-    GET_CREDENTIAL_STATE: { ok: true, hasCredential: false, storageAvailable: true },
+    GET_ACCOUNT_STATE: { ok: true, account: { connected: false, accountEmail: null } },
   });
-  assert.equal(p.$("credential-state").textContent, "Not set");
+  assert.equal(p.$("account-state").textContent, "Not connected to VMR Outbound");
+  assert.equal(p.$("account-email").textContent, "—");
+  assert.equal(p.$("account-connect").hidden, false);
+  assert.equal(p.$("account-connect").textContent.trim(), "Sign in to VMR Outbound");
+  assert.equal(p.$("account-disconnect").hidden, true);
+  // And the same one action is offered where the operator actually is.
+  assert.equal(p.$("signin-card").hidden, false);
+  assert.equal(p.$("signin-btn").textContent.trim(), "Sign in to VMR Outbound");
+  assert.equal(p.connection(), "Sign in needed");
 });
 
-test("setting a credential hands it over once and clears the field", async () => {
-  const p = await settingsPanel({
-    GET_CREDENTIAL_STATE: { ok: true, hasCredential: false, storageAvailable: true },
-    SET_CAPTURE_CREDENTIAL: { ok: true, hasCredential: true, storageAvailable: true },
+test("signing in is one click and repaints the connection", async () => {
+  const p = await panelOn(SURFACES.SALESNAV_SEARCH, {
+    GET_ACCOUNT_STATE: { ok: true, account: { connected: false, accountEmail: null } },
+    CONNECT_ACCOUNT: { ok: true, account: { connected: true, accountEmail: "operator@example.com" } },
     PROBE_BACKEND: { ok: true, state: "connected" },
   });
-  p.$("capture-credential").value = CREDENTIAL;
-  await p.click("credential-save");
   await p.flush();
-
-  const set = p.sent.filter((m) => m.type === "SET_CAPTURE_CREDENTIAL");
-  assert.equal(set.length, 1);
-  assert.equal(set[0].credential, CREDENTIAL);
-  assert.equal(p.$("capture-credential").value, "", "the field must not keep the secret");
-  assert.equal(p.$("credential-state").textContent, "Set for this session");
-  assert.equal(p.document.body.innerHTML.includes(CREDENTIAL), false);
+  assert.equal(p.$("signin-card").hidden, false);
+  await p.click("signin-btn");
+  await p.flush();
+  const asked = p.sent.filter((m) => m.type === "CONNECT_ACCOUNT");
+  assert.equal(asked.length, 1, "one click, one interactive sign-in");
+  assert.equal(p.$("signin-card").hidden, true);
+  assert.equal(p.$("account-email").textContent, "operator@example.com");
 });
 
-test("a refused paste is still cleared, and says what was wrong", async () => {
+test("disconnecting is offered and puts the install back to signed out", async () => {
   const p = await settingsPanel({
-    GET_CREDENTIAL_STATE: { ok: true, hasCredential: false, storageAvailable: true },
-    SET_CAPTURE_CREDENTIAL: { ok: false, error: "credential_malformed" },
+    GET_ACCOUNT_STATE: { ok: true, account: { connected: true, accountEmail: "operator@example.com" } },
+    DISCONNECT_ACCOUNT: { ok: true, account: { connected: false, accountEmail: null } },
   });
-  p.$("capture-credential").value = "not-a-credential";
-  await p.click("credential-save");
+  await p.click("account-disconnect");
   await p.flush();
-
-  // A rejected paste is still a secret in a DOM node until it is cleared.
-  assert.equal(p.$("capture-credential").value, "");
-  assert.equal(p.$("credential-state").textContent, "Not set");
-  assert.match(p.$("credential-feedback").textContent, /vmrx1/);
+  assert.equal(p.$("account-state").textContent, "Not connected to VMR Outbound");
+  assert.equal(p.$("account-email").textContent, "—");
+  assert.equal(p.$("signin-card").hidden, false);
+  assert.equal(p.connection(), "Sign in needed");
 });
 
-test("clearing the credential reports it gone", async () => {
-  const p = await settingsPanel({
-    GET_CREDENTIAL_STATE: { ok: true, hasCredential: true, storageAvailable: true },
-    CLEAR_CAPTURE_CREDENTIAL: { ok: true, hasCredential: false },
-  });
-  await p.click("credential-clear");
-  await p.flush();
-  assert.equal(p.$("credential-state").textContent, "Not set");
-  assert.match(p.$("credential-feedback").textContent, /cleared/i);
-});
-
-test("a hosted backend awaiting a credential is not shown as unreachable", async () => {
+test("a hosted backend awaiting a sign-in is not shown as unreachable", async () => {
   const p = await panelOn(SURFACES.SALESNAV_SEARCH, {
-    PROBE_BACKEND: { ok: false, state: "credential_required" },
+    PROBE_BACKEND: { ok: false, state: "sign_in_required" },
   });
   await p.flush();
   await p.flush();
-  assert.equal(p.connection(), "Credential needed");
+  assert.equal(p.connection(), "Sign in needed");
 });

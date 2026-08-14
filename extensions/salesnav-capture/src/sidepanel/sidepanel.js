@@ -636,12 +636,30 @@
     }
     const detail = handoff.describeSendError(r);
     const unreachable = detail.code === "network_error" || detail.code === "timeout";
-    setConnection(unreachable ? "unreachable" : "connected");
+    // Not being signed in is not a failed backend: the reviewed draft is intact,
+    // and the one thing that fixes it is the sign-in action — offered right here
+    // so the operator never has to go looking for the connection screen.
+    const needsSignIn = detail.code === "account_link_required";
+    if (needsSignIn) renderAccount({ connected: false, accountEmail: null });
+    setConnection(needsSignIn ? "sign_in_required" : unreachable ? "unreachable" : "connected");
     renderSaveFailure(detail, {
-      title: unreachable ? "Connection lost" : "Capture failed",
-      body: unreachable
-        ? "The backend didn't answer. Nothing was saved, and what you reviewed is still here."
-        : "Nothing was saved. What you reviewed is still here.",
+      tone: needsSignIn ? "warning" : "danger",
+      title: needsSignIn
+        ? "Connect to VMR Outbound"
+        : unreachable
+          ? "Connection lost"
+          : "Capture failed",
+      body: needsSignIn
+        ? "Nothing was sent. What you reviewed is still here — sign in and save again."
+        : unreachable
+          ? "The backend didn't answer. Nothing was saved, and what you reviewed is still here."
+          : "Nothing was saved. What you reviewed is still here.",
+      retryLabel: needsSignIn ? "Sign in to VMR Outbound" : undefined,
+      onRetry: needsSignIn
+        ? async () => {
+            if (await connectAccount()) await doSave();
+          }
+        : undefined,
       showExport: !!isBatch,
     });
   }
@@ -1316,82 +1334,287 @@
       "still need them, then discard.";
   }
 
-  // ---- settings -----------------------------------------------------------
+  // ---- connection ----------------------------------------------------------
 
   function loadPrefsIntoUi(prefs) {
     currentPrefs = prefs;
-    $("backend-url").value = prefs.backendBaseUrl || "";
-    $("mock-url").value = prefs.mockReceiverUrl || "";
     $("max-records").value = prefs.maxRecordsPerBatch || 500;
-    $("send-target").value = prefs.sendTarget || "mock";
   }
 
-  // ---- hosted capture credential -------------------------------------------
+  // ---- the VMR Outbound account link ---------------------------------------
   //
-  // Write-only from this side. The worker will report whether a credential is
-  // held but never what it is, so there is nothing here to render, restore into
-  // the field, or leak into a screenshot. The input is cleared the moment the
-  // value has been handed over.
+  // The panel never sees a token, an installation id, a backend URL or a
+  // credential — the worker answers with two facts: whether this install is
+  // linked, and to which account. Everything below renders those two facts and
+  // offers the only two actions that exist.
 
-  /** Paint the credential status line from the worker's answer. */
-  function showCredentialState(state) {
-    const line = $("credential-state");
-    if (!line) return;
-    if (state && state.storageAvailable === false) {
-      line.textContent = "Unavailable in this browser";
+  // null until the worker has answered, so an install whose state is not known
+  // yet is never accused of being signed out.
+  let currentAccount = null;
+
+  /** Paint the connection card, the sign-in prompt and the header badge. */
+  function renderAccount(account) {
+    if (account) currentAccount = account;
+    const known = !!currentAccount;
+    const connected = known && currentAccount.connected === true;
+    const email = (known && currentAccount.accountEmail) || null;
+
+    const stateLine = $("account-state");
+    if (stateLine) {
+      stateLine.textContent = connected
+        ? "Connected to VMR Outbound"
+        : known
+          ? "Not connected to VMR Outbound"
+          : "Checking your VMR Outbound connection…";
+    }
+    const badgeSlot = $("account-badge");
+    if (badgeSlot) {
+      badgeSlot.textContent = "";
+      if (known) {
+        badgeSlot.appendChild(
+          connected
+            ? badge("Connected", { tone: "success", dot: true })
+            : badge("Sign in needed", { tone: "warning", dot: true })
+        );
+      }
+    }
+    const emailLine = $("account-email");
+    if (emailLine) {
+      emailLine.textContent = email || "—";
+      emailLine.className = email ? "v" : "v empty";
+    }
+    const note = $("account-note");
+    if (note) {
+      note.textContent = !known
+        ? "Captures are saved into your own VMR Outbound account."
+        : connected
+          ? "Captures are saved into this VMR Outbound account. The connection is remembered, including after you restart Chrome."
+          : "Sign in once. VM Prospector then saves captured contacts into your own VMR Outbound account.";
+    }
+    // Neither action is offered until the answer is actually known: an install
+    // that is still being checked has not failed at anything, and offering a
+    // sign-in there would make a working link look broken.
+    const connectBtn = $("account-connect");
+    if (connectBtn) {
+      connectBtn.hidden = !known || connected;
+      connectBtn.textContent = "Sign in to VMR Outbound";
+    }
+    const disconnectBtn = $("account-disconnect");
+    if (disconnectBtn) disconnectBtn.hidden = !connected;
+
+    // The one prompt an operator ever needs: shown only while there is nothing
+    // linked, above whatever they are doing, because nothing can be saved until
+    // it is done.
+    const card = $("signin-card");
+    if (card) card.hidden = !known || connected;
+
+    // Only downgrade the header when the link is genuinely the thing standing in
+    // the way; a probed "connected" is a stronger fact and is left alone.
+    if (known && !connected && shell.getConnection() !== "saving") {
+      setConnection("sign_in_required");
+    }
+  }
+
+  /**
+   * Ask the worker for the link, letting it connect silently first.
+   *
+   * The silent attempt is the whole point of the design: an operator already
+   * signed in to VMR Outbound gets a linked extension with no window and no
+   * click, and a restart re-authorizes from the stored refresh token without
+   * anybody being asked for anything.
+   */
+  async function refreshAccount(autoConnect) {
+    const r = await send({ type: "GET_ACCOUNT_STATE", autoConnect: autoConnect === true });
+    if (!r || !r.ok || !r.account) return null;
+    renderAccount(r.account);
+    return r.account;
+  }
+
+  /** The single interactive sign-in action. */
+  async function connectAccount() {
+    const buttons = [$("account-connect"), $("signin-btn")].filter(Boolean);
+    for (const btn of buttons) btn.disabled = true;
+    // The token exchange behind the sign-in window is a cross-origin request, so
+    // it needs the optional host permission. This click is the user gesture that
+    // can ask for it — doing it here means the operator answers one prompt
+    // before the sign-in rather than watching the sign-in fail after it.
+    const permission = await ensureHostPermission(
+      backendBase() + constants.ACCOUNT_LINK_PATHS.TOKEN
+    );
+    if (!permission.granted) {
+      for (const btn of buttons) btn.disabled = false;
+      const message = $("signin-message");
+      if (message) {
+        message.textContent =
+          "Allow VM Prospector to reach VMR Outbound, then sign in. Nothing has been sent.";
+      }
+      setConnection("not_allowed");
+      return false;
+    }
+    const r = await send({ type: "CONNECT_ACCOUNT" });
+    for (const btn of buttons) btn.disabled = false;
+    if (r && r.account) renderAccount(r.account);
+    if (r && r.ok) {
+      setConnection("connected");
+      await probeConnection();
+      return true;
+    }
+    const described = handoff.describeSendError({ error: (r && r.error) || "sign_in_failed" });
+    const message = $("signin-message");
+    if (message) message.textContent = `${described.headline} ${described.detail}`.trim();
+    return false;
+  }
+
+  async function disconnectAccount() {
+    if (!confirm("Disconnect this browser from VMR Outbound? Captures will stop until you sign in again.")) {
       return;
     }
-    line.textContent = state && state.hasCredential ? "Set for this session" : "Not set";
+    const r = await send({ type: "DISCONNECT_ACCOUNT" });
+    if (r && r.account) renderAccount(r.account);
+    else renderAccount({ connected: false, accountEmail: null });
+    setConnection("sign_in_required");
   }
 
-  function setCredentialFeedback(message) {
-    const node = $("credential-feedback");
-    if (node) node.textContent = message;
+  // ---- development overrides -----------------------------------------------
+  //
+  // Built here rather than in sidepanel.html so an ordinary panel's DOM carries
+  // no trace of them — no backend field, no mock receiver, no credential input,
+  // nothing to find in a screenshot or a saved page. They appear only when the
+  // worker reports the development gate (an object at chrome.storage.local key
+  // `vmr_dev_overrides` with `enabled: true`), which nothing in any shipped UI
+  // can write: it has to be created by hand from the extension's own devtools
+  // console on an unpacked build. The worker enforces the same gate on the
+  // messages below, so building this section is not what authorises anything.
+
+  let devFields = null;
+
+  function devField(labelText, node) {
+    return el("div", { class: "field" }, [
+      el("label", { class: "field-label", text: labelText }),
+      node,
+    ]);
   }
 
-  async function refreshCredentialState() {
+  function renderDevSettings(enabled) {
+    const host = $("dev-settings");
+    if (!host) return;
+    host.textContent = "";
+    host.hidden = !enabled;
+    devFields = null;
+    if (!enabled) return;
+
+    const prefs = currentPrefs || {};
+    const target = el("select", { class: "input" }, [
+      el("option", { text: "Hosted VMR backend", attrs: { value: "backend" } }),
+      el("option", { text: "Mock receiver (development)", attrs: { value: "mock" } }),
+    ]);
+    target.value = prefs.sendTarget || "backend";
+    const backendUrl = el("input", { class: "input", attrs: { type: "text" } });
+    backendUrl.value = prefs.backendBaseUrl || "";
+    const mockUrl = el("input", { class: "input", attrs: { type: "text" } });
+    mockUrl.value = prefs.mockReceiverUrl || "";
+    const credential = el("input", {
+      class: "input",
+      attrs: { type: "password", autocomplete: "off", spellcheck: "false" },
+    });
+    const credentialState = el("span", { class: "v", text: "Not set" });
+    const credentialFeedback = el("p", { class: "p tiny muted" });
+
+    devFields = { target, backendUrl, mockUrl, credential, credentialState, credentialFeedback };
+
+    host.appendChild(el("span", { class: "eyebrow", text: "Development overrides" }));
+    host.appendChild(devField("Where captures go", target));
+    host.appendChild(devField("Backend base URL", backendUrl));
+    host.appendChild(devField("Mock receiver URL", mockUrl));
+    host.appendChild(
+      el("div", { class: "field" }, [
+        el("label", { class: "field-label", text: "Legacy capture credential" }),
+        credential,
+        el("div", { class: "badge-row" }, [
+          credentialState,
+          el("button", {
+            class: "btn btn-sm",
+            text: "Set",
+            attrs: { type: "button" },
+            on: { click: saveDevCredential },
+          }),
+          el("button", {
+            class: "btn btn-sm",
+            text: "Clear",
+            attrs: { type: "button" },
+            on: { click: clearDevCredential },
+          }),
+        ]),
+        credentialFeedback,
+      ])
+    );
+    host.appendChild(
+      el("div", { class: "kv" }, [
+        el("span", { class: "k", text: "Extension ID" }),
+        el("span", { class: "v mono", text: (chrome.runtime && chrome.runtime.id) || "unknown" }),
+      ])
+    );
+    void refreshDevCredentialState();
+  }
+
+  function showDevCredentialState(state) {
+    if (!devFields) return;
+    if (state && state.storageAvailable === false) {
+      devFields.credentialState.textContent = "Unavailable in this browser";
+      return;
+    }
+    devFields.credentialState.textContent =
+      state && state.hasCredential ? "Set for this session" : "Not set";
+  }
+
+  async function refreshDevCredentialState() {
     const r = await send({ type: "GET_CREDENTIAL_STATE" });
-    showCredentialState(r);
+    showDevCredentialState(r);
   }
 
-  async function saveCredential() {
-    const field = $("capture-credential");
-    const value = field.value;
+  async function saveDevCredential() {
+    if (!devFields) return;
+    const value = devFields.credential.value;
     const r = await send({ type: "SET_CAPTURE_CREDENTIAL", credential: value });
     // Cleared on every path, including the refusal: a rejected paste is still a
     // secret and has no business sitting in a DOM node.
-    field.value = "";
+    devFields.credential.value = "";
     if (r && r.ok) {
-      showCredentialState(r);
-      setCredentialFeedback("Credential set for this browser session.");
+      showDevCredentialState(r);
+      devFields.credentialFeedback.textContent = "Credential set for this browser session.";
       await probeConnection();
       return;
     }
-    showCredentialState({ hasCredential: false });
-    const described = self.SNCapture.handoff.describeSendError({ error: r && r.error });
-    setCredentialFeedback(`${described.headline} ${described.detail}`.trim());
+    showDevCredentialState({ hasCredential: false });
+    const described = handoff.describeSendError({ error: r && r.error });
+    devFields.credentialFeedback.textContent = `${described.headline} ${described.detail}`.trim();
   }
 
-  async function clearCapturedCredential() {
+  async function clearDevCredential() {
+    if (!devFields) return;
     const r = await send({ type: "CLEAR_CAPTURE_CREDENTIAL" });
-    $("capture-credential").value = "";
-    showCredentialState(r);
-    setCredentialFeedback("Credential cleared.");
+    devFields.credential.value = "";
+    showDevCredentialState(r);
+    devFields.credentialFeedback.textContent = "Credential cleared.";
   }
 
   async function saveSettings() {
     const patch = {
-      backendBaseUrl: $("backend-url").value.trim(),
-      mockReceiverUrl: $("mock-url").value.trim(),
       maxRecordsPerBatch: Math.max(1, Math.min(500, parseInt($("max-records").value, 10) || 500)),
-      sendTarget: $("send-target").value,
     };
+    // Only ever sent from a panel the development gate has unlocked; the worker
+    // drops these keys again if the gate is not actually present.
+    if (devFields) {
+      patch.backendBaseUrl = devFields.backendUrl.value.trim();
+      patch.mockReceiverUrl = devFields.mockUrl.value.trim();
+      patch.sendTarget = devFields.target.value;
+    }
     const r = await send({ type: "SET_PREFS", prefs: patch });
     if (r && r.ok) {
       currentPrefs = r.prefs;
       await refreshPermissionState();
-      // The settings screen is where "can it reach the backend?" is actually
-      // being asked, and a saved URL is exactly when the answer changes.
+      // This screen is where "can it reach the backend?" is actually being
+      // asked, and a saved setting is exactly when the answer changes.
       await probeConnection();
       closeSettings();
     }
@@ -1402,11 +1625,8 @@
       (chrome.runtime.getManifest && chrome.runtime.getManifest().version) || "unknown";
     $("settings-version").textContent = version;
     $("settings-connection").textContent = $("conn-text").textContent;
-    // The install's own id, so an operator can hand it over for the hosted
-    // approved-origin list without hunting through chrome://extensions.
-    const idNode = $("extension-id");
-    if (idNode) idNode.textContent = (chrome.runtime && chrome.runtime.id) || "unknown";
-    void refreshCredentialState();
+    renderAccount(null);
+    void refreshAccount(false);
     showView("settings");
     // Re-check on open rather than mirroring a possibly stale badge. This is the
     // one screen whose whole purpose is the connection.
@@ -1434,6 +1654,7 @@
     syncBatchSaveAction,
     setConnection,
     refreshPermissionState,
+    renderAccount,
     showView,
     isSticky,
     setRetainedContext,
@@ -1501,19 +1722,15 @@
     $("export-csv").addEventListener("click", () => doExport("csv"));
     $("save-btn").addEventListener("click", doSave);
     $("save-settings").addEventListener("click", saveSettings);
-    $("credential-save").addEventListener("click", saveCredential);
-    $("credential-clear").addEventListener("click", clearCapturedCredential);
     $("settings-close").addEventListener("click", closeSettings);
     $("settings-toggle").addEventListener("click", () => {
       if (shell.getView() === "settings") closeSettings();
       else openSettings();
     });
     $("outcome-back").addEventListener("click", () => showView(returnView || "listings-select"));
-    $("send-target").addEventListener("change", async (e) => {
-      const r = await send({ type: "SET_PREFS", prefs: { sendTarget: e.target.value } });
-      if (r && r.ok) currentPrefs = r.prefs;
-      refreshPermissionState();
-    });
+    $("account-connect").addEventListener("click", connectAccount);
+    $("account-disconnect").addEventListener("click", disconnectAccount);
+    $("signin-btn").addEventListener("click", connectAccount);
 
     $("label-add").addEventListener("click", addLabelFromInput);
     $("label-input").addEventListener("keydown", (e) => {
@@ -1546,6 +1763,8 @@
     const state = await send({ type: "GET_STATE" });
     if (state && state.ok) {
       loadPrefsIntoUi(state.prefs);
+      renderDevSettings(!!(state.dev && state.dev.enabled));
+      if (state.account) renderAccount(state.account);
       currentMetadata = state.metadata || { labels: [], note: null };
       currentFilingContext = state.filingContext || { campaignId: null };
       renderMetadata();
@@ -1561,6 +1780,10 @@
     refreshPermissionState();
     refreshLabelSuggestions();
     refreshCampaigns(false);
+    // The cold open: connect silently if the operator is already signed in to
+    // VMR Outbound, so the ordinary case needs no click at all. Only after that
+    // has had its chance is the backend probed, or the operator asked to sign in.
+    await refreshAccount(true);
     // On a cold open, say something true about the backend rather than "Not
     // checked" until the operator happens to attempt a save.
     void probeConnection();

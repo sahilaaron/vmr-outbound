@@ -145,6 +145,12 @@ PREFLIGHT_MAX_AGE_SECONDS = 600
 EXTENSION_KEY_ID_STATE_KEY = "extension_capture_key_id"
 EXTENSION_CREDENTIAL_LABEL = "extension_capture"
 
+# The account an account-linked capture belongs to, recorded alongside the key id
+# when — and only when — a `vmre1` token resolved to a live link. A `vmrx1`
+# credential names no account, so this stays `None` for one, and a caller must
+# never infer ownership from the key id alone.
+EXTENSION_USER_ID_STATE_KEY = "extension_capture_user_id"
+
 
 def normalize_contract_path(raw: str) -> str:
     """The single path spelling the contract is written against.
@@ -238,6 +244,14 @@ class ExtensionAuthSettings(BaseModel):
         description="Accept extension capture credentials on the enumerated intake contract.",
     )
 
+    link_enabled: bool = Field(
+        default=False,
+        description=(
+            "Accept account-linked extension authorizations (vmre1 tokens) on the same "
+            "enumerated intake contract, and mount the /extension link surface."
+        ),
+    )
+
     # Digests, not secrets — but still excluded from dumps and reprs. A digest is
     # not replayable, and it is also not something that belongs in a log line, a
     # diagnostics screen or a settings dump.
@@ -317,10 +331,63 @@ class ExtensionAuthSettings(BaseModel):
 
     # --- decisions ----------------------------------------------------------
 
-    def is_configured(self) -> bool:
-        """True when this boundary could actually admit a request."""
+    @property
+    def allowed_extension_ids(self) -> tuple[str, ...]:
+        """The approved Chrome extension ids, derived from the approved origins.
 
-        return bool(self.enabled and self.credentials and self.allowed_origins)
+        Derived rather than configured separately, deliberately. A second list
+        would be a second source of truth that can disagree with the first, and
+        the disagreement would be silent: an id approved for the link flow but
+        not for the capture origin produces a deployment that authorises an
+        install and then refuses every capture it makes. One list, two readings.
+
+        The validator above has already proved each origin is exactly
+        ``chrome-extension://`` plus 32 characters from ``a``-``p``, so this
+        slice is total.
+        """
+
+        prefix = "chrome-extension://"
+        return tuple(origin[len(prefix) :] for origin in self.allowed_origins)
+
+    def is_allowed_extension_id(self, candidate: str | None) -> bool:
+        """Whether ``candidate`` is one of the approved installs.
+
+        Exact match, like the origin rule and for the same reason: the point of
+        the list is that one specific install is approved and every other
+        extension in the browser is not.
+        """
+
+        if not candidate or not candidate.isascii():
+            return False
+        return any(
+            hmac.compare_digest(candidate, approved) for approved in self.allowed_extension_ids
+        )
+
+    def accepts_capture_credentials(self) -> bool:
+        """Whether *either* capture credential scheme is switched on.
+
+        The two are separate switches on purpose — a deployment may run the
+        account-linked flow with no ``vmrx1`` credential issued at all — but the
+        CORS preflight is about the shape of a request rather than about which
+        credential will follow, so it is answered whenever one of them could.
+        """
+
+        return bool(self.enabled or self.link_enabled)
+
+    def is_configured(self) -> bool:
+        """True when this boundary could actually admit a request.
+
+        Two ways to be admissible now, and an approved origin is required by
+        both: a configured ``vmrx1`` credential, or account linking. Without the
+        second clause a hosted deployment that had moved entirely to account
+        linking would still have to mint a legacy shared credential purely to
+        satisfy the runtime gate on ``FEATURES__CONTACT_CAPTURE_INTAKE`` — which
+        is exactly the credential the linking work exists to stop issuing.
+        """
+
+        if not self.allowed_origins:
+            return False
+        return bool(self.link_enabled or (self.enabled and self.credentials))
 
     def is_allowed_origin(self, origin: str | None) -> bool:
         """Whether ``origin`` is one of the approved extension installs.
@@ -399,6 +466,47 @@ def _single_header(scope: Scope, name: bytes) -> str | None:
     return values[0] if len(values) == 1 else None
 
 
+def presented_authorization_header(scope: Scope) -> str | None:
+    """The one unambiguous ``Authorization`` value on this request, or ``None``.
+
+    Exposed so that the account-linked resolver in
+    ``app/core/auth/extension_link.py`` reads the header through exactly the same
+    rule as the configured-credential path — including the refusal of a
+    duplicated header — rather than growing a second, subtly different reader.
+    """
+
+    return _single_header(scope, b"authorization")
+
+
+def single_request_origin(scope: Scope) -> str | None:
+    """The one ``Origin`` value on this request, or ``None`` for none or many."""
+
+    origins = _scope_headers(scope, b"origin")
+    if len(origins) != 1:
+        return None
+    return origins[0].strip()
+
+
+def capture_origin_permitted(scope: Scope, settings: ExtensionAuthSettings, *, method: str) -> bool:
+    """The origin half of the capture rule, shared by both credential schemes.
+
+    Factored out of :func:`authenticate_capture_request` without changing it, so
+    that an account-linked capture is held to precisely the rule the docstring
+    below describes rather than to a re-derivation of it:
+
+    * more than one ``Origin`` header is ambiguity, and ambiguity refuses;
+    * an unsafe method with no ``Origin`` is not a real capture;
+    * a *present* origin must be one of the approved installs, on every method.
+    """
+
+    origins = _scope_headers(scope, b"origin")
+    if len(origins) > 1:
+        return False
+    if not origins:
+        return method.upper() in {"GET", "HEAD", "OPTIONS"}
+    return settings.is_allowed_origin(origins[0].strip())
+
+
 def authenticate_capture_request(
     scope: Scope, settings: ExtensionAuthSettings, *, path: str, method: str
 ) -> str | None:
@@ -434,17 +542,11 @@ def authenticate_capture_request(
     if not is_contract_request(path, method):
         return None
 
-    key_id = settings.authenticate(_single_header(scope, b"authorization"))
+    key_id = settings.authenticate(presented_authorization_header(scope))
     if key_id is None:
         return None
 
-    origins = _scope_headers(scope, b"origin")
-    if len(origins) > 1:
-        return None
-    origin = origins[0].strip() if origins else None
-    if origin is None:
-        return None if method.upper() not in {"GET", "HEAD", "OPTIONS"} else key_id
-    return key_id if settings.is_allowed_origin(origin) else None
+    return key_id if capture_origin_permitted(scope, settings, method=method) else None
 
 
 def capture_preflight_headers(
@@ -465,7 +567,7 @@ def capture_preflight_headers(
     the operator's session instead.
     """
 
-    if not settings.enabled:
+    if not settings.accepts_capture_credentials():
         return None
     methods = contract_methods(path)
     if not methods:
@@ -494,6 +596,20 @@ def extension_key_id(request: Any) -> str | None:
     scope = getattr(request, "scope", request)
     state = scope.get("state") or {}
     value = state.get(EXTENSION_KEY_ID_STATE_KEY)
+    return value if isinstance(value, str) and value else None
+
+
+def extension_user_id(request: Any) -> str | None:
+    """The account an account-linked capture belongs to, if this request is one.
+
+    ``None`` for a ``vmrx1`` capture, which names a configured key id and no
+    account at all. A caller that needs ownership must therefore handle the
+    absence rather than assume every extension request has an owner.
+    """
+
+    scope = getattr(request, "scope", request)
+    state = scope.get("state") or {}
+    value = state.get(EXTENSION_USER_ID_STATE_KEY)
     return value if isinstance(value, str) and value else None
 
 

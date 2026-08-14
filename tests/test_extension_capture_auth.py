@@ -10,6 +10,31 @@ builds it — staging environment, real authentication middleware, an always-rea
 probe, and a staging database URL that satisfies the production-like runtime
 rules but is never connected because ``get_db`` is overridden with the suite's
 own transactional session.
+
+One thing changed under this file, and it is worth stating plainly
+------------------------------------------------------------------
+Extension authorization moved to per-account links
+(``tests/test_extension_account_linking.py``), and the ``vmrx1`` shared
+credential this file is about became **development compatibility**: the
+middleware verifies it only when ``APP_ENV=local``, so no reusable secret a human
+could paste can authorise a hosted capture.
+
+No invariant here was relaxed to accommodate that. What moved is *where* each
+invariant is proved:
+
+* the tests that assert what the credential can do now run against a local
+  development build (the ``legacy`` fixture), because that is where the scheme is
+  live and where a 201 therefore means something;
+* the tests that assert what it **cannot** do run against *both* builds (the
+  ``either`` fixture), because a refusal proved only in staging would now be
+  satisfied by the environment gate rather than by the rule under test;
+* ``test_the_legacy_credential_is_worth_nothing_in_hosted_mode`` states the new
+  gate directly, so the change is recorded here rather than inferred from a
+  fixture name.
+
+Everything about the *shape* of the credential — parsing, digests, revocation,
+settings validation — is environment-independent and is asserted directly against
+``ExtensionAuthSettings`` exactly as before.
 """
 
 from __future__ import annotations
@@ -99,6 +124,10 @@ class _AlwaysReadyProbe:
         return None
 
 
+LOCAL_HOST = "localhost"
+LOCAL_ORIGIN = f"http://{LOCAL_HOST}"
+
+
 def _base_env(**overrides: str) -> dict[str, str]:
     env = {
         "APP_ENV": "staging",
@@ -122,13 +151,58 @@ def _base_env(**overrides: str) -> dict[str, str]:
     return env
 
 
+def _local_env(**overrides: str) -> dict[str, str]:
+    """The one environment in which a ``vmrx1`` credential is still a credential.
+
+    The legacy shared credential became development compatibility when extension
+    authorization moved to per-account links
+    (``tests/test_extension_account_linking.py``): the middleware now verifies it
+    only when ``APP_ENV=local``, so that no reusable secret a human could paste
+    can authorise a hosted capture. Every assertion in this file about what the
+    credential *is* — how it parses, what it refuses, how narrow it is — is
+    therefore made here, where the scheme is live, rather than in an environment
+    where it would be refused before any of those rules were reached.
+
+    Hosted authentication is switched on deliberately, even locally. Without it
+    the middleware returns early and the boundary is not enforced at all, which
+    would turn every refusal below into a vacuous pass.
+    """
+
+    env = {
+        "APP_ENV": "local",
+        "DEBUG": "false",
+        "DRY_RUN": "true",
+        "TRUSTED_HOSTS": f'["{LOCAL_HOST}"]',
+        "FEATURES__WORKBENCH": "true",
+        "FEATURES__CONTACT_CAPTURE_INTAKE": "true",
+        "AUTH__ENABLED": "true",
+        "AUTH__SESSION_SECRET": SESSION_SECRET,
+        "AUTH__ALLOWED_OPERATOR_EMAILS": f'["{APPROVED_EMAIL}"]',
+        "AUTH__GOOGLE_CLIENT_ID": "vmr-test-client.apps.googleusercontent.com",
+        "AUTH__GOOGLE_CLIENT_SECRET": "test-client-secret",
+        "AUTH__PUBLIC_BASE_URL": LOCAL_ORIGIN,
+        "AUTH__COOKIE_SECURE": "false",
+        "EXTENSION_AUTH__ENABLED": "true",
+        "EXTENSION_AUTH__CREDENTIALS": json.dumps([f"{KEY_ID}:{credential_digest(SECRET)}"]),
+        "EXTENSION_AUTH__ALLOWED_ORIGINS": json.dumps([EXTENSION_ORIGIN]),
+    }
+    env.update(overrides)
+    return env
+
+
 def _apply(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -> None:
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     get_settings.cache_clear()
 
 
-def _build(monkeypatch: pytest.MonkeyPatch, env: dict[str, str], db: Session) -> TestClient:
+def _build(
+    monkeypatch: pytest.MonkeyPatch,
+    env: dict[str, str],
+    db: Session,
+    *,
+    base_url: str = STAGING_ORIGIN,
+) -> TestClient:
     _apply(monkeypatch, env)
     app = create_app(readiness_probe=_AlwaysReadyProbe())
 
@@ -136,12 +210,46 @@ def _build(monkeypatch: pytest.MonkeyPatch, env: dict[str, str], db: Session) ->
         yield db
 
     app.dependency_overrides[get_db] = _override
-    return TestClient(app, base_url=STAGING_ORIGIN, follow_redirects=False)
+    return TestClient(app, base_url=base_url, follow_redirects=False)
 
 
 @pytest.fixture()
 def hosted(monkeypatch: pytest.MonkeyPatch, db_session: Session) -> Iterator[TestClient]:
     client = _build(monkeypatch, _base_env(), db_session)
+    try:
+        yield client
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.fixture()
+def legacy(monkeypatch: pytest.MonkeyPatch, db_session: Session) -> Iterator[TestClient]:
+    """A local development build, where the ``vmrx1`` scheme is live."""
+
+    client = _build(monkeypatch, _local_env(), db_session, base_url=LOCAL_ORIGIN)
+    try:
+        yield client
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.fixture(params=["hosted", "local"])
+def either(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, db_session: Session
+) -> Iterator[TestClient]:
+    """Both builds, for the refusals that must hold in both.
+
+    A refusal asserted only against the hosted build would now be satisfied by
+    the environment gate rather than by the rule under test — every ``vmrx1``
+    request is refused there. Running the same refusal against the local build,
+    where the scheme genuinely verifies, is what keeps these tests about the
+    credential rather than about the environment. This is strictly more than the
+    file asserted before.
+    """
+
+    env = _base_env() if request.param == "hosted" else _local_env()
+    base_url = STAGING_ORIGIN if request.param == "hosted" else LOCAL_ORIGIN
+    client = _build(monkeypatch, env, db_session, base_url=base_url)
     try:
         yield client
     finally:
@@ -399,13 +507,40 @@ def test_anonymous_hosted_capture_is_refused(hosted: TestClient, db_session: Ses
     assert _submission_count(db_session) == before
 
 
-def test_a_missing_credential_with_an_approved_origin_is_refused(hosted: TestClient) -> None:
-    assert _capture(hosted, headers={}).status_code == 401
+def test_a_missing_credential_with_an_approved_origin_is_refused(either: TestClient) -> None:
+    assert _capture(either, headers={}).status_code == 401
 
 
-def test_an_invalid_credential_is_refused(hosted: TestClient) -> None:
+def test_an_invalid_credential_is_refused(either: TestClient) -> None:
     wrong = {"Authorization": f"Bearer vmrx1.{KEY_ID}.{'q' * len(SECRET)}"}
-    assert _capture(hosted, headers=wrong).status_code == 401
+    assert _capture(either, headers=wrong).status_code == 401
+
+
+def test_the_legacy_credential_is_worth_nothing_in_hosted_mode(
+    hosted: TestClient, legacy: TestClient, db_session: Session
+) -> None:
+    """The environment gate, stated as one test rather than left in a fixture name.
+
+    The same credential, the same approved origin, the same well-formed request,
+    and two answers: refused against a staging build, accepted against a local
+    one. That is what makes "no reusable shared secret authorises a hosted
+    capture" a property of the code rather than a promise about what an
+    environment file will contain.
+
+    The hosted build here has ``EXTENSION_AUTH__ENABLED`` on with the credential
+    digest and the approved origin configured, so this is not "an unconfigured
+    boundary refused everything" — it is the gate.
+    """
+
+    before = _submission_count(db_session)
+    refused = _capture(hosted, headers=BEARER)
+    assert refused.status_code == 401
+    assert refused.json()["error"] == "unauthorized"
+    assert _submission_count(db_session) == before
+
+    accepted = _capture(legacy, headers=BEARER)
+    assert accepted.status_code == 201, accepted.text
+    assert _submission_count(db_session) == before + 1
 
 
 def test_a_revoked_credential_is_refused(
@@ -421,16 +556,22 @@ def test_a_revoked_credential_is_refused(
     )
     revoked_bearer = {"Authorization": f"Bearer {REVOKED_CREDENTIAL}"}
 
-    live = _build(monkeypatch, _base_env(EXTENSION_AUTH__CREDENTIALS=issued), db_session)
+    live = _build(
+        monkeypatch,
+        _local_env(EXTENSION_AUTH__CREDENTIALS=issued),
+        db_session,
+        base_url=LOCAL_ORIGIN,
+    )
     assert _capture(live, headers=revoked_bearer).status_code == 201
 
     dead = _build(
         monkeypatch,
-        _base_env(
+        _local_env(
             EXTENSION_AUTH__CREDENTIALS=issued,
             EXTENSION_AUTH__REVOKED_KEY_IDS=json.dumps([REVOKED_KEY_ID]),
         ),
         db_session,
+        base_url=LOCAL_ORIGIN,
     )
     assert _capture(dead, headers=revoked_bearer).status_code == 401
     # The credential that was not revoked is untouched.
@@ -439,12 +580,12 @@ def test_a_revoked_credential_is_refused(
 
 
 def test_a_valid_credential_from_the_approved_origin_captures(
-    hosted: TestClient, db_session: Session
+    legacy: TestClient, db_session: Session
 ) -> None:
     """The positive case, all the way to persisted evidence."""
 
     before = _submission_count(db_session)
-    response = _capture(hosted, headers=BEARER)
+    response = _capture(legacy, headers=BEARER)
     assert response.status_code == 201, response.text
     body = response.json()
     assert body["counts"]["submitted"] == 1
@@ -455,21 +596,21 @@ def test_a_valid_credential_from_the_approved_origin_captures(
 
 @pytest.mark.parametrize("origin", [HOSTILE_ORIGIN, OTHER_EXTENSION_ORIGIN, STAGING_ORIGIN])
 def test_a_valid_credential_from_an_unapproved_origin_is_refused(
-    hosted: TestClient, db_session: Session, origin: str
+    either: TestClient, db_session: Session, origin: str
 ) -> None:
     """A stolen credential replayed from anywhere else is worth nothing."""
 
     before = _submission_count(db_session)
-    response = _capture(hosted, headers=BEARER, origin=origin)
+    response = _capture(either, headers=BEARER, origin=origin)
     assert response.status_code == 401
     assert "access-control-allow-origin" not in response.headers
     assert _submission_count(db_session) == before
 
 
-def test_a_capture_post_without_an_origin_is_refused(hosted: TestClient) -> None:
+def test_a_capture_post_without_an_origin_is_refused(either: TestClient) -> None:
     """Every real capture carries `Origin`; a write that does not is not one."""
 
-    assert _capture(hosted, headers=BEARER, origin=None).status_code == 401
+    assert _capture(either, headers=BEARER, origin=None).status_code == 401
 
 
 def test_a_session_cookie_alone_is_not_an_extension_request(
@@ -511,10 +652,10 @@ def test_a_session_cookie_does_not_rescue_an_invalid_credential(
     assert _submission_count(db_session) == before
 
 
-def test_two_authorization_headers_are_ambiguity_and_refuse(hosted: TestClient) -> None:
+def test_two_authorization_headers_are_ambiguity_and_refuse(either: TestClient) -> None:
     """A proxy or client must not get to choose which credential is read."""
 
-    response = hosted.post(
+    response = either.post(
         CAPTURE_URL,
         json=_fresh(PROFILE_SUBMISSION),
         headers=[
@@ -549,15 +690,15 @@ def test_two_authorization_headers_are_ambiguity_and_refuse(hosted: TestClient) 
     ],
 )
 def test_the_credential_authorizes_nothing_outside_the_enumerated_contract(
-    hosted: TestClient, method: str, path: str
+    either: TestClient, method: str, path: str
 ) -> None:
     """A valid credential on any other route is worth exactly nothing."""
 
-    response = hosted.request(method, path, headers={**BEARER, "Origin": EXTENSION_ORIGIN}, json={})
+    response = either.request(method, path, headers={**BEARER, "Origin": EXTENSION_ORIGIN}, json={})
     assert response.status_code in {401, 403}, f"{method} {path} -> {response.status_code}"
 
 
-def test_a_path_spelled_around_the_contract_is_still_refused(hosted: TestClient) -> None:
+def test_a_path_spelled_around_the_contract_is_still_refused(either: TestClient) -> None:
     """Normalisation must not become a way to reach a route the table does not list."""
 
     for spelling in (
@@ -565,7 +706,7 @@ def test_a_path_spelled_around_the_contract_is_still_refused(hosted: TestClient)
         "/api/intake/contact-captures/",
         "//api//intake//contact-captures",
     ):
-        response = hosted.post(
+        response = either.post(
             spelling,
             json=_fresh(PROFILE_SUBMISSION),
             headers={**BEARER, "Origin": EXTENSION_ORIGIN},
@@ -578,16 +719,16 @@ def test_a_path_spelled_around_the_contract_is_still_refused(hosted: TestClient)
             assert response.status_code in {201, 401, 403, 404, 405, 307}
 
 
-def test_the_three_contract_reads_work_with_the_credential(hosted: TestClient) -> None:
+def test_the_three_contract_reads_work_with_the_credential(legacy: TestClient) -> None:
     for url in (LABELS_URL, LOOKUP_URL, CAMPAIGNS_URL):
-        response = hosted.get(url, headers={**BEARER, "Origin": EXTENSION_ORIGIN})
+        response = legacy.get(url, headers={**BEARER, "Origin": EXTENSION_ORIGIN})
         assert response.status_code == 200, f"{url} -> {response.status_code} {response.text}"
         assert response.headers.get("access-control-allow-origin") == EXTENSION_ORIGIN
 
 
-def test_the_contract_reads_are_refused_without_the_credential(hosted: TestClient) -> None:
+def test_the_contract_reads_are_refused_without_the_credential(either: TestClient) -> None:
     for url in (LABELS_URL, LOOKUP_URL, CAMPAIGNS_URL):
-        response = hosted.get(url, headers={"Origin": EXTENSION_ORIGIN})
+        response = either.get(url, headers={"Origin": EXTENSION_ORIGIN})
         assert response.status_code == 401, f"{url} -> {response.status_code}"
 
 
@@ -683,14 +824,14 @@ def test_a_bare_options_without_a_requested_method_is_refused(hosted: TestClient
 
 
 def test_idempotent_resubmission_is_unchanged_over_the_credential(
-    hosted: TestClient, db_session: Session
+    legacy: TestClient, db_session: Session
 ) -> None:
     """The same submission id replays; it does not duplicate."""
 
     payload = _fresh(PROFILE_SUBMISSION)
     before = _submission_count(db_session)
-    first = hosted.post(CAPTURE_URL, json=payload, headers={**BEARER, "Origin": EXTENSION_ORIGIN})
-    second = hosted.post(CAPTURE_URL, json=payload, headers={**BEARER, "Origin": EXTENSION_ORIGIN})
+    first = legacy.post(CAPTURE_URL, json=payload, headers={**BEARER, "Origin": EXTENSION_ORIGIN})
+    second = legacy.post(CAPTURE_URL, json=payload, headers={**BEARER, "Origin": EXTENSION_ORIGIN})
     assert first.status_code == 201
     assert second.status_code in {200, 201}
     assert second.json()["already_received"] is True
@@ -699,11 +840,11 @@ def test_idempotent_resubmission_is_unchanged_over_the_credential(
 
 
 def test_a_capture_stays_contact_first_with_no_campaign(
-    hosted: TestClient, db_session: Session
+    legacy: TestClient, db_session: Session
 ) -> None:
     payload = _fresh(PROFILE_SUBMISSION)
     payload.pop("campaign_id", None)
-    response = hosted.post(
+    response = legacy.post(
         CAPTURE_URL, json=payload, headers={**BEARER, "Origin": EXTENSION_ORIGIN}
     )
     assert response.status_code == 201
@@ -715,13 +856,13 @@ def test_a_capture_stays_contact_first_with_no_campaign(
 # ---------------------------------------------------------------------------
 
 
-def test_no_response_on_the_boundary_echoes_the_credential(hosted: TestClient) -> None:
+def test_no_response_on_the_boundary_echoes_the_credential(legacy: TestClient) -> None:
     responses = [
-        _capture(hosted),
-        _capture(hosted, headers=BEARER),
-        _capture(hosted, headers=BEARER, origin=HOSTILE_ORIGIN),
-        _preflight(hosted, CAPTURE_URL, origin=EXTENSION_ORIGIN, method="POST"),
-        hosted.get(LABELS_URL, headers={**BEARER, "Origin": EXTENSION_ORIGIN}),
+        _capture(legacy),
+        _capture(legacy, headers=BEARER),
+        _capture(legacy, headers=BEARER, origin=HOSTILE_ORIGIN),
+        _preflight(legacy, CAPTURE_URL, origin=EXTENSION_ORIGIN, method="POST"),
+        legacy.get(LABELS_URL, headers={**BEARER, "Origin": EXTENSION_ORIGIN}),
     ]
     for response in responses:
         haystack = response.text + json.dumps(dict(response.headers))
@@ -730,11 +871,11 @@ def test_no_response_on_the_boundary_echoes_the_credential(hosted: TestClient) -
 
 
 def test_the_access_log_records_no_credential(
-    hosted: TestClient, caplog: pytest.LogCaptureFixture
+    legacy: TestClient, caplog: pytest.LogCaptureFixture
 ) -> None:
     with caplog.at_level(logging.INFO, logger="vmr.http"):
-        _capture(hosted, headers=BEARER)
-        _capture(hosted, headers={"Authorization": f"Bearer vmrx1.{KEY_ID}.{'z' * 44}"})
+        _capture(legacy, headers=BEARER)
+        _capture(legacy, headers={"Authorization": f"Bearer vmrx1.{KEY_ID}.{'z' * 44}"})
     recorded = "\n".join(record.getMessage() for record in caplog.records)
     assert recorded, "the hardening middleware should have logged the requests"
     assert SECRET not in recorded

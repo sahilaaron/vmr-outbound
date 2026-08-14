@@ -128,6 +128,10 @@ def _env(**overrides: str) -> dict[str, str]:
         "EXTENSION_AUTH__ENABLED": "true",
         "EXTENSION_AUTH__CREDENTIALS": json.dumps([f"{KEY_ID}:{credential_digest(KEY_SECRET)}"]),
         "EXTENSION_AUTH__ALLOWED_ORIGINS": json.dumps([EXTENSION_ORIGIN]),
+        # Account-linked extension authorization, which is what a hosted
+        # deployment actually uses. The legacy `vmrx1` block above stays
+        # configured on purpose: section G now asserts that it is inert here.
+        "EXTENSION_AUTH__LINK_ENABLED": "true",
     }
     env.update(overrides)
     return env
@@ -433,13 +437,28 @@ def test_the_classification_counts_are_the_ones_deliberately_recorded() -> None:
     stayed with the USER — a capture's company domain and the seller knowledge
     base have no approval other than an operator's, so withholding those would
     have broken the product rather than protected it.
+
+    The operator-reachable count then moved a second time, 87 to 89, and in the
+    other direction: ``GET`` and ``POST /extension/authorize`` were added by the
+    extension account-linking slice. Both are per-operator consent pages, exactly
+    like ``POST /gmail/connect``, and what they grant is strictly narrower than
+    what the operator granting it already holds — the four routes of
+    ``EXTENSION_CAPTURE_CONTRACT``, delegated, revocable, and dead the moment the
+    account is disabled. The other two routes on that router,
+    ``POST /extension/token`` and ``POST /extension/revoke``, are not counted
+    here because they are classified as anonymous rather than as USER-reachable;
+    ``tests/test_hosted_auth_templates.py`` records why.
     """
 
     assert len(PROVIDER_SPEND_SURFACE) == 9, sorted(PROVIDER_SPEND_SURFACE)
-    # 87 -> 86: `GET /app/agents` moved to the administrator surface with the
-    # control POST that was already there. See
-    # `test_the_agent_monitor_inside_the_product_is_administrator_only`.
-    assert len(EXPECTED_USER_REACHABLE) == 86, len(EXPECTED_USER_REACHABLE)
+    # And a third time, 89 to 88, in the withholding direction: `GET /app/agents`
+    # joined the control POST on the administrator surface. The monitor names
+    # every campaign carrying an Agent override and lists jobs across all of
+    # them, so it is not scoped to one operator's campaigns and cannot be
+    # without rewriting the reader the administrator surfaces share. See
+    # `test_the_agent_monitor_inside_the_product_is_administrator_only`, and note
+    # that per-campaign Agent work is untouched under `/app/campaigns/{id}/...`.
+    assert len(EXPECTED_USER_REACHABLE) == 88, len(EXPECTED_USER_REACHABLE)
 
 
 def test_reading_the_verification_page_is_not_spending(client: TestClient) -> None:
@@ -659,19 +678,85 @@ def test_an_unmounted_path_under_an_administrator_prefix_is_still_refused(
 # ---------------------------------------------------------------------------
 
 
+def _linked_extension_token(client: TestClient, *, email: str = "extension@vmr.example") -> str:
+    """One account-linked extension access token, obtained the way a user does.
+
+    Driven as real requests, like everything else in this file: an operator signs
+    in, presses the consent button on ``/extension/authorize``, and the extension
+    redeems the resulting single-use PKCE code at ``/extension/token``. The
+    session cookie is cleared afterwards, so every assertion that follows is
+    about the *extension's* authority and cannot be satisfied by the operator's
+    cookie riding along.
+
+    This replaced a hard-coded ``vmrx1`` credential here. The credential was not
+    weakened, it was superseded: a `vmrx1` token is now inert outside
+    ``APP_ENV=local`` (see ``test_the_legacy_shared_credential_is_inert_here``
+    below), so the honest way to state "the capture contract still answers the
+    extension" is with the credential the extension actually holds.
+    """
+
+    import base64
+    import hashlib
+    import secrets
+    from urllib.parse import parse_qs, urlparse
+
+    account = seed_account(email=email)
+    csrf = _attach_session(client, account.user_id, account.email)
+    verifier = secrets.token_urlsafe(32)
+    challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest())
+        .decode("ascii")
+        .rstrip("=")
+    )
+    installation_id = "install-route-authorization-0001"
+    granted = client.post(
+        "/extension/authorize",
+        data={
+            "extension_id": EXTENSION_ID,
+            "installation_id": installation_id,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "state": "state-routeauthorization",
+            "redirect_uri": f"https://{EXTENSION_ID}.chromiumapp.org/",
+            "_csrf": csrf,
+        },
+        headers={"Sec-Fetch-Site": "same-origin"},
+    )
+    assert granted.status_code == 303, granted.text[:300]
+    code = parse_qs(urlparse(granted.headers["location"]).query)["code"][0]
+    client.cookies.clear()
+
+    exchanged = client.post(
+        "/extension/token",
+        json={
+            "grant_type": "authorization_code",
+            "code": code,
+            "code_verifier": verifier,
+            "extension_id": EXTENSION_ID,
+            "installation_id": installation_id,
+        },
+        headers={"Origin": EXTENSION_ORIGIN},
+    )
+    assert exchanged.status_code == 200, exchanged.text
+    token: str = exchanged.json()["access_token"]
+    return token
+
+
 def test_the_capture_contract_still_answers_a_verified_extension_credential(
     client: TestClient,
 ) -> None:
     """``/api`` became administrator-only for *sessions*, not for the extension.
 
-    The capture credential carries no account and therefore no role, so refusing
-    it here for "not being an administrator" would have broken capture without
-    making anything safer. It is authorised by a bearer secret bound to an
-    approved ``chrome-extension://`` origin, which is checked before the
-    administrator rule and is a narrower authority than any session.
+    An extension authorization carries no role — it is delegated from one account
+    for one narrow purpose — so refusing it here for "not being an administrator"
+    would have broken capture without making anything safer. It is checked before
+    the administrator rule and is a narrower authority than any session.
     """
 
-    headers = {**BEARER, "Origin": EXTENSION_ORIGIN}
+    headers = {
+        "Authorization": f"Bearer {_linked_extension_token(client)}",
+        "Origin": EXTENSION_ORIGIN,
+    }
     for url in (
         "/api/contact-labels",
         "/api/contacts/lookup?linkedin_profile_url=https%3A%2F%2Fwww.linkedin.com%2Fin%2Fx",
@@ -717,9 +802,27 @@ def test_the_extension_credential_did_not_widen_with_the_administrator_rule(
     extension authority for no live caller.
     """
 
-    response = client.request(method, path, headers={**BEARER, "Origin": EXTENSION_ORIGIN}, json={})
+    token = _linked_extension_token(client, email=f"narrow-{method}@x.test")
+    headers = {"Authorization": f"Bearer {token}", "Origin": EXTENSION_ORIGIN}
+    response = client.request(method, path, headers=headers, json={})
     assert response.status_code in {401, 403}, f"{method} {path} -> {response.status_code}"
     assert response.json()["error"] != "admin_required"
+
+
+def test_the_legacy_shared_credential_is_inert_here(client: TestClient) -> None:
+    """The `vmrx1` credential this file still configures is worth nothing.
+
+    ``EXTENSION_AUTH__ENABLED``, the credential digest and the approved origin
+    are all set in ``_env()`` above, and the request below is perfectly formed.
+    It is refused anyway, because the legacy shared-secret scheme is gated on
+    ``APP_ENV=local`` — so nothing in this hosted build's capture path depends on
+    a reusable secret a human could paste. ``tests/test_extension_account_linking.py``
+    proves the other half: the same credential still works under ``APP_ENV=local``.
+    """
+
+    refused = client.get("/api/contact-labels", headers={**BEARER, "Origin": EXTENSION_ORIGIN})
+    assert refused.status_code == 401
+    assert refused.json()["error"] == "unauthorized"
 
 
 # ---------------------------------------------------------------------------
@@ -877,6 +980,23 @@ EXPECTED_USER_REACHABLE: frozenset[str] = frozenset(
         "POST /gmail/connect",
         "GET /gmail/callback",
         "POST /gmail/disconnect",
+        # Extension account linking. Connecting a browser extension to one's own
+        # VMR account is a per-operator consent, exactly like connecting a
+        # mailbox above, and it is not an administrative act: what it grants is
+        # strictly narrower than what the operator granting it already has — the
+        # four routes of `EXTENSION_CAPTURE_CONTRACT`, delegated from their own
+        # account, revocable by them, and dead the moment their account is
+        # disabled. Withholding it from a USER would mean only an administrator
+        # could use the capture extension, which is the opposite of the product.
+        #
+        # `POST /extension/token` and `POST /extension/revoke` are absent because
+        # they are classified as anonymous (see
+        # `tests/test_hosted_auth_templates.py`, which records exactly why) and
+        # the walk below skips anonymous paths. Both are authorised by a
+        # presented token plus an approved extension origin rather than by a
+        # session, and neither can grant anything the authorize pages did not.
+        "GET /extension/authorize",
+        "POST /extension/authorize",
         # Extension capture review: the operator's own queue of what they
         # captured, and the labels and notes they put on it.
         "GET /captures/{capture_id}",

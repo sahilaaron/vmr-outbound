@@ -15,11 +15,12 @@
  * first. Never posts to LinkedIn. Nothing is ever sent without an explicit
  * operator-triggered message.
  *
- * One credential, and only one: the VMR capture credential a hosted deployment
- * requires (see `common/constants.js`). It is held in `chrome.storage.session`,
- * attached only to a request going to a named hosted deployment, and never
- * returned to the panel, written to a log line, or stored beside the drafts. No
- * LinkedIn credential, cookie or session is ever read or kept.
+ * Authorization for hosted capture is the operator's own VMR Outbound account
+ * link (see `common/account-link.js`): a short-lived access token, refreshed
+ * from a rotating refresh token, attached only to a request going to a named
+ * hosted deployment and never returned to the panel, written to a log line, or
+ * stored beside the drafts. Nobody types a credential. No LinkedIn credential,
+ * cookie or session is ever read or kept.
  */
 importScripts(
   "../common/constants.js",
@@ -32,6 +33,7 @@ importScripts(
   "../common/contact-schema.js",
   "../common/migration.js",
   "../common/permissions.js",
+  "../common/account-link.js",
   "../common/handoff.js"
 );
 
@@ -44,6 +46,7 @@ const {
   migration,
   normalize,
   permissions,
+  accountLink: accountLinkModule,
   handoff,
   surface,
 } = self.SNCapture;
@@ -51,6 +54,7 @@ const {
   STORAGE,
   PROFILE_STORAGE,
   CONTACT_STORAGE,
+  ACCOUNT_STORAGE,
   CREDENTIAL_STORAGE,
   CREDENTIAL_PATTERN,
   DEFAULT_PREFERENCES,
@@ -116,13 +120,117 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 if (chrome.runtime.onStartup) chrome.runtime.onStartup.addListener(migrateLegacyState);
 
-// ---- hosted capture credential ---------------------------------------------
+// ---- account link -----------------------------------------------------------
 //
-// Held in `chrome.storage.session`: in-memory for the browser session, never
-// written to disk, and unreadable from a content script. Everything below is
-// written so the value has exactly one exit: the `Authorization` header of a
-// request to a named hosted deployment. It is never returned to the panel,
-// never included in a response object, and never passed to `console`.
+// Hosted capture is authorised by the operator's own VMR Outbound account. The
+// client lives in `common/account-link.js`; the worker owns the one instance and
+// is the only thing that ever sees a token. The panel is told whether the
+// install is linked and to which account — never a token, in any response.
+
+const accountLink = accountLinkModule.createAccountLink({
+  chrome,
+  crypto,
+  fetch: (...args) => fetch(...args),
+  backendBaseUrl: async () => (await getPrefs()).backendBaseUrl,
+});
+
+/** Link state for the panel: connected, and to whom. Never a token. */
+async function accountState() {
+  return accountLink.state();
+}
+
+/**
+ * Whether the optional host permission for the backend is already granted.
+ *
+ * The token exchange is a cross-origin `fetch`, so it needs that permission even
+ * though `launchWebAuthFlow` does not. Checking first means an operator who has
+ * not approved the origin yet is told THAT, instead of being walked through a
+ * sign-in window whose exchange then fails for an unrelated reason. The worker
+ * never requests the permission — there is no user gesture here; the panel
+ * requests it with the click that started the sign-in.
+ */
+async function accountLinkPermission() {
+  const prefs = await getPrefs();
+  const base = String(prefs.backendBaseUrl || "").replace(/\/$/, "");
+  if (!permissions.isHostedUrl(base + "/")) return { ok: true, pattern: null };
+  return hasHostPermission(base + constants.ACCOUNT_LINK_PATHS.TOKEN);
+}
+
+/** Open-the-panel path: report the link, connecting silently if it can. */
+async function ensureAccountConnected() {
+  const perm = await accountLinkPermission();
+  if (!perm.ok) {
+    // No point opening even a silent auth window: the exchange behind it cannot
+    // run yet. The panel asks for the permission on the operator's next click.
+    return {
+      ok: true,
+      account: await accountState(),
+      reason: "permission_required",
+      originPattern: perm.pattern,
+    };
+  }
+  const result = await accountLink.ensureConnected();
+  return { ok: true, account: result.account, reason: result.reason || null };
+}
+
+/** The single "Sign in to VMR Outbound" action. */
+async function connectAccount() {
+  const perm = await accountLinkPermission();
+  if (!perm.ok) {
+    return {
+      ok: false,
+      error: "permission_denied",
+      originPattern: perm.pattern,
+      account: await accountState(),
+    };
+  }
+  const result = await accountLink.connect({ interactive: true });
+  const account = await accountState();
+  if (!result.ok) return { ok: false, error: result.error, account };
+  return { ok: true, account };
+}
+
+async function disconnectAccount() {
+  await accountLink.disconnect();
+  return { ok: true, account: await accountState() };
+}
+
+// ---- development overrides ---------------------------------------------------
+//
+// EXACTLY ONE THING enables them: an object at `chrome.storage.local`
+// key `vmr_dev_overrides` with `enabled === true`.
+//
+// Nothing writes that key. No panel control, no message handler, no install or
+// startup step — deliberately, so it can only be created by hand from the
+// extension's own devtools console on an unpacked build. An ordinary
+// staging/production operator has no path to it at all, which is what makes the
+// legacy `vmrx1` credential and the backend/mock-target fields below unreachable
+// for them rather than merely hidden.
+
+async function devOverrides() {
+  try {
+    const data = await chrome.storage.local.get(ACCOUNT_STORAGE.DEV_OVERRIDES);
+    const raw = data && data[ACCOUNT_STORAGE.DEV_OVERRIDES];
+    return raw && typeof raw === "object" && raw.enabled === true ? raw : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+async function devModeEnabled() {
+  return (await devOverrides()) !== null;
+}
+
+// ---- legacy `vmrx1` capture credential (development compatibility only) ------
+//
+// Superseded by the account link. Retained only for the local/development
+// compatibility the backend still honours under APP_ENV=local, and reachable
+// only behind the development gate above: the ordinary panel has no control for
+// it, the worker refuses to store one without the gate, and hosted capture never
+// depends on it. Held in `chrome.storage.session` — in-memory for the browser
+// session, never written to disk, unreadable from a content script — and it has
+// exactly one exit: the `Authorization` header of a request to a named hosted
+// deployment when no account link exists.
 
 /** Session storage, or null on a browser too old to have it. */
 function credentialStore() {
@@ -142,15 +250,20 @@ async function getCredential() {
 }
 
 /**
- * Store a pasted credential after a shape check.
+ * Store a pasted legacy credential after a shape check.
+ *
+ * Refused outright unless the development gate is present: on an ordinary
+ * install there is no such thing as a credential to paste, and accepting one
+ * would keep alive exactly the shared-secret path the account link replaced.
  *
  * The shape check refuses an obviously-wrong paste — a truncated copy, the
  * configuration digest pasted instead of the credential — at the field, so the
- * operator learns immediately rather than through a 401 three screens later.
+ * developer learns immediately rather than through a 401 three screens later.
  * The backend remains the only authority on whether a well-formed credential is
  * a real one.
  */
 async function setCredential(value) {
+  if (!(await devModeEnabled())) return { ok: false, error: "dev_mode_required" };
   const store = credentialStore();
   if (!store) return { ok: false, error: "credential_storage_unavailable" };
   const candidate = typeof value === "string" ? value.trim() : "";
@@ -168,7 +281,7 @@ async function clearCredential() {
 }
 
 /**
- * Whether a credential is held — never the credential itself.
+ * Whether a legacy credential is held — never the credential itself.
  *
  * This is the only thing the panel is ever told about it, which is what keeps
  * the value out of the panel's DOM, its state, and anything it might render.
@@ -178,31 +291,83 @@ async function credentialState() {
     ok: true,
     hasCredential: (await getCredential()) !== null,
     storageAvailable: credentialStore() !== null,
+    devMode: await devModeEnabled(),
   };
+}
+
+/**
+ * The legacy credential, but only where it is still legitimate: behind the
+ * development gate, and only when this install has no account link to use
+ * instead. Ordinary hosted capture can never reach this.
+ */
+async function legacyDevCredential() {
+  if (!(await devModeEnabled())) return null;
+  return getCredential();
 }
 
 /**
  * Headers for one backend request, or the refusal to make it.
  *
- * A loopback target is unchanged and carries no credential: local development
- * has no authenticated intake and adding one would be a behaviour change nobody
- * asked for. A named hosted deployment must carry the credential, and a missing
- * one is refused here rather than sent anyway to collect a 401 — the operator
- * gets "set the credential", not "the backend rejected you".
+ * A loopback target is unchanged and carries nothing: local development has no
+ * authenticated intake and adding one would be a behaviour change nobody asked
+ * for. A named hosted deployment carries the account-linked access token, minted
+ * from the operator's own VMR Outbound session and refreshed silently when it is
+ * close to expiry.
+ *
+ * With no usable link the request is refused here rather than sent to collect a
+ * 401 — the operator gets one "Sign in to VMR Outbound" action, not a backend
+ * rejection they cannot act on. Nothing leaves the browser on that path.
  */
 async function requestHeaders(url, extra) {
   const headers = Object.assign({}, extra || {});
   if (!permissions.isHostedUrl(url)) return { ok: true, headers };
-  const credential = await getCredential();
-  if (!credential) {
+
+  const token = await accountLink.ensureAccessToken();
+  if (token.ok) {
+    headers["Authorization"] = "Bearer " + token.accessToken;
+    return { ok: true, headers };
+  }
+
+  const legacy = await legacyDevCredential();
+  if (legacy) {
+    headers["Authorization"] = "Bearer " + legacy;
+    return { ok: true, headers };
+  }
+
+  // A transport or server-side failure while refreshing is not "you are signed
+  // out" — saying so would send the operator through a sign-in that cannot help.
+  if (token.error === "timeout" || token.error === "network_error") {
+    return {
+      ok: false,
+      error: token.error,
+      message: "Could not reach VMR Outbound to authorise this capture.",
+    };
+  }
+  if (token.error === "token_endpoint_error") {
+    return {
+      ok: false,
+      error: "account_link_unavailable",
+      message: "VMR Outbound could not authorise this capture just now. Try again shortly.",
+    };
+  }
+  // A development install with the gate on, no account link and no legacy
+  // credential is a developer who has configured neither; naming the credential
+  // is the actionable answer for them. An ordinary install has exactly one way
+  // forward, and it is a sign-in.
+  if (await devModeEnabled()) {
     return {
       ok: false,
       error: "credential_missing",
-      message: "Hosted VMR needs a capture credential. Add it in Settings, then retry.",
+      message:
+        "No VMR Outbound account link and no development capture credential. " +
+        "Sign in, or set a credential in the development overrides.",
     };
   }
-  headers["Authorization"] = "Bearer " + credential;
-  return { ok: true, headers };
+  return {
+    ok: false,
+    error: "account_link_required",
+    message: "Sign in to VMR Outbound to capture into your account.",
+  };
 }
 
 // ---- storage helpers ------------------------------------------------------
@@ -211,9 +376,20 @@ async function getPrefs() {
   const data = await chrome.storage.local.get(STORAGE.PREFERENCES);
   return Object.assign({}, DEFAULT_PREFERENCES, data[STORAGE.PREFERENCES] || {});
 }
+// Which preferences describe WHERE captures go. They are product configuration,
+// not operator preferences: the hosted deployment is chosen by the product, and
+// the ordinary panel has no control that can change any of them. A patch that
+// carries one is accepted only behind the development gate, so the send target
+// cannot be moved even by a panel that has been tampered with.
+const DEV_ONLY_PREFERENCES = ["backendBaseUrl", "sendTarget", "mockReceiverUrl"];
+
 async function setPrefs(patch) {
   const prefs = await getPrefs();
-  const next = Object.assign({}, prefs, patch || {});
+  const requested = Object.assign({}, patch || {});
+  if (!(await devModeEnabled())) {
+    for (const key of DEV_ONLY_PREFERENCES) delete requested[key];
+  }
+  const next = Object.assign({}, prefs, requested);
   await chrome.storage.local.set({ [STORAGE.PREFERENCES]: next });
   return next;
 }
@@ -815,10 +991,18 @@ async function probeBackend() {
   if (result.error === "origin_not_allowed") {
     return { ok: false, state: "not_allowed" };
   }
+  if (result.error === "account_link_required") {
+    // A hosted deployment that is running perfectly and simply is not linked to
+    // this operator's account yet. Reporting that as "unreachable" would send
+    // them to check a server that is fine.
+    return { ok: false, state: "sign_in_required" };
+  }
+  if (result.error === "account_link_unavailable") {
+    return { ok: false, state: "unreachable", error: result.error };
+  }
   if (result.error === "credential_missing") {
-    // A hosted deployment that is running perfectly and simply has not been
-    // given a credential yet. Reporting that as "unreachable" would send the
-    // operator to check a server that is fine.
+    // Development path only: a developer-configured install with the gate on and
+    // no legacy credential set.
     return { ok: false, state: "credential_required" };
   }
   // Anything else — a timeout, a refused connection, an HTTP error — means the
@@ -1427,6 +1611,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           filingContext: await getFilingContext(),
           migration: await getMigrationNotice(),
           credential: await credentialState(),
+          account: await accountState(),
+          dev: { enabled: await devModeEnabled() },
         });
         break;
       }
@@ -1476,8 +1662,27 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           filingContext: await setFilingContext(msg.filingContext),
         });
         break;
-      // The credential is write-only from the panel's side: it can be set,
-      // cleared, and asked about, but never read back.
+      // The account link. The panel learns whether this install is linked and to
+      // which account; a token never appears in any of these responses.
+      case "GET_ACCOUNT_STATE":
+        // `autoConnect` is the panel's cold open: connect silently if the
+        // operator is already signed in and this install is already approved,
+        // which is what makes "install, open, capture" need no click at all.
+        sendResponse(
+          msg.autoConnect === true
+            ? await ensureAccountConnected()
+            : { ok: true, account: await accountState() }
+        );
+        break;
+      case "CONNECT_ACCOUNT":
+        sendResponse(await connectAccount());
+        break;
+      case "DISCONNECT_ACCOUNT":
+        sendResponse(await disconnectAccount());
+        break;
+      // The legacy credential is write-only from the panel's side: it can be
+      // set, cleared, and asked about, but never read back — and it can only be
+      // set at all behind the development gate.
       case "GET_CREDENTIAL_STATE":
         sendResponse(await credentialState());
         break;
@@ -1520,6 +1725,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           metadata: await getOperatorMetadata(),
           filingContext: await getFilingContext(),
           migration: await getMigrationNotice(),
+          account: await accountState(),
         });
         break;
       }

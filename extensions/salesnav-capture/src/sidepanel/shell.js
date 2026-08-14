@@ -185,9 +185,13 @@
     connected: { tone: "ok", text: "Connected" },
     unreachable: { tone: "bad", text: "Not connected" },
     not_allowed: { tone: "warn", text: "Not allowed yet" },
-    // A hosted backend that answered, and is waiting for a credential. Distinct
-    // from "Not connected" on purpose: the server is fine, and telling the
-    // operator otherwise sends them to check something that is not broken.
+    // A hosted backend that answered, and is waiting for this install to be
+    // linked to a VMR Outbound account. Distinct from "Not connected" on
+    // purpose: the server is fine, and telling the operator otherwise sends
+    // them to check something that is not broken.
+    sign_in_required: { tone: "warn", text: "Sign in needed" },
+    // The same shape on the development path, where a legacy credential is what
+    // is missing. Never reachable on an ordinary install.
     credential_required: { tone: "warn", text: "Credential needed" },
   };
 

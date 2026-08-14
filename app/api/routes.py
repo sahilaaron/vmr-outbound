@@ -575,14 +575,15 @@ async def contact_capture_route(request: Request, db: Session = Depends(get_db))
     # subject to the same rule as every other one. The check is here rather than
     # inside the intake service because only the request knows who is asking.
     #
-    # Today a capture credential carries no user, so `actor_from_request` returns
-    # an unidentified actor and this refuses nothing — which is the existing
-    # behaviour, deliberately kept while account linking is built on its own
-    # branch. The moment a request carries a resolvable user the same call fails
-    # closed, and the refusal is the intake contract's own refusal shape rather
-    # than a bare 403, so the extension renders it like any other rejected
-    # submission.
-    capture_actor = actor_from_request(request)
+    # An account-linked `vmre1` token resolves to the operator who authorized it,
+    # so filing into a campaign they cannot reach is refused here. A legacy
+    # `vmrx1` credential names no account, stays unidentified, and is unaffected —
+    # it is local-development only.
+    #
+    # The refusal is the intake contract's own shape rather than a bare 403, so
+    # the extension renders it like any other rejected submission instead of
+    # treating it as a broken link and discarding a good refresh token.
+    capture_actor = actor_from_request(request, db)
     if capture_actor.is_identified:
         requested_campaign = payload.get("campaign_id") if isinstance(payload, dict) else None
         if requested_campaign not in (None, ""):

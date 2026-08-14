@@ -1,0 +1,67 @@
+{#
+  The extension consent page.
+
+  Shown exactly once per install: the first time a browser extension asks to be
+  connected to this VMR account. Every later connection — including after a
+  browser restart — is answered silently by `GET /extension/authorize`, because a
+  live link is standing consent and re-asking would be a dialog with one possible
+  answer.
+
+  Three things are on the page deliberately:
+
+  * **Which account.** The whole point of account linking is that captures belong
+    to a person, so the person has to be able to see which person the browser
+    thinks they are before they agree.
+  * **What it will be allowed to do, in plain words.** Four sentences describing
+    the four routes in `EXTENSION_CAPTURE_CONTRACT`. Nobody consents to
+    `POST /api/intake/contact-captures`.
+  * **What it will not be allowed to do.** A consent screen that lists only
+    permissions teaches nobody where the boundary is, and "cannot reach Gmail" is
+    the sentence that makes the boundary legible.
+
+  What is deliberately absent: the backend URL, any credential, any key id, the
+  authorization code, the code challenge in human-readable framing, and any
+  instruction to copy or type anything. An ordinary user's whole part in this is
+  reading four sentences and pressing one button.
+
+  The hidden fields carry the request's own parameters through to the POST so the
+  button re-validates against exactly what the GET validated. The CSRF field is
+  inserted automatically at compile time (`app/core/auth/templating.py`).
+#}
+{% extends "base.html" %}
+{% block title %}Connect the capture extension{% endblock %}
+{% block content %}
+  <h1>Connect the capture extension</h1>
+
+  <p class="tight">This will connect the extension to your VMR account:</p>
+  <p class="identity">{{ account_email }}</p>
+
+  <p>It will be allowed to:</p>
+  <ul>
+    {% for permission in permissions %}
+      <li>{{ permission }}</li>
+    {% endfor %}
+  </ul>
+
+  <p>It will <strong>not</strong> be allowed to:</p>
+  <ul>
+    {% for exclusion in exclusions %}
+      <li>{{ exclusion }}</li>
+    {% endfor %}
+  </ul>
+
+  <form method="post" action="/extension/authorize">
+    <input type="hidden" name="extension_id" value="{{ extension_id }}">
+    <input type="hidden" name="installation_id" value="{{ installation_id }}">
+    <input type="hidden" name="code_challenge" value="{{ code_challenge }}">
+    <input type="hidden" name="code_challenge_method" value="{{ code_challenge_method }}">
+    <input type="hidden" name="state" value="{{ state }}">
+    <input type="hidden" name="redirect_uri" value="{{ redirect_uri }}">
+    <button class="button" type="submit">Connect extension</button>
+  </form>
+
+  <p class="note">
+    You can disconnect this extension at any time, from the extension's panel or
+    from VMR Outbound. Disconnecting takes effect immediately.
+  </p>
+{% endblock %}

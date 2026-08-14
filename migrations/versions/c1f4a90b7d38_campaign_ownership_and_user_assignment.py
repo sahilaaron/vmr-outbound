@@ -29,8 +29,22 @@ Two additive changes, and neither one guesses.
 Reversible with no data loss beyond the grants themselves, which is the only
 possible interpretation of removing the table.
 
+## Where this sits in the chain
+
+Written against ``b45732880eff`` and re-parented onto ``c2d81f4a6b93`` (extension
+account linking, PR #275) when this branch was reconciled with main. That is a
+change to *this* revision only — the merged one is untouched — and it is the
+right move rather than a merge revision because these two migrations were never
+published: they have never run anywhere, so nobody's ``alembic_version`` names
+them and no deployment can be mid-way through the old order.
+
+The two touch nothing in common. This one adds a column to ``campaigns`` and one
+new table; ``c2d81f4a6b93`` adds two extension tables and alters nothing. The
+re-parenting therefore states a sequence, not a dependency, and leaves the
+project with the single head it requires.
+
 Revision ID: c1f4a90b7d38
-Revises: b45732880eff
+Revises: c2d81f4a6b93
 """
 
 from __future__ import annotations
@@ -41,7 +55,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "c1f4a90b7d38"
-down_revision: str | Sequence[str] | None = "b45732880eff"
+down_revision: str | Sequence[str] | None = "c2d81f4a6b93"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

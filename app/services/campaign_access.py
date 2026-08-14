@@ -44,23 +44,37 @@ meaningful.
 
 The extension
 -------------
-A capture credential proves an *installation*, not a person: it carries no user
-id and no role. Account linking for the extension is being built on a separate
-branch, so this module deliberately does not guess. :func:`actor_from_request`
-resolves such a request to :data:`UNIDENTIFIED_EXTENSION` — an actor that is not
-an administrator and owns nothing — and the two extension-reachable campaign
-surfaces name that case explicitly rather than falling through it:
+There are two kinds of extension credential and they answer this module
+differently, which is the whole of the reconciliation with the account-linking
+slice (PR #275).
 
-* ``GET /api/campaigns`` keeps today's behaviour for a credential with no linked
-  user, because narrowing it to nothing would break the shipped extension, and
-  calls :func:`scope_campaign_statement` the moment one is present.
-* Filing a capture into a campaign calls :func:`may_access_campaign`, which
-  refuses as soon as a user is resolvable and is not entitled to it.
+An **account-linked token** (``vmre1``) names a VMR account. The authentication
+middleware verifies it, refuses it the moment the account is disabled or the link
+is revoked, and records the owner in the request scope under
+``EXTENSION_USER_ID_STATE_KEY``. It deliberately does **not** write
+``operator_role`` or ``operator_user_id`` for such a request, because those two
+keys are what ``require_admin`` and the operator surfaces read, and an extension
+token must never be able to assert an operator's authority anywhere outside the
+four routes of ``EXTENSION_CAPTURE_CONTRACT``.
 
-When the account-linking branch lands it has one thing to do here: put the
-resolved user id and role into the request scope the way the session middleware
-already does. Every rule above then applies to the extension with no further
-change.
+So :func:`actor_from_request` reads the extension key instead, and — when it is
+given a database session — resolves that account's *current* role and state from
+the ``users`` table on this request. Three consequences, each deliberate:
+
+* ``GET /api/campaigns`` returns exactly the campaigns the linked operator can
+  reach, because the same :func:`scope_campaign_statement` answers it.
+* Filing a capture into a campaign that operator cannot reach fails closed.
+* A linked **administrator** keeps global campaign visibility, because the role
+  is read from the account rather than from the token — and it grants nothing
+  outside campaign visibility, since ``require_admin`` reads a different key that
+  stays ``None`` for every extension request.
+
+A **legacy configured credential** (``vmrx1``) proves an installation and names
+no account at all. It is local-development only and verifies nothing in a hosted
+environment. It resolves to :data:`UNIDENTIFIED_EXTENSION` — not an
+administrator, owns nothing — and ``GET /api/campaigns`` keeps its historical
+unscoped answer for that case alone, because narrowing a local development path
+would break the extension in the one place it is still allowed to be used.
 """
 
 from __future__ import annotations
@@ -76,6 +90,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db as _get_db
+from app.core.auth.extension import EXTENSION_USER_ID_STATE_KEY
 from app.models.campaign import Campaign, CampaignContact, CampaignUserAssignment
 from app.models.enums import UserRole, UserState
 from app.models.user import User
@@ -147,8 +162,24 @@ UNIDENTIFIED_EXTENSION = CampaignActor(user_id=None, role=None, enforced=True)
 UNENFORCED = CampaignActor(user_id=None, role=None, enforced=False)
 
 
-def actor_from_request(request: Request) -> CampaignActor:
-    """Resolve the campaign actor for one request, from the request scope only."""
+def actor_from_request(request: Request, session: Session | None = None) -> CampaignActor:
+    """Resolve the campaign actor for one request.
+
+    The scope is the only input for a browser session: the middleware resolves
+    the account record on every authenticated request and writes the *current*
+    role there, so a demotion or a removed assignment applies to the very next
+    request rather than when a twelve-hour cookie expires.
+
+    ``session`` is optional and is used for one case: an account-linked
+    extension token, whose owner the middleware records under a different key
+    (see the module docstring for why it must not write ``operator_role``). Given
+    a session, the owner's role and state are read from the ``users`` table here,
+    on this request, for the same reason the middleware reads the account rather
+    than trusting a token. Without a session the actor is still *identified* —
+    it carries the user id — but never an administrator, which is the safe
+    direction: the caller sees the operator's own campaigns rather than
+    everybody's.
+    """
 
     state: dict[str, Any] = request.scope.get("state") or {}
     if not state.get("auth_enforced"):
@@ -170,7 +201,42 @@ def actor_from_request(request: Request) -> CampaignActor:
         except ValueError:  # pragma: no cover - middleware only writes valid values
             user_id = None
 
-    return CampaignActor(user_id=user_id, role=role, enforced=True)
+    if user_id is not None:
+        return CampaignActor(user_id=user_id, role=role, enforced=True)
+
+    return _extension_actor(request, state, session)
+
+
+def _extension_actor(
+    request: Request, state: dict[str, Any], session: Session | None
+) -> CampaignActor:
+    """The actor behind an account-linked extension token, if this is one.
+
+    Returns :data:`UNIDENTIFIED_EXTENSION` for a legacy ``vmrx1`` credential and
+    for anything else that reaches here, so the failure direction stays refusal.
+    """
+
+    raw_extension_user = state.get(EXTENSION_USER_ID_STATE_KEY)
+    if not isinstance(raw_extension_user, str) or not raw_extension_user:
+        return UNIDENTIFIED_EXTENSION
+    try:
+        linked_user_id = uuid.UUID(raw_extension_user)
+    except ValueError:  # pragma: no cover - middleware only writes valid values
+        return UNIDENTIFIED_EXTENSION
+
+    if session is None:
+        # Identified but never privileged. A caller with no session cannot read
+        # the role, and guessing ADMIN would be the one guess that widens access.
+        return CampaignActor(user_id=linked_user_id, role=None, enforced=True)
+
+    owner = session.get(User, linked_user_id)
+    if owner is None or owner.state is not UserState.ACTIVE:
+        # The middleware already refuses a token whose account is disabled or
+        # deleted, so this is a belt-and-braces read rather than the control. It
+        # costs one primary-key lookup and it means a race between the two reads
+        # resolves to "no access" instead of to the account's former authority.
+        return UNIDENTIFIED_EXTENSION
+    return CampaignActor(user_id=owner.id, role=owner.role, enforced=True)
 
 
 # ---------------------------------------------------------------------------
@@ -533,7 +599,7 @@ def require_campaign_path_access(request: Request, db: Session = Depends(_get_db
     raw_membership = params.get("campaign_contact_id")
     if raw is None and raw_membership is None:
         return
-    actor = actor_from_request(request)
+    actor = actor_from_request(request, db)
     if actor.is_admin:
         return
 

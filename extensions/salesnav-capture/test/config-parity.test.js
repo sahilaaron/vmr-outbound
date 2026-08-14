@@ -180,6 +180,49 @@ test("loopback is not treated as hosted, so a local send carries no credential",
   }
 });
 
+// --- the product-configured backend, and what linking needs -------------------
+//
+// The backend used to be something an operator typed. It is product
+// configuration now, so the default and the named deployment must be the same
+// thing: a default that drifts from the approved list is a default that cannot
+// be reached, and there is no longer a field to correct it in.
+
+test("the default backend IS the named hosted deployment", () => {
+  assert.equal(
+    constants.DEFAULT_PREFERENCES.backendBaseUrl,
+    constants.HOSTED_BACKEND_ORIGINS[0],
+    "the ordinary default must be an approved hosted deployment: nothing in the panel " +
+      "can change it, so a wrong value here is unrecoverable for the operator"
+  );
+  assert.equal(constants.DEFAULT_PREFERENCES.sendTarget, "backend");
+});
+
+test("the manifest declares the identity permission the account link needs", () => {
+  assert.ok(
+    (manifest.permissions || []).includes("identity"),
+    "chrome.identity.launchWebAuthFlow is the whole sign-in path; without this " +
+      "permission the extension cannot be linked to an account at all"
+  );
+  // And nothing else was widened while adding it.
+  assert.deepEqual(
+    [...(manifest.permissions || [])].sort(),
+    ["activeTab", "downloads", "identity", "scripting", "sidePanel", "storage"],
+    "the permission set must not grow beyond the identity permission"
+  );
+});
+
+test("the account-link endpoints live on the approved hosted origin", () => {
+  for (const path of Object.values(constants.ACCOUNT_LINK_PATHS)) {
+    const url = constants.HOSTED_BACKEND_ORIGINS[0] + path;
+    assert.equal(validatorAccepts(constants.HOSTED_BACKEND_ORIGINS[0]), true);
+    assert.equal(
+      perms.originPatternForUrl(url),
+      "https://" + new URL(url).hostname + "/*",
+      `${path} must be reachable under a declared host permission`
+    );
+  }
+});
+
 // --- the credential format the backend actually verifies ----------------------
 
 test("the credential pattern matches the scheme the backend parses", () => {

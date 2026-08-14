@@ -377,8 +377,14 @@ def list_campaigns(
     # moment an extension request carries a resolvable user, the actor stops
     # being unidentified and the same scoped statement below answers it. No line
     # of this handler changes when that lands.
-    campaign_actor = actor_from_request(request)
+    campaign_actor = actor_from_request(request, db)
     if extension_request and not campaign_actor.is_identified:
+        # A legacy `vmrx1` credential, which names an installation and no
+        # account. It is local-development only and verifies nothing hosted, so
+        # it keeps the historical unscoped answer rather than being narrowed to
+        # an empty list in the one place it is still allowed to be used. An
+        # account-linked `vmre1` token never reaches this branch: it is
+        # identified, and the scoped statement below answers it.
         campaign_actor = UNENFORCED
     overviews = campaigns.list_campaigns(db, actor=campaign_actor)
     rows = []
