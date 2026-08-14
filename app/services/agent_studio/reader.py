@@ -17,6 +17,7 @@ from app.services.agent_studio.extensions import (
     module_for,
 )
 from app.services.agents.registry import PIPELINE_ORDER
+from app.services.operations import settings as operational
 from app.services.workbench_agents.reader import PhaseTwoWorkbenchReader
 from app.services.workbench_agents.views import AgentCardView, ControlView, JobView
 
@@ -94,9 +95,14 @@ def load_studio(session: Session, *, campaign_id: uuid.UUID | None = None) -> Ag
             )
         )
     campaigns = tuple(session.scalars(select(Campaign).order_by(Campaign.name, Campaign.id)).all())
-    # Reads the flag list only. No query is issued against any non-Agent module's
-    # tables, so listing a module here cannot load, lease or touch its state.
-    modules = enabled_capability_modules(get_settings().features.enabled())
+    # Reads the effective flag list only — the administrator's settings, not the
+    # environment's defaults, so a module turned on from the Admin Configuration
+    # screen is listed here without a restart. No query is issued against any
+    # non-Agent module's tables, so listing a module cannot load, lease or touch
+    # its state.
+    modules = enabled_capability_modules(
+        operational.effective_flags(session, get_settings()).enabled()
+    )
     return AgentStudioView(
         agents=tuple(cards),
         campaigns=campaigns,

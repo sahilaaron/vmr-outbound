@@ -63,6 +63,7 @@ from app.services.company_intelligence.inputs import IntelligenceInputError
 from app.services.company_intelligence.producer import POLICY_VERSION
 from app.services.company_intelligence.runner import PRODUCER, PRODUCER_VERSION
 from app.services.imports import display
+from app.services.operations import settings as operational
 
 # Every state-changing route on this router is refused unless the request
 # carries the CSRF token bound to the caller's session. The check is declared
@@ -99,7 +100,9 @@ def _render(
     shared: dict[str, Any] = {
         "app_env": settings.app_env,
         "dry_run": settings.dry_run,
-        "features_enabled": settings.features.enabled(),
+        # The effective controls rather than the environment's defaults, so this
+        # shell agrees with what an administrator has switched on.
+        "features_enabled": operational.effective_flags(db, settings).enabled(),
         "local_env": settings.app_env.lower() == "local",
         "database_ok": True,
         "open_reviews": open_reviews,
@@ -537,7 +540,7 @@ def company_intelligence_backfill_advance(
         report = ci_backfill.advance(
             db,
             run=run,
-            feature_enabled=get_settings().features.company_intelligence,
+            feature_enabled=operational.enabled(db, "company_intelligence"),
             actor=OPERATOR_ACTOR,
         )
     except ci_backfill.BackfillError as exc:

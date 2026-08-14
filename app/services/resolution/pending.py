@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings, get_settings
 from app.models.company_domain_resolution import CompanyDomainResolution
 from app.models.linkedin_profile import LinkedInProfileSnapshot
+from app.services.operations import settings as operational
 from app.services.resolution import service as resolution_service
 from app.services.thinking.claude_cli import ClaudeCliThinker
 
@@ -50,8 +51,18 @@ class BackfillResult:
         return bool(self.considered)
 
 
-def _provider_access(settings: Settings) -> resolution_service.ProviderAccess:
-    usable = settings.features.salesnav_domain_enrichment and settings.has_logo_dev_key()
+def _provider_access(session: Session, settings: Settings) -> resolution_service.ProviderAccess:
+    """How logo.dev may be reached on this pass, or an access with no key.
+
+    ``session`` is here because whether the provider may be called is an
+    administrator's durable setting rather than an environment variable, so
+    answering the question means reading the database.
+    """
+
+    usable = (
+        operational.enabled(session, "salesnav_domain_enrichment", settings)
+        and settings.has_logo_dev_key()
+    )
     return resolution_service.ProviderAccess(
         api_key=settings.logo_dev_api_key if usable else None,
         search_url=settings.logo_dev_search_url,
@@ -60,7 +71,7 @@ def _provider_access(settings: Settings) -> resolution_service.ProviderAccess:
     )
 
 
-def _model_access(settings: Settings) -> resolution_service.ModelAccess:
+def _model_access(session: Session, settings: Settings) -> resolution_service.ModelAccess:
     """The model fallback, if it is switched on.
 
     Available here and deliberately *not* at intake. A model call with web search
@@ -68,9 +79,12 @@ def _model_access(settings: Settings) -> resolution_service.ModelAccess:
     inside an HTTP request can cost a whole submission, and it bounds even the
     fast provider call to a share of its budget. This pass has no request to
     overrun, which is the entire reason it exists.
+
+    ``session`` is here because the switch is an administrator's durable setting
+    rather than an environment variable, so reading it needs the database.
     """
 
-    if not settings.features.model_company_domain_lookup:
+    if not operational.enabled(session, "model_company_domain_lookup", settings):
         return resolution_service.ModelAccess()
     return resolution_service.ModelAccess(
         thinker_factory=lambda: ClaudeCliThinker(settings=settings),
@@ -80,18 +94,21 @@ def _model_access(settings: Settings) -> resolution_service.ModelAccess:
 
 @dataclass(frozen=True)
 class LookupBlocker:
-    """One unmet precondition: what it means, and the exact line to add.
+    """One unmet precondition: what it means, and where to go and fix it.
 
     The setting is a separate field rather than a phrase inside the sentence so a
-    page can render it as something to copy. That matters more than it sounds: an
-    environment variable buried in prose wraps mid-word in a table cell, and
-    ``FEATURES__SALESNAV_DOMAIN_ENRI`` / ``CHMENT`` across two lines is a name
-    nobody can retype correctly.
+    page can render it as the one thing to act on. It used to be an ``.env`` line
+    because that was genuinely the only way to change any of these; every switch
+    among them is an operator control now, so it names the control and the screen
+    it lives on instead of telling an administrator to open a shell. The one
+    exception is the logo.dev credential, which really is environment-only, and
+    there the variable name is still the actionable thing.
     """
 
     #: Why this stops resolution, in the operator's terms.
     message: str
-    #: The .env line that fixes it, verbatim.
+    #: What to change, and where: a control on the Admin Configuration screen, or
+    #: for a deployment credential the environment variable itself.
     setting: str
 
 
@@ -111,8 +128,9 @@ class LookupReadiness:
     is fine; it was never invited to run.
 
     So the preconditions get named, in the order they have to be fixed, in the
-    operator's own vocabulary — including the environment variable, because "the
-    promotion flag" is not something anyone can act on without knowing its name.
+    operator's own vocabulary — including where each one is changed, because "the
+    promotion flag" is not something anyone can act on without knowing what it is
+    called on the screen that owns it.
     """
 
     #: True when a logo.dev lookup would actually be attempted for a new capture.
@@ -128,11 +146,27 @@ class LookupReadiness:
         return self.provider_ready
 
 
-def lookup_readiness(settings: Settings | None = None) -> LookupReadiness:
-    """Why automatic domain resolution would or would not run right now."""
+def _control_location(key: str) -> str:
+    """Where an operator turns this control on, under the name the screen uses.
+
+    Read from the control registry rather than written out here so the two cannot
+    drift: an operator told to look for a label that no longer exists is back to
+    guessing.
+    """
+
+    return f"{operational.CONTROLS_BY_KEY[key].label} — Admin → Configuration"
+
+
+def lookup_readiness(session: Session, settings: Settings | None = None) -> LookupReadiness:
+    """Why automatic domain resolution would or would not run right now.
+
+    ``session`` is here because three of the four preconditions are now an
+    administrator's durable settings rather than environment variables, and
+    reading what is actually in force needs the database.
+    """
 
     settings = settings or get_settings()
-    features = settings.features
+    features = operational.effective_flags(session, settings)
     blockers: list[LookupBlocker] = []
 
     if not features.contact_capture_promotion:
@@ -141,7 +175,7 @@ def lookup_readiness(settings: Settings | None = None) -> LookupReadiness:
                 message=(
                     "Capture promotion is switched off, so no capture is resolved automatically."
                 ),
-                setting="FEATURES__CONTACT_CAPTURE_PROMOTION=true",
+                setting=_control_location("contact_capture_promotion"),
             )
         )
     if not features.automatic_company_domain_resolution:
@@ -151,14 +185,14 @@ def lookup_readiness(settings: Settings | None = None) -> LookupReadiness:
                     "Automatic company-domain resolution is switched off, so a capture "
                     "waits for you to press resolve."
                 ),
-                setting="FEATURES__AUTOMATIC_COMPANY_DOMAIN_RESOLUTION=true",
+                setting=_control_location("automatic_company_domain_resolution"),
             )
         )
     if not features.salesnav_domain_enrichment:
         blockers.append(
             LookupBlocker(
                 message="The logo.dev lookup is switched off, so no provider is ever asked.",
-                setting="FEATURES__SALESNAV_DOMAIN_ENRICHMENT=true",
+                setting=_control_location("salesnav_domain_enrichment"),
             )
         )
     if not settings.has_logo_dev_key():
@@ -170,6 +204,8 @@ def lookup_readiness(settings: Settings | None = None) -> LookupReadiness:
                     "resolvable once a key exists rather than being frozen at a decision "
                     "nobody made."
                 ),
+                # Genuinely environment-only: a provider credential is a
+                # deployment secret and no screen can set it.
                 setting="LOGO_DEV_API_KEY=...",
             )
         )
@@ -183,7 +219,7 @@ def lookup_readiness(settings: Settings | None = None) -> LookupReadiness:
                     "The model fallback is switched off, so companies logo.dev cannot "
                     "match stay unresolved rather than being searched for."
                 ),
-                setting="FEATURES__MODEL_COMPANY_DOMAIN_LOOKUP=true",
+                setting=_control_location("model_company_domain_lookup"),
             )
         )
     return LookupReadiness(
@@ -233,14 +269,12 @@ def resolve_pending(
     """
 
     settings = settings or get_settings()
-    if not (
-        settings.features.contact_capture_promotion
-        and settings.features.automatic_company_domain_resolution
-    ):
+    features = operational.effective_flags(session, settings)
+    if not (features.contact_capture_promotion and features.automatic_company_domain_resolution):
         return BackfillResult()
 
-    access = _provider_access(settings)
-    model = _model_access(settings)
+    access = _provider_access(session, settings)
+    model = _model_access(session, settings)
     # Same rule as intake: without a provider the policy could only conclude "the
     # lookup was not run", and recording that non-decision would permanently stop
     # the capture resolving automatically later.

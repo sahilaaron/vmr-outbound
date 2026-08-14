@@ -5,7 +5,7 @@
 <div class="page-head">
   <div>
     <h1>Configuration</h1>
-    <div class="sub">The effective operating configuration: feature switches, Agent controls, Campaign overrides and the active immutable policy versions. This page is read-only; every change goes through its authoritative surface, linked in place.</div>
+    <div class="sub">The effective operating configuration. Ordinary product controls are changed here; deployment and security settings are shown read-only because they belong to the environment. Agent controls, Campaign overrides and immutable policy versions keep their own authoritative surfaces, linked in place.</div>
   </div>
 </div>
 
@@ -42,7 +42,7 @@
 </div>
 
 <div class="card">
-  <div class="card-head"><h2>Agent/Stage controls (global)</h2><span class="hint">changes go through the legacy monitor's authoritative command surface</span></div>
+  <div class="card-head"><h2>Agent/Stage controls (global)</h2><span class="hint">a different layer: which Agents may run, per deployment and per campaign. Changed on the Agent monitor.</span></div>
   <div class="card-body tight">
     <div class="table-wrap">
     <table class="data">
@@ -114,12 +114,137 @@
   </div>
 </div>
 
+{# ---------------------------------------------------------------------------
+   Operator product controls. This is the half that used to require SSH, an edit
+   to /etc/vmr/vmr.env and a restart, which Hosted Beta UAT found the hard way:
+   the Agent controls were on, Research was paused with `feature_disabled`, and
+   nothing on any screen could change it.
+
+   Each control shows three things separately, because the effective answer is a
+   conjunction and an operator has to be able to see which part is missing:
+   whether the deployment *can* (a provider credential, a prerequisite control),
+   what the administrator asked for, and what is actually in force.
+--------------------------------------------------------------------------- #}
+{% for group, controls in operations_groups %}
 <div class="card">
-  <div class="card-head"><h2>Feature switches</h2><span class="hint">all default off; set via environment, not from this page</span></div>
+  <div class="card-head">
+    <h2>{{ group }}</h2>
+    <span class="hint">operator controls — changed here, stored in the database, audited</span>
+  </div>
   <div class="card-body">
+    <table class="tbl">
+      <thead>
+        <tr><th>Control</th><th>Deployment capability</th><th>Effective</th><th>Change</th></tr>
+      </thead>
+      <tbody>
+        {% for control in controls %}
+        <tr>
+          <td>
+            <b>{{ control.label | neutralize }}</b>
+            <div class="muted-note">{{ control.summary | neutralize }}</div>
+            {% if control.from_deployment_default %}
+            <div class="muted-note">No decision recorded yet — showing the deployment default.</div>
+            {% else %}
+            <div class="muted-note">
+              Set {{ control.updated_at | ago }}
+              {%- if control.updated_by %} by {{ control.updated_by | neutralize }}{% endif %}
+              {%- if control.reason %} · {{ control.reason | neutralize }}{% endif %}
+            </div>
+            {% endif %}
+          </td>
+          <td>
+            {% if control.capability.available %}
+              <span class="badge ok">available</span>
+            {% else %}
+              <span class="badge err">unavailable</span>
+              <div class="muted-note">{{ control.capability.reason | neutralize }}</div>
+            {% endif %}
+            {% for name, present in control.capability.evidence %}
+            <div class="muted-note mono">{{ name | neutralize }}: {{ "yes" if present else "no" }}</div>
+            {% endfor %}
+          </td>
+          <td>
+            {% if control.effective %}
+              <span class="badge ok">ON</span>
+            {% else %}
+              <span class="badge">off</span>
+            {% endif %}
+            {% if control.requested and not control.effective %}
+            <div class="muted-note">Requested on, but held off by the deployment capability above.</div>
+            {% endif %}
+          </td>
+          <td>
+            {% if control.effective %}
+            <form class="inline" method="post" action="/admin/configuration/controls/{{ control.key }}">
+              <input type="hidden" name="enabled" value="false">
+              <input type="hidden" name="expected_version" value="{{ control.version if control.version is not none else '' }}">
+              <label class="sr-only" for="off-{{ control.key }}">Why {{ control.label }} is being switched off</label>
+              <input id="off-{{ control.key }}" name="reason" type="text" placeholder="Why (recorded)" maxlength="500">
+              <button class="btn small warn" type="submit">Switch off</button>
+            </form>
+            {% elif control.capability.available %}
+            <form class="inline" method="post" action="/admin/configuration/controls/{{ control.key }}">
+              <input type="hidden" name="enabled" value="true">
+              <input type="hidden" name="expected_version" value="{{ control.version if control.version is not none else '' }}">
+              <label class="sr-only" for="on-{{ control.key }}">Why {{ control.label }} is being switched on</label>
+              <input id="on-{{ control.key }}" name="reason" type="text" placeholder="Why (recorded)" maxlength="500">
+              <button class="btn small primary" type="submit">Switch on</button>
+            </form>
+            {% else %}
+            <span class="muted-note">Cannot be enabled until the capability above is satisfied.</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endfor %}
+
+<div class="card">
+  <div class="card-head">
+    <h2>Deployment settings</h2>
+    <span class="hint">environment only — read-only here, by design</span>
+  </div>
+  <div class="card-body">
+    <p class="muted-note">
+      These are deployment or security boundaries, not product operation. Several are
+      enforced by validation that runs once before the service starts serving, so a
+      switch that could change them at runtime would walk straight past the check that
+      exists to refuse exactly that state. Secrets — database URLs, OAuth client
+      secrets, provider API keys, encryption and session keys — are never shown here at
+      all, only whether they are configured.
+    </p>
+    <table class="tbl">
+      <thead><tr><th>Setting</th><th>State</th><th>Why it is not editable here</th></tr></thead>
+      <tbody>
+        {% for row in operations.deployment_only %}
+        <tr>
+          <td class="mono">{{ row.key | neutralize }}</td>
+          <td>{% if row.value %}<span class="badge ok">on</span>{% else %}<span class="badge">off</span>{% endif %}</td>
+          <td class="muted-note">{{ row.why | neutralize }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Declared, not consulted</h2>
+    <span class="hint">switches that exist in configuration and that nothing reads</span>
+  </div>
+  <div class="card-body">
+    <p class="muted-note">
+      Listed rather than hidden, so this page does not imply that the set of switches is
+      the set of behaviours. Changing any of these changes nothing; they are not offered
+      as controls for that reason.
+    </p>
     <div class="chiprow">
-      {% for name, enabled in view.flags %}
-      <span class="chip {{ 'on' if enabled else '' }}">{{ (name) | neutralize }}</span>
+      {% for name in operations.declared_not_consulted %}
+      <span class="chip">{{ name | neutralize }}</span>
       {% endfor %}
     </div>
   </div>

@@ -33,6 +33,7 @@ from app.services.agents.adapters import (
 )
 from app.services.agents.controls import CAMPAIGN_EXECUTION_SOURCE, effective_control
 from app.services.agents.registry import get_agent_spec
+from app.services.audit import record_audit_event
 from app.services.campaign_contacts import refresh_eligibility
 from app.services.insights.lineage import pins_from_ancestor
 from app.services.pipeline import (
@@ -524,6 +525,103 @@ def schedule_next(
             actor=actor,
         )
     return job
+
+
+#: The pause classification an Agent writes when a *deployment or operational*
+#: switch refused it, as opposed to an Agent control or a domain block. The
+#: Research adapter raises it as ``AgentBlocked("feature_disabled", ...)``.
+FEATURE_PAUSE_CODES: frozenset[str] = frozenset({"feature_disabled"})
+
+
+def reclaim_feature_paused_jobs(
+    session: Session,
+    *,
+    agent_ids: Iterable[AgentIdentifier],
+    actor: str = "system",
+) -> int:
+    """Make work that a switched-off feature paused claimable again.
+
+    Turning a product control back on has to answer the question the UAT run
+    asked: what happens to the jobs that were already refused while it was off?
+
+    They were paused, not failed and not skipped, which is what makes this
+    recoverable at all — ``jobs.mark_paused`` keeps the job, its attempt count
+    and its stage, and ``PAUSED`` has a transition out of it. This function is
+    the supported way back, and it is deliberately the same mechanism
+    :func:`reconcile_agent_control` already uses when an Agent control is
+    re-enabled: ``jobs.resume_paused`` with an explicit set of pause
+    classifications the caller owns.
+
+    Owning the classification is the safety property. A job paused because an
+    operator paused the membership, because a suppression fired, because the
+    Agent control is off, or because the campaign's execution switch is off is
+    **not** touched here — those pauses have their own causes and their own
+    resolutions, and a feature coming back on says nothing about any of them.
+    Only ``feature_disabled`` is resumed.
+
+    Nothing is skipped and nothing is terminally consumed: a resumed job goes
+    back to ``PENDING`` with ``next_run_at`` now, and the stage it belongs to is
+    scheduled again through the ordinary path, where every gate that refused it
+    the first time gets to refuse it again if it still applies.
+    """
+
+    wanted = tuple(agent_ids)
+    if not wanted:
+        return 0
+
+    now = datetime.now(UTC)
+    resumed = 0
+    paused_jobs = list(
+        locking.lock_agent_jobs(
+            session,
+            select(AgentJob).where(
+                AgentJob.agent_id.in_(wanted),
+                AgentJob.status == AgentJobStatus.PAUSED,
+                AgentJob.error_class.in_(FEATURE_PAUSE_CODES),
+            ),
+        )
+    )
+    for job in paused_jobs:
+        before = job.status
+        jobs.resume_paused(session, job, reason_codes=FEATURE_PAUSE_CODES, now=now)
+        if job.status is AgentJobStatus.PENDING and before is AgentJobStatus.PAUSED:
+            resumed += 1
+            membership = session.get(CampaignContact, job.campaign_contact_id)
+            if membership is not None:
+                # The stage is BLOCKED after a feature refusal, and BLOCKED is
+                # not a state a worker picks work up from. WAITING is the one
+                # legal move out of it that means "queued again", so the resumed
+                # job is reachable rather than a row that looks claimable and
+                # never runs. It is a restoration of eligibility, and the event
+                # says exactly that.
+                transition_stage(
+                    session,
+                    membership=membership,
+                    agent_id=job.agent_id,
+                    target=PipelineStageStatus.WAITING,
+                    event_type=PipelineEventType.ELIGIBILITY_RESTORED,
+                    actor=actor,
+                    job=job,
+                    reason_code="feature_enabled_reclaim",
+                    reason_detail=(
+                        "The operational setting that refused this stage is on again, so "
+                        "the paused work was returned to the queue."
+                    ),
+                )
+    if resumed:
+        session.flush()
+        record_audit_event(
+            session,
+            actor=actor,
+            action="agent_job.feature_paused_reclaimed",
+            entity_type="agent",
+            entity_id=",".join(sorted(agent.value for agent in wanted)),
+            previous_state="paused",
+            new_state="queued",
+            reason="an operational setting that had refused this work was enabled",
+            context={"resumed": resumed},
+        )
+    return resumed
 
 
 def reconcile_agent_control(

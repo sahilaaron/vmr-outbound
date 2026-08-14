@@ -24,6 +24,7 @@ from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
+from app.core.features import FeatureFlags
 from app.models.agent import AgentControl, CampaignAgentOverride
 from app.models.audit_event import AuditEvent
 from app.models.campaign import Campaign, CampaignContact
@@ -67,6 +68,7 @@ from app.services.agents.jobs import public_status_for
 from app.services.agents.registry import AGENT_SPECS, PIPELINE_ORDER
 from app.services.companies import detail as company_detail_service
 from app.services.company_intelligence.handoff import RESEARCH_HANDOFF_ACTOR
+from app.services.operations import settings as operational
 from app.services.personalization import policy as personalization_policy
 from app.services.research.fallback import FALLBACK_WORKER_NAME
 from app.services.research.workers.website import WORKER_NAME as WEBSITE_WORKER_NAME
@@ -305,6 +307,18 @@ class AdminWorkbenchReader:
 
     # -- shared helpers ------------------------------------------------------
 
+    def _features(self) -> FeatureFlags:
+        """What is actually switched on, not what the environment defaulted to.
+
+        The Workbench reports the state an operator is looking at, so it has to
+        read the same effective layer the services do: an administrator who turns
+        a control on from the Admin Configuration screen must see this page agree
+        with them immediately. One SELECT per call, over the session this reader
+        already holds.
+        """
+
+        return operational.effective_flags(self._session, self._settings)
+
     def _campaign_names(self) -> dict[uuid.UUID, str]:
         return {
             campaign_id: name
@@ -446,7 +460,8 @@ class AdminWorkbenchReader:
 
         review_awaiting: int | None = None
         recent_drafts: int | None = None
-        if self._settings.features.drafting or self._settings.features.email_generation:
+        features = self._features()
+        if features.drafting or features.email_generation:
             review_awaiting = drafts_service.queue_counts(self._session).awaiting
         drafts_7d = self._session.scalar(
             select(func.count(DraftVersion.id)).where(
@@ -545,7 +560,7 @@ class AdminWorkbenchReader:
             attention=tuple(attention),
             recent_activity=phase2.recent_activity,
             fallback_runs=fallback_runs,
-            fallback_available=self._settings.features.research_claude_fallback,
+            fallback_available=features.research_claude_fallback,
         )
 
     def _fallback_runs(self, *, limit: int) -> tuple[FallbackRunRow, ...]:
@@ -855,7 +870,7 @@ class AdminWorkbenchReader:
                 job.agent_id is AgentIdentifier.RESEARCH for job in execution.jobs
             ),
             sequences=self._sequence_diagnoses(campaign_contact_id),
-            sequences_enabled=self._settings.features.email_sequences,
+            sequences_enabled=operational.enabled(self._session, "email_sequences", self._settings),
         )
 
     def _sequence_diagnoses(
@@ -1862,6 +1877,9 @@ class AdminWorkbenchReader:
             )
             or 0
         )
+        intelligence_available = operational.enabled(
+            self._session, "company_intelligence", self._settings
+        )
 
         return AdminCompanyView(
             company_id=company.id,
@@ -1882,11 +1900,9 @@ class AdminWorkbenchReader:
             dossiers=dossiers,
             research_jobs=research_jobs,
             conflicts=tuple(str(conflict.kind.value) for conflict in detail.conflicts),
-            intelligence_available=self._settings.features.company_intelligence,
+            intelligence_available=intelligence_available,
             intelligence_href=(
-                f"/admin/companies/{company.id}/intelligence"
-                if self._settings.features.company_intelligence
-                else None
+                f"/admin/companies/{company.id}/intelligence" if intelligence_available else None
             ),
             intelligence_job=intelligence_job,
             intelligence_version_count=intelligence_versions,
@@ -1939,7 +1955,8 @@ class AdminWorkbenchReader:
     # -- review --------------------------------------------------------------
 
     def review(self, *, view: str = "awaiting") -> ReviewIndexView:
-        available = self._settings.features.drafting or self._settings.features.email_generation
+        features = self._features()
+        available = features.drafting or features.email_generation
         if not available:
             available = bool(self._session.scalar(select(func.count(DraftVersion.id))))
         if not available:
@@ -2027,7 +2044,7 @@ class AdminWorkbenchReader:
             return entry.attempted_at, entry.result if failed else None
 
         settings = self._settings
-        features = settings.features
+        features = self._features()
         descriptors: list[ProviderStatusView] = []
 
         claude_features = tuple(
@@ -2192,7 +2209,7 @@ class AdminWorkbenchReader:
         )
 
         fallback_config: dict[str, Any] | None = None
-        if settings.features.research_claude_fallback:
+        if self._features().research_claude_fallback:
             fallback_config = {
                 "timeout_seconds": settings.research_claude_fallback_timeout_seconds,
                 "max_sources": settings.research_claude_fallback_max_sources,
@@ -2322,7 +2339,7 @@ class AdminWorkbenchReader:
             stale_leases=stale,
             oldest_open_job_at=oldest_open,
             audit_tail=audit_tail,
-            features_enabled=tuple(self._settings.features.enabled()),
+            features_enabled=tuple(self._features().enabled()),
             job_search_result=job_search_result,
             job_search_query=job_query,
             job_search_error=job_search_error,

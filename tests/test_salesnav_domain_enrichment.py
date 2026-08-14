@@ -529,9 +529,19 @@ def test_web_full_flow_no_contacts_before_confirm(
     assert done.contacts_created == 3
 
 
-def test_web_lookup_without_key_reports_not_configured(
+def test_web_lookup_without_key_is_refused_before_any_call(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A missing credential stops the lookup and says so, rather than half-running it.
+
+    The refusal moved. logo.dev domain lookup is an operator control now, and a
+    control whose provider credential is absent cannot be on — so the request is
+    turned away by the control itself instead of by the key check behind it. The
+    two things this test has always been about are unchanged: the operator is
+    told, in a sentence, and no company is left holding a lookup that never
+    happened.
+    """
+
     monkeypatch.setenv("APP_ENV", "local")
     monkeypatch.setenv("FEATURES__WORKBENCH", "true")
     monkeypatch.setenv("FEATURES__CSV_IMPORT", "true")
@@ -551,10 +561,7 @@ def test_web_lookup_without_key_reports_not_configured(
         with TestClient(app) as c:
             resp = c.post(f"/imports/{batch.id}/enrich/lookup", follow_redirects=False)
             assert resp.status_code == 303
-            assert (
-                "not+configured" in resp.headers["location"]
-                or "LOGO_DEV_API_KEY" in (resp.headers["location"])
-            )
+            assert "enrichment+is+not+enabled" in resp.headers["location"]
         # No lookup ran: the company stays NOT_STARTED.
         recs = db_session.scalars(select(SalesNavCompanyEnrichment)).all()
         assert all(r.lookup_status is EnrichmentLookupStatus.NOT_STARTED for r in recs)

@@ -34,6 +34,7 @@ from app.core.config import Settings, get_settings
 from app.models.email_evidence import ExactEmailVerification
 from app.models.usage_ledger import UsageLedgerEntry
 from app.services.imports.normalization import is_valid_email, normalize_email
+from app.services.operations import settings as operational
 from app.services.verification import queue as jobs
 from app.services.verification import service
 from app.services.verification.policy import VerificationPolicy, get_policy
@@ -144,8 +145,11 @@ def run_live_smoke(
 
     settings = settings or get_settings()
 
-    # 1) The verification feature must be deliberately enabled.
-    if not settings.features.millionverifier:
+    # 1) The verification feature must be deliberately enabled. The effective
+    # control, not the environment's default: an administrator enabling
+    # MillionVerifier from the Admin Configuration screen has made exactly the
+    # deliberate decision this check is asking for.
+    if not operational.enabled(session, "millionverifier", settings):
         raise LiveSmokeError(
             "verification feature is disabled; set FEATURES__MILLIONVERIFIER=true "
             "(local .env) and restart before running the live smoke test"

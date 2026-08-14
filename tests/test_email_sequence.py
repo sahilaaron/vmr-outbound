@@ -1278,19 +1278,23 @@ def test_sequence_mode_requires_both_the_flag_and_the_campaign_opt_in(
     campaign = scenario[0]
 
     get_settings.cache_clear()
-    assert sequence_mode_enabled(get_settings(), campaign) is False, "flag off"
+    assert sequence_mode_enabled(db_session, get_settings(), campaign) is False, "flag off"
 
     monkeypatch.setenv("FEATURES__EMAIL_SEQUENCES", "true")
     get_settings.cache_clear()
-    assert sequence_mode_enabled(get_settings(), campaign) is True
+    assert sequence_mode_enabled(db_session, get_settings(), campaign) is True
 
     campaign.cadence_config = {"sequence": {"enabled": False}}
     db_session.flush()
-    assert sequence_mode_enabled(get_settings(), campaign) is False, "campaign opted out"
+    assert sequence_mode_enabled(db_session, get_settings(), campaign) is False, (
+        "campaign opted out"
+    )
 
     campaign.cadence_config = None
     db_session.flush()
-    assert sequence_mode_enabled(get_settings(), campaign) is False, "campaign never opted in"
+    assert sequence_mode_enabled(db_session, get_settings(), campaign) is False, (
+        "campaign never opted in"
+    )
     get_settings.cache_clear()
 
 

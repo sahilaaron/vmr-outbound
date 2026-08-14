@@ -48,6 +48,7 @@ from app.services.company_intelligence import inputs as inputs_module
 from app.services.company_intelligence import jobs as jobs_module
 from app.services.company_intelligence import producer as producer_module
 from app.services.company_intelligence.inputs import IntelligenceInputError
+from app.services.operations import settings as operational
 
 #: Recorded as ``requested_by`` on every automatically enqueued job, so the
 #: queue, the audit trail and the Workbench can tell the automatic handoff from
@@ -100,7 +101,10 @@ def enqueue_after_research(
     """
 
     resolved = settings or get_settings()
-    if not resolved.features.company_intelligence:
+    # The effective control rather than the environment's default, so that
+    # turning Company Intelligence on takes effect for the next dossier committed
+    # instead of the next deployment.
+    if not operational.enabled(session, "company_intelligence", resolved):
         return skipped(
             OUTCOME_FEATURE_DISABLED,
             "Company Intelligence is switched off; nothing was queued.",
