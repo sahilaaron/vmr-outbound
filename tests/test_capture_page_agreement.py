@@ -159,8 +159,8 @@ def test_an_unattempted_lookup_says_which_switch_is_missing(
 
     Four unrelated preconditions produce it, none of them visible anywhere, and a
     queue silently piling up behind an unset flag reads as a broken pipeline. The
-    page now names what is missing — including the variable, because "the lookup
-    flag" is not something anyone can act on.
+    page now names what is missing — including where to change it, because "the
+    lookup flag" is not something anyone can act on.
     """
 
     snapshot = capture_factory.salesnav_capture(db_session, company_name="QuantHealth")
@@ -171,7 +171,11 @@ def test_an_unattempted_lookup_says_which_switch_is_missing(
     assert "not_started" in body
     assert "Nothing has been looked up for this company yet" in body
     assert "configuration state, not a result" in body
-    # The .env line, verbatim and unbroken — this is the one thing on the panel the
-    # reader has to reproduce exactly.
-    assert "FEATURES__SALESNAV_DOMAIN_ENRICHMENT=true" in body
+    # Where the switch actually lives, under the name the screen shows it under.
+    # These are operator controls now, so the panel points at the Admin
+    # Configuration screen rather than at an .env line nobody can edit here.
+    assert "logo.dev domain lookup — Admin → Configuration" in body
+    # The one precondition that is genuinely a deployment secret still names its
+    # variable, verbatim and unbroken: it is the thing the reader has to
+    # reproduce exactly, and no screen can set it.
     assert "LOGO_DEV_API_KEY" in body

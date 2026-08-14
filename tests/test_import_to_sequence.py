@@ -583,7 +583,7 @@ def test_an_imported_contact_with_sequences_off_keeps_its_import_truth(
 
     campaign, contact, membership, _policy, _result = imported
     get_settings.cache_clear()
-    assert sequence_mode_enabled(get_settings(), campaign) is False
+    assert sequence_mode_enabled(db_session, get_settings(), campaign) is False
 
     # No sequence row exists on any path.
     assert db_session.scalar(select(func.count(EmailSequence.id))) == 0

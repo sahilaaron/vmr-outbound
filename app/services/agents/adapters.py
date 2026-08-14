@@ -38,6 +38,7 @@ from app.services.insights import employee_size
 from app.services.insights import evidence as insights_evidence
 from app.services.insights import lineage as insights_lineage
 from app.services.insights.evidence import InsightError
+from app.services.operations import settings as operational
 from app.services.personalization import generation as personalization_generation
 from app.services.personalization import policy as personalization_policy
 from app.services.personalization import sequence as sequence_generation
@@ -577,7 +578,12 @@ class ResearchAgentAdapter:
         from app.services.research.workers import WorkerNotRegistered, build_workers
 
         settings = get_settings()
-        if not settings.features.company_research:
+        # The *effective* setting, not the environment's. An administrator turns
+        # Company research on from the Admin Configuration screen and the next
+        # job sees it; the previous read went straight to `FEATURES__` and made
+        # the switch a deploy. Jobs already paused here are returned to the queue
+        # by `orchestrator.reclaim_feature_paused_jobs` when it is turned on.
+        if not operational.enabled(context.session, "company_research", settings):
             raise AgentBlocked(
                 "feature_disabled",
                 "Company research is switched off for this deployment.",
@@ -650,7 +656,7 @@ class ResearchAgentAdapter:
         switching one on is a deployment decision.
         """
 
-        if not settings.features.research_claude_fallback:
+        if not operational.enabled(context.session, "research_claude_fallback", settings):
             return None, (
                 "The Claude research fallback is switched off for this deployment "
                 "(FEATURES__RESEARCH_CLAUDE_FALLBACK)."
@@ -1348,7 +1354,7 @@ class PersonalizationAgentAdapter:
             )
         settings = get_settings()
         thinker = self._thinker_factory(settings)
-        if sequence_mode_enabled(settings, context.campaign):
+        if sequence_mode_enabled(context.session, settings, context.campaign):
             return self._execute_sequence(context, policy=policy, thinker=thinker)
         try:
             generated = personalization_generation.generate(
@@ -1566,16 +1572,20 @@ class PersonalizationAgentAdapter:
         )
 
 
-def sequence_mode_enabled(settings: Settings, campaign: Campaign) -> bool:
+def sequence_mode_enabled(session: Session, settings: Settings, campaign: Campaign) -> bool:
     """Whether this Campaign Contact gets a sequence rather than a single draft.
 
-    Two switches, both required. The deployment flag decides whether the feature
-    exists at all; the Campaign opt-in decides whether *this* Campaign uses it.
-    Requiring both is what stops enabling the feature from silently changing
-    what every existing Campaign produces.
+    Two switches, both required. The operational setting decides whether the
+    feature is in use at all; the Campaign opt-in decides whether *this* Campaign
+    uses it. Requiring both is what stops turning the feature on from silently
+    changing what every existing Campaign produces.
+
+    ``session`` is here because the first of those switches is now an
+    administrator's durable setting rather than an environment variable, and
+    reading it needs the database.
     """
 
-    return settings.features.email_sequences and campaign_opted_in(campaign)
+    return operational.enabled(session, "email_sequences", settings) and campaign_opted_in(campaign)
 
 
 #: The adapter that runs for each Agent, unless a caller passes its own.

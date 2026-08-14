@@ -35,6 +35,7 @@ from app.models.campaign import Campaign
 from app.models.enums import SellerRecordState
 from app.models.seller_knowledge import CampaignOffering, SellerOffering
 from app.services.audit import record_audit_event
+from app.services.campaign_access import CampaignActor, scope_campaign_statement
 from app.services.seller.common import OPERATOR_ACTOR, SellerKnowledgeError
 
 
@@ -56,17 +57,26 @@ def offerings_for_campaign(session: Session, campaign_id: uuid.UUID) -> list[Sel
     )
 
 
-def campaigns_for_offering(session: Session, offering_id: uuid.UUID) -> list[Campaign]:
-    """Return every campaign that concerns an offering."""
+def campaigns_for_offering(
+    session: Session, offering_id: uuid.UUID, *, actor: CampaignActor
+) -> list[Campaign]:
+    """Every campaign that concerns an offering **and that ``actor`` may see**.
 
-    return list(
-        session.scalars(
-            select(Campaign)
-            .join(CampaignOffering, CampaignOffering.campaign_id == Campaign.id)
-            .where(CampaignOffering.offering_id == offering_id)
-            .order_by(Campaign.created_at.desc())
-        ).all()
+    An offering is seller knowledge and is not campaign-scoped, but the list of
+    campaigns using it is a list of campaigns, so it is scoped like every other
+    one. ``actor`` is required for the reason
+    :func:`app.services.campaigns.list_campaigns` gives: a default here would put
+    campaign names on a page nobody scoped.
+    """
+
+    statement = scope_campaign_statement(
+        select(Campaign)
+        .join(CampaignOffering, CampaignOffering.campaign_id == Campaign.id)
+        .where(CampaignOffering.offering_id == offering_id)
+        .order_by(Campaign.created_at.desc()),
+        actor,
     )
+    return list(session.scalars(statement).all())
 
 
 def associate(

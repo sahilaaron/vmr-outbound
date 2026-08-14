@@ -61,6 +61,30 @@
           </div>
         </div>
         {% endif %}
+        <div class="v2-field">
+          <b>Who can use this campaign</b>
+          <div class="v2-hint">
+            {% if access_owner %}
+            Created by <span class="m">{{ access_owner.email | neutralize }}</span>.
+            {% else %}
+            No recorded creator — administrators can open it, and anybody else needs
+            an assignment.
+            {% endif %}
+            {% set assignees = access_people | rejectattr('is_creator') | list %}
+            {% if assignees %}
+            Assigned to
+            {% for person in assignees %}<span class="m">{{ person.email | neutralize }}</span>{% if not loop.last %}, {% endif %}{% endfor %}.
+            {% else %}
+            Nobody else is assigned.
+            {% endif %}
+            Administrators reach every campaign by role.
+            {% if is_admin %}
+            <a href="/app/campaigns/{{ campaign.id }}">Change this on the campaign page →</a>
+            {% else %}
+            Only an administrator can change this.
+            {% endif %}
+          </div>
+        </div>
         <div class="v2-btn-row">
           <button class="v2-btn primary big" type="submit">Save changes</button>
           <a class="v2-btn big" href="/app/campaigns/{{ campaign.id }}">Cancel</a>

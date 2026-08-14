@@ -57,12 +57,16 @@ from app.models.enums import (
 )
 from app.models.pipeline import CampaignContactAgentState
 from app.models.suppression import Suppression
+from app.services import campaign_access, workbench_agents
 from app.services import campaigns as campaign_service
 from app.services import drafts as draft_service
-from app.services import workbench_agents
 from app.services.agents import readiness as agent_readiness
 from app.services.agents import rerun as agent_rerun
 from app.services.agents.registry import AGENT_SPECS, PIPELINE_ORDER
+from app.services.campaign_access import (
+    actor_from_request,
+    require_campaign_path_access,
+)
 from app.services.campaigns import CampaignError
 from app.services.captures import labels as capture_labels
 from app.services.captures import promotion as capture_promotion
@@ -75,6 +79,7 @@ from app.services.gmail import mailbox as gmail_mailbox
 from app.services.gmail import provider as gmail_provider
 from app.services.gmail import read as gmail_read
 from app.services.imports import apollo, campaign_import, display, staging
+from app.services.operations import settings as operational
 from app.services.personalization.cadence import (
     DEFAULT_ELAPSED_DAYS,
     campaign_opted_in,
@@ -96,7 +101,11 @@ from app.web.v2 import context as shell
 # once, here, rather than on ~100 individual handlers: a route added later is
 # covered the moment it is registered. It is inert for safe methods and inert
 # entirely when hosted authentication is disabled (local development).
-router = APIRouter(prefix="/app", include_in_schema=False, dependencies=[Depends(require_csrf)])
+router = APIRouter(
+    prefix="/app",
+    include_in_schema=False,
+    dependencies=[Depends(require_csrf), Depends(require_campaign_path_access)],
+)
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
@@ -398,11 +407,14 @@ def _render(
     status_code: int = 200,
 ) -> HTMLResponse:
     settings = get_settings()
+    features = operational.effective_flags(db, settings)
     counts = shell.attention_counts(db)
     name, email, initials = shell.operator_identity(db, settings)
     shared: dict[str, Any] = {
         "app_env": settings.app_env,
-        "features_enabled": settings.features.enabled(),
+        # The effective controls, not the environment's defaults: the shell every
+        # page renders inside reports what an administrator has switched on.
+        "features_enabled": features.enabled(),
         "database_ok": _database_ok(db),
         "attention": counts,
         "nav_groups": shell.nav_groups(counts),
@@ -413,7 +425,7 @@ def _render(
         # the same server-side decision the admin routes enforce, read from the
         # request scope — not a second rule that could quietly disagree with it.
         "is_admin": is_admin_request(request),
-        "capture_ready": "contact_capture_intake" in settings.features.enabled(),
+        "capture_ready": "contact_capture_intake" in features.enabled(),
         "campaigns_js_version": CAMPAIGNS_JS_VERSION,
         "v2_css_version": V2_CSS_VERSION,
         "live_js_version": LIVE_JS_VERSION,
@@ -500,8 +512,14 @@ def _reader(db: Session) -> workbench_agents.PhaseTwoWorkbenchReader:
     return workbench_agents.PhaseTwoWorkbenchReader(db)
 
 
-def _agent_workbench_on(settings: Settings) -> bool:
-    return "agent_workbench" in settings.features.enabled()
+def _agent_workbench_on(db: Session, settings: Settings) -> bool:
+    """Whether the Agent monitor and controls are switched on.
+
+    ``db`` is a parameter because the switch is an administrator's durable
+    setting rather than an environment variable, so reading it is a query.
+    """
+
+    return operational.enabled(db, "agent_workbench", settings)
 
 
 def _checkbox(value: str) -> bool:
@@ -516,16 +534,19 @@ def _checkbox(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _sequences_on(settings: Settings) -> bool:
+def _sequences_on(db: Session, settings: Settings) -> bool:
     """Whether sequence *generation* is available in this deployment.
 
     Only the deployment half of the gate. It answers "can anything be
     generated", never "should this page show anything" -- an existing sequence
     stays readable after the switch is turned off, because concealing recorded
     human decisions is not the same as disabling a feature.
+
+    ``db`` is a parameter because the switch is an administrator's durable
+    setting rather than an environment variable, so reading it is a query.
     """
 
-    return "email_sequences" in settings.features.enabled()
+    return operational.enabled(db, "email_sequences", settings)
 
 
 #: Every way the sequence section can be in a state other than "here it is".
@@ -566,15 +587,18 @@ class SequenceAvailability:
         return self.state == SEQUENCE_STATE_AVAILABLE
 
 
-def _gmail_drafts_on(settings: Settings) -> bool:
+def _gmail_drafts_on(db: Session, settings: Settings) -> bool:
     """Whether one-click Gmail draft creation exists in this deployment (#267).
 
     Both switches. ``gmail_drafts`` acts on a sequence, so without
     ``email_sequences`` there is nothing for it to act on, and showing a Connect
     Gmail control that could never lead to a draft would be a control that lies.
+
+    ``db`` is a parameter because both switches are an administrator's durable
+    settings rather than environment variables, so reading them is a query.
     """
 
-    enabled = settings.features.enabled()
+    enabled = operational.effective_flags(db, settings).enabled()
     return "gmail_drafts" in enabled and "email_sequences" in enabled
 
 
@@ -588,7 +612,7 @@ def _mailbox_state(db: Session, settings: Settings) -> gmail_mailbox.MailboxStat
     none that could be connected.
     """
 
-    if not _gmail_drafts_on(settings):
+    if not _gmail_drafts_on(db, settings):
         return gmail_mailbox.UNAVAILABLE
     owner = session_account_id(current_operator())
     if owner is None:
@@ -606,7 +630,7 @@ def _gmail_draft_rows(
 ) -> dict[uuid.UUID, gmail_read.DraftRow]:
     """Gmail draft state for one sequence, for the operator making the request."""
 
-    if sequence is None or not _gmail_drafts_on(settings):
+    if sequence is None or not _gmail_drafts_on(db, settings):
         return {}
     owner = session_account_id(current_operator())
     if owner is None:
@@ -620,16 +644,20 @@ def _gmail_draft_rows(
 
 
 def _sequence_availability(
-    settings: Settings, *, campaign: Campaign | None, sequence: Any | None
+    db: Session, settings: Settings, *, campaign: Campaign | None, sequence: Any | None
 ) -> SequenceAvailability:
     """Resolve the exact state, given the two switches and what exists.
 
     The order is deliberate. An existing sequence is disclosed first, because
     hiding recorded work is the worst of the available answers; only when there
     is nothing to show does the configuration decide the wording.
+
+    ``db`` is a parameter because the deployment half of the gate is now an
+    administrator's durable setting rather than an environment variable, so
+    reading it is a query.
     """
 
-    generation_on = _sequences_on(settings)
+    generation_on = _sequences_on(db, settings)
     # ``campaign is None`` means the caller is not looking at one campaign -- the
     # unfiltered Review queue, for instance. Opt-in is a per-campaign fact, so
     # with no campaign in hand the honest answer is silence about it rather than
@@ -692,8 +720,14 @@ def _step_position(step: str | None) -> int:
     return value if 1 <= value <= SEQUENCE_LENGTH else 1
 
 
-def _kb_on(settings: Settings) -> bool:
-    return "seller_knowledge_base" in settings.features.enabled()
+def _kb_on(db: Session, settings: Settings) -> bool:
+    """Whether the Knowledge Base is switched on.
+
+    ``db`` is a parameter because the switch is an administrator's durable
+    setting rather than an environment variable, so reading it is a query.
+    """
+
+    return operational.enabled(db, "seller_knowledge_base", settings)
 
 
 # ---------------------------------------------------------------------------
@@ -1024,11 +1058,11 @@ def today_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     """
 
     counts = shell.attention_counts(db)
-    overviews = campaign_service.list_campaigns(db)
+    overviews = campaign_service.list_campaigns(db, actor=actor_from_request(request))
     draft_counts = draft_service.queue_counts(db)
     settings = get_settings()
 
-    reader = _reader(db) if _agent_workbench_on(settings) else None
+    reader = _reader(db) if _agent_workbench_on(db, settings) else None
     queue = reader.overview().queue if reader is not None else None
 
     contacts_total = db.scalar(select(func.count(Contact.id))) or 0
@@ -1113,7 +1147,7 @@ def today_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
             "companies_total": companies_total,
             "confirmed_addresses": confirmed,
             "queue": queue,
-            "agent_workbench_on": _agent_workbench_on(settings),
+            "agent_workbench_on": _agent_workbench_on(db, settings),
         },
     )
 
@@ -1144,7 +1178,7 @@ def _campaign_needs_sentence(
 
 @router.get("/campaigns")
 def campaigns_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    overviews = campaign_service.list_campaigns(db)
+    overviews = campaign_service.list_campaigns(db, actor=actor_from_request(request))
     rows: list[dict[str, Any]] = []
     for overview in overviews:
         campaign_counts = shell.attention_counts(db, campaign_id=overview.campaign.id)
@@ -1179,7 +1213,7 @@ def campaign_new_page(request: Request, db: Session = Depends(get_db)) -> HTMLRe
 
     settings = get_settings()
     offerings = (
-        seller_records.list_offerings(db, include_archived=False) if _kb_on(settings) else []
+        seller_records.list_offerings(db, include_archived=False) if _kb_on(db, settings) else []
     )
     return _render(
         request,
@@ -1189,7 +1223,7 @@ def campaign_new_page(request: Request, db: Session = Depends(get_db)) -> HTMLRe
             "active_nav": "campaigns",
             "page_title": "New campaign",
             "offerings": offerings,
-            "kb_on": _kb_on(settings),
+            "kb_on": _kb_on(db, settings),
         },
     )
 
@@ -1211,13 +1245,17 @@ def campaign_create(
             status=CampaignStatus.DRAFT,
             allow_provisional_domains=bool(allow_provisional_domains),
             actor=draft_service.OPERATOR_ACTOR,
+            # The durable owner. `actor` above stays the audit string it has
+            # always been; this is the account that will still be able to open
+            # the campaign tomorrow, so it may only ever be a real users.id.
+            created_by_user_id=actor_from_request(request).user_id,
         )
     except CampaignError as exc:
         return _redirect("/app/campaigns/new", err=str(exc))
 
     settings = get_settings()
     chosen = _uuid(offering_id)
-    if chosen is not None and _kb_on(settings):
+    if chosen is not None and _kb_on(db, settings):
         try:
             seller_campaign_offerings.associate(
                 db, campaign=campaign, offering_id=chosen, actor=draft_service.OPERATOR_ACTOR
@@ -1257,8 +1295,15 @@ def campaign_edit_page(
             "page_title": f"Edit {campaign.name}",
             "campaign": campaign,
             "sequence_enabled": campaign_opted_in(campaign),
-            "sequences_on": _sequences_on(get_settings()),
+            "sequences_on": _sequences_on(db, get_settings()),
             "sequence_cadence_days": ", ".join(str(day) for day in DEFAULT_ELAPSED_DAYS),
+            # Read-only here on purpose. Editing a campaign's settings and
+            # changing who may open it are different decisions with different
+            # audiences, so the edit form states the current answer and links to
+            # the panel that changes it rather than carrying a second control
+            # that only an administrator could use.
+            "access_owner": campaign_access.campaign_owner(db, campaign),
+            "access_people": campaign_access.campaign_people(db, campaign),
         },
     )
 
@@ -1293,7 +1338,7 @@ def campaign_edit_submit(
     # the campaign *in* -- the opposite of what it asked for.
     opted_in = (
         _checkbox(sequence_enabled)
-        if _sequences_on(get_settings())
+        if _sequences_on(db, get_settings())
         else campaign_opted_in(campaign)
     )
     try:
@@ -1378,7 +1423,7 @@ def campaign_page(
         return _not_found(request, db, "That is not a campaign id.")
 
     settings = get_settings()
-    if not _agent_workbench_on(settings):
+    if not _agent_workbench_on(db, settings):
         overview = campaign_service.get_campaign_overview(db, identifier)
         if overview is None:
             return _not_found(request, db, "That campaign does not exist.")
@@ -1399,6 +1444,10 @@ def campaign_page(
             selected = AgentIdentifier(stage)
         except ValueError:
             selected = None
+
+    campaign = db.get(Campaign, identifier)
+    if campaign is None:
+        return _not_found(request, db, "That campaign does not exist.")
 
     reader = _reader(db)
     current = max(1, page)
@@ -1422,11 +1471,13 @@ def campaign_page(
     selected_tile = next((tile for tile in tiles if tile.selected), None)
 
     offerings = (
-        seller_campaign_offerings.offerings_for_campaign(db, identifier) if _kb_on(settings) else []
+        seller_campaign_offerings.offerings_for_campaign(db, identifier)
+        if _kb_on(db, settings)
+        else []
     )
     campaign_record = campaign_service.get_campaign(db, identifier)
     readiness = None
-    if _kb_on(settings) and campaign_record is not None:
+    if _kb_on(db, settings) and campaign_record is not None:
         readiness = seller_readiness.campaign_report(db, campaign_record)
 
     # What the disabled skippable Agents would do to this campaign, said before
@@ -1496,11 +1547,19 @@ def campaign_page(
                 if selected
                 else f"/app/campaigns/{identifier}"
             ),
-            "campaigns": campaign_service.list_campaigns(db),
+            "campaigns": campaign_service.list_campaigns(db, actor=actor_from_request(request)),
             "offerings": offerings,
             "readiness": readiness,
             "sequence_readiness": sequence_readiness,
-            "kb_on": _kb_on(settings),
+            "kb_on": _kb_on(db, settings),
+            # Who can open this campaign. Rendered for administrators only —
+            # `is_admin` is already in the shared context — and computed here
+            # rather than in the template so the page never issues a query per
+            # row. The two lists are separate facts: `access_people` is who has
+            # access and why, `assignable_users` is who could be given it.
+            "access_owner": campaign_access.campaign_owner(db, campaign),
+            "access_people": campaign_access.campaign_people(db, campaign),
+            "assignable_users": campaign_access.assignable_users(db, campaign),
         },
     )
 
@@ -1619,8 +1678,14 @@ def campaign_agent_rerun(
 # is a POST, so a refreshed preview cannot import anything.
 
 
-def _import_on(settings: Settings) -> bool:
-    return settings.features.csv_import
+def _import_on(db: Session, settings: Settings) -> bool:
+    """Whether contacts may be imported from a file.
+
+    ``db`` is a parameter because the switch is an administrator's durable
+    setting rather than an environment variable, so reading it is a query.
+    """
+
+    return operational.enabled(db, "csv_import", settings)
 
 
 def _campaign_or_none(db: Session, campaign_id: str) -> tuple[uuid.UUID, Any] | None:
@@ -1675,7 +1740,7 @@ def campaign_imports_page(
             "active_nav": "campaigns",
             "page_title": f"Import contacts — {campaign.name}",
             "campaign": campaign,
-            "import_on": _import_on(settings),
+            "import_on": _import_on(db, settings),
             "max_upload_mb": round(settings.max_upload_bytes / (1024 * 1024), 1),
             "max_rows": campaign_import.MAX_DATA_ROWS,
             "batches": campaign_import.campaign_batches(db, identifier),
@@ -1696,7 +1761,7 @@ async def campaign_import_upload(
     identifier, campaign = found
     base = f"/app/campaigns/{identifier}/imports"
     settings = get_settings()
-    if not _import_on(settings):
+    if not _import_on(db, settings):
         return _redirect(
             base,
             err="Contact file import is switched off. Set FEATURES__CSV_IMPORT=true and restart.",
@@ -1830,7 +1895,7 @@ def campaign_import_preview_page(
             "preview": preview,
             "shown_rows": preview.rows[:PREVIEW_ROWS_SHOWN],
             "fatal_error": None,
-            "import_on": _import_on(get_settings()),
+            "import_on": _import_on(db, get_settings()),
         },
     )
 
@@ -2004,18 +2069,36 @@ def review_page(
     evidence for the address, and what the Knowledge Base authorised.
     """
 
+    # Authorization first, and separately from the operator's filter. `allowed`
+    # is None for an administrator (no restriction) and a concrete set otherwise;
+    # every list on this page is built through it, and every record resolved by
+    # id is checked against it, because a page that filters its list but honours
+    # a `?draft=` link into another team's campaign has not scoped anything.
+    actor = actor_from_request(request)
+    allowed = campaign_access.accessible_campaign_ids(db, actor)
     campaign_id = _uuid(campaign) if campaign else None
-    queue = draft_service.list_queue(db, campaign_id=campaign_id, view=view, limit=100)
+    if campaign_id is not None:
+        campaign_access.require_campaign_access(db, campaign_id, actor)
+    queue = draft_service.list_queue(
+        db, campaign_id=campaign_id, campaign_ids=allowed, view=view, limit=100
+    )
+
+    def _readable(candidate_campaign_id: uuid.UUID | None) -> bool:
+        return allowed is None or (
+            candidate_campaign_id is not None and candidate_campaign_id in allowed
+        )
 
     selected: draft_service.DraftRow | None = None
     requested = _uuid(draft) if draft else None
     if requested is not None:
         selected = draft_service.get_draft(db, requested)
+        if selected is not None and not _readable(selected.campaign_id):
+            selected = None
     if selected is None:
         selected = (
             queue.rows[0]
             if queue.rows
-            else draft_service.first_awaiting(db, campaign_id=campaign_id)
+            else draft_service.first_awaiting(db, campaign_id=campaign_id, campaign_ids=allowed)
         )
 
     settings = get_settings()
@@ -2046,6 +2129,7 @@ def review_page(
     sequence_queue = sequence_read.list_queue(
         db,
         campaign_id=campaign_id,
+        campaign_ids=allowed,
         view=sequence_view,
         limit=50,
     )
@@ -2053,8 +2137,8 @@ def review_page(
     # *current filter* happens to match one. Deciding it on the filter would hide
     # the filter chips too, leaving an operator with an approved sequence and no
     # way to navigate to it once the switch was off.
-    if not _sequences_on(settings) and not sequence_read.any_sequence_exists(
-        db, campaign_id=campaign_id
+    if not _sequences_on(db, settings) and not sequence_read.any_sequence_exists(
+        db, campaign_id=campaign_id, campaign_ids=allowed
     ):
         sequence_queue = None
     chosen_sequence = _uuid(sequence) if sequence else None
@@ -2066,8 +2150,14 @@ def review_page(
         # sequence outside the current filter is shown expanded above a list
         # that does not include it -- which is the truthful arrangement.
         sequence_card = sequence_read.card_for_sequence(db, chosen_sequence)
+        if sequence_card is not None and not _readable(sequence_card.campaign_id):
+            # Resolving by id is deliberate (see above); honouring the id for a
+            # campaign this account cannot open is not.
+            sequence_card = None
     if sequence_card is not None:
         record = sequence_read.get_sequence(db, sequence_card.sequence_id)
+        if record is not None and not _readable(record.campaign_id):
+            record = None
         if record is not None:
             sequence_rows = sequence_read.message_rows(db, sequence=record)
             # One body, on request. Expanding a card must not become a
@@ -2076,12 +2166,14 @@ def review_page(
                 db, sequence=record, position=_step_position(step)
             )
             sequence_availability = _sequence_availability(
+                db,
                 settings,
                 campaign=db.get(Campaign, record.campaign_id),
                 sequence=record,
             )
     if sequence_card is None:
         sequence_availability = _sequence_availability(
+            db,
             settings,
             campaign=db.get(Campaign, campaign_id) if campaign_id else None,
             sequence=None,
@@ -2096,14 +2188,14 @@ def review_page(
             "new sequence will be written and no review action can be recorded while the "
             "switch is off."
         )
-        if not _sequences_on(settings) and sequence_queue is not None
+        if not _sequences_on(db, settings) and sequence_queue is not None
         else None
     )
     execution = None
     if (
         selected is not None
         and selected.campaign_contact_id is not None
-        and _agent_workbench_on(settings)
+        and _agent_workbench_on(db, settings)
     ):
         execution = _reader(db).contact_execution(
             selected.campaign_id, selected.campaign_contact_id
@@ -2122,17 +2214,17 @@ def review_page(
             "selected": selected,
             "execution": execution,
             "evidence": evidence,
-            "campaigns": campaign_service.list_campaigns(db),
+            "campaigns": campaign_service.list_campaigns(db, actor=actor_from_request(request)),
             "campaign_id": campaign_id,
-            "agent_workbench_on": _agent_workbench_on(settings),
-            "sequences_on": _sequences_on(settings),
-            "sequence_generation_on": _sequences_on(settings),
+            "agent_workbench_on": _agent_workbench_on(db, settings),
+            "sequences_on": _sequences_on(db, settings),
+            "sequence_generation_on": _sequences_on(db, settings),
             "sequence_availability": sequence_availability,
             # With the feature off and no sequence anywhere, the section is
             # omitted rather than rendered as a permanent "switched off" banner
             # on a page about single drafts. It reappears the moment either the
             # feature is on or a sequence exists to disclose.
-            "sequence_section_visible": _sequences_on(settings) or sequence_queue is not None,
+            "sequence_section_visible": _sequences_on(db, settings) or sequence_queue is not None,
             "sequence_view_has_rows": bool(sequence_queue and sequence_queue.rows),
             "sequence_queue_notice": sequence_queue_notice,
             "sequence_queue": sequence_queue,
@@ -2151,7 +2243,7 @@ def review_page(
             # #267. The mailbox state is what makes the "From" line on an
             # expanded message truthful, and it is what the Create Gmail drafts
             # panel is rendered from.
-            "gmail_drafts_on": _gmail_drafts_on(settings),
+            "gmail_drafts_on": _gmail_drafts_on(db, settings),
             "mailbox": _mailbox_state(db, settings),
         },
     )
@@ -2298,6 +2390,7 @@ def review_approve(
     identifier = _uuid(draft_id)
     if identifier is None:
         return _redirect("/app/review", err="That is not a draft id.")
+    _require_review_access(request, db, _draft_campaign_id(db, identifier))
     try:
         draft_service.approve(
             db,
@@ -2328,6 +2421,7 @@ def review_discard(
     identifier = _uuid(draft_id)
     if identifier is None:
         return _redirect("/app/review", err="That is not a draft id.")
+    _require_review_access(request, db, _draft_campaign_id(db, identifier))
     try:
         draft_service.discard(
             db,
@@ -2486,13 +2580,14 @@ def _sequence_write_refusal(
     if sequence is None:
         return None
     availability = _sequence_availability(
+        db,
         settings,
         campaign=db.get(Campaign, sequence.campaign_id),
         sequence=sequence,
     )
     if not availability.read_only:
         return None
-    if not _sequences_on(settings):
+    if not _sequences_on(db, settings):
         return (
             "Seven-message sequences are switched off in this environment, so no review "
             "decision can be recorded. The sequence and its existing decisions are unchanged."
@@ -2506,6 +2601,43 @@ def _sequence_write_refusal(
 def _sequence_id_for_version(db: Session, version_id: uuid.UUID) -> uuid.UUID | None:
     version = db.get(EmailSequenceMessageVersion, version_id)
     return version.sequence_id if version is not None else None
+
+
+def _require_review_access(request: Request, db: Session, campaign_id: uuid.UUID | None) -> None:
+    """Refuse a review write against a campaign this account may not use.
+
+    The review routes are keyed by a *draft* or *sequence* id, not by a campaign
+    id, so the router-level path guard never sees them — it only fires on a
+    ``{campaign_id}`` path parameter. The review page itself is scoped, including
+    its ``?draft=`` and ``?sequence=`` deep links, so the ids are not on offer;
+    but hiding an id is a courtesy and this is the control.
+
+    It matters more here than almost anywhere else on the surface. Approval is
+    the human authorisation the whole pipeline waits for: an approved draft is a
+    statement that a named person read this exact version and is willing for it
+    to go out. Letting somebody outside the campaign record that statement would
+    put a signature on work they were never shown.
+
+    ``campaign_id`` of ``None`` means the target could not be resolved at all —
+    a deleted or bogus id — and is left to the handler, which already answers it
+    with a specific message.
+    """
+
+    if campaign_id is None:
+        return
+    campaign_access.require_campaign_access(db, campaign_id, actor_from_request(request))
+
+
+def _draft_campaign_id(db: Session, draft_version_id: uuid.UUID) -> uuid.UUID | None:
+    row = draft_service.get_draft(db, draft_version_id)
+    return row.campaign_id if row is not None else None
+
+
+def _sequence_campaign_id(db: Session, sequence_id: uuid.UUID | None) -> uuid.UUID | None:
+    if sequence_id is None:
+        return None
+    record = sequence_read.get_sequence(db, sequence_id)
+    return record.campaign_id if record is not None else None
 
 
 @router.post("/review/sequence/messages/{version_id}/approve")
@@ -2526,9 +2658,9 @@ def sequence_message_approve(
         return _redirect(target, err=CROSS_SITE_REFUSAL)
     if _oversized(request):
         return _redirect(target, err=OVERSIZED_REFUSAL)
-    refusal = _sequence_write_refusal(
-        db, get_settings(), sequence_id=_sequence_id_for_version(db, identifier)
-    )
+    sequence_id_for_message = _sequence_id_for_version(db, identifier)
+    _require_review_access(request, db, _sequence_campaign_id(db, sequence_id_for_message))
+    refusal = _sequence_write_refusal(db, get_settings(), sequence_id=sequence_id_for_message)
     if refusal is not None:
         return _redirect(target, err=refusal)
     try:
@@ -2568,9 +2700,9 @@ def sequence_message_discard(
         return _redirect(target, err=CROSS_SITE_REFUSAL)
     if _oversized(request):
         return _redirect(target, err=OVERSIZED_REFUSAL)
-    refusal = _sequence_write_refusal(
-        db, get_settings(), sequence_id=_sequence_id_for_version(db, identifier)
-    )
+    sequence_id_for_message = _sequence_id_for_version(db, identifier)
+    _require_review_access(request, db, _sequence_campaign_id(db, sequence_id_for_message))
+    refusal = _sequence_write_refusal(db, get_settings(), sequence_id=sequence_id_for_message)
     if refusal is not None:
         return _redirect(target, err=refusal)
     try:
@@ -2609,9 +2741,9 @@ def sequence_message_edit(
         return _redirect(target, err=CROSS_SITE_REFUSAL)
     if _oversized(request):
         return _redirect(target, err=OVERSIZED_REFUSAL)
-    refusal = _sequence_write_refusal(
-        db, get_settings(), sequence_id=_sequence_id_for_version(db, identifier)
-    )
+    sequence_id_for_message = _sequence_id_for_version(db, identifier)
+    _require_review_access(request, db, _sequence_campaign_id(db, sequence_id_for_message))
+    refusal = _sequence_write_refusal(db, get_settings(), sequence_id=sequence_id_for_message)
     if refusal is not None:
         return _redirect(target, err=refusal)
     try:
@@ -2660,6 +2792,7 @@ def sequence_approve(
         return _redirect(target, err=CROSS_SITE_REFUSAL)
     if _oversized(request):
         return _redirect(target, err=OVERSIZED_REFUSAL)
+    _require_review_access(request, db, _sequence_campaign_id(db, identifier))
     refusal = _sequence_write_refusal(db, get_settings(), sequence_id=identifier)
     if refusal is not None:
         return _redirect(target, err=refusal)
@@ -2714,7 +2847,7 @@ def sequence_create_gmail_drafts(
 
     target = _sequence_back(back)
     settings = get_settings()
-    if not _gmail_drafts_on(settings):
+    if not _gmail_drafts_on(db, settings):
         return _redirect(
             target,
             err="Gmail draft creation is switched off in this environment, so nothing happened.",
@@ -2726,6 +2859,7 @@ def sequence_create_gmail_drafts(
         return _redirect(target, err=CROSS_SITE_REFUSAL)
     if _oversized(request):
         return _redirect(target, err=OVERSIZED_REFUSAL)
+    _require_review_access(request, db, _sequence_campaign_id(db, identifier))
     # A sequence that is read-only for review is read-only for drafting too.
     # Creating a draft from a sequence whose feature switch or campaign opt-in
     # has since been turned off would take a *more* consequential action than
@@ -2918,8 +3052,27 @@ def contact_page(
         return _not_found(request, db, "That contact does not exist.")
 
     settings = get_settings()
+    # A Contact is a permanent record and is not owned by a campaign — the same
+    # person can legitimately appear in several. What *is* campaign-scoped is the
+    # membership: its pipeline, its drafts, its sequence, its Agent history. So
+    # the page keeps showing the contact and narrows the memberships to the
+    # campaigns this account may open, rather than refusing the whole person
+    # because one of their memberships belongs to somebody else's campaign.
+    actor = actor_from_request(request)
+    allowed = campaign_access.accessible_campaign_ids(db, actor)
+    if allowed is not None:
+        # Narrow the view object itself, not a local copy: the template renders
+        # `detail.memberships` directly, so filtering only a local list would
+        # have scoped the code and not the page.
+        detail.memberships = [
+            (candidate, candidate_campaign)
+            for candidate, candidate_campaign in detail.memberships
+            if candidate.campaign_id in allowed
+        ]
     memberships = detail.memberships
     chosen = _uuid(campaign) if campaign else None
+    if chosen is not None:
+        campaign_access.require_campaign_access(db, chosen, actor)
     membership = None
     for candidate, _campaign in memberships:
         if chosen is None or candidate.campaign_id == chosen:
@@ -2927,7 +3080,7 @@ def contact_page(
             break
 
     execution = None
-    if membership is not None and _agent_workbench_on(settings):
+    if membership is not None and _agent_workbench_on(db, settings):
         execution = _reader(db).contact_execution(membership.campaign_id, membership.id)
 
     intel = verification_console.contact_email_intel(db, detail.contact)
@@ -2953,6 +3106,7 @@ def contact_page(
             db, campaign_contact_id=membership.id
         )
         sequence_availability = _sequence_availability(
+            db,
             settings,
             campaign=db.get(Campaign, membership.campaign_id),
             sequence=sequence_record,
@@ -2980,10 +3134,10 @@ def contact_page(
             "steps": steps,
             "membership": membership,
             "latest_draft": latest_draft,
-            "agent_workbench_on": _agent_workbench_on(settings),
-            "sequences_on": _sequences_on(settings) or sequence_record is not None,
-            "sequence_section_visible": _sequences_on(settings) or sequence_record is not None,
-            "sequence_generation_on": _sequences_on(settings),
+            "agent_workbench_on": _agent_workbench_on(db, settings),
+            "sequences_on": _sequences_on(db, settings) or sequence_record is not None,
+            "sequence_section_visible": _sequences_on(db, settings) or sequence_record is not None,
+            "sequence_generation_on": _sequences_on(db, settings),
             "sequence_availability": sequence_availability,
             "sequence": sequence_record,
             "sequence_summary": sequence_summary,
@@ -2993,7 +3147,7 @@ def contact_page(
             # be revoked at Google between two page loads, and the page an
             # operator is about to click Create Gmail drafts on is exactly the
             # place that must not be showing a stale "connected".
-            "gmail_drafts_on": _gmail_drafts_on(settings),
+            "gmail_drafts_on": _gmail_drafts_on(db, settings),
             "mailbox": _mailbox_state(db, settings),
             # Scoped to this operator's own connected mailbox: a sequence
             # belongs to a Campaign Contact rather than to an operator, so an
@@ -3279,7 +3433,7 @@ def knowledge_page(
     """
 
     settings = get_settings()
-    if not _kb_on(settings):
+    if not _kb_on(db, settings):
         return _render(
             request,
             db,
@@ -3314,7 +3468,9 @@ def knowledge_page(
             ctx["proof_points"] = seller_records.proof_points_for_offering(db, selected.id)
             ctx["claims"] = seller_records.restricted_claims_for_offering(db, selected.id)
             ctx["personas"] = seller_records.personas_for_offering(db, selected.id)
-            ctx["campaigns"] = seller_campaign_offerings.campaigns_for_offering(db, selected.id)
+            ctx["campaigns"] = seller_campaign_offerings.campaigns_for_offering(
+                db, selected.id, actor=actor_from_request(request)
+            )
     elif section == "proof-points":
         proof_points = seller_records.list_proof_points(db, include_archived=True)
         ctx["records"] = proof_points
@@ -3360,7 +3516,7 @@ def agents_page(
     """
 
     settings = get_settings()
-    if not _agent_workbench_on(settings):
+    if not _agent_workbench_on(db, settings):
         return _render(
             request,
             db,
@@ -3396,7 +3552,7 @@ def agents_page(
             "blurb": AGENT_BLURBS[selected],
             "phases": PHASES,
             "blurbs": AGENT_BLURBS,
-            "campaigns": campaign_service.list_campaigns(db),
+            "campaigns": campaign_service.list_campaigns(db, actor=actor_from_request(request)),
             "campaign_id": campaign_id,
         },
     )
@@ -3470,7 +3626,9 @@ def capture_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespons
     """What the capture extension does, and what it has actually captured."""
 
     settings = get_settings()
-    enabled = settings.features.enabled()
+    # The effective controls: promotion and automatic domain resolution are
+    # administrator-controlled, so this page must report what is actually on.
+    enabled = operational.effective_flags(db, settings).enabled()
     pending: list[Any] = []
     try:
         pending = list(capture_promotion.pending_captures(db, limit=25))
@@ -3495,7 +3653,7 @@ def capture_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespons
             "pending": pending,
             "labels": labels,
             "unresolved": unresolved,
-            "campaigns": campaign_service.list_campaigns(db),
+            "campaigns": campaign_service.list_campaigns(db, actor=actor_from_request(request)),
         },
     )
 
@@ -3529,7 +3687,7 @@ def suppressions_page(request: Request, db: Session = Depends(get_db)) -> HTMLRe
             "page_title": "Suppression list",
             "rows": active,
             "total": total,
-            "enabled": "suppressions" in get_settings().features.enabled(),
+            "enabled": operational.enabled(db, "suppressions"),
         },
     )
 

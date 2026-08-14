@@ -26,6 +26,11 @@ def client(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> Iterator[Tes
     monkeypatch.setenv("FEATURES__WORKBENCH", "true")
     monkeypatch.setenv("FEATURES__EMAIL_GENERATION", "true")
     monkeypatch.setenv("FEATURES__MILLIONVERIFIER", "true")
+    # A documented test key, which routes to the simulator exactly as an absent
+    # one does. It is here because MillionVerifier is an operator control now and
+    # a control with no credential configured cannot be on, so a keyless
+    # deployment would refuse the verify action rather than simulate it.
+    monkeypatch.setenv("MILLIONVERIFIER_API_KEY", "API_KEY_FOR_OK")
     get_settings.cache_clear()
     app = create_app()
 

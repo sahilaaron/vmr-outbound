@@ -183,6 +183,19 @@ _ADMIN_PATH_PREFIXES: frozenset[str] = frozenset(
         # The Workbench, Agent Studio and Company Intelligence, all three of
         # which are mounted on different routers but share this one prefix.
         "/admin",
+        # The Agent monitor inside the operator product. It is the third face of
+        # the same surface `/workbench` and `/admin` already withhold: the global
+        # Agent controls (enable, pause, disable, stop sending) and a job list
+        # that spans every campaign in the deployment. Neither is scoped to one
+        # person's campaigns and neither could be — a global control is a
+        # deployment decision, not campaign work.
+        #
+        # It was USER-reachable by omission rather than by decision, which meant
+        # any signed-in account could halt every Agent for everybody. Per-campaign
+        # Agent work is unaffected: rerun, override and stage actions live under
+        # `/app/campaigns/{id}/...` and are reached by whoever the campaign is
+        # assigned to.
+        "/app/agents",
         # The account directory. Already refused by the `require_admin`
         # dependency on its own router, and named here as well so that this set
         # is a complete statement of the administrator surface rather than a

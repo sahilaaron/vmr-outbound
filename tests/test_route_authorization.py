@@ -260,6 +260,10 @@ def _raw_url(spelling: str) -> httpx.URL:
 #: a USER and admit an ADMIN — sections A and E run the same list from both
 #: sides, which is what stops "refuse everybody" from passing as a fix.
 ADMIN_SURFACE: tuple[tuple[str, str], ...] = (
+    # The Agent monitor inside the operator product. See
+    # `test_the_agent_monitor_inside_the_product_is_administrator_only` for why
+    # the read moved here alongside the control POST.
+    ("GET", "/app/agents"),
     ("GET", "/admin"),
     ("GET", "/admin/configuration"),
     ("GET", "/admin/providers"),
@@ -333,7 +337,6 @@ OPERATOR_PRODUCT_SURFACE: tuple[tuple[str, str], ...] = (
     ("GET", "/app/companies"),
     ("GET", "/app/capture"),
     ("GET", "/app/knowledge"),
-    ("GET", "/app/agents"),
     ("GET", "/app/suppressions"),
     ("POST", "/gmail/connect"),
     ("POST", "/gmail/disconnect"),
@@ -448,7 +451,14 @@ def test_the_classification_counts_are_the_ones_deliberately_recorded() -> None:
     """
 
     assert len(PROVIDER_SPEND_SURFACE) == 9, sorted(PROVIDER_SPEND_SURFACE)
-    assert len(EXPECTED_USER_REACHABLE) == 89, len(EXPECTED_USER_REACHABLE)
+    # And a third time, 89 to 88, in the withholding direction: `GET /app/agents`
+    # joined the control POST on the administrator surface. The monitor names
+    # every campaign carrying an Agent override and lists jobs across all of
+    # them, so it is not scoped to one operator's campaigns and cannot be
+    # without rewriting the reader the administrator surfaces share. See
+    # `test_the_agent_monitor_inside_the_product_is_administrator_only`, and note
+    # that per-campaign Agent work is untouched under `/app/campaigns/{id}/...`.
+    assert len(EXPECTED_USER_REACHABLE) == 88, len(EXPECTED_USER_REACHABLE)
 
 
 def test_reading_the_verification_page_is_not_spending(client: TestClient) -> None:
@@ -537,19 +547,36 @@ def test_the_operator_product_surface_is_enumerated_rather_than_sampled() -> Non
         assert not is_admin_only_request(path, method), f"{method} {path} became administrator-only"
 
 
-def test_the_global_agent_control_is_the_one_carve_out_inside_the_product(
+def test_the_agent_monitor_inside_the_product_is_administrator_only(
     client: TestClient,
 ) -> None:
-    """``/app/agents`` reads as product; posting a control does not.
+    """``/app/agents`` is withheld whole, read as well as write.
 
-    Agent controls are platform-wide rather than campaign-wide, so a post with no
-    campaign named reaches the global control and can halt or resume every
-    campaign's pipeline, the sending agent included. An operator still needs to
-    *see* which agents are enabled, which is why only the verb moved.
+    This supersedes an earlier, narrower decision that withheld only the control
+    POST and left the page readable so an operator could *see* which Agents were
+    enabled. Two things changed under it.
+
+    First, campaigns now have owners and assignees, and this page is not scoped
+    to them: it names every campaign that carries an Agent override, and its job
+    list carries contact and campaign rows from campaigns the reader may have no
+    access to. Scoping the monitor would mean rewriting the reader that the
+    administrator surfaces share; withholding it costs a normal operator nothing
+    they cannot get from their own campaign page, which shows that campaign's
+    stages, its Agents and its jobs.
+
+    Second, "see which Agents are enabled" is being answered properly elsewhere:
+    the Admin Configuration screen is where operational switches are read and
+    changed, and it is administrator-only by the same rule.
+
+    Per-campaign Agent work is deliberately untouched — rerun, override and stage
+    actions live under ``/app/campaigns/{id}/...`` and stay with whoever the
+    campaign is assigned to.
     """
 
     csrf = _user_session(client)
-    assert client.get("/app/agents").status_code != 403
+    read = client.get("/app/agents")
+    assert read.status_code == 403
+    assert read.json()["error"] == "admin_required"
     refused = _call(client, "POST", f"/app/agents/{SAMPLE_ID}/control", csrf)
     assert refused.status_code == 403
     assert refused.json()["error"] == "admin_required"
@@ -911,7 +938,6 @@ EXPECTED_USER_REACHABLE: frozenset[str] = frozenset(
         # `/app` and everything under it, which is the product itself.
         "GET /app",
         "GET /app/",
-        "GET /app/agents",
         "GET /app/analytics",
         "GET /app/campaigns",
         "GET /app/campaigns/new",
@@ -1178,6 +1204,7 @@ def test_the_administrator_prefixes_and_exact_paths_are_the_ones_recorded_here()
     assert admin_only_prefixes() == {
         "/admin",
         "/app/admin",
+        "/app/agents",
         "/api",
         "/workbench",
         "/imports",

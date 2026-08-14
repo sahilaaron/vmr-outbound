@@ -25,6 +25,7 @@ from app.core.config import Settings, get_settings
 from app.core.health import DatabaseReadinessProbe, ReadinessProbe, run_readiness_probe
 from app.core.http import CanonicalTrustedHostMiddleware, ProductionHTTPMiddleware
 from app.core.runtime import validate_runtime_settings
+from app.services.campaign_access import CampaignAccessError
 from app.web.auth_routes import IDENTITY_PROVIDER_STATE_KEY
 from app.web.auth_routes import router as auth_router
 from app.web.extension_link_routes import router as extension_link_router
@@ -188,6 +189,31 @@ def create_app(
             },
         )
 
+    @app.exception_handler(CampaignAccessError)
+    async def campaign_access_denied(request: Request, exc: CampaignAccessError) -> JSONResponse:
+        """One shape for every campaign refusal, whoever asked and however.
+
+        A 403 rather than a 404, for the reason the exception's own docstring
+        records: campaign names are unique and administered, so a 404 would hide
+        very little and would send an operator who genuinely needs the campaign
+        looking for a broken link instead of asking for the assignment they are
+        missing. It names no campaign, no owner and no assignee.
+
+        JSON rather than a rendered page, matching the two refusals either side
+        of it: one handler answers a page request, a form POST and an API call
+        alike, and a rendered page here would need a template on a code path
+        that must keep working while the workbench feature switch is off.
+        """
+
+        return JSONResponse(
+            status_code=403,
+            content={
+                "error": "campaign_access_denied",
+                "status": 403,
+                "message": str(exc),
+            },
+        )
+
     @app.exception_handler(CsrfError)
     async def csrf_failed(request: Request, exc: CsrfError) -> JSONResponse:
         """One shape for every CSRF refusal, and never a redirect.
@@ -320,9 +346,14 @@ def create_app(
         # router so that `/app/admin/...` resolves on the router that carries the
         # `require_admin` dependency, and can never be picked up by a broader
         # pattern added to the v2 router later.
+        from app.web.v2.admin_campaign_access import router as admin_campaign_access_router
         from app.web.v2.admin_users import router as admin_users_router
 
         app.include_router(admin_users_router)
+        # Campaign assignment, on the same administrator-only prefix and for the
+        # same reason: `/app/admin/...` must resolve on a router that carries
+        # `require_admin` before any broader `/app/...` pattern can pick it up.
+        app.include_router(admin_campaign_access_router)
 
         # The v2 router is included first so its `/app/...` paths are matched
         # before any broader admin pattern can shadow them.

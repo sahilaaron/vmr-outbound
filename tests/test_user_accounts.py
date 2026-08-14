@@ -52,7 +52,7 @@ SESSION_SECRET = "test-session-secret-value-at-least-32-chars"
 ADMIN_EMAIL = "sahil@verifiedmarketresearch.com"
 STAGING_DATABASE_URL = "postgresql+psycopg://vmr:secret@db.internal.example:5432/vmr_staging"
 
-#: Comfortably over the fifteen-character minimum, and not on the blocklist.
+#: Comfortably over the eight-character minimum, and not on the blocklist.
 GOOD_PASSWORD = "correct-battery-horse-2026"
 OTHER_PASSWORD = "a-different-long-passphrase-99"
 
@@ -210,8 +210,10 @@ def test_verifying_against_a_missing_or_corrupt_hash_is_a_refusal_not_an_error()
     "candidate",
     [
         "short",
-        "fourteen-chars",  # 14 — one under the line
-        "               ",  # only spaces
+        "seven67",  # 7 — one under the line
+        "        ",  # only spaces, at exactly the minimum length
+        "12345678",  # 8 and blocklisted: length alone was never the whole rule
+        "qwerty123",
         "password12345",
         "Password123",
         "correcthorsebatterystaple",
@@ -223,10 +225,37 @@ def test_the_policy_refuses_what_it_says_it_refuses(candidate: str) -> None:
         passwords.validate_password(candidate)
 
 
+def test_the_minimum_is_eight_and_seven_is_refused() -> None:
+    """The UAT contract, pinned to the boundary rather than to prose.
+
+    Written as its own test because the parametrized cases above would still
+    pass if the minimum drifted to seven or to nine; these two assertions fail on
+    any change to the boundary in either direction.
+    """
+
+    assert passwords.MIN_PASSWORD_CHARS == 8
+    assert passwords.MAX_PASSWORD_CHARS == 256
+
+    # Eight characters, not on the blocklist, not derived from an address.
+    assert passwords.validate_password("gk7-mQ2p") == "gk7-mQ2p"
+
+    with pytest.raises(passwords.PasswordPolicyError) as refusal:
+        passwords.validate_password("gk7-mQ2")  # seven
+    assert "at least 8 characters" in str(refusal.value)
+
+    # The ceiling is unchanged: 256 accepted, 257 refused.
+    assert passwords.validate_password("x" * 256) == "x" * 256
+    with pytest.raises(passwords.PasswordPolicyError) as over:
+        passwords.validate_password("x" * 257)
+    assert "at most 256 characters" in str(over.value)
+
+
 @pytest.mark.parametrize(
     "candidate",
     [
-        "fifteen chars!!",  # exactly 15, with a space
+        "gk7-mQ2p",  # exactly 8
+        "eight ch",  # exactly 8, with a space
+        "fifteen chars!!",  # 15 — what the old minimum accepted, still accepted
         GOOD_PASSWORD,
         "x" * 64,  # the length the policy promises to accept
         "  leading and trailing spaces preserved  ",
@@ -614,7 +643,7 @@ def test_a_rejected_password_does_not_burn_the_link(client: TestClient) -> None:
         headers=headers,
     )
     assert too_short.status_code == 400
-    assert "at least 15 characters" in too_short.text
+    assert "at least 8 characters" in too_short.text
 
     mismatch = client.post(
         "/auth/setup",

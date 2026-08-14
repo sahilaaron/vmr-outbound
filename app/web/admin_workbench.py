@@ -39,6 +39,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.core.auth.context import current_operator
 from app.core.auth.csrf import register_csrf, require_csrf
 from app.core.config import get_settings
 from app.models.campaign import Campaign, CampaignContact
@@ -56,8 +57,11 @@ from app.services.admin_workbench.views import (
     DiagnosticLink,
     DiagnosticsView,
 )
+from app.services.agents import orchestrator
 from app.services.agents.registry import AGENT_SPECS, PIPELINE_ORDER
+from app.services.campaign_access import require_campaign_path_access
 from app.services.imports import display
+from app.services.operations import settings as operational
 from app.services.seller.common import OPERATOR_ACTOR
 
 # Every state-changing route on this router is refused unless the request
@@ -65,7 +69,7 @@ from app.services.seller.common import OPERATOR_ACTOR
 # once, here, rather than on ~100 individual handlers: a route added later is
 # covered the moment it is registered. It is inert for safe methods and inert
 # entirely when hosted authentication is disabled (local development).
-router = APIRouter(dependencies=[Depends(require_csrf)])
+router = APIRouter(dependencies=[Depends(require_csrf), Depends(require_campaign_path_access)])
 
 _TEMPLATES_DIR = "app/web/templates"
 templates = Jinja2Templates(directory=_TEMPLATES_DIR)
@@ -671,12 +675,128 @@ def admin_providers_page(request: Request, db: Session = Depends(get_db)) -> HTM
 @router.get("/admin/configuration", response_class=HTMLResponse)
 def admin_configuration_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     view = _reader(db).configuration()
+    operations_view = operational.configuration_view(db, get_settings())
     return _render(
         request,
         db,
         "admin/configuration.html",
-        {"view": view, "active_nav": "configuration", "page_title": "Configuration"},
+        {
+            "view": view,
+            "operations": operations_view,
+            # Grouped here rather than in the template so the page cannot
+            # reorder itself as controls are added.
+            "operations_groups": _grouped_controls(operations_view),
+            "active_nav": "configuration",
+            "page_title": "Configuration",
+        },
     )
+
+
+def _grouped_controls(
+    view: operational.OperationalConfigurationView,
+) -> tuple[tuple[str, tuple[operational.ControlRow, ...]], ...]:
+    """Controls in registry order, gathered under their group heading."""
+
+    order: list[str] = []
+    buckets: dict[str, list[operational.ControlRow]] = {}
+    for row in view.controls:
+        if row.group not in buckets:
+            buckets[row.group] = []
+            order.append(row.group)
+        buckets[row.group].append(row)
+    return tuple((group, tuple(buckets[group])) for group in order)
+
+
+@router.post("/admin/configuration/controls/{key}")
+async def admin_configuration_set_control(
+    request: Request, key: str, db: Session = Depends(get_db)
+) -> Response:
+    """Turn one operator product control on or off.
+
+    This is the route Hosted Beta UAT was missing. Company research being off is
+    an operating decision, and making it require SSH and a restart made it a
+    deployment. It is administrator-only — the whole ``/admin`` prefix is, by
+    ``app/core/auth/policy.py`` — and it refuses a deployment or security setting
+    by name in the service rather than by leaving it out of the form.
+
+    Turning a control on that had been refusing work does the second half of the
+    job: the paused ``feature_disabled`` jobs for the Agents that control gates
+    are returned to the queue through the supported reconciliation path, so the
+    operator does not have to find and retry them one at a time. Nothing is
+    skipped and nothing is consumed — a resumed job passes every gate again.
+    """
+
+    back = "/admin/configuration"
+    form = await request.form()
+    wanted = str(form.get("enabled", "")).strip().lower() in {"1", "true", "on", "yes"}
+    reason = str(form.get("reason", "")).strip() or None
+    raw_version = str(form.get("expected_version", "")).strip()
+    expected_version: int | None
+    if raw_version == "":
+        # Blank is a claim, not a missing value: the page that rendered this form
+        # saw no stored row at all. It is submitted as version 0 rather than as
+        # "no opinion", because those are different things and only the first is
+        # what the form is saying.
+        #
+        # The difference is not theoretical. Two administrators open this screen
+        # while a control has never been set; one of them posts and creates
+        # version 1; the other posts the opposite decision from a page whose form
+        # still says "no row". Sending "no opinion" would let the second write
+        # land silently on top of the first. Sending 0 makes it the conflict it
+        # is, and the operator is told to reload — which is exactly the rule the
+        # Agent control forms follow.
+        expected_version = 0
+    else:
+        try:
+            expected_version = int(raw_version)
+        except ValueError:
+            return _redirect(back, err="That control version is not a number.")
+
+    try:
+        change = operational.set_control(
+            db,
+            key=key,
+            enabled_value=wanted,
+            actor=_operator_actor(),
+            reason=reason,
+            expected_version=expected_version,
+            settings=get_settings(),
+        )
+    except operational.OperationalSettingError as exc:
+        db.rollback()
+        return _redirect(back, err=str(exc))
+
+    if not change.changed:
+        return _redirect(back, ok="That setting was already in that state; nothing changed.")
+
+    reclaimed = 0
+    if change.reclaim_agents:
+        reclaimed = orchestrator.reclaim_feature_paused_jobs(
+            db, agent_ids=change.reclaim_agents, actor=_operator_actor()
+        )
+    db.commit()
+
+    label = operational.CONTROLS_BY_KEY[key].label
+    message = f"{label} is now {'on' if change.enabled else 'off'}."
+    if reclaimed:
+        message += (
+            f" {reclaimed} paused job{'s' if reclaimed != 1 else ''} that this setting had "
+            "refused went back into the queue."
+        )
+    return _redirect(back, ok=message)
+
+
+def _operator_actor() -> str:
+    """Who changed a setting, for the audit trail.
+
+    The signed-in administrator's address when authentication is enabled, and a
+    plainly-labelled local marker when it is not. Never a form field.
+    """
+
+    session = current_operator()
+    if session is not None and session.email:
+        return session.email
+    return "local:unauthenticated-development"
 
 
 # --- System ------------------------------------------------------------------

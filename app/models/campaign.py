@@ -1,4 +1,4 @@
-"""Campaign and campaign-membership models.
+"""Campaign, campaign-membership and campaign-access models.
 
 A campaign is the shell that an authorized contact batch is imported into
 (CMP-001, minimum fields for this slice). A ``CampaignContact`` row is the
@@ -6,6 +6,14 @@ membership that links a contact to a campaign and carries that contact's
 explicit, audited workflow state *for that campaign* — so the same contact can
 appear in several campaigns without losing per-campaign progress or creating a
 duplicate active-outreach record (CMP-002, CMP-003).
+
+Who may *see* a campaign is the third thing here, and it is deliberately data
+rather than a rule derived from something else. ``Campaign.created_by_user_id``
+records who made it; ``CampaignUserAssignment`` records who else an
+administrator has let in. Both are explicit rows, so the answer to "why can this
+person see this campaign?" is always a record somebody wrote, never an inference
+from an email domain, a name convention or an audit-log actor string. See
+``app/services/campaign_access.py`` for the rules those two columns feed.
 """
 
 from __future__ import annotations
@@ -93,6 +101,33 @@ class Campaign(Base):
         nullable=False,
         default=CampaignStatus.DRAFT,
     )
+    # --- Ownership -----------------------------------------------------------
+    #
+    # Nullable, and it will stay nullable. Three separate reasons, and the first
+    # is the one that decides it:
+    #
+    # 1. **Campaigns created before this column existed have no owner, and
+    #    nothing in the database knows who made them.** The audit trail records
+    #    ``actor="operator"`` — a constant, not an identity — so inferring an
+    #    owner would mean picking the bootstrap administrator and calling that a
+    #    fact. An administrator still sees every campaign, so nothing is lost by
+    #    telling the truth here.
+    # 2. A campaign can legitimately outlive its creator's account. ``SET NULL``
+    #    on delete keeps the campaign and its history rather than cascading a
+    #    person's departure into the work.
+    # 3. Local development and the test suite run with authentication off, where
+    #    there is no account to attribute anything to.
+    #
+    # A NULL owner is therefore "nobody in particular", never "everybody":
+    # ``app/services/campaign_access.py`` grants an ownerless campaign to
+    # administrators only, and to a normal user only through an explicit
+    # assignment row.
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -105,6 +140,63 @@ class Campaign(Base):
 
     def __repr__(self) -> str:  # pragma: no cover - debug helper
         return f"Campaign(id={self.id!r}, name={self.name!r}, status={self.status.value!r})"
+
+
+class CampaignUserAssignment(Base):
+    """One person an administrator has granted access to one campaign.
+
+    A row, not a list column and not a role name. Three consequences that are
+    the reason for the shape:
+
+    * **Many-to-many by construction.** A campaign may be assigned to any number
+      of users and a user may be assigned any number of campaigns, without
+      rewriting either side's row.
+    * **Unassigning is a delete, and it takes effect on the next request.**
+      Access is computed from these rows on every request rather than copied
+      into a session cookie, so revocation does not wait for a sign-out.
+    * **Who granted it is recorded.** ``assigned_by_user_id`` is nullable only so
+      that deleting an administrator's account does not delete the grants they
+      made — the grant is a fact about the assignee, not about the grantor.
+
+    The unique constraint makes "assign" idempotent at the database level: the
+    service can attempt an insert and treat a conflict as "already assigned"
+    rather than reading first and racing between the read and the write.
+    """
+
+    __tablename__ = "campaign_user_assignments"
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_id", "user_id", name="uq_campaign_user_assignments_campaign_user"
+        ),
+        Index("ix_campaign_user_assignments_user_id", "user_id"),
+        Index("ix_campaign_user_assignments_campaign_id", "campaign_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("campaigns.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # Nullable on purpose: see the class docstring. ``SET NULL`` rather than
+    # ``CASCADE`` so removing the granting administrator never silently revokes
+    # somebody else's access.
+    assigned_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - debug helper
+        return f"CampaignUserAssignment(campaign_id={self.campaign_id!r}, user_id={self.user_id!r})"
 
 
 class CampaignContact(Base):

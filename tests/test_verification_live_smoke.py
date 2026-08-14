@@ -90,8 +90,23 @@ def test_refuses_when_feature_disabled(
 
 
 def test_refuses_when_no_key(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Refused before any network call, and told why.
+
+    The refusal stayed exactly where it was, and that is worth pinning. Making
+    MillionVerifier an operator control briefly moved it: a control whose
+    credential is absent cannot be on, so the *control* refused first and the
+    specific "no API key configured" sentence became unreachable.
+
+    That was wrong here. With no key, verification deliberately routes to a
+    deterministic simulator, and that is documented, tested behaviour local
+    development depends on — so the capability requires the credential only in
+    hosted environments, where a simulated answer would be misleading. This test
+    runs local, the control is therefore available, and the key check behind it
+    answers with the sentence it always used.
+    """
+
     settings = _settings(monkeypatch, key=None)
-    with pytest.raises(LiveSmokeError, match="no MillionVerifier API key"):
+    with pytest.raises(LiveSmokeError, match="no MillionVerifier API key configured"):
         run_live_smoke(db_session, email="a@b.com", confirm=True, settings=settings)
 
 

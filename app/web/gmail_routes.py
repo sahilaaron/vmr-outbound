@@ -71,6 +71,7 @@ from app.services.gmail.oauth import (
     GoogleGmailOAuthClient,
     verify_mailbox_identity,
 )
+from app.services.operations import settings as operational
 
 router = APIRouter(
     prefix="/gmail",
@@ -115,15 +116,19 @@ def oauth_client(request: Request, settings: Settings) -> GmailOAuthClient:
     return GoogleGmailOAuthClient(settings.gmail)
 
 
-def gmail_enabled(settings: Settings) -> bool:
+def gmail_enabled(db: Session, settings: Settings) -> bool:
     """Whether the Gmail draft feature exists in this deployment at all.
 
     Both switches, because the feature acts on a sequence: without
     ``email_sequences`` there is nothing to draft from, and a Connect Gmail
     button leading to a dead end is worse than no button.
+
+    ``db`` is a parameter because both switches are an administrator's durable
+    settings rather than environment variables, so reading them is a query.
     """
 
-    return bool(settings.features.gmail_drafts and settings.features.email_sequences)
+    features = operational.effective_flags(db, settings)
+    return bool(features.gmail_drafts and features.email_sequences)
 
 
 def _safe_return(raw: str | None) -> str:
@@ -194,12 +199,13 @@ def _constant_equal(left: str, right: str) -> bool:
 @router.post("/connect")
 def connect_gmail(
     request: Request,
+    db: Session = Depends(get_db),
     back: str = Form(DEFAULT_RETURN_PATH),
 ) -> Response:
     """Start one Gmail consent, for the signed-in operator only."""
 
     settings = _settings(request)
-    if not gmail_enabled(settings):
+    if not gmail_enabled(db, settings):
         return _not_available()
     target = _safe_return(back)
 
@@ -276,7 +282,7 @@ def gmail_callback(
     """Validate the round trip and bind one verified mailbox to this operator."""
 
     settings = _settings(request)
-    if not gmail_enabled(settings):
+    if not gmail_enabled(db, settings):
         return _not_available()
 
     codec = _codec(settings)
@@ -381,7 +387,7 @@ def disconnect_gmail(
     """Forget this operator's mailbox authorization."""
 
     settings = _settings(request)
-    if not gmail_enabled(settings):
+    if not gmail_enabled(db, settings):
         return _not_available()
     target = _safe_return(back)
     operator = current_operator()

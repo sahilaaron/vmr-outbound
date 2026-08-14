@@ -38,13 +38,22 @@ from app.services import campaign_contacts, campaigns, collections, pipeline
 from app.services.agents import controls, jobs
 from app.services.agents.orchestrator import reconcile_agent_control
 from app.services.agents.registry import AGENT_SPECS
+from app.services.campaign_access import (
+    UNENFORCED,
+    actor_from_request,
+    require_campaign_path_access,
+)
 
 # Every state-changing route on this router is refused unless the request
 # carries the CSRF token bound to the caller's session. The check is declared
 # once, here, rather than on ~100 individual handlers: a route added later is
 # covered the moment it is registered. It is inert for safe methods and inert
 # entirely when hosted authentication is disabled (local development).
-router = APIRouter(prefix="/api", tags=["phase-2"], dependencies=[Depends(require_csrf)])
+router = APIRouter(
+    prefix="/api",
+    tags=["phase-2"],
+    dependencies=[Depends(require_csrf), Depends(require_campaign_path_access)],
+)
 DbSession = Annotated[Session, Depends(get_db)]
 PageLimit = Annotated[int, Query(ge=1, le=500)]
 PageOffset = Annotated[int, Query(ge=0)]
@@ -353,7 +362,31 @@ def list_campaigns(
             response.headers["Access-Control-Allow-Origin"] = origin
             response.headers["Vary"] = "Origin"
 
-    overviews = campaigns.list_campaigns(db)
+    # Who is asking decides what comes back, and this is the seam the
+    # account-linked extension branch lands on.
+    #
+    # A session caller is scoped by :mod:`app.services.campaign_access`: an
+    # administrator gets every campaign, a normal user gets the ones they created
+    # or were assigned. A capture credential proves an *installation*, not a
+    # person, so `actor_from_request` resolves it to an actor with no user id —
+    # and today that actor is handed the pre-existing unscoped list rather than an
+    # empty one, because narrowing it now would break the extension that is
+    # already shipped while account linking is being built on another branch.
+    #
+    # The narrowing is written here rather than left to be written later: the
+    # moment an extension request carries a resolvable user, the actor stops
+    # being unidentified and the same scoped statement below answers it. No line
+    # of this handler changes when that lands.
+    campaign_actor = actor_from_request(request, db)
+    if extension_request and not campaign_actor.is_identified:
+        # A legacy `vmrx1` credential, which names an installation and no
+        # account. It is local-development only and verifies nothing hosted, so
+        # it keeps the historical unscoped answer rather than being narrowed to
+        # an empty list in the one place it is still allowed to be used. An
+        # account-linked `vmre1` token never reaches this branch: it is
+        # identified, and the scoped statement below answers it.
+        campaign_actor = UNENFORCED
+    overviews = campaigns.list_campaigns(db, actor=campaign_actor)
     rows = []
     for overview in overviews:
         campaign = overview.campaign
@@ -379,9 +412,13 @@ def list_campaigns(
 
 
 @router.post("/campaigns", status_code=status.HTTP_201_CREATED)
-def create_campaign(payload: CampaignCreate, db: DbSession) -> dict[str, Any]:
+def create_campaign(request: Request, payload: CampaignCreate, db: DbSession) -> dict[str, Any]:
     try:
-        campaign = campaigns.create_campaign(db, **payload.model_dump())
+        campaign = campaigns.create_campaign(
+            db,
+            **payload.model_dump(),
+            created_by_user_id=actor_from_request(request).user_id,
+        )
     except campaigns.CampaignError as exc:
         _raise_service_error(exc)
     return _campaign(campaign)

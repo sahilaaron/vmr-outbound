@@ -564,26 +564,30 @@ def test_one_model_call_per_company_however_often_resolution_runs(db_session: Se
 # ---------------------------------------------------------------------------
 
 
-def test_readiness_names_every_unmet_precondition_with_its_variable() -> None:
+def test_readiness_names_every_unmet_precondition_and_where_to_change_it(
+    db_session: Session,
+) -> None:
     """The gap that made this a support question rather than a self-service fix.
 
     Four unrelated switches produce the same "not_started · 0 attempt(s)", and
     none of them was named anywhere. "The promotion flag" is not actionable
-    without its variable name, so the variable name is in the sentence.
+    without knowing what it is called and where it lives, so each blocker names
+    the control and the screen that owns it — or, for the one precondition that
+    is genuinely a deployment secret, the environment variable.
     """
 
     from app.services.resolution import pending
 
     settings = get_settings()
-    readiness = pending.lookup_readiness(settings)
+    readiness = pending.lookup_readiness(db_session, settings)
 
     assert not readiness.provider_ready
-    settings_named = {blocker.setting.split("=")[0] for blocker in readiness.blockers}
+    settings_named = {blocker.setting for blocker in readiness.blockers}
     assert settings_named == {
-        "FEATURES__CONTACT_CAPTURE_PROMOTION",
-        "FEATURES__AUTOMATIC_COMPANY_DOMAIN_RESOLUTION",
-        "FEATURES__SALESNAV_DOMAIN_ENRICHMENT",
-        "LOGO_DEV_API_KEY",
+        "Capture promotion — Admin → Configuration",
+        "Automatic company-domain resolution — Admin → Configuration",
+        "logo.dev domain lookup — Admin → Configuration",
+        "LOGO_DEV_API_KEY=...",
     }
     # Each carries its own sentence too: a bare variable name says what to set and
     # not what it does, which is how a switch gets turned on without being understood.
@@ -591,6 +595,7 @@ def test_readiness_names_every_unmet_precondition_with_its_variable() -> None:
 
 
 def test_a_fully_configured_workbench_reports_nothing_missing(
+    db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.services.resolution import pending
@@ -608,7 +613,7 @@ def test_a_fully_configured_workbench_reports_nothing_missing(
     monkeypatch.setenv("LOGO_DEV_API_KEY", "a-key")
     get_settings.cache_clear()
     try:
-        readiness = pending.lookup_readiness(get_settings())
+        readiness = pending.lookup_readiness(db_session, get_settings())
         assert readiness.provider_ready
         assert readiness.model_ready
         assert readiness.blockers == ()

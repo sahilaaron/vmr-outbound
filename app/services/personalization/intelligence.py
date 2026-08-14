@@ -46,6 +46,7 @@ from app.models.enums import (
     IntelligenceValueState,
 )
 from app.services.company_intelligence import read as intelligence_read
+from app.services.operations import settings as operational
 
 #: Bounds. The snapshot is a record, not a dump: enough accepted values to
 #: orient copy, enough exclusions to explain the gaps, nothing unbounded.
@@ -275,7 +276,10 @@ def assemble(
     """
 
     resolved = settings or get_settings()
-    if not resolved.features.company_intelligence:
+    # The effective control rather than the environment's default: whether
+    # drafting may read intelligence is an administrator's durable setting now,
+    # and this read already has the session it takes to answer that.
+    if not operational.enabled(session, "company_intelligence", resolved):
         return unavailable(STATUS_FEATURE_DISABLED)
 
     read = intelligence_read.get_company_intelligence(session, company_id=company.id)

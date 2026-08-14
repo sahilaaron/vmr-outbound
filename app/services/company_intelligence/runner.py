@@ -50,6 +50,7 @@ from app.services.company_intelligence.producer import (
     IntelligenceMalformed,
     IntelligenceProducerError,
 )
+from app.services.operations import settings as operational
 from app.services.thinking.claude_cli import ClaudeCliThinker
 from app.services.thinking.contracts import Thinker, ThinkingError, ThinkingRequest
 
@@ -123,7 +124,10 @@ def produce_for_company(
     """
 
     resolved_settings = settings or get_settings()
-    if not resolved_settings.features.company_intelligence:
+    # The effective control, not the environment's default: an administrator who
+    # turns Company Intelligence on from the Admin Configuration screen expects
+    # the next run to produce something, not to wait for a deploy.
+    if not operational.enabled(session, "company_intelligence", resolved_settings):
         return RunOutcome(
             succeeded=False,
             company_id=company.id,

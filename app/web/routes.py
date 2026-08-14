@@ -58,7 +58,14 @@ from app.models.linkedin_profile import LinkedInProfileSnapshot
 from app.models.personalization_policy import PersonalizationPolicyVersion
 from app.models.verification_job import AgentJob
 from app.services import agent_studio as agent_studio_service
-from app.services import campaign_contacts, devtools, identity, workbench, workbench_agents
+from app.services import (
+    campaign_access,
+    campaign_contacts,
+    devtools,
+    identity,
+    workbench,
+    workbench_agents,
+)
 from app.services.agent_studio.capture_report import DurableCaptureReportReader
 from app.services.agent_studio.company_report import DurableCompanyReportReader
 from app.services.agent_studio.email_verification_report import EmailVerificationReportReader
@@ -68,6 +75,10 @@ from app.services.agent_studio.research_report import (
     ResearchReportReader,
 )
 from app.services.agents.registry import AGENT_SPECS
+from app.services.campaign_access import (
+    actor_from_request,
+    require_campaign_path_access,
+)
 from app.services.campaign_contacts import CampaignContactError
 from app.services.campaigns import (
     CampaignError,
@@ -99,6 +110,7 @@ from app.services.imports.importer import (
     run_import,
 )
 from app.services.imports.preview import preview_import, preview_pending_batch
+from app.services.operations import settings as operational
 from app.services.personalization import generation as personalization_generation
 from app.services.personalization import policy as personalization_policy
 from app.services.resolution import pending as resolution_pending
@@ -125,7 +137,10 @@ from app.services.workbench_agents import views as workbench_views
 # once, here, rather than on ~100 individual handlers: a route added later is
 # covered the moment it is registered. It is inert for safe methods and inert
 # entirely when hosted authentication is disabled (local development).
-router = APIRouter(include_in_schema=False, dependencies=[Depends(require_csrf)])
+router = APIRouter(
+    include_in_schema=False,
+    dependencies=[Depends(require_csrf), Depends(require_campaign_path_access)],
+)
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 # The shared spreadsheet-neutralization boundary, so every environment that
@@ -219,7 +234,9 @@ def _render(
     shared: dict[str, Any] = {
         "app_env": settings.app_env,
         "dry_run": settings.dry_run,
-        "features_enabled": settings.features.enabled(),
+        # The effective controls, not the environment's defaults: every page's
+        # shell reports what an administrator has actually switched on.
+        "features_enabled": operational.effective_flags(db, settings).enabled(),
         "local_env": settings.app_env.lower() == "local",
         "database_ok": _database_ok(db),
         "open_reviews": open_reviews,
@@ -335,7 +352,7 @@ def campaigns_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespo
         db,
         "campaigns.html",
         {
-            "campaigns": list_campaigns(db),
+            "campaigns": list_campaigns(db, actor=actor_from_request(request)),
             "active_nav": "campaigns",
             "page_title": "Campaigns",
         },
@@ -355,7 +372,13 @@ async def campaigns_create(request: Request, db: Session = Depends(get_db)) -> R
     except ValueError:
         status = CampaignStatus.DRAFT
     try:
-        campaign = create_campaign(db, name=name, description=description, status=status)
+        campaign = create_campaign(
+            db,
+            name=name,
+            description=description,
+            status=status,
+            created_by_user_id=actor_from_request(request).user_id,
+        )
     except CampaignError as exc:
         return _redirect("/campaigns", err=str(exc))
     except Exception:
@@ -407,20 +430,20 @@ def campaign_detail_page(
             "workflow_states": list(ContactWorkflowState),
             # Seller context (KB-001). Present only when the Knowledge Base is
             # switched on; while off the campaign page renders exactly as before.
-            "knowledge_base_on": _knowledge_base_enabled(),
+            "knowledge_base_on": _knowledge_base_enabled(db),
             "campaign_offerings": (
                 seller_campaign_offerings.offerings_for_campaign(db, overview.campaign.id)
-                if _knowledge_base_enabled()
+                if _knowledge_base_enabled(db)
                 else []
             ),
             "selectable_offerings": (
                 seller_campaign_offerings.selectable_offerings(db, overview.campaign.id)
-                if _knowledge_base_enabled()
+                if _knowledge_base_enabled(db)
                 else []
             ),
             "campaign_readiness": (
                 seller_readiness.campaign_report(db, overview.campaign)
-                if _knowledge_base_enabled()
+                if _knowledge_base_enabled(db)
                 else None
             ),
             "active_nav": "campaigns",
@@ -473,7 +496,10 @@ def imports_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespons
 
     staged_dir = get_settings().staged_uploads_dir
     staged_entries = staging.list_staged_uploads(staged_dir)
-    campaign_names = {str(row.campaign.id): row.campaign.name for row in list_campaigns(db)}
+    campaign_names = {
+        str(row.campaign.id): row.campaign.name
+        for row in list_campaigns(db, actor=actor_from_request(request))
+    }
     staged_with_names = [(entry, campaign_names.get(entry.campaign_id)) for entry in staged_entries]
 
     return _render(
@@ -500,7 +526,7 @@ def import_new_page(request: Request, db: Session = Depends(get_db)) -> HTMLResp
         db,
         "import_new.html",
         {
-            "campaigns": list_campaigns(db),
+            "campaigns": list_campaigns(db, actor=actor_from_request(request)),
             "preselect_campaign": request.query_params.get("campaign_id"),
             "max_upload_bytes": get_settings().max_upload_bytes,
             "active_nav": "imports",
@@ -889,9 +915,9 @@ def batch_detail_page(
             "outcome_filter": outcome_filter,
             "is_salesnav": is_salesnav,
             "is_pending": is_pending,
-            "enrich_enabled": is_salesnav and _enrichment_enabled(),
+            "enrich_enabled": is_salesnav and _enrichment_enabled(db),
             "sn_meta": batch.source_metadata if is_salesnav else None,
-            "csv_import_enabled": get_settings().features.csv_import,
+            "csv_import_enabled": operational.enabled(db, "csv_import"),
             "active_nav": "imports",
             "page_title": batch.filename or "Import batch",
         },
@@ -1020,9 +1046,8 @@ async def batch_map_save(
     # A Sales Navigator capture has no company_domain source, so when the
     # domain-enrichment feature is on the operator resolves domains next; other
     # batches go straight to the preview (unchanged behaviour).
-    if (
-        batch.source_format == ImportSourceFormat.SALES_NAVIGATOR
-        and get_settings().features.salesnav_domain_enrichment
+    if batch.source_format == ImportSourceFormat.SALES_NAVIGATOR and operational.enabled(
+        db, "salesnav_domain_enrichment"
     ):
         return _redirect(f"/imports/{batch.id}/enrich")
     return _redirect(f"/imports/{batch.id}/preview")
@@ -1038,8 +1063,15 @@ async def batch_map_save(
 # capture is never mutated, and nothing is ever auto-accepted.
 
 
-def _enrichment_enabled() -> bool:
-    return get_settings().features.salesnav_domain_enrichment
+def _enrichment_enabled(db: Session) -> bool:
+    """Whether the logo.dev lookup may be offered on this request.
+
+    ``db`` is a parameter because the switch is an administrator's durable
+    setting rather than an environment variable, so answering it is a read
+    against the database.
+    """
+
+    return operational.enabled(db, "salesnav_domain_enrichment")
 
 
 def _render_enrich(
@@ -1068,10 +1100,9 @@ def _render_enrich(
 def batch_enrich_page(
     request: Request, batch_id: str, db: Session = Depends(get_db)
 ) -> HTMLResponse:
-    if not _enrichment_enabled():
-        return _not_found(
-            request, db, "Company-domain enrichment is not enabled for this workbench."
-        )
+    refused = operational.refusal(db, "salesnav_domain_enrichment")
+    if refused is not None:
+        return _not_found(request, db, refused)
     loaded = _load_pending_batch(db, batch_id)
     if loaded is None:
         return _not_found(
@@ -1085,8 +1116,13 @@ def batch_enrich_page(
 def batch_enrich_lookup(request: Request, batch_id: str, db: Session = Depends(get_db)) -> Response:
     """Look up every not-yet-looked-up company once (idempotent, explicit)."""
 
-    if not _enrichment_enabled():
-        return _redirect("/imports", err="Company-domain enrichment is not enabled.")
+    refused = operational.refusal(db, "salesnav_domain_enrichment")
+    if refused is not None:
+        # The specific cause, not a generic "not enabled". A missing provider
+        # credential and an administrator's decision to switch the lookup off are
+        # different problems with different fixes, and the operator needs to know
+        # which one they have.
+        return _redirect("/imports", err=refused)
     loaded = _load_pending_batch(db, batch_id)
     if loaded is None:
         return _redirect("/imports", err="That staged batch does not exist or was processed.")
@@ -1131,8 +1167,13 @@ async def batch_enrich_refresh(
 ) -> Response:
     """Explicitly re-look-up one company (the only path that re-calls logo.dev)."""
 
-    if not _enrichment_enabled():
-        return _redirect("/imports", err="Company-domain enrichment is not enabled.")
+    refused = operational.refusal(db, "salesnav_domain_enrichment")
+    if refused is not None:
+        # The specific cause, not a generic "not enabled". A missing provider
+        # credential and an administrator's decision to switch the lookup off are
+        # different problems with different fixes, and the operator needs to know
+        # which one they have.
+        return _redirect("/imports", err=refused)
     loaded = _load_pending_batch(db, batch_id)
     if loaded is None:
         return _redirect("/imports", err="That staged batch does not exist or was processed.")
@@ -1185,8 +1226,13 @@ async def batch_enrich_confirm(
 ) -> Response:
     """Apply the operator's explicit domain decision for one company."""
 
-    if not _enrichment_enabled():
-        return _redirect("/imports", err="Company-domain enrichment is not enabled.")
+    refused = operational.refusal(db, "salesnav_domain_enrichment")
+    if refused is not None:
+        # The specific cause, not a generic "not enabled". A missing provider
+        # credential and an administrator's decision to switch the lookup off are
+        # different problems with different fixes, and the operator needs to know
+        # which one they have.
+        return _redirect("/imports", err=refused)
     loaded = _load_pending_batch(db, batch_id)
     if loaded is None:
         return _redirect("/imports", err="That staged batch does not exist or was processed.")
@@ -1257,9 +1303,10 @@ def batch_preview_page(
             "preview": result,
             "shown_rows": result.rows[:PREVIEW_ROWS_SHOWN],
             "has_mapping": bool(batch.column_mapping),
-            "csv_import_enabled": get_settings().features.csv_import,
+            "csv_import_enabled": operational.enabled(db, "csv_import"),
             "enrich_enabled": (
-                batch.source_format == ImportSourceFormat.SALES_NAVIGATOR and _enrichment_enabled()
+                batch.source_format == ImportSourceFormat.SALES_NAVIGATOR
+                and _enrichment_enabled(db)
             ),
             "active_nav": "imports",
             "page_title": f"Preview — staged batch {batch.id}",
@@ -1615,7 +1662,7 @@ def contacts_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespon
             # Offered so a selection made here can be enrolled without leaving
             # the page. The list is still not required to view a contact: an
             # empty list simply hides the enrolment bar.
-            "campaigns": list_campaigns(db),
+            "campaigns": list_campaigns(db, actor=actor_from_request(request)),
             "active_nav": "contacts",
             "page_title": "Contacts",
         },
@@ -1639,6 +1686,9 @@ async def contacts_add_to_campaign(request: Request, db: Session = Depends(get_d
     campaign_id = _parse_uuid(str(form.get("campaign_id", "")))
     if campaign_id is None:
         return _redirect("/contacts", err="Choose a campaign to add the selected contacts to.")
+    # The campaign arrives in the form body, so the router-level path guard does
+    # not see it. Enrolment is a write into somebody's campaign; check it here.
+    campaign_access.require_campaign_access(db, campaign_id, actor_from_request(request))
 
     selected: list[uuid.UUID] = []
     for raw in form.getlist("contact_ids"):
@@ -1678,7 +1728,7 @@ def contact_detail_page(
     if detail is None:
         return _not_found(request, db, "That contact does not exist.")
 
-    settings = get_settings()
+    features = operational.effective_flags(db)
     intel = verification_console.contact_email_intel(db, detail.contact)
     return _render(
         request,
@@ -1688,10 +1738,9 @@ def contact_detail_page(
             "detail": detail,
             "intel": intel,
             "all_labels": crm_annotations.all_labels(db),
-            "verification_enabled": settings.features.email_generation
-            or settings.features.millionverifier,
-            "generation_enabled": settings.features.email_generation,
-            "millionverifier_enabled": settings.features.millionverifier,
+            "verification_enabled": features.email_generation or features.millionverifier,
+            "generation_enabled": features.email_generation,
+            "millionverifier_enabled": features.millionverifier,
             "active_nav": "contacts",
             "page_title": detail.full_name,
         },
@@ -1928,8 +1977,14 @@ async def capture_add_note(
 # --- Phase 2: email verification --------------------------------------------
 
 
-def _verification_available() -> bool:
-    features = get_settings().features
+def _verification_available(db: Session) -> bool:
+    """Whether either half of email verification is switched on.
+
+    ``db`` is a parameter because both switches are administrators' durable
+    settings rather than environment variables, and reading them is a query.
+    """
+
+    features = operational.effective_flags(db)
     return features.email_generation or features.millionverifier
 
 
@@ -1938,7 +1993,7 @@ WORKER_ID = "workbench-local"
 
 @router.post("/contacts/{contact_id}/generate-candidates")
 def contact_generate_candidates(contact_id: str, db: Session = Depends(get_db)) -> Response:
-    if not get_settings().features.email_generation:
+    if not operational.enabled(db, "email_generation"):
         return _redirect(f"/contacts/{contact_id}", err="Email generation is disabled.")
     parsed = _parse_uuid(contact_id)
     contact = db.get(Contact, parsed) if parsed else None
@@ -1958,7 +2013,7 @@ def contact_generate_candidates(contact_id: str, db: Session = Depends(get_db)) 
 
 @router.post("/contacts/{contact_id}/verify")
 def contact_verify(contact_id: str, db: Session = Depends(get_db)) -> Response:
-    if not get_settings().features.millionverifier:
+    if not operational.enabled(db, "millionverifier"):
         return _redirect(f"/contacts/{contact_id}", err="MillionVerifier is disabled.")
     parsed = _parse_uuid(contact_id)
     contact = db.get(Contact, parsed) if parsed else None
@@ -1993,7 +2048,7 @@ def contact_verify(contact_id: str, db: Session = Depends(get_db)) -> Response:
 @router.get("/verification", response_class=HTMLResponse, name="verification")
 def verification_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     settings = get_settings()
-    if not _verification_available():
+    if not _verification_available(db):
         return _render(
             request,
             db,
@@ -2004,6 +2059,7 @@ def verification_page(request: Request, db: Session = Depends(get_db)) -> HTMLRe
                 "page_title": "Email Verification",
             },
         )
+    features = operational.effective_flags(db, settings)
     console = verification_console.load_console(db)
     return _render(
         request,
@@ -2011,8 +2067,8 @@ def verification_page(request: Request, db: Session = Depends(get_db)) -> HTMLRe
         "verification.html",
         {
             "console": console,
-            "generation_enabled": settings.features.email_generation,
-            "millionverifier_enabled": settings.features.millionverifier,
+            "generation_enabled": features.email_generation,
+            "millionverifier_enabled": features.millionverifier,
             "active_nav": "verification",
             "page_title": "Email Verification",
         },
@@ -2040,7 +2096,7 @@ def _verification_provider(settings: Settings) -> VerificationProvider:
 @router.post("/verification/run")
 def verification_run(db: Session = Depends(get_db)) -> Response:
     settings = get_settings()
-    if not settings.features.millionverifier:
+    if not operational.enabled(db, "millionverifier", settings):
         return _redirect("/verification", err="MillionVerifier is disabled.")
     provider = _verification_provider(settings)
     processed = verification_service.run_worker(
@@ -2053,7 +2109,7 @@ def verification_run(db: Session = Depends(get_db)) -> Response:
 
 @router.post("/verification/recover")
 def verification_recover(db: Session = Depends(get_db)) -> Response:
-    if not _verification_available():
+    if not _verification_available(db):
         return _redirect("/verification", err="Email verification is disabled.")
     reclaimed = verification_queue.recover_stale_jobs(db)
     for job in reclaimed:
@@ -2075,7 +2131,7 @@ def verification_recover(db: Session = Depends(get_db)) -> Response:
 @router.post("/verification/bulk")
 async def verification_bulk(request: Request, db: Session = Depends(get_db)) -> Response:
     settings = get_settings()
-    if not settings.features.millionverifier:
+    if not operational.enabled(db, "millionverifier", settings):
         return _redirect("/verification", err="MillionVerifier is disabled.")
     form = await request.form()
     campaign_id = _parse_uuid(str(form.get("campaign_id", "")))
@@ -2127,8 +2183,14 @@ async def verification_bulk(request: Request, db: Session = Depends(get_db)) -> 
 # service. A page that cannot answer a question truthfully says so instead.
 
 
-def _agent_workbench_available() -> bool:
-    return get_settings().features.agent_workbench
+def _agent_workbench_available(db: Session) -> bool:
+    """Whether the Agent Workbench routes may answer on this request.
+
+    ``db`` is a parameter because the switch is an administrator's durable
+    setting rather than an environment variable, so reading it needs a query.
+    """
+
+    return operational.enabled(db, "agent_workbench")
 
 
 def _reader(db: Session) -> workbench_agents.PhaseTwoWorkbenchReader:
@@ -2206,7 +2268,7 @@ def _command_redirect(url: str, outcome: workbench_agents.CommandOutcome) -> Res
 
 @router.get("/workbench", response_class=HTMLResponse)
 def agent_workbench_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return _agent_workbench_unavailable(request, db)
     return _render(
         request,
@@ -2224,7 +2286,7 @@ def agent_workbench_page(request: Request, db: Session = Depends(get_db)) -> HTM
 
 @router.get("/workbench/jobs", response_class=HTMLResponse)
 def agent_jobs_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return _agent_workbench_unavailable(request, db)
     agent_raw = request.query_params.get("agent") or None
     status_raw = request.query_params.get("status") or None
@@ -2275,7 +2337,7 @@ def agent_jobs_page(request: Request, db: Session = Depends(get_db)) -> HTMLResp
 def agent_job_detail_page(
     request: Request, job_id: str, db: Session = Depends(get_db)
 ) -> HTMLResponse:
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return _agent_workbench_unavailable(request, db)
     parsed = _parse_uuid(job_id)
     job = _reader(db).job(parsed) if parsed else None
@@ -2296,7 +2358,7 @@ def agent_job_detail_page(
 
 @router.post("/workbench/jobs/{job_id}/retry")
 async def agent_job_retry(request: Request, job_id: str, db: Session = Depends(get_db)) -> Response:
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return _redirect("/", err="The Workbench Agent monitor is disabled.")
     parsed = _parse_uuid(job_id)
     if parsed is None:
@@ -2317,7 +2379,7 @@ async def agent_job_retry(request: Request, job_id: str, db: Session = Depends(g
 def agent_detail_page(
     request: Request, agent_id: str, db: Session = Depends(get_db)
 ) -> HTMLResponse:
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return _agent_workbench_unavailable(request, db)
     parsed = _parse_agent_id(agent_id)
     if parsed is None:
@@ -2343,7 +2405,7 @@ def agent_detail_page(
 async def agent_set_control(
     request: Request, agent_id: str, db: Session = Depends(get_db)
 ) -> Response:
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return _redirect("/", err="The Workbench Agent monitor is disabled.")
     parsed = _parse_agent_id(agent_id)
     if parsed is None:
@@ -2373,7 +2435,7 @@ async def agent_sending_stop(request: Request, db: Session = Depends(get_db)) ->
     """
 
     back = f"/workbench/agents/{AgentIdentifier.SENDING.value}"
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return _redirect("/", err="The Workbench Agent monitor is disabled.")
     form = await request.form()
     if str(form.get("confirm", "")).strip().upper() != "STOP":
@@ -2391,7 +2453,7 @@ async def agent_sending_resume(request: Request, db: Session = Depends(get_db)) 
     """Ask Phase 2 to allow Sending again, through its own safety checks."""
 
     back = f"/workbench/agents/{AgentIdentifier.SENDING.value}"
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return _redirect("/", err="The Workbench Agent monitor is disabled.")
     form = await request.form()
     if str(form.get("confirm", "")).strip().upper() != "RESUME SENDING":
@@ -2408,7 +2470,7 @@ async def agent_sending_resume(request: Request, db: Session = Depends(get_db)) 
 def agent_campaign_page(
     request: Request, campaign_id: str, db: Session = Depends(get_db)
 ) -> HTMLResponse:
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return _agent_workbench_unavailable(request, db)
     parsed = _parse_uuid(campaign_id)
     stage = (
@@ -2448,7 +2510,7 @@ def agent_campaign_page(
 async def agent_campaign_override(
     request: Request, campaign_id: str, agent_id: str, db: Session = Depends(get_db)
 ) -> Response:
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return _redirect("/", err="The Workbench Agent monitor is disabled.")
     parsed_campaign = _parse_uuid(campaign_id)
     parsed_agent = _parse_agent_id(agent_id)
@@ -2479,7 +2541,7 @@ async def agent_campaign_override(
 async def agent_campaign_override_clear(
     request: Request, campaign_id: str, agent_id: str, db: Session = Depends(get_db)
 ) -> Response:
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return _redirect("/", err="The Workbench Agent monitor is disabled.")
     parsed_campaign = _parse_uuid(campaign_id)
     parsed_agent = _parse_agent_id(agent_id)
@@ -2509,7 +2571,7 @@ def agent_contact_execution_page(
     campaign_contact_id: str,
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return _agent_workbench_unavailable(request, db)
     parsed_campaign = _parse_uuid(campaign_id)
     parsed_membership = _parse_uuid(campaign_contact_id)
@@ -2549,7 +2611,7 @@ async def agent_contact_command(
     is refused rather than guessed.
     """
 
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return _redirect("/", err="The Workbench Agent monitor is disabled.")
     back = f"/workbench/campaigns/{campaign_id}/contacts/{campaign_contact_id}"
     parsed = _parse_uuid(campaign_contact_id)
@@ -2791,23 +2853,30 @@ def _auto_resolution_enabled() -> bool:
 
     Both switches, because automatic resolution is a way of settling a capture's
     promotion: with promotion off there is nothing for a decision to feed.
+
     """
 
     features = get_settings().features
     return features.contact_capture_promotion and features.automatic_company_domain_resolution
 
 
-def _provider_access() -> resolution_service.ProviderAccess:
+def _provider_access(db: Session) -> resolution_service.ProviderAccess:
     """How the provider may be reached, or an access with no key at all.
 
     A missing switch or missing key yields an unusable access rather than an
     error: the policy then decides from stored evidence and reports the provider
     truthfully as not run, instead of the page pretending it asked and heard
     nothing.
+
+    ``db`` is a parameter because the switch is an administrator's durable
+    setting rather than an environment variable, so reading it is a query.
     """
 
     settings = get_settings()
-    usable = settings.features.salesnav_domain_enrichment and settings.has_logo_dev_key()
+    usable = (
+        operational.enabled(db, "salesnav_domain_enrichment", settings)
+        and settings.has_logo_dev_key()
+    )
     return resolution_service.ProviderAccess(
         api_key=settings.logo_dev_api_key if usable else None,
         search_url=settings.logo_dev_search_url,
@@ -2839,7 +2908,7 @@ def contact_captures_pending_page(request: Request, db: Session = Depends(get_db
         "contact_captures_pending.html",
         {
             "rows": rows,
-            "lookup_available": _enrichment_enabled() and get_settings().has_logo_dev_key(),
+            "lookup_available": _enrichment_enabled(db) and get_settings().has_logo_dev_key(),
             "page_title": "Captures awaiting promotion",
         },
     )
@@ -2858,7 +2927,7 @@ def capture_company_lookup(
         return _redirect("/contact-captures/pending", err="That capture does not exist.")
     settings = get_settings()
     target = f"/contact-captures/{snapshot.id}"
-    if not settings.features.salesnav_domain_enrichment:
+    if not operational.enabled(db, "salesnav_domain_enrichment", settings):
         return _redirect(target, err="Company-domain enrichment is not enabled. No lookup ran.")
     if not settings.has_logo_dev_key():
         return _redirect(
@@ -2987,7 +3056,7 @@ def capture_company_resolve(
         outcome = resolution_service.resolve(
             db,
             snapshot=snapshot,
-            access=_provider_access(),
+            access=_provider_access(db),
             actor="workbench",
             force=True,
         )
@@ -3119,12 +3188,13 @@ def contact_capture_page(
             "profile_rows": _capture_profile_rows(snapshot.profile_fields or {}),
             "resolution": view,
             "lookup_available": (
-                settings.features.salesnav_domain_enrichment and settings.has_logo_dev_key()
+                operational.enabled(db, "salesnav_domain_enrichment", settings)
+                and settings.has_logo_dev_key()
             ),
             # So "not_started · 0 attempt(s)" can say *why* nothing was attempted.
             # A status with no explanation reads as a broken pipeline when the truth
             # is usually one unset switch.
-            "readiness": resolution_pending.lookup_readiness(settings),
+            "readiness": resolution_pending.lookup_readiness(db, settings),
             # Decisions are shown whenever they exist, even with the switch since
             # turned off: a decision that produced a live company link must stay
             # explainable regardless of the current configuration.
@@ -3143,10 +3213,14 @@ def contact_capture_page(
 # step, no approval queue and no model in any of these paths.
 
 
-def _knowledge_base_enabled() -> bool:
-    """Whether the Knowledge Base is switched on (FND-007 default-off)."""
+def _knowledge_base_enabled(db: Session) -> bool:
+    """Whether the Knowledge Base is switched on (FND-007 default-off).
 
-    return get_settings().features.seller_knowledge_base
+    ``db`` is a parameter because the switch is an administrator's durable
+    setting rather than an environment variable, so reading it is a query.
+    """
+
+    return operational.enabled(db, "seller_knowledge_base")
 
 
 def _kb_disabled(request: Request, db: Session) -> HTMLResponse:
@@ -3209,7 +3283,7 @@ def _show_archived(request: Request) -> bool:
 def knowledge_base_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     """Overview and readiness for the seller-side knowledge base."""
 
-    if not _knowledge_base_enabled():
+    if not _knowledge_base_enabled(db):
         return _kb_disabled(request, db)
     return _render(
         request,
@@ -3232,7 +3306,7 @@ async def knowledge_base_generate(request: Request, db: Session = Depends(get_db
     offering or persona is never overwritten by a generated one.
     """
 
-    if not _knowledge_base_enabled():
+    if not _knowledge_base_enabled(db):
         return _redirect("/", err="The Knowledge Base is not enabled.")
 
     form = await request.form()
@@ -3265,7 +3339,7 @@ async def knowledge_base_generate(request: Request, db: Session = Depends(get_db
 def knowledge_base_company_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     """The seller organisation profile."""
 
-    if not _knowledge_base_enabled():
+    if not _knowledge_base_enabled(db):
         return _kb_disabled(request, db)
     return _render(
         request,
@@ -3280,7 +3354,7 @@ def knowledge_base_company_page(request: Request, db: Session = Depends(get_db))
 
 @router.post("/knowledge-base/company")
 async def knowledge_base_company_save(request: Request, db: Session = Depends(get_db)) -> Response:
-    if not _knowledge_base_enabled():
+    if not _knowledge_base_enabled(db):
         return _kb_disabled(request, db)
     form = await request.form()
     try:
@@ -3306,7 +3380,7 @@ async def knowledge_base_company_save(request: Request, db: Session = Depends(ge
 
 @router.get("/knowledge-base/offerings", response_class=HTMLResponse)
 def knowledge_base_offerings_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    if not _knowledge_base_enabled():
+    if not _knowledge_base_enabled(db):
         return _kb_disabled(request, db)
     archived = _show_archived(request)
     return _render(
@@ -3326,7 +3400,7 @@ def knowledge_base_offerings_page(request: Request, db: Session = Depends(get_db
 async def knowledge_base_offering_create(
     request: Request, db: Session = Depends(get_db)
 ) -> Response:
-    if not _knowledge_base_enabled():
+    if not _knowledge_base_enabled(db):
         return _kb_disabled(request, db)
     form = await request.form()
     try:
@@ -3354,7 +3428,7 @@ async def knowledge_base_offering_create(
 def knowledge_base_offering_detail_page(
     request: Request, offering_id: str, db: Session = Depends(get_db)
 ) -> HTMLResponse:
-    if not _knowledge_base_enabled():
+    if not _knowledge_base_enabled(db):
         return _kb_disabled(request, db)
     parsed_id = _parse_uuid(offering_id)
     offering = seller_records.get_offering(db, parsed_id) if parsed_id else None
@@ -3395,7 +3469,9 @@ def knowledge_base_offering_detail_page(
                 for record in seller_records.list_personas(db)
                 if record.id not in linked_ids["persona"]
             ],
-            "campaigns": seller_campaign_offerings.campaigns_for_offering(db, offering.id),
+            "campaigns": seller_campaign_offerings.campaigns_for_offering(
+                db, offering.id, actor=actor_from_request(request)
+            ),
         },
     )
 
@@ -3404,7 +3480,7 @@ def knowledge_base_offering_detail_page(
 async def knowledge_base_offering_update(
     request: Request, offering_id: str, db: Session = Depends(get_db)
 ) -> Response:
-    if not _knowledge_base_enabled():
+    if not _knowledge_base_enabled(db):
         return _kb_disabled(request, db)
     parsed_id = _parse_uuid(offering_id)
     offering = seller_records.get_offering(db, parsed_id) if parsed_id else None
@@ -3442,7 +3518,7 @@ async def knowledge_base_offering_state(
 ) -> Response:
     """Archive or restore an offering. Campaigns that name it are unaffected."""
 
-    if not _knowledge_base_enabled():
+    if not _knowledge_base_enabled(db):
         return _kb_disabled(request, db)
     parsed_id = _parse_uuid(offering_id)
     offering = seller_records.get_offering(db, parsed_id) if parsed_id else None
@@ -3478,7 +3554,7 @@ async def knowledge_base_offering_link(
 ) -> Response:
     """Add or remove one proof point, restricted claim, or persona association."""
 
-    if not _knowledge_base_enabled():
+    if not _knowledge_base_enabled(db):
         return _kb_disabled(request, db)
     parsed_id = _parse_uuid(offering_id)
     offering = seller_records.get_offering(db, parsed_id) if parsed_id else None
@@ -3515,7 +3591,7 @@ async def knowledge_base_offering_link(
 def knowledge_base_proof_points_page(
     request: Request, db: Session = Depends(get_db)
 ) -> HTMLResponse:
-    if not _knowledge_base_enabled():
+    if not _knowledge_base_enabled(db):
         return _kb_disabled(request, db)
     archived = _show_archived(request)
     proof_points = seller_records.list_proof_points(db, include_archived=archived)
@@ -3538,7 +3614,7 @@ def knowledge_base_proof_points_page(
 async def knowledge_base_proof_point_create(
     request: Request, db: Session = Depends(get_db)
 ) -> Response:
-    if not _knowledge_base_enabled():
+    if not _knowledge_base_enabled(db):
         return _kb_disabled(request, db)
     form = await request.form()
     try:
@@ -3561,7 +3637,7 @@ async def knowledge_base_proof_point_update(
 ) -> Response:
     """Edit a proof point. Its offering associations are untouched."""
 
-    if not _knowledge_base_enabled():
+    if not _knowledge_base_enabled(db):
         return _kb_disabled(request, db)
     parsed_id = _parse_uuid(proof_point_id)
     proof_point = seller_records.get_proof_point(db, parsed_id) if parsed_id else None
@@ -3587,7 +3663,7 @@ async def knowledge_base_proof_point_update(
 async def knowledge_base_proof_point_state(
     request: Request, proof_point_id: str, db: Session = Depends(get_db)
 ) -> Response:
-    if not _knowledge_base_enabled():
+    if not _knowledge_base_enabled(db):
         return _kb_disabled(request, db)
     parsed_id = _parse_uuid(proof_point_id)
     proof_point = seller_records.get_proof_point(db, parsed_id) if parsed_id else None
@@ -3610,7 +3686,7 @@ async def knowledge_base_proof_point_state(
 def knowledge_base_restricted_claims_page(
     request: Request, db: Session = Depends(get_db)
 ) -> HTMLResponse:
-    if not _knowledge_base_enabled():
+    if not _knowledge_base_enabled(db):
         return _kb_disabled(request, db)
     archived = _show_archived(request)
     claims = seller_records.list_restricted_claims(db, include_archived=archived)
@@ -3640,7 +3716,7 @@ def knowledge_base_restricted_claims_page(
 async def knowledge_base_restricted_claim_create(
     request: Request, db: Session = Depends(get_db)
 ) -> Response:
-    if not _knowledge_base_enabled():
+    if not _knowledge_base_enabled(db):
         return _kb_disabled(request, db)
     form = await request.form()
     try:
@@ -3675,7 +3751,7 @@ async def knowledge_base_restricted_claim_update(
 ) -> Response:
     """Edit a restriction. Widening it to global drops its offering links."""
 
-    if not _knowledge_base_enabled():
+    if not _knowledge_base_enabled(db):
         return _kb_disabled(request, db)
     parsed_id = _parse_uuid(claim_id)
     claim = seller_records.get_restricted_claim(db, parsed_id) if parsed_id else None
@@ -3711,7 +3787,7 @@ async def knowledge_base_restricted_claim_update(
 async def knowledge_base_restricted_claim_state(
     request: Request, claim_id: str, db: Session = Depends(get_db)
 ) -> Response:
-    if not _knowledge_base_enabled():
+    if not _knowledge_base_enabled(db):
         return _kb_disabled(request, db)
     parsed_id = _parse_uuid(claim_id)
     claim = seller_records.get_restricted_claim(db, parsed_id) if parsed_id else None
@@ -3732,7 +3808,7 @@ async def knowledge_base_restricted_claim_state(
 
 @router.get("/knowledge-base/personas", response_class=HTMLResponse)
 def knowledge_base_personas_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    if not _knowledge_base_enabled():
+    if not _knowledge_base_enabled(db):
         return _kb_disabled(request, db)
     archived = _show_archived(request)
     personas = seller_records.list_personas(db, include_archived=archived)
@@ -3755,7 +3831,7 @@ def knowledge_base_personas_page(request: Request, db: Session = Depends(get_db)
 async def knowledge_base_persona_create(
     request: Request, db: Session = Depends(get_db)
 ) -> Response:
-    if not _knowledge_base_enabled():
+    if not _knowledge_base_enabled(db):
         return _kb_disabled(request, db)
     form = await request.form()
     try:
@@ -3782,7 +3858,7 @@ async def knowledge_base_persona_update(
 ) -> Response:
     """Edit a persona. Its offering associations are untouched."""
 
-    if not _knowledge_base_enabled():
+    if not _knowledge_base_enabled(db):
         return _kb_disabled(request, db)
     parsed_id = _parse_uuid(persona_id)
     persona = seller_records.get_persona(db, parsed_id) if parsed_id else None
@@ -3812,7 +3888,7 @@ async def knowledge_base_persona_update(
 async def knowledge_base_persona_state(
     request: Request, persona_id: str, db: Session = Depends(get_db)
 ) -> Response:
-    if not _knowledge_base_enabled():
+    if not _knowledge_base_enabled(db):
         return _kb_disabled(request, db)
     parsed_id = _parse_uuid(persona_id)
     persona = seller_records.get_persona(db, parsed_id) if parsed_id else None
@@ -3846,7 +3922,7 @@ async def campaign_offering_add(
     Association only. It never writes the campaign's copy or call to action.
     """
 
-    if not _knowledge_base_enabled():
+    if not _knowledge_base_enabled(db):
         return _kb_disabled(request, db)
     parsed_id = _parse_uuid(campaign_id)
     overview = get_campaign_overview(db, parsed_id) if parsed_id else None
@@ -3875,7 +3951,7 @@ async def campaign_offering_remove(
 ) -> Response:
     """Remove an offering association. Nothing else about the campaign changes."""
 
-    if not _knowledge_base_enabled():
+    if not _knowledge_base_enabled(db):
         return _kb_disabled(request, db)
     parsed_id = _parse_uuid(campaign_id)
     overview = get_campaign_overview(db, parsed_id) if parsed_id else None
@@ -3939,7 +4015,7 @@ def _campaign_contact_options(db: Session) -> list[dict[str, Any]]:
 
 @router.get("/admin/agents/studio", response_class=HTMLResponse)
 def agent_studio_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return _agent_workbench_unavailable(request, db)
     return _render(
         request,
@@ -4065,7 +4141,7 @@ def _personalization_context(
 
 @router.get("/admin/agents/studio/personalization", response_class=HTMLResponse)
 def personalization_policy_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return _agent_workbench_unavailable(request, db)
     return _render(
         request,
@@ -4099,7 +4175,7 @@ def _parse_examples(raw: str) -> list[dict[str, Any]]:
 async def personalization_policy_create(
     request: Request, db: Session = Depends(get_db)
 ) -> Response:
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return _redirect("/admin", err="Agent Studio is disabled.")
     form = await request.form()
     base_id = _parse_uuid(str(form.get("based_on_version_id", "")))
@@ -4175,7 +4251,7 @@ async def personalization_policy_create(
 async def personalization_policy_activate(
     request: Request, policy_version_id: str, db: Session = Depends(get_db)
 ) -> Response:
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return _redirect("/admin", err="Agent Studio is disabled.")
     parsed = _parse_uuid(policy_version_id)
     if parsed is None:
@@ -4205,7 +4281,7 @@ def _personalization_thinker() -> ClaudeCliThinker:
 
 @router.post("/admin/agents/studio/personalization/preview", response_class=HTMLResponse)
 async def personalization_preview(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return _agent_workbench_unavailable(request, db)
     form = await request.form()
     membership_id = _parse_uuid(str(form.get("campaign_contact_id", "")))
@@ -4315,7 +4391,7 @@ def _email_verification_context(
 
 @router.get("/admin/agents/studio/email", response_class=HTMLResponse)
 def email_agent_studio_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return _agent_workbench_unavailable(request, db)
     return _render(
         request,
@@ -4327,7 +4403,7 @@ def email_agent_studio_page(request: Request, db: Session = Depends(get_db)) -> 
 
 @router.get("/admin/agents/studio/verification", response_class=HTMLResponse)
 def verification_agent_studio_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return _agent_workbench_unavailable(request, db)
     return _render(
         request,
@@ -4341,7 +4417,7 @@ def verification_agent_studio_page(request: Request, db: Session = Depends(get_d
 async def verification_credential_rotate(
     request: Request, provider_id: str, db: Session = Depends(get_db)
 ) -> Response:
-    if not _agent_workbench_available() or provider_id not in PROVIDERS:
+    if not _agent_workbench_available(db) or provider_id not in PROVIDERS:
         return _redirect("/admin/agents/studio/verification", err="Provider unavailable.")
     form = await request.form()
     try:
@@ -4371,7 +4447,7 @@ async def verification_credential_rotate(
 async def verification_provider_test(
     request: Request, db: Session = Depends(get_db)
 ) -> HTMLResponse:
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return _agent_workbench_unavailable(request, db)
     form = await request.form()
     run = None
@@ -4503,7 +4579,7 @@ async def email_pattern_policy_activate(
 def _agent_execution_report_response(
     job_id: str, expected: AgentIdentifier, db: Session
 ) -> JSONResponse:
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return JSONResponse(status_code=404, content={"detail": "Not found."})
     parsed = _parse_uuid(job_id)
     report = EmailVerificationReportReader(db).read(parsed, expected) if parsed else None
@@ -4524,7 +4600,7 @@ def verification_agent_report_api(job_id: str, db: Session = Depends(get_db)) ->
 
 @router.get("/admin/agents/studio/research", response_class=HTMLResponse)
 def research_agent_report_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return _agent_workbench_unavailable(request, db)
     selected = _parse_uuid(request.query_params.get("campaign_contact"))
     report = _research_report_reader(db).read(selected) if selected else None
@@ -4552,7 +4628,7 @@ def research_agent_report_api(agent_job_id: str, db: Session = Depends(get_db)) 
     generic response so the endpoint never leaks another Agent's existence.
     """
 
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return JSONResponse(status_code=404, content={"detail": "Not found."})
     parsed = _parse_uuid(agent_job_id)
     report = _research_report_reader(db).read_job(parsed) if parsed else None
@@ -4563,7 +4639,7 @@ def research_agent_report_api(agent_job_id: str, db: Session = Depends(get_db)) 
 
 @router.get("/admin/agents/studio/capture", response_class=HTMLResponse)
 def capture_agent_report_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return _agent_workbench_unavailable(request, db)
     raw_selected = request.query_params.get("job")
     selected = _parse_uuid(raw_selected)
@@ -4601,7 +4677,7 @@ def capture_agent_report_page(request: Request, db: Session = Depends(get_db)) -
 def capture_agent_report_api(agent_job_id: str, db: Session = Depends(get_db)) -> JSONResponse:
     """Return the shared exact-job Capture report, or one generic safe 404."""
 
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return JSONResponse(status_code=404, content={"detail": "Not found."})
     parsed = _parse_uuid(agent_job_id)
     report = _capture_report_reader(db).read_job(parsed) if parsed else None
@@ -4612,7 +4688,7 @@ def capture_agent_report_api(agent_job_id: str, db: Session = Depends(get_db)) -
 
 @router.get("/admin/agents/studio/company", response_class=HTMLResponse)
 def company_agent_report_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return _agent_workbench_unavailable(request, db)
     raw_selected = request.query_params.get("job")
     selected = _parse_uuid(raw_selected)
@@ -4649,7 +4725,7 @@ def company_agent_report_page(request: Request, db: Session = Depends(get_db)) -
 def company_agent_report_api(agent_job_id: str, db: Session = Depends(get_db)) -> JSONResponse:
     """Return the shared exact-job Company report, or one generic safe 404."""
 
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return JSONResponse(status_code=404, content={"detail": "Not found."})
     parsed = _parse_uuid(agent_job_id)
     report = _company_report_reader(db).read_job(parsed) if parsed else None
@@ -4660,7 +4736,7 @@ def company_agent_report_api(agent_job_id: str, db: Session = Depends(get_db)) -
 
 @router.get("/admin/agents/studio/insights", response_class=HTMLResponse)
 def insights_agent_report_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return _agent_workbench_unavailable(request, db)
     selected = _parse_uuid(request.query_params.get("job"))
     report = _insights_report_reader(db).read_job(selected) if selected else None
@@ -4692,7 +4768,7 @@ def insights_agent_report_page(request: Request, db: Session = Depends(get_db)) 
 def insights_agent_report_api(agent_job_id: str, db: Session = Depends(get_db)) -> JSONResponse:
     """Return the same exact-job read model as the operator HTML surface."""
 
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return JSONResponse(status_code=404, content={"detail": "Not found."})
     parsed = _parse_uuid(agent_job_id)
     report = _insights_report_reader(db).read_job(parsed) if parsed else None
@@ -4705,7 +4781,7 @@ def insights_agent_report_api(agent_job_id: str, db: Session = Depends(get_db)) 
 def agent_studio_agent_page(
     request: Request, agent_id: str, db: Session = Depends(get_db)
 ) -> HTMLResponse:
-    if not _agent_workbench_available():
+    if not _agent_workbench_available(db):
         return _agent_workbench_unavailable(request, db)
     parsed = _parse_agent_id(agent_id)
     if parsed is None:

@@ -1,0 +1,642 @@
+"""Who may see, use and change a Campaign.
+
+One module, and every campaign surface asks it the same question. That is the
+point: before this existed the answer was "anybody with a session", spread
+implicitly across four routers and about forty handlers, and the only way to
+audit it was to read all of them.
+
+The rules
+---------
+* **ADMIN sees, creates and changes every campaign**, and is the only role that
+  can grant or revoke somebody else's access. Administrators are the deployment's
+  operators; withholding a campaign from them would create work nobody could
+  unblock.
+* **USER sees a campaign they created** (``Campaign.created_by_user_id``) **or a
+  campaign explicitly assigned to them** (a ``CampaignUserAssignment`` row), and
+  nothing else. Both are durable data written by a deliberate act.
+* **Everything else is refused**, including reading, editing, enrolling into,
+  importing into, executing, and any programmatic call that names the campaign.
+
+Three properties worth stating because they are the ones a reviewer should try
+to break:
+
+**It is server-side, and it is not a filter on a template.** Hiding a campaign
+from a list is a courtesy. What actually refuses is
+:func:`require_campaign_access`, called with the campaign id from the URL or the
+form body before the handler does anything with it. A USER who types another
+team's campaign id into the address bar, or POSTs to it with a valid session and
+a valid CSRF token, is refused there.
+
+**It fails closed.** The scoping helpers return a *restrictive* expression for
+every caller who is not an administrator, and an actor with no resolvable user
+id and no administrator role — which is what a malformed or partially resolved
+request looks like — matches nothing at all. Adding a new campaign route and
+forgetting to scope it is still a bug, but forgetting to *resolve* the actor is
+not: the failure direction is refusal.
+
+**It is inert where there are no accounts.** Local development and the whole
+test suite run with ``AUTH__ENABLED`` off. There is then no account directory,
+no role and no user id, and the entire application is already unauthenticated —
+so :class:`CampaignActor` reports ``enforced=False`` and every check passes,
+exactly as ``require_admin`` next door does. This is the same trade the admin
+dependency already made, and it is what keeps three thousand existing tests
+meaningful.
+
+The extension
+-------------
+There are two kinds of extension credential and they answer this module
+differently, which is the whole of the reconciliation with the account-linking
+slice (PR #275).
+
+An **account-linked token** (``vmre1``) names a VMR account. The authentication
+middleware verifies it, refuses it the moment the account is disabled or the link
+is revoked, and records the owner in the request scope under
+``EXTENSION_USER_ID_STATE_KEY``. It deliberately does **not** write
+``operator_role`` or ``operator_user_id`` for such a request, because those two
+keys are what ``require_admin`` and the operator surfaces read, and an extension
+token must never be able to assert an operator's authority anywhere outside the
+four routes of ``EXTENSION_CAPTURE_CONTRACT``.
+
+So :func:`actor_from_request` reads the extension key instead, and — when it is
+given a database session — resolves that account's *current* role and state from
+the ``users`` table on this request. Three consequences, each deliberate:
+
+* ``GET /api/campaigns`` returns exactly the campaigns the linked operator can
+  reach, because the same :func:`scope_campaign_statement` answers it.
+* Filing a capture into a campaign that operator cannot reach fails closed.
+* A linked **administrator** keeps global campaign visibility, because the role
+  is read from the account rather than from the token — and it grants nothing
+  outside campaign visibility, since ``require_admin`` reads a different key that
+  stays ``None`` for every extension request.
+
+A **legacy configured credential** (``vmrx1``) proves an installation and names
+no account at all. It is local-development only and verifies nothing in a hosted
+environment. It resolves to :data:`UNIDENTIFIED_EXTENSION` — not an
+administrator, owns nothing — and ``GET /api/campaigns`` keeps its historical
+unscoped answer for that case alone, because narrowing a local development path
+would break the extension in the one place it is still allowed to be used.
+"""
+
+from __future__ import annotations
+
+import uuid
+from collections.abc import Iterable
+from dataclasses import dataclass
+from typing import Any
+
+from fastapi import Depends, Request
+from sqlalchemy import Select, or_, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from app.api.deps import get_db as _get_db
+from app.core.auth.extension import EXTENSION_USER_ID_STATE_KEY
+from app.models.campaign import Campaign, CampaignContact, CampaignUserAssignment
+from app.models.enums import UserRole, UserState
+from app.models.user import User
+from app.services.audit import record_audit_event
+
+
+class CampaignAccessError(Exception):
+    """Raised when a caller may not use the campaign they named.
+
+    Rendered as a 403 by the application's handler, with one message for every
+    cause. A 403 rather than a 404 on purpose, and the reasoning is the same one
+    ``AdminRequiredError`` records: campaign names are unique and administered,
+    so pretending the campaign does not exist would not hide much, and it would
+    send an operator who genuinely needs access to look for a broken link
+    instead of asking for the assignment they are missing.
+    """
+
+    def __init__(self, message: str | None = None) -> None:
+        super().__init__(
+            message
+            or "You do not have access to this campaign. An administrator can assign it to you."
+        )
+
+
+class CampaignAssignmentError(Exception):
+    """Raised when an assignment cannot be made, with a reason to show."""
+
+
+@dataclass(frozen=True)
+class CampaignActor:
+    """The identity a campaign decision is made for.
+
+    Built from the request scope rather than from the session cookie, for the
+    reason ``app/core/auth/admin.py`` gives about roles: the middleware resolves
+    the account record on every authenticated request, so a demotion or a removed
+    assignment applies to the very next request rather than when a twelve-hour
+    cookie expires.
+    """
+
+    user_id: uuid.UUID | None
+    role: UserRole | None
+    #: Whether this deployment has an account directory at all. ``False`` means
+    #: hosted authentication is switched off, so there is nobody to be.
+    enforced: bool = True
+
+    @property
+    def is_admin(self) -> bool:
+        """Whether this actor may reach every campaign.
+
+        ``True`` when authorization is not enforced, because the whole
+        application is then open and a campaign rule cannot be the one thing
+        holding a line nothing else holds.
+        """
+
+        return not self.enforced or self.role is UserRole.ADMIN
+
+    @property
+    def is_identified(self) -> bool:
+        return self.user_id is not None
+
+
+#: An enforced actor with no identity: an extension capture credential that has
+#: not yet been linked to an account, or any authenticated request whose account
+#: could not be resolved. Not an administrator and owns nothing, so every
+#: restrictive rule below refuses it.
+UNIDENTIFIED_EXTENSION = CampaignActor(user_id=None, role=None, enforced=True)
+
+#: The actor used where the deployment has no account directory.
+UNENFORCED = CampaignActor(user_id=None, role=None, enforced=False)
+
+
+def actor_from_request(request: Request, session: Session | None = None) -> CampaignActor:
+    """Resolve the campaign actor for one request.
+
+    The scope is the only input for a browser session: the middleware resolves
+    the account record on every authenticated request and writes the *current*
+    role there, so a demotion or a removed assignment applies to the very next
+    request rather than when a twelve-hour cookie expires.
+
+    ``session`` is optional and is used for one case: an account-linked
+    extension token, whose owner the middleware records under a different key
+    (see the module docstring for why it must not write ``operator_role``). Given
+    a session, the owner's role and state are read from the ``users`` table here,
+    on this request, for the same reason the middleware reads the account rather
+    than trusting a token. Without a session the actor is still *identified* —
+    it carries the user id — but never an administrator, which is the safe
+    direction: the caller sees the operator's own campaigns rather than
+    everybody's.
+    """
+
+    state: dict[str, Any] = request.scope.get("state") or {}
+    if not state.get("auth_enforced"):
+        return UNENFORCED
+
+    raw_role = state.get("operator_role")
+    role: UserRole | None = None
+    if isinstance(raw_role, str):
+        try:
+            role = UserRole(raw_role)
+        except ValueError:  # pragma: no cover - middleware only writes valid values
+            role = None
+
+    raw_user = state.get("operator_user_id")
+    user_id: uuid.UUID | None = None
+    if isinstance(raw_user, str):
+        try:
+            user_id = uuid.UUID(raw_user)
+        except ValueError:  # pragma: no cover - middleware only writes valid values
+            user_id = None
+
+    if user_id is not None:
+        return CampaignActor(user_id=user_id, role=role, enforced=True)
+
+    return _extension_actor(request, state, session)
+
+
+def _extension_actor(
+    request: Request, state: dict[str, Any], session: Session | None
+) -> CampaignActor:
+    """The actor behind an account-linked extension token, if this is one.
+
+    Returns :data:`UNIDENTIFIED_EXTENSION` for a legacy ``vmrx1`` credential and
+    for anything else that reaches here, so the failure direction stays refusal.
+    """
+
+    raw_extension_user = state.get(EXTENSION_USER_ID_STATE_KEY)
+    if not isinstance(raw_extension_user, str) or not raw_extension_user:
+        return UNIDENTIFIED_EXTENSION
+    try:
+        linked_user_id = uuid.UUID(raw_extension_user)
+    except ValueError:  # pragma: no cover - middleware only writes valid values
+        return UNIDENTIFIED_EXTENSION
+
+    if session is None:
+        # Identified but never privileged. A caller with no session cannot read
+        # the role, and guessing ADMIN would be the one guess that widens access.
+        return CampaignActor(user_id=linked_user_id, role=None, enforced=True)
+
+    owner = session.get(User, linked_user_id)
+    if owner is None or owner.state is not UserState.ACTIVE:
+        # The middleware already refuses a token whose account is disabled or
+        # deleted, so this is a belt-and-braces read rather than the control. It
+        # costs one primary-key lookup and it means a race between the two reads
+        # resolves to "no access" instead of to the account's former authority.
+        return UNIDENTIFIED_EXTENSION
+    return CampaignActor(user_id=owner.id, role=owner.role, enforced=True)
+
+
+# ---------------------------------------------------------------------------
+# Reading
+# ---------------------------------------------------------------------------
+
+
+def _assigned_campaign_ids_subquery(user_id: uuid.UUID) -> Select[tuple[uuid.UUID]]:
+    return select(CampaignUserAssignment.campaign_id).where(
+        CampaignUserAssignment.user_id == user_id
+    )
+
+
+def campaign_visibility_clause(actor: CampaignActor) -> Any | None:
+    """A WHERE clause restricting ``Campaign`` rows to what ``actor`` may see.
+
+    ``None`` means "no restriction" and is returned **only** for an
+    administrator or an unenforced deployment. Every other caller gets a real
+    expression, and an actor with no user id gets one that matches nothing —
+    which is why forgetting to identify a caller refuses rather than grants.
+    """
+
+    if actor.is_admin:
+        return None
+    if actor.user_id is None:
+        # `false()` would be clearer to read but produces a constant SQLAlchemy
+        # cannot always fold into a composed statement the same way; comparing
+        # the primary key to NULL is never true and composes everywhere.
+        return Campaign.id.is_(None)
+    return or_(
+        Campaign.created_by_user_id == actor.user_id,
+        Campaign.id.in_(_assigned_campaign_ids_subquery(actor.user_id)),
+    )
+
+
+def scope_campaign_statement(statement: Select[Any], actor: CampaignActor) -> Select[Any]:
+    """Apply :func:`campaign_visibility_clause` to a statement selecting Campaigns."""
+
+    clause = campaign_visibility_clause(actor)
+    if clause is None:
+        return statement
+    return statement.where(clause)
+
+
+def accessible_campaign_ids(session: Session, actor: CampaignActor) -> frozenset[uuid.UUID] | None:
+    """The campaign ids ``actor`` may reach, or ``None`` meaning "all of them".
+
+    ``None`` is not "none": it is the administrator answer, and callers that
+    filter an unrelated table by campaign use it to skip the filter entirely
+    rather than materialising every id.
+    """
+
+    if actor.is_admin:
+        return None
+    if actor.user_id is None:
+        return frozenset()
+    rows = session.scalars(scope_campaign_statement(select(Campaign.id), actor)).all()
+    return frozenset(rows)
+
+
+def may_access_campaign(
+    session: Session, campaign_id: uuid.UUID | None, actor: CampaignActor
+) -> bool:
+    """Whether ``actor`` may read or use the campaign with this id.
+
+    **This answers access, not existence, and the two differ by role on
+    purpose.**
+
+    An administrator gets ``True`` for any well-formed id, including one that
+    matches no row, and issues no query at all. That is not a hole: an
+    administrator may reach every campaign that exists, so the only thing a
+    lookup could add is turning "no such campaign" into "no access", which is a
+    worse message for the one person who is entitled to the real one. Existence
+    is then the handler's business, where it already has a specific answer.
+
+    For everybody else, a campaign that does not exist and a campaign that
+    belongs to somebody else are the same ``False``, which is what stops this
+    function being an existence oracle for ids a caller is guessing at.
+    """
+
+    if actor.is_admin:
+        return True
+    if campaign_id is None:
+        return False
+    statement = select(Campaign.id).where(Campaign.id == campaign_id)
+    return session.scalar(scope_campaign_statement(statement, actor)) is not None
+
+
+def require_campaign_access(
+    session: Session, campaign_id: uuid.UUID | None, actor: CampaignActor
+) -> None:
+    """Refuse unless ``actor`` may use this campaign. The server-side gate."""
+
+    if not may_access_campaign(session, campaign_id, actor):
+        raise CampaignAccessError
+
+
+def visible_campaigns(session: Session, actor: CampaignActor) -> list[Campaign]:
+    """Every campaign ``actor`` may see, newest first — the scoped list-all."""
+
+    statement = select(Campaign).order_by(Campaign.created_at.desc())
+    return list(session.scalars(scope_campaign_statement(statement, actor)).all())
+
+
+# ---------------------------------------------------------------------------
+# Assignment (administrator only)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class AssignedUser:
+    """One person on a campaign, as the admin screens need to show them."""
+
+    user_id: uuid.UUID
+    email: str
+    display_name: str
+    role: UserRole
+    state: UserState
+    assigned_at: Any
+    assigned_by_email: str | None
+    #: ``True`` when this person created the campaign rather than being assigned
+    #: to it. Creators are listed alongside assignees because they have access
+    #: for a different reason and unassigning cannot remove it.
+    is_creator: bool
+
+
+def campaign_owner(session: Session, campaign: Campaign) -> User | None:
+    """The account that created this campaign, or ``None`` for a historical row."""
+
+    if campaign.created_by_user_id is None:
+        return None
+    return session.get(User, campaign.created_by_user_id)
+
+
+def campaign_people(session: Session, campaign: Campaign) -> tuple[AssignedUser, ...]:
+    """Creator first, then assignees by email — everyone who can reach it.
+
+    Administrators are deliberately *not* listed. They reach every campaign by
+    role, so listing them here would suggest an assignment that could be removed.
+    """
+
+    people: list[AssignedUser] = []
+    owner = campaign_owner(session, campaign)
+    if owner is not None:
+        people.append(
+            AssignedUser(
+                user_id=owner.id,
+                email=owner.email,
+                display_name=owner.display_name or owner.email,
+                role=owner.role,
+                state=owner.state,
+                assigned_at=campaign.created_at,
+                assigned_by_email=None,
+                is_creator=True,
+            )
+        )
+
+    granter = User.__table__.alias("granter")
+    rows = session.execute(
+        select(CampaignUserAssignment, User, granter.c.email)
+        .join(User, User.id == CampaignUserAssignment.user_id)
+        .join(granter, granter.c.id == CampaignUserAssignment.assigned_by_user_id, isouter=True)
+        .where(CampaignUserAssignment.campaign_id == campaign.id)
+        .order_by(User.email)
+    ).all()
+    for assignment, user, granted_by in rows:
+        if owner is not None and user.id == owner.id:
+            # Assigning the creator is allowed but adds nothing; do not show the
+            # same person twice.
+            continue
+        people.append(
+            AssignedUser(
+                user_id=user.id,
+                email=user.email,
+                display_name=user.display_name or user.email,
+                role=user.role,
+                state=user.state,
+                assigned_at=assignment.created_at,
+                assigned_by_email=granted_by,
+                is_creator=False,
+            )
+        )
+    return tuple(people)
+
+
+def assignable_users(session: Session, campaign: Campaign) -> tuple[User, ...]:
+    """Accounts an administrator may still assign to this campaign.
+
+    Sourced from the ``users`` table — the existing authority — and never from a
+    free-typed address, so a campaign cannot be assigned to somebody who has no
+    account. Administrators and the creator are excluded because both already
+    have access; disabled accounts are excluded because assigning one grants
+    nothing.
+    """
+
+    assigned = set(
+        session.scalars(
+            select(CampaignUserAssignment.user_id).where(
+                CampaignUserAssignment.campaign_id == campaign.id
+            )
+        ).all()
+    )
+    if campaign.created_by_user_id is not None:
+        assigned.add(campaign.created_by_user_id)
+
+    candidates = session.scalars(
+        select(User)
+        .where(User.state == UserState.ACTIVE, User.role == UserRole.USER)
+        .order_by(User.email)
+    ).all()
+    return tuple(user for user in candidates if user.id not in assigned)
+
+
+def assign_user(
+    session: Session,
+    *,
+    campaign: Campaign,
+    user_id: uuid.UUID,
+    actor: CampaignActor,
+    actor_label: str,
+) -> CampaignUserAssignment:
+    """Grant one account access to one campaign. Administrator only.
+
+    Idempotent: assigning somebody who is already assigned returns the existing
+    row rather than raising, because the operator's intent is satisfied either
+    way and a duplicate-submitted form should not produce an error page.
+    """
+
+    _require_admin_actor(actor)
+    user = session.get(User, user_id)
+    if user is None:
+        raise CampaignAssignmentError("That account no longer exists.")
+    if user.state is not UserState.ACTIVE:
+        raise CampaignAssignmentError(
+            "That account is disabled. Re-enable it before assigning campaigns to it."
+        )
+
+    existing = session.scalar(
+        select(CampaignUserAssignment).where(
+            CampaignUserAssignment.campaign_id == campaign.id,
+            CampaignUserAssignment.user_id == user_id,
+        )
+    )
+    if existing is not None:
+        return existing
+
+    assignment = CampaignUserAssignment(
+        campaign_id=campaign.id,
+        user_id=user_id,
+        assigned_by_user_id=actor.user_id,
+    )
+    session.add(assignment)
+    try:
+        with session.begin_nested():
+            session.flush()
+    except IntegrityError:
+        # Two administrators assigning the same person at the same time. The
+        # unique constraint decided; read the winner rather than failing.
+        session.expunge(assignment)
+        winner = session.scalar(
+            select(CampaignUserAssignment).where(
+                CampaignUserAssignment.campaign_id == campaign.id,
+                CampaignUserAssignment.user_id == user_id,
+            )
+        )
+        if winner is None:  # pragma: no cover - defensive
+            raise
+        return winner
+
+    record_audit_event(
+        session,
+        actor=actor_label,
+        action="campaign.user_assigned",
+        entity_type="campaign",
+        entity_id=str(campaign.id),
+        new_state="assigned",
+        reason=f"{user.email} may now use this campaign",
+        context={"user_id": str(user_id), "user_email": user.email},
+    )
+    return assignment
+
+
+def unassign_user(
+    session: Session,
+    *,
+    campaign: Campaign,
+    user_id: uuid.UUID,
+    actor: CampaignActor,
+    actor_label: str,
+) -> bool:
+    """Revoke one account's assignment. Administrator only.
+
+    Returns whether a row was removed. Removing an assignment does not remove
+    creator access: if the person created the campaign they keep it, and the
+    admin screen says so rather than letting the button look like it failed.
+    """
+
+    _require_admin_actor(actor)
+    assignment = session.scalar(
+        select(CampaignUserAssignment).where(
+            CampaignUserAssignment.campaign_id == campaign.id,
+            CampaignUserAssignment.user_id == user_id,
+        )
+    )
+    if assignment is None:
+        return False
+
+    user = session.get(User, user_id)
+    session.delete(assignment)
+    session.flush()
+    record_audit_event(
+        session,
+        actor=actor_label,
+        action="campaign.user_unassigned",
+        entity_type="campaign",
+        entity_id=str(campaign.id),
+        previous_state="assigned",
+        new_state="revoked",
+        reason=f"{user.email if user else user_id} may no longer use this campaign",
+        context={"user_id": str(user_id), "user_email": user.email if user else None},
+    )
+    return True
+
+
+def require_campaign_path_access(request: Request, db: Session = Depends(_get_db)) -> None:
+    """Router-level gate for any route with a ``{campaign_id}`` path parameter.
+
+    Declared once per router rather than once per handler, deliberately and for
+    the reason ``require_admin`` gives about the same choice: a campaign route
+    added next month is scoped the moment it is registered, not when somebody
+    remembers to decorate it. Forty-odd handlers across five routers already name
+    a campaign in their path, and a per-handler check would have been forty
+    chances to forget.
+
+    Three behaviours worth stating, because each is a decision:
+
+    * **An administrator passes without a query.** The role already grants every
+      campaign, and refusing an administrator a campaign that does not exist
+      would replace the handler's clear "no such campaign" with a misleading
+      "no access".
+    * **A path parameter that is not a UUID is left alone.** It cannot identify a
+      campaign anybody has access to, and the handlers already answer it with a
+      404 or a redirect that says what was wrong. Turning a typo into a 403 would
+      be worse, not safer.
+    * **Everything else is refused before the handler body runs**, including
+      writes that carry a valid session and a valid CSRF token.
+
+    It fires on ``{campaign_id}`` and on ``{campaign_contact_id}``, because a
+    membership id names campaign work just as surely as a campaign id does and
+    seven routes are keyed by one.
+
+    This is the *path* half only. A campaign named in a query string or a form
+    body is checked by the handler that reads it, because only the handler knows
+    which parameter carries it, and a draft or sequence id is resolved by the
+    review handlers for the same reason.
+    """
+
+    params = request.scope.get("path_params") or {}
+    raw = params.get("campaign_id")
+    raw_membership = params.get("campaign_contact_id")
+    if raw is None and raw_membership is None:
+        return
+    actor = actor_from_request(request, db)
+    if actor.is_admin:
+        return
+
+    if raw is not None:
+        try:
+            campaign_id = uuid.UUID(str(raw))
+        except (ValueError, AttributeError, TypeError):
+            return
+        require_campaign_access(db, campaign_id, actor)
+        return
+
+    # A Campaign Contact id names a campaign one hop away, and several routes are
+    # keyed by it rather than by the campaign: pause, resume, archive, retry,
+    # skip a stage, read the pipeline. They are the same class of surface as the
+    # review writes — an id that identifies campaign work without spelling the
+    # campaign out — so they are resolved here rather than left to seven
+    # handlers to remember.
+    try:
+        membership_id = uuid.UUID(str(raw_membership))
+    except (ValueError, AttributeError, TypeError):
+        return
+    membership = db.get(CampaignContact, membership_id)
+    if membership is None:
+        # No membership, no campaign to be entitled to. The handler answers this
+        # with its own 404, which is more useful than a refusal.
+        return
+    require_campaign_access(db, membership.campaign_id, actor)
+
+
+def assignments_for_user(session: Session, user_id: uuid.UUID) -> Iterable[uuid.UUID]:
+    """Campaign ids assigned to one account. Used by the account screens."""
+
+    return session.scalars(_assigned_campaign_ids_subquery(user_id)).all()
+
+
+def _require_admin_actor(actor: CampaignActor) -> None:
+    if not actor.is_admin:
+        raise CampaignAccessError(
+            "Only a platform administrator can change who a campaign is assigned to."
+        )

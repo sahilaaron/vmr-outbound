@@ -73,6 +73,7 @@ from app.services.imports.normalization import (
     normalize_name,
     normalize_text,
 )
+from app.services.operations import settings as operational
 from app.services.profiles import refresh as refresh_service
 from app.services.provenance import service as provenance
 from app.services.suppressions import evaluate_suppression
@@ -1059,10 +1060,11 @@ def _auto_resolve_captures(
     """
 
     settings = get_settings()
-    if not (
-        settings.features.contact_capture_promotion
-        and settings.features.automatic_company_domain_resolution
-    ):
+    # The effective controls rather than the environment's: an administrator
+    # turning capture promotion on from the Admin Configuration screen must
+    # change what the very next submission does, without a deploy.
+    features = operational.effective_flags(session, settings)
+    if not (features.contact_capture_promotion and features.automatic_company_domain_resolution):
         return 0
 
     # Imported here rather than at module scope: intake is the staging boundary
@@ -1070,7 +1072,7 @@ def _auto_resolve_captures(
     # common case where the switch is off.
     from app.services.resolution import service as resolution_service
 
-    usable = settings.features.salesnav_domain_enrichment and settings.has_logo_dev_key()
+    usable = features.salesnav_domain_enrichment and settings.has_logo_dev_key()
     access = resolution_service.ProviderAccess(
         api_key=settings.logo_dev_api_key if usable else None,
         search_url=settings.logo_dev_search_url,

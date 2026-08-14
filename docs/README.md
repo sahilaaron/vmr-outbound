@@ -9,6 +9,8 @@
 - [Decision 0008: Extension distribution and origin pinning](decisions/0008-extension-distribution-and-origin-pinning.md) — stable extension identity/distribution remains a prerequisite for production origin pinning.
 - [Decision 0009: Sequences as a bounded domain, not seven drafts](decisions/0009-seven-message-sequence-domain.md) — why legacy `DraftVersion` could not carry the seven-message sequence and the accepted approved-by-default review semantics.
 - [The seven-message outreach sequence](EMAIL_SEQUENCE.md) — detailed sequence domain, versioning, cadence and future provider integration contract.
+- [Campaign access](CAMPAIGN_ACCESS.md) — campaign ownership, per-user assignment and the server-side authorization rules every campaign surface asks. Written from Hosted Beta UAT.
+- [Admin configuration](ADMIN_CONFIGURATION.md) — which switches an administrator changes from the application and which stay in the environment, the effective-control contract, and how paused Research work is reclaimed when a control comes back on.
 - [One-click Gmail draft creation](GMAIL_DRAFTS.md) — #267: the separate Gmail mailbox grant, encrypted token storage, draft lineage and idempotency. Built behind `FEATURES__GMAIL_DRAFTS`, **off by default**; it does not change the launch order below.
 
 ## Current merged baseline
