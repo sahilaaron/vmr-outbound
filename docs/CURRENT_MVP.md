@@ -1,188 +1,184 @@
-# Current MVP
+# Current MVP / Hosted Beta acceptance
 
-**Status date:** 2 August 2026
-**Authoritative delivery:** PR #232 merged; PR #233 is the customer-interface merge gate.
+**Status date:** 14 August 2026  
+**Merged main:** `c1bd054e45e09a22d3d8cf1e7aec629226f352e4`  
+**Last independently verified live release:** `d9750b008919bf2bfe42a848b0b454eeedd66f1f`
 
-## MVP outcome
+For exact runtime facts and the merged-vs-live distinction, see [`CURRENT_PRODUCT_STATE.md`](CURRENT_PRODUCT_STATE.md).
 
-The current VMR Outbound Agent MVP is complete as a product build when one operator can:
+## Outcome
 
-> capture an authorized LinkedIn or Sales Navigator prospect, enrol the permanent Contact into a Campaign, run the Contact through sourced Company research, exact-address email verification, evidence-backed Insights and Personalization, and approve or discard one exact immutable draft version.
+VMR Outbound Agent is now in real Hosted Beta UAT.
 
-The MVP ends at a trustworthy human-approved draft. It does **not** send email.
+The intended operator path is:
 
-SalesHandy/provider submission, delivery events, replies, bounces, opt-outs, sequences and analytics are post-MVP work.
+```text
+Capture authorized LinkedIn / Sales Navigator prospect
+→ preserve immutable evidence
+→ resolve permanent Contact and Company
+→ Research
+→ Email candidate discovery
+→ exact-address Verification
+→ evidence-backed Insights
+→ Campaign-specific Personalization / sequence
+→ human review/edit/approval
+→ Gmail draft creation
+```
+
+The product does **not** automatically send email.
+
+Approval is not sending authority. Gmail draft creation is a separate mailbox handoff. Automatic sending, scheduler/polling loops, reply detection and autonomous follow-up execution are outside the current path.
 
 ## Product surfaces
 
 | Route | Role |
 | --- | --- |
-| `/` and `/app` | Customer-facing application and daily operating surface |
-| `/app/review` | Exact-version draft review, approve/discard and evidence inspection |
-| `/admin` | Operator/admin Workbench for low-level controls, jobs, retries and authoritative write paths |
-| `/admin/agents/studio` | Global Agent inspection plus Agent-specific Admin modules; never exposed in `/app` |
-
-The customer interface and Workbench share the existing service and model layers. They use separate routers, templates and stylesheets.
+| `/` and `/app` | Main operator product |
+| `/app/review` | Exact-version review/edit/approval |
+| `/app/admin/users` | Admin-created user directory; no public signup |
+| `/admin` | Global Admin/Workbench operations |
+| `/admin/agents/studio` | Global Agent inspection and Agent-specific Admin modules |
+| `/gmail/*` | Separate Gmail mailbox authorization and draft creation |
 
 ## Current pipeline
 
 ```text
-Capture
-→ Identity
-→ Company
-→ Research
-→ Email
-→ Verification
-→ Insights
-→ Personalization
-→ Human review
+Capture → Identity → Company → Research → Email → Verification → Insights → Personalization → Review → Gmail draft
 ```
 
-`Sending` remains registered so the pipeline can extend without another domain redesign, but it has no production adapter and is disabled.
+`Sending` remains a registered future boundary only; there is no production sending adapter or automatic sending authority.
 
-## Agent status
+## Real Hosted Beta UAT evidence
 
-| Agent | Current implementation | Status |
-| --- | --- | --- |
-| Capture | Existing intake/promotion paths plus durable exact-execution reporting | Operational; live report acceptance pending |
-| Identity | Shared Agent adapter over authoritative identity services | Operational |
-| Company | Exact permanent-Company linking, canonical-domain gates and durable execution lineage | Operational; live acceptance pending |
-| Research | Registered deterministic research workers | Operational; live acceptance pending |
-| Email | Deterministic candidate policy | Operational |
-| Verification | Durable exact-address verification using the existing MillionVerifier boundary | Operational; live authority required |
-| Insights | One bounded no-tools thinking call plus deterministic evidence validation and Employee Size normalization | Operational; live acceptance pending |
-| Personalization | Claude CLI through the bounded thinking seam, `allowed_tools=()` and immutable Personalization Policy versions | Operational; live acceptance pending |
-| Sending | Contract only | Disabled; post-MVP |
+Campaign:
 
-## Research authority
+`PE&VC MENA 200-1000`
 
-Research gathers source-backed evidence. The worker-based RES-001 Research adapter is authoritative.
+Campaign UUID:
 
-It writes:
+`588b3e15-8c39-4d5f-962b-ff1b00d76412`
 
-- the raw worker submission;
-- one versioned Company dossier;
-- sourced INS-001 evidence records;
-- an operator-facing outcome derived from what the workers actually found.
+The original diagnosed cohort contained 50 recent VM Prospector captures.
 
-Research does not use a language model and does not silently rewrite canonical Company fields. Claude first enters the pipeline at Insights, after evidence has been persisted.
+Before the runtime repair:
 
-Capture reuses the existing immutable LinkedIn snapshots, staged import rows,
-promotion decisions, suppression ledger and Campaign filing services. Future
-extension, import and manual/API outcomes pin a bounded historical projection in
-one terminal Capture Agent Job; no second Capture queue or workflow was added.
-Admin Studio separates captured execution values and exact Contact/Campaign
-Contact lineage from today's Contact, merge survivor, labels, memberships and
-suppression state. Older telemetry that was never stored remains explicitly
-partial or unavailable. Capture hands permanent-person work to Identity and
-captured employer evidence to Company without absorbing either authority.
+- all 50 filing requests existed and targeted the correct Campaign;
+- 0 promotion rows existed;
+- all 50 promotions had never been attempted;
+- all 50 filings remained `PENDING` with `attempts=0`;
+- Campaign membership count was 0.
 
-The Company Agent reuses the existing permanent Company, capture candidate and
-append-only domain-decision systems. New jobs durably pin the historical
-Company/domain, exact decision ids, effective provisional-domain policy and
-Research handoff. Admin Studio shows that execution separately from current
-capture and Company aggregate state. `confirmed`, `provisional`, `unresolved`
-and report-only `provider_only` remain distinct; unresolved blocks Research,
-while provisional may start Research and reaches later stages only when the
-Campaign's existing setting permits it. Company Intelligence remains outside
-this pipeline slice.
+Root cause: Hosted Beta had capture promotion and automatic company-domain resolution unset, so both defaulted false.
 
-Insights pins the exact Research job, raw submission and dossier it consumed,
-stores attributable claims through the shared evidence model, and derives an
-append-only structured Employee Size fact. Supported Employee Size uses fixed
-v1 bands from `1_10` through `10001_plus`; exact counts remain absent when only
-a range or approximation is supported. Conflicted, stale, unresolved and
-unavailable values are visible but ineligible downstream. Email candidate order
-and Verification waterfall behavior do not use Employee Size.
+After enabling the required staging runtime group and restarting web/worker, the normal worker backfill processed captures through supported application services. No manual SQL or hand-created Contact/CampaignContact rows were used.
 
-## Email and verification policy
+For the original 50:
 
-The Email Agent attempts no more than three candidates in one fixed versioned order:
+- 18 captures resolved provisionally and promoted;
+- 32 remain `UNRESOLVED` awaiting operator confirmation;
+- 18 distinct Campaign Contacts now exist;
+- 32 filing requests remain `PENDING`;
+- 0 filing failures occurred.
 
-1. `firstname.lastname`
-2. `firstname`
-3. `finitiallastname`
+Repeat sightings are idempotent per `(Campaign, Contact)`, so applied filings can exceed distinct Campaign memberships.
 
-It enqueues one child Verification Agent Job at a time and stops immediately after the first verified result.
+## Current acceptance blocker
 
-A live MillionVerifier result on the Agent path requires:
+The 18 real Campaign Contacts are eligible/active but their pipeline is blocked at **Research** because Company Research is effectively disabled in the current live control state.
 
-- an `ENABLED` Verification Agent control on an execution-enabled Campaign;
-- effective Verification Agent configuration containing `{"live": true}`;
-- a real, non-test provider credential — `MILLIONVERIFIER_API_KEY` or an active
-  Agent Studio credential.
+Observed live state after capture recovery:
 
-Simulated evidence cannot complete a live Campaign stage.
+- Company Research: off;
+- Research Claude fallback: off;
+- Company Intelligence: off;
+- Insights Research: off;
+- MillionVerifier operational enablement: off;
+- Email Sequences: on;
+- Gmail Drafts: on;
+- `DRY_RUN=true`;
+- automatic Sending: unavailable.
 
-`FEATURES__MILLIONVERIFIER` is **not** in that list, and this page previously
-said it was. The flag gates the legacy `/verification` console routes and the
-smoke script; it is never read on the Agent path
-(`app/services/agents/adapters.py` → `app/services/verification/waterfall.py` →
-`provider.py`). Turning it off closes the console and leaves the Agent free to
-spend.
+This is no longer a hosting/capture/Campaign-filing problem. The next operating proof is to make Research product-operable from the Admin UI, reclaim the paused Research jobs through supported services, and continue the same real Contacts downstream.
 
-`DRY_RUN` does not gate it either. `DRY_RUN` is about sending, and the overview
-banner reading "no real email can be scheduled" is true about sending and says
-nothing about verification credits.
+## Provider/runtime facts
 
-## Current operating choices
+Hosted capture promotion currently has:
 
-- Contacts and Companies are permanent and Campaign-independent.
-- Campaign Contact owns Campaign-specific execution state and draft output.
-- Campaign enrolment is currently explicit and reversible through the Workbench, including bulk enrolment with refusal accounting.
-- Knowledge Base editing remains on `/admin`; the customer interface reads it.
-- Capture-domain decisions and suppression creation retain one authoritative admin write path.
-- Missing capabilities are shown as unavailable rather than represented with invented data.
-- A generated draft is not approved. Approval is recorded against one exact immutable `DraftVersion`.
-- Approval does not send email.
+- Logo.dev capability configured;
+- automatic company-domain resolution enabled;
+- Logo.dev/SalesNav domain enrichment enabled;
+- model company-domain lookup switch enabled.
 
-## Not built
+However the VPS does not currently have the `claude` executable on PATH. Model company-domain fallback attempts therefore return `API_UNAVAILABLE`.
 
-The current product does not provide:
+During the real recovery run, 16 model fallback calls were attempted and returned no domain. Those records are no longer `NOT_STARTED`; if Claude CLI is installed later and those exact records should be retried, that requires an explicit forced re-lookup rather than an assumption that the ordinary pending worker will retry them.
 
-- SalesHandy or another sending-provider adapter;
-- delivery, reply, bounce or opt-out synchronization;
-- sending, replies, sequences or analytics backends;
-- auto-send;
-- deterministic fit/confidence scoring;
-- Saved Audience criteria and snapshot generation;
-- extension Campaign auto-add;
-- multi-email cadence generation;
-- draft editing.
+## Authentication and users
 
-These are not hidden launch blockers for the current draft-producing MVP. They remain explicit post-MVP work.
+The durable `users` table is hosted-access authority.
+
+- No public signup.
+- Admin creates accounts at `/app/admin/users`.
+- Accounts may use any working business or personal email; they are not limited to the VMR domain.
+- Google proves identity where used; the VMR account grants access.
+- Admin-issued password setup links are single-use and time-bounded.
+
+Current merged password minimum is 15 characters. A UAT repair reducing it to 8 is in development and is not yet merged/live product truth.
+
+## VM Prospector authorization
+
+PR #275 is merged on `main` and replaces ordinary hosted manual backend/shared-secret configuration with first-party VMR account linking:
+
+- authorization-code + PKCE through `chrome.identity.launchWebAuthFlow`;
+- short-lived access tokens;
+- rotating refresh tokens;
+- disabled/revoked account checks on every authorized request;
+- hosted rejection of legacy reusable `vmrx1` credentials.
+
+The extension authority remains exactly:
+
+- `POST /api/intake/contact-captures`
+- `GET /api/contact-labels`
+- `GET /api/contacts/lookup`
+- `GET /api/campaigns`
+
+PR #275 is merged but is not called live until the VPS `/version` proves deployment of a containing SHA and real browser UAT passes.
+
+## Review / sequence / Gmail invariants
+
+- Seven messages exactly: days `0, 3, 7, 12, 18, 25, 35`.
+- Human edits preserve immutable version lineage.
+- A review row represents a real human action.
+- Default approval is not human approval.
+- Approval is not sending authority.
+- Gmail mailbox authorization is separate from hosted identity and extension authorization.
+- Gmail creates drafts only in the current path.
+
+## Active UAT repair in development
+
+Branch: `feat/uat-operator-controls`
+
+This branch is not current product truth yet. It is implementing:
+
+1. password minimum `8`;
+2. Campaign creator ownership + multi-user assignment;
+3. Admin global Campaign visibility with normal-user Campaign scoping;
+4. server-side authorization across Campaign/review/membership actions;
+5. durable Admin-operated product controls so ordinary operation no longer requires VPS `.env` edits;
+6. supported recovery of jobs paused because an operational capability was disabled.
+
+Testing on that branch found directly related authorization gaps in review approval/fallback rendering and CampaignContact-id routes; those are being repaired inside the same authorization scope. The clean full-suite rerun was still in progress at the time of this documentation reconciliation.
 
 ## Acceptance remaining
 
-The implementation is assembled, but green CI is not operating acceptance.
+1. Finish/review/merge/deploy the operator-controls repair.
+2. Enable Research from the Admin product surface and prove paused Research work is reclaimable without SQL.
+3. Continue the existing real Campaign Contacts through Research.
+4. Exercise real Email/Verification authority deliberately and record provider decisions/spend.
+5. Exercise real Insights and Personalization with available model runtime.
+6. Review/edit/approve exact immutable output.
+7. Create Gmail drafts.
+8. Verify no send side effect.
+9. Record an explicit Hosted Beta `PASS`, `CONDITIONAL PASS` or `BLOCKED` verdict with named residual limitations.
 
-1. Merge PR #233 after CI and local route checks.
-2. Run one authorized real Contact end to end:
-   - real website research;
-   - real MillionVerifier decision;
-   - real Claude CLI Insights and Personalization;
-   - exact draft visible in `/app/review`;
-   - approve or discard recorded in audit history;
-   - no sending side effect.
-3. Run a controlled 10–20 Contact batch and verify:
-   - worker claims and concurrency;
-   - retries and failed/blocked state;
-   - partial research outcomes;
-   - provider/model spend boundaries;
-   - usability of `/app` and `/admin` during execution.
-4. Record an explicit pass, conditional pass or blocked verdict.
-
-## Traceability
-
-- Authoritative MVP epic: #202
-- Campaign pipeline: PR #232
-- Customer interface and Review: PR #233
-- Shared Agent contract: #223
-- Workbench controls: #221
-- Research: #160 and #173
-- Email Agent: #224
-- Verification Agent: #225
-- Insights: #212
-- AI trust hardening: #181
-- MVP acceptance and later pilot: #96
-- Post-MVP sending: #174
+Green CI remains implementation evidence, not a substitute for those real operating proofs.
