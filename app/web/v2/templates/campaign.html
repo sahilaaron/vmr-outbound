@@ -163,6 +163,10 @@
             {% if tile.skipped %}<span class="clear">{{ tile.skipped }} skipped</span>{% endif %}
             {% if not tile.implemented %}<span class="clear">no adapter</span>
             {% elif tile.control_status != 'enabled' %}<span class="clear">agent {{ tile.control_status }}</span>
+            {# Enabled and still refusing everything. Said on the tile because it is
+               otherwise invisible: the Agent reads as running, and every job it claims
+               comes back refused. #}
+            {% elif tile.live_opt_in_missing %}<span class="stuck">live work not enabled here</span>
             {% elif tile.quiet %}<span class="clear">all clear</span>{% endif %}
           </span>
           {% if tile.moving %}<span class="railtrack"><i></i></span>{% endif %}
@@ -196,6 +200,79 @@
           {% endif %}
         </div>
       </div>
+
+      {# --- This campaign's live opt-in for the selected Agent -----------------
+
+         Four Agents refuse every job until this campaign's configuration says
+         {"live": true}: Research, Verification, Insights and Personalization.
+         Nothing on any screen used to say so, so a campaign could show the Agent
+         enabled while every contact it claimed came back "research_not_live".
+
+         It sits above the re-run block on purpose. This is the cause; the re-run
+         is the recovery, and pressing the recovery first only re-queues work that
+         will be refused again for exactly the same reason.
+
+         Shown to every operator, changeable only by an administrator — the switch
+         authorises real outside work and metered spend for the whole cohort, the
+         same authority the deployment already reserves for its provider routes.
+      -------------------------------------------------------------------------- #}
+      {% if selected_control and selected_control.requires_live_opt_in %}
+      <div class="v2-rerun">
+        <div class="v2-rerun-head">
+          {% if selected_control.live_opt_in %}
+          <b>Live {{ selected_tile.label }} work is enabled for this campaign.</b>
+          Contacts here may be researched and processed for real, with the results kept on
+          each contact's record.
+          {% else %}
+          <b>Live {{ selected_tile.label }} work is not enabled for this campaign.</b>
+          The Agent will claim each contact and refuse it, which is why contacts collect
+          here rather than moving on. Turning this on is what lets them run.
+          {% endif %}
+        </div>
+        <div class="v2-hint">
+          Enabling this permits real outside work for the contacts in
+          <b>this campaign only</b>: fetching other organisations' public web pages,
+          calling the paid providers this stage uses, and spending model budget — a
+          cost per contact. It changes nothing for any other campaign, and no draft is
+          ever sent without your approval.
+          {%- if not is_admin %}
+          Only a platform administrator can change it; ask one to enable it for this
+          campaign.
+          {% endif %}
+        </div>
+        {% if is_admin %}
+        <form class="v2-inline-form" method="post"
+              action="/app/campaigns/{{ execution.campaign_id }}/agents/{{ selected_stage }}/live">
+          {# Blank when the page saw no campaign override at all. Never 0: that would
+             claim a version exists and turn a conflict into a silent overwrite. #}
+          <input type="hidden" name="expected_version"
+                 value="{{ selected_control.campaign_version if selected_control.campaign_version is not none else '' }}">
+          <input type="hidden" name="live" value="{{ '0' if selected_control.live_opt_in else '1' }}">
+          <input type="hidden" name="back"
+                 value="/app/campaigns/{{ execution.campaign_id }}?stage={{ selected_stage }}">
+          <label class="v2-sr" for="live-reason">Why</label>
+          <input class="v2-input" id="live-reason" name="reason" maxlength="500"
+                 placeholder="Why (kept on the record)">
+          <button class="v2-btn {{ '' if selected_control.live_opt_in else 'primary' }}" type="submit">
+            {{ 'Stop live ' ~ selected_tile.label ~ ' work' if selected_control.live_opt_in
+               else 'Enable live ' ~ selected_tile.label ~ ' work' }}
+          </button>
+        </form>
+        <div class="v2-hint">
+          {% if selected_control.live_opt_in %}
+          Turning it off discards nothing — jobs, evidence and history stay exactly as they
+          are, and the Agent simply refuses the next run.
+          {% else %}
+          Contacts already stopped here stay stopped until you run the Agent again below;
+          nothing is released automatically.
+          {% endif %}
+          This records a campaign override for the {{ selected_tile.label }} Agent, so its
+          state here no longer follows a later platform-wide change until the override is
+          cleared.
+        </div>
+        {% endif %}
+      </div>
+      {% endif %}
 
       {# Run this Agent again. Offered only where something is actually stopped, so the
          control never invites a click that can do nothing — which is also why a contact
@@ -504,9 +581,16 @@
             {{ control_state(control.status) }}
             {% if control.campaign_scoped %}{{ tag('campaign override', 'brand', small=true) }}{% endif %}
             {% if not control.implemented %}{{ tag('no adapter', '', small=true) }}{% endif %}
+            {# "Enabled" is not the whole answer for these four: without the campaign's
+               live opt-in the Agent claims work and refuses it. Named here so the list
+               cannot show a green state for an Agent that can do nothing. #}
+            {% if control.live_opt_in_missing %}{{ tag('live work off', 'warn', small=true) }}{% endif %}
           </div>
           <div class="v2-hint">
             from {{ control.source | nice }}{% if control.reason %} · {{ control.reason }}{% endif %}
+            {%- if control.live_opt_in_missing %}
+            · <a href="/app/campaigns/{{ execution.campaign_id }}?stage={{ control.agent_id.value }}">this campaign has not enabled live work for it</a>
+            {%- endif %}
           </div>
         </div>
         {% endfor %}

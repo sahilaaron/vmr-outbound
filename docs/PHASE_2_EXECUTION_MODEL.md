@@ -86,6 +86,46 @@ legacy `/verification` console routes and the smoke script only, and is never
 read on the Agent path. Neither is `DRY_RUN`, which concerns sending rather than
 provider spend.
 
+## The Campaign live opt-in
+
+Four implemented Agents refuse to execute until the **effective** Agent
+configuration for their Campaign contains `{"live": true}`: Research
+(`research_not_live`), Verification (`verification_live_disabled`), Insights and
+Personalization (`thinking_live_disabled`). Each reaches outside this system or
+spends provider budget per Contact, so enabling the Agent is deliberately not
+enough on its own.
+
+`AgentSpec.requires_live_opt_in` records which Agents have that gate, and
+`registry.LIVE_OPT_IN_AGENTS` derives the list. It is a registry fact rather than
+a setting: the adapter remains the authority for its own refusal, and the flag
+only says which of them have one.
+
+Three switches, and none of them substitutes for another:
+
+| Decision | Where it lives | Scope |
+| --- | --- | --- |
+| Deployment capability | Admin Configuration / feature switches | the whole deployment |
+| Whether an Agent may claim work | global Agent control | every Campaign that inherits it |
+| Whether this Campaign permits live work | Campaign Agent config `{"live": true}` | one Campaign |
+
+The opt-in is written by `agents.controls.set_campaign_live_opt_in` through the
+ordinary `CampaignAgentOverride` row, so it carries the same version, audit event
+and validation as any other Campaign override. It **carries** the status the
+Campaign already had rather than choosing one, so configuring a Campaign can
+never turn an Agent on; and withdrawing it writes `false` rather than deleting
+the key, so nothing silently re-inherits a global value.
+
+Operators set it on the Campaign's own page, on the stage panel for the Agent
+concerned (`POST /app/campaigns/{campaign_id}/agents/{agent_id}/live`). The verb
+is administrator-only — it authorises real outbound work and metered spend for a
+whole cohort — while the page around it stays readable to every operator with
+access to the Campaign, which is how an enabled-but-refusing Agent is visible at
+all.
+
+Turning it on releases nothing by itself. Work already refused is recovered
+through the existing per-stage re-run, which names every Contact it would touch
+before it runs.
+
 ## Insights and Personalization
 
 Insights and Personalization share one provider-neutral thinking boundary whose current transport invokes the operator's local Claude CLI.

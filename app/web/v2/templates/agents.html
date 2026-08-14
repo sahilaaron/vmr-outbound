@@ -106,6 +106,21 @@
             {% else %}No — a contact cannot go past it, so switching it off holds them.{% endif %}
           </dd></div>
           <div class="v2-kv"><dt>Default state</dt><dd>{{ spec.default_status.value }}</dd></div>
+          {# The second switch. Enabling this Agent is not enough for these four: each
+             refuses every job until the campaign it is running for has opted in to live
+             work. Stated here because the state above reads as the whole answer and is
+             not — an Agent shown as enabled can still refuse everything. #}
+          {% if spec.requires_live_opt_in %}
+          <div class="v2-kv"><dt>Needs a campaign opt-in</dt><dd>
+            Yes — it refuses every job until the campaign permits live work, because it
+            reaches outside this system or spends provider budget per contact. That
+            switch belongs to one campaign at a time and lives on the campaign's own
+            page, next to the contacts it would affect.
+            {% if campaign_id %}
+            <a href="/app/campaigns/{{ campaign_id }}?stage={{ selected.value }}">Open it for this campaign →</a>
+            {% endif %}
+          </dd></div>
+          {% endif %}
         </dl>
         <div class="v2-card-foot plain">
           These decide what this Agent <em>executes</em>. They never decide what is

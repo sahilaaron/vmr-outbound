@@ -287,6 +287,12 @@ ADMIN_SURFACE: tuple[tuple[str, str], ...] = (
     ("GET", "/imports"),
     ("GET", "/local-tools"),
     ("POST", "/campaigns"),
+    # The campaign live opt-in. The one verb on the operator's own campaign page
+    # that authorises real outside work — website research, MillionVerifier
+    # credits, model budget — for a whole cohort at once. The page around it
+    # stays operator-readable, which is the point: an operator has to be able to
+    # see that an enabled Agent is refusing everything and say what is missing.
+    ("POST", f"/app/campaigns/{SAMPLE_ID}/agents/research/live"),
 )
 
 #: Every route that can reach a paid provider, or rotate the credential that

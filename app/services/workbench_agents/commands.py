@@ -305,6 +305,94 @@ class WorkbenchCommands:
         )
         return outcome
 
+    def set_campaign_live_opt_in(
+        self,
+        campaign_id: uuid.UUID,
+        agent_id: AgentIdentifier,
+        *,
+        live: bool,
+        expected_version: int | None,
+        reason: str | None = None,
+    ) -> CommandOutcome:
+        """Let this Campaign's Agent do real work, or stop letting it.
+
+        The same optimistic-concurrency guard, the same refusal shape and the
+        same audit trail as :meth:`set_campaign_override`, because it writes the
+        same row through the same Phase 2 service. What it does *not* do is
+        reconcile: the opt-in changes what the Agent may do, not whether it may
+        claim, so nothing that was held by a control is released by it — and work
+        already refused for a *different* reason must not be swept back into the
+        queue by a decision that has nothing to do with it. Releasing the jobs
+        this opt-in refused is the operator's own act, through the re-run the
+        stage already offers, which names every contact it would touch.
+        """
+
+        action = f"agent.campaign_live_opt_in.{'on' if live else 'off'}"
+        spec = get_agent_spec(agent_id)
+        if self._session.get(Campaign, campaign_id) is None:
+            raise WorkbenchCommandError("that Campaign does not exist")
+        current = self._campaign_version(campaign_id, agent_id)
+        if self._stale(current, expected_version):
+            outcome = self._stale_outcome(action, current=current, expected=expected_version)
+            self._audit(
+                outcome,
+                reason=reason,
+                context={"agent_id": agent_id.value, "campaign_id": str(campaign_id)},
+            )
+            return outcome
+        try:
+            override = agent_controls.set_campaign_live_opt_in(
+                self._session,
+                campaign_id=campaign_id,
+                agent_id=agent_id,
+                live=live,
+                actor=self._actor,
+                reason=reason,
+            )
+        except agent_controls.AgentControlError as exc:
+            outcome = CommandOutcome(
+                action=action,
+                accepted=False,
+                message=f"{spec.display_name} was not changed for this Campaign.",
+                refusal_reason=sanitize_text(str(exc)),
+                entity_id=str(campaign_id),
+            )
+            self._audit(
+                outcome,
+                reason=reason,
+                context={"agent_id": agent_id.value, "campaign_id": str(campaign_id)},
+            )
+            return outcome
+        outcome = CommandOutcome(
+            action=action,
+            accepted=True,
+            message=(
+                f"Live {spec.display_name} work is allowed for this Campaign only. "
+                "No other Campaign changed."
+                if live
+                else f"Live {spec.display_name} work is no longer allowed for this Campaign."
+            ),
+            in_flight_note=(
+                "Work already held at this Agent stays held until you run the stage "
+                "again; nothing was released automatically."
+                if live
+                else "Nothing was discarded: jobs, evidence and stage history are untouched, "
+                "and the Agent refuses the next execution instead."
+            ),
+            entity_id=str(override.id),
+        )
+        self._audit(
+            outcome,
+            reason=reason,
+            context={
+                "agent_id": agent_id.value,
+                "campaign_id": str(campaign_id),
+                "live": live,
+                "version": override.version,
+            },
+        )
+        return outcome
+
     def clear_campaign_override(
         self,
         campaign_id: uuid.UUID,
