@@ -765,24 +765,16 @@ def set_control(
         try:
             with session.begin_nested():
                 session.flush()
-        except IntegrityError:
-            # Two administrators created the row at once. Re-read and fall
-            # through to the update path rather than failing the operator's
-            # click on a race they cannot see.
+        except IntegrityError as exc:
+            # Two administrators created the row at the same instant, both from a
+            # page that showed no stored row. One of them was right for about a
+            # millisecond. Reporting the conflict is the same answer the version
+            # check gives a moment later, and it is better than letting the
+            # slower click overwrite a decision it never saw.
             session.expunge(row)
-            row = session.get(OperationalSetting, key)
-            if row is None:  # pragma: no cover - defensive
-                raise
-            return _update(
-                session,
-                row=row,
-                spec=spec,
-                enabled_value=enabled_value,
-                actor=actor,
-                reason=reason,
-                expected_version=None,
-                previous=None,
-            )
+            raise OperationalSettingError(
+                "This setting changed since the page was loaded. Reload and try again."
+            ) from exc
         _audit(session, spec=spec, actor=actor, previous=None, new=enabled_value, reason=reason)
         return ControlChange(
             key=key,
@@ -815,6 +807,11 @@ def _update(
     previous: bool | None,
 ) -> ControlChange:
     if expected_version is not None and expected_version != row.version:
+        # ``0`` reaches here from a form that rendered before any row existed, and
+        # it is a conflict for the same reason a stale integer is: the page the
+        # operator decided from is not the page the database is on. ``None`` is
+        # the separate case of a programmatic caller with no opinion about
+        # concurrency, and it is left alone deliberately.
         raise OperationalSettingError(
             "This setting changed since the page was loaded. Reload and try again."
         )

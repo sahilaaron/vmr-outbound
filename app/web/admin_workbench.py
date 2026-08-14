@@ -733,9 +733,19 @@ async def admin_configuration_set_control(
     raw_version = str(form.get("expected_version", "")).strip()
     expected_version: int | None
     if raw_version == "":
-        # Blank is a claim, not a missing value: the page saw no stored row. See
-        # the same reasoning on the Agent control forms in `app/web/routes.py`.
-        expected_version = None
+        # Blank is a claim, not a missing value: the page that rendered this form
+        # saw no stored row at all. It is submitted as version 0 rather than as
+        # "no opinion", because those are different things and only the first is
+        # what the form is saying.
+        #
+        # The difference is not theoretical. Two administrators open this screen
+        # while a control has never been set; one of them posts and creates
+        # version 1; the other posts the opposite decision from a page whose form
+        # still says "no row". Sending "no opinion" would let the second write
+        # land silently on top of the first. Sending 0 makes it the conflict it
+        # is, and the operator is told to reload — which is exactly the rule the
+        # Agent control forms follow.
+        expected_version = 0
     else:
         try:
             expected_version = int(raw_version)

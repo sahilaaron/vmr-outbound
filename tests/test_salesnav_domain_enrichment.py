@@ -561,7 +561,9 @@ def test_web_lookup_without_key_is_refused_before_any_call(
         with TestClient(app) as c:
             resp = c.post(f"/imports/{batch.id}/enrich/lookup", follow_redirects=False)
             assert resp.status_code == 303
-            assert "enrichment+is+not+enabled" in resp.headers["location"]
+            location = resp.headers["location"]
+            assert "LOGO_DEV_API_KEY" in location
+            assert "credential+is+not+configured" in location
         # No lookup ran: the company stays NOT_STARTED.
         recs = db_session.scalars(select(SalesNavCompanyEnrichment)).all()
         assert all(r.lookup_status is EnrichmentLookupStatus.NOT_STARTED for r in recs)

@@ -44,18 +44,21 @@ from app.core.auth.session import SESSION_COOKIE_NAME, SessionCodec
 from app.core.config import get_settings
 from app.db.session import SessionLocal
 from app.main import create_app
-from app.models.campaign import Campaign, CampaignUserAssignment
+from app.models.campaign import Campaign, CampaignContact, CampaignUserAssignment
 from app.models.contact import Contact
 from app.models.draft import DraftApproval, DraftVersion
 from app.models.email_sequence import EmailSequenceMessageReview
-from app.models.enums import ApprovalStatus, UserRole
+from app.models.enums import ApprovalStatus, UserRole, UserState
+from app.models.user import User
 from app.services import campaign_access
 from app.services import campaigns as campaign_service
 from app.services import drafts as draft_service
 from app.services.campaign_access import CampaignActor
+from app.services.users import service as users_service
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from starlette.requests import Request
 
 from tests import gmail_factory
 from tests.hosted_auth_factory import TEST_CLIENT_ID, seed_account
@@ -263,6 +266,60 @@ def _seed_draft(campaign_id: uuid.UUID) -> uuid.UUID:
         session.add(draft)
         session.commit()
         return draft.id
+
+
+def _seed_membership(campaign_id: uuid.UUID) -> uuid.UUID:
+    """One committed Campaign Contact, whose id names campaign work without naming the campaign."""
+
+    with SessionLocal() as session:
+        contact = Contact(
+            first_name="Grace",
+            last_name="Hopper",
+            email=f"grace-{uuid.uuid4().hex[:8]}@kiln.example",
+            natural_key=f"grace|hopper|{uuid.uuid4()}",
+        )
+        session.add(contact)
+        session.flush()
+        membership = CampaignContact(campaign_id=campaign_id, contact_id=contact.id)
+        session.add(membership)
+        session.commit()
+        return membership.id
+
+
+def _scoped_request(**path_params: str) -> Request:
+    """A request carrying nothing but the path parameters and a signed-in USER.
+
+    The router-level gate reads the actor out of ``request.scope["state"]`` — the
+    same place the authentication middleware writes it — and the path parameters
+    out of ``request.scope["path_params"]``, which Starlette fills in during
+    routing. Building the scope by hand is how a test can ask the dependency the
+    question a real request asks it, without needing a route that a signed-in
+    USER is allowed to reach in the first place. The keys below are exactly the
+    ones ``actor_from_request`` reads.
+    """
+
+    return Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/campaign-contacts",
+            "headers": [],
+            "query_string": b"",
+            "path_params": dict(path_params),
+            "state": {},
+        }
+    )
+
+
+def _as_user(request: Request, operator: _Operator) -> Request:
+    """Put an enforced, signed-in USER into a hand-built request scope."""
+
+    request.scope["state"] = {
+        "auth_enforced": True,
+        "operator_role": UserRole.USER.value,
+        "operator_user_id": operator.user_id,
+    }
+    return request
 
 
 @dataclass(frozen=True)
@@ -987,7 +1044,194 @@ def test_a_user_cannot_approve_a_sequence_from_a_campaign_they_were_never_assign
 
 
 # ---------------------------------------------------------------------------
-# I. Where there are no accounts, nothing is withheld
+# I. A membership id names a campaign one hop away
+# ---------------------------------------------------------------------------
+
+
+def test_a_membership_keyed_route_is_scoped_by_the_campaign_it_belongs_to(
+    client: TestClient,
+) -> None:
+    """Seven routes name campaign work by a Campaign Contact id and never spell the campaign out.
+
+    ``/api/campaign-contacts/{id}`` and its pause, resume, archive, retry,
+    pipeline and stage-skip siblings are the same class of surface as the review
+    writes: an id that identifies one campaign's work without carrying the
+    campaign id the router-level gate matches on. The gate now resolves the
+    membership to its campaign, and this is the test that says so.
+
+    **The main claim is asserted against the dependency rather than through
+    ``/api``, and that is not a shortcut.** The whole ``/api`` prefix is
+    administrator-only, so a signed-in USER is turned away by the authentication
+    boundary before routing — the request never reaches the gate, and asserting
+    a 403 there would be asserting ``admin_required`` and calling it campaign
+    scoping. The layer below is where the rule actually lives, and it is also
+    the layer that starts mattering the moment the extension carries a user
+    identity, which is the change these routes are waiting on.
+
+    The HTTP half is still asserted, honestly: an administrator session drives
+    one of the routes and gets through, and a USER session gets the
+    administrator refusal by name, so what each layer is answering is recorded
+    rather than assumed.
+    """
+
+    creator = _user_session(client, email="creator@vmr.example")
+    campaign_id = _seed_campaign("Nordic pharma outreach", owner=creator)
+    membership_id = _seed_membership(campaign_id)
+    colleague = _user_session(client, email="colleague@vmr.example")
+
+    admin = _admin_session(client)
+    as_admin = client.get(f"/api/campaign-contacts/{membership_id}")
+    assert as_admin.status_code == 200, as_admin.text[:200]
+    assert as_admin.json()["campaign_id"] == str(campaign_id)
+
+    _resume(client, colleague)
+    as_user = client.get(f"/api/campaign-contacts/{membership_id}")
+    assert as_user.status_code == 403
+    assert as_user.json()["error"] == "admin_required", as_user.text[:200]
+
+    # The rule itself, asked the way a routed request asks it.
+    request = _as_user(_scoped_request(campaign_contact_id=str(membership_id)), colleague)
+    actor = CampaignActor(user_id=uuid.UUID(colleague.user_id), role=UserRole.USER)
+    with SessionLocal() as session:
+        assert campaign_access.may_access_campaign(session, campaign_id, actor) is False
+        with pytest.raises(campaign_access.CampaignAccessError):
+            campaign_access.require_campaign_path_access(request, session)
+
+    _resume(client, admin)
+    assert _assign(client, admin, campaign_id, colleague).status_code == 303
+
+    with SessionLocal() as session:
+        assert campaign_access.may_access_campaign(session, campaign_id, actor) is True
+        # No exception: the same membership id, the same account, one assignment
+        # later. A gate that refused everybody would fail here.
+        campaign_access.require_campaign_path_access(request, session)
+
+
+# ---------------------------------------------------------------------------
+# J. What an account change does not do
+# ---------------------------------------------------------------------------
+
+
+def test_a_creator_keeps_access_when_an_assignment_row_for_them_is_removed(
+    client: TestClient,
+) -> None:
+    """Unassigning must not take away access that never came from the assignment.
+
+    Assigning somebody who already created the campaign is allowed and adds
+    nothing, and an administrator tidying up afterwards is an ordinary thing to
+    do. The trap is that "unassign" reads like "remove their access" — an
+    implementation that deleted the row and then recomputed access from
+    assignments alone would lock the campaign's own author out of it, and
+    nothing in the UI would say why.
+
+    The assignment row is deliberately gone by the end, so the access asserted
+    here can only be coming from ``Campaign.created_by_user_id``.
+    """
+
+    creator = _user_session(client, email="creator@vmr.example")
+    campaign_id = _seed_campaign("Nordic pharma outreach", owner=creator)
+
+    admin = _admin_session(client)
+    assert _assign(client, admin, campaign_id, creator).status_code == 303
+    assert _unassign(client, admin, campaign_id, creator).status_code == 303
+
+    with SessionLocal() as session:
+        assert session.scalars(select(CampaignUserAssignment)).all() == [], (
+            "the assignment row is meant to be gone — otherwise this proves the wrong grant"
+        )
+
+    _resume(client, creator)
+    listed = client.get("/app/campaigns")
+    assert listed.status_code == 200
+    assert "Nordic pharma outreach" in listed.text
+    assert client.get(f"/app/campaigns/{campaign_id}").status_code == 200
+    # And a write, not only a read: creator access is whole rather than partial.
+    assert (
+        _post(
+            client, f"/app/campaigns/{campaign_id}/execution", creator, enabled="true"
+        ).status_code
+        == 303
+    )
+
+
+def test_disabling_an_account_transfers_neither_ownership_nor_assignments(
+    client: TestClient,
+) -> None:
+    """Disabling revokes signing in. It does not touch who a campaign belongs to.
+
+    The two are separate on purpose, and conflating them would be destructive in
+    a way nobody could undo from the screen that caused it. If disabling an
+    account cleared its ownership, the campaigns that person made would become
+    ownerless — reachable by administrators, invisible to the colleague who
+    takes the work over — and reactivating them tomorrow would not bring the
+    access back. So the rule is that the rows are facts about the account and
+    survive it being switched off, and reactivation restores exactly what was
+    there.
+
+    The revocation is asserted first, with the account's still-live cookie
+    getting ``unauthorized`` rather than the campaign refusal, because otherwise
+    "the data is untouched" would be a claim about a disabling that might not
+    have happened.
+    """
+
+    creator = _user_session(client, email="creator@vmr.example")
+    owned = _seed_campaign("Nordic pharma outreach", owner=creator)
+    somebody_elses = _seed_campaign("Benelux logistics")
+
+    admin = _admin_session(client)
+    assert _assign(client, admin, somebody_elses, creator).status_code == 303
+
+    with SessionLocal() as session:
+        user = session.get(User, uuid.UUID(creator.user_id))
+        assert user is not None
+        users_service.set_state(session, user=user, state=UserState.DISABLED, actor=ADMIN_EMAIL)
+        session.commit()
+
+    # Signing in is what was revoked, and it was revoked on the next request:
+    # a disabled account is not "signed in without a role", it is not signed in.
+    _resume(client, creator)
+    refused = client.get(f"/app/campaigns/{owned}")
+    assert refused.status_code == 401
+    assert refused.json()["error"] == "unauthorized", refused.text[:200]
+
+    with SessionLocal() as session:
+        campaign = session.get(Campaign, owned)
+        assert campaign is not None
+        assert campaign.created_by_user_id == uuid.UUID(creator.user_id), (
+            "disabling the account moved the campaign's ownership"
+        )
+        assignments = session.scalars(
+            select(CampaignUserAssignment).where(
+                CampaignUserAssignment.user_id == uuid.UUID(creator.user_id)
+            )
+        ).all()
+        assert [row.campaign_id for row in assignments] == [somebody_elses], (
+            "disabling the account removed the assignments it held"
+        )
+
+    # Reactivation restores exactly the access the account had, which is the
+    # claim the two assertions above are only worth making for. The cookie is
+    # reissued because `set_state` bumps `auth_version` in both directions on
+    # purpose — a reactivated account may sign in again, but the tab somebody
+    # left open does not come back to life.
+    with SessionLocal() as session:
+        user = session.get(User, uuid.UUID(creator.user_id))
+        assert user is not None
+        users_service.set_state(session, user=user, state=UserState.ACTIVE, actor=ADMIN_EMAIL)
+        session.commit()
+        restored_version = user.auth_version
+
+    _attach_session(client, creator.user_id, creator.email, auth_version=restored_version)
+    reopened = client.get("/app/campaigns")
+    assert reopened.status_code == 200, reopened.text[:200]
+    assert "Nordic pharma outreach" in reopened.text
+    assert "Benelux logistics" in reopened.text
+    assert client.get(f"/app/campaigns/{owned}").status_code == 200
+    assert client.get(f"/app/campaigns/{somebody_elses}").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# K. Where there are no accounts, nothing is withheld
 # ---------------------------------------------------------------------------
 
 

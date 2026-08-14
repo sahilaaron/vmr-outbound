@@ -76,7 +76,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db as _get_db
-from app.models.campaign import Campaign, CampaignUserAssignment
+from app.models.campaign import Campaign, CampaignContact, CampaignUserAssignment
 from app.models.enums import UserRole, UserState
 from app.models.user import User
 from app.services.audit import record_audit_event
@@ -518,22 +518,49 @@ def require_campaign_path_access(request: Request, db: Session = Depends(_get_db
     * **Everything else is refused before the handler body runs**, including
       writes that carry a valid session and a valid CSRF token.
 
+    It fires on ``{campaign_id}`` and on ``{campaign_contact_id}``, because a
+    membership id names campaign work just as surely as a campaign id does and
+    seven routes are keyed by one.
+
     This is the *path* half only. A campaign named in a query string or a form
     body is checked by the handler that reads it, because only the handler knows
-    which parameter carries it.
+    which parameter carries it, and a draft or sequence id is resolved by the
+    review handlers for the same reason.
     """
 
-    raw = (request.scope.get("path_params") or {}).get("campaign_id")
-    if raw is None:
+    params = request.scope.get("path_params") or {}
+    raw = params.get("campaign_id")
+    raw_membership = params.get("campaign_contact_id")
+    if raw is None and raw_membership is None:
         return
     actor = actor_from_request(request)
     if actor.is_admin:
         return
+
+    if raw is not None:
+        try:
+            campaign_id = uuid.UUID(str(raw))
+        except (ValueError, AttributeError, TypeError):
+            return
+        require_campaign_access(db, campaign_id, actor)
+        return
+
+    # A Campaign Contact id names a campaign one hop away, and several routes are
+    # keyed by it rather than by the campaign: pause, resume, archive, retry,
+    # skip a stage, read the pipeline. They are the same class of surface as the
+    # review writes — an id that identifies campaign work without spelling the
+    # campaign out — so they are resolved here rather than left to seven
+    # handlers to remember.
     try:
-        campaign_id = uuid.UUID(str(raw))
+        membership_id = uuid.UUID(str(raw_membership))
     except (ValueError, AttributeError, TypeError):
         return
-    require_campaign_access(db, campaign_id, actor)
+    membership = db.get(CampaignContact, membership_id)
+    if membership is None:
+        # No membership, no campaign to be entitled to. The handler answers this
+        # with its own 404, which is more useful than a refusal.
+        return
+    require_campaign_access(db, membership.campaign_id, actor)
 
 
 def assignments_for_user(session: Session, user_id: uuid.UUID) -> Iterable[uuid.UUID]:
