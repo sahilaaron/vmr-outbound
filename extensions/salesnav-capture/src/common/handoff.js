@@ -253,11 +253,99 @@
           detail: "Nothing was sent. Try again shortly.",
           canRetry: true,
         };
+      // --- account link failures, by category ------------------------------
+      //
+      // These replaced one catch-all ("The window was closed, or VMR Outbound
+      // declined this install"), which named two unrelated causes at once and
+      // was wrong about both whenever the real cause was a third thing. Each
+      // category below is decided by `account-link.js` from a status code, a
+      // server-chosen error name, or Chrome's description of the auth window —
+      // never from a code, token or verifier, so none of these strings can
+      // carry credential material. `sign_in_failed` remains the generic case
+      // and is deliberately vague.
+      case "sign_in_cancelled":
+        return {
+          code: "sign_in_cancelled",
+          headline: "Sign-in was cancelled.",
+          detail: "The sign-in window closed before it finished. Nothing changed — try again.",
+          canRetry: true,
+        };
+      case "sign_in_declined":
+        return {
+          code: "sign_in_declined",
+          headline: "The connection was declined.",
+          detail:
+            "VMR Outbound was asked to connect this extension and the request was refused. " +
+            "Try again and choose Connect extension.",
+          canRetry: true,
+        };
+      case "sign_in_incomplete":
+        return {
+          code: "sign_in_incomplete",
+          headline: "Sign-in did not finish.",
+          detail:
+            "The window came back without completing the connection. If you were asked to " +
+            "sign in to VMR Outbound, finish that first, then try again.",
+          canRetry: true,
+        };
+      case "authorization_expired":
+        return {
+          code: "authorization_expired",
+          headline: "The sign-in request expired.",
+          detail: "It is only valid for a minute. Try again and complete it without pausing.",
+          canRetry: true,
+        };
+      case "extension_not_authorized":
+        return {
+          code: "extension_not_authorized",
+          headline: "This install is not approved for this VMR deployment.",
+          detail:
+            "Ask whoever administers the deployment to approve this extension, then try " +
+            "again. Retrying now will fail the same way.",
+          canRetry: false,
+        };
+      case "account_link_revoked":
+        return {
+          code: "account_link_revoked",
+          headline: "This browser is no longer connected to VMR Outbound.",
+          detail:
+            "The connection was disconnected, expired, or the account was disabled. " +
+            "Sign in again to reconnect.",
+          canRetry: true,
+        };
+      case "backend_unreachable":
+        return {
+          code: "backend_unreachable",
+          headline: "VMR Outbound could not be reached.",
+          detail: "Check your connection, then try again. Nothing was sent.",
+          canRetry: true,
+        };
+      case "token_endpoint_error":
+        return {
+          code: "token_endpoint_error",
+          headline: "VMR Outbound could not complete the sign-in just now.",
+          detail: "The server reported a problem. Nothing changed — try again shortly.",
+          canRetry: true,
+        };
+      case "state_mismatch":
+        return {
+          code: "state_mismatch",
+          headline: "The sign-in response did not match this request.",
+          detail: "It was discarded and nothing was connected. Try again.",
+          canRetry: true,
+        };
+      case "identity_unavailable":
+        return {
+          code: "identity_unavailable",
+          headline: "This browser cannot open the VMR sign-in window.",
+          detail: "Chrome 116 or newer is required to connect an account.",
+          canRetry: false,
+        };
       case "sign_in_failed":
         return {
           code: "sign_in_failed",
           headline: "Sign-in did not complete.",
-          detail: "The window was closed, or VMR Outbound declined this install. Try again.",
+          detail: "Nothing was connected and nothing was sent. Try again.",
           canRetry: true,
         };
       case "account_link_not_hosted":

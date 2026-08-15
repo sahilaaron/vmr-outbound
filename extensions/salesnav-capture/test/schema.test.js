@@ -69,28 +69,13 @@ test("committed example payload fixture validates against the validator", () => 
   assert.equal(v.valid, true, v.errors.join("; "));
 });
 
-test("CSV export includes a header and one row per record", () => {
-  const records = captureRecords("results-normal.html").map(sc.toWireRecord);
-  const csv = sc.toCsv(records);
-  const lines = csv.split("\r\n");
-  assert.equal(lines.length, records.length + 1);
-  assert.ok(lines[0].startsWith("raw_full_name,first_name,last_name"));
-});
-
-test("CSV neutralizes formula injection and quotes special chars", () => {
-  const rec = {
-    rawFullName: "=SUM(A1:A9)", firstName: "+cmd", lastName: '-danger', title: "a,b",
-    companyName: 'quote"here', location: "line\nbreak", linkedinProfileUrl: null,
-    salesNavLeadUrl: null, companyLinkedInUrl: null, salesNavCompanyUrl: null,
-    visibleCompanyMetadata: ["x", "y"], sourceSearchUrl: null, sourcePageNumber: 1,
-    sourcePosition: 1, capturedAt: null, warnings: [],
-  };
-  const csv = sc.toCsv([rec]);
-  const row = csv.split("\r\n")[1];
-  assert.ok(row.includes("'=SUM(A1:A9)"), "leading = neutralized");
-  assert.ok(row.includes("'+cmd"), "leading + neutralized");
-  assert.ok(row.includes('"a,b"'), "comma quoted");
-  assert.ok(row.includes('"quote""here"'), "double-quote escaped");
+test("the CSV writer is gone with the export it existed for (#280)", () => {
+  // `toCsv`/`CSV_COLUMNS` had exactly one caller: the panel's "Download CSV"
+  // button. With the button, its JSON twin and the `downloads` permission
+  // removed, a second serializer of captured personal data with no caller is
+  // not something to keep.
+  assert.equal(typeof sc.toCsv, "undefined");
+  assert.equal(typeof sc.CSV_COLUMNS, "undefined");
 });
 
 test("serializePayload flags oversize payloads", () => {

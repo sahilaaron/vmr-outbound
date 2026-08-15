@@ -181,17 +181,6 @@ body {
   flex: none;
 }
 
-.context-url {
-  padding: 4px 14px 0;
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  color: var(--text-faint);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: none;
-}
-
 /* step rail */
 
 .steps {

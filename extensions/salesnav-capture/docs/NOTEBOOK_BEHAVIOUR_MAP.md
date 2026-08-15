@@ -144,8 +144,9 @@ every row.
 - Missing fields become explicit `null` + a per-record warning; a results page that
   yields **zero** rows while looking like a results page **fails visibly** (it is
   never reported as a successful empty capture).
-- Output is a reviewable draft batch → JSON / CSV download or an explicit POST to
-  the VMR intake endpoint (mock receiver until the backend adapter lands). No Excel.
+- Output is a reviewable draft batch → an explicit POST to the VMR intake
+  endpoint. No Excel, and (since #280) no JSON/CSV download either: a reviewed
+  contact is saved into the operator's VMR Outbound account or it is not saved.
 
 ## 8. Assumptions that do NOT carry over to the extension
 1. **Two ChromeDriver windows / Selenium.** Replaced by one content script in the

@@ -126,12 +126,18 @@
   }
 
   /**
-   * Ensure the OPTIONAL loopback host permission is granted before a backend
-   * call. Requests it (with the current click gesture) if not already held.
+   * Ensure the host permission for a backend call is held.
+   *
+   * The hosted VMR deployment is a REQUIRED host permission (manifest
+   * `host_permissions`), so it is granted at install and this returns
+   * immediately without opening a dialog. Only the optional loopback
+   * development origins are still requested, with the current click gesture.
    */
   async function ensureHostPermission(url) {
-    const pattern = self.SNCapture.permissions.originPatternForUrl(url);
+    const perms = self.SNCapture.permissions;
+    const pattern = perms.originPatternForUrl(url);
     if (!pattern) return { granted: false, pattern: null, reason: "not_loopback" };
+    if (!perms.requiresRuntimeGrant(url)) return { granted: true, pattern, required: true };
     try {
       const has = await chrome.permissions.contains({ origins: [pattern] });
       if (has) return { granted: true, pattern };
@@ -343,7 +349,6 @@
     const btn = $("save-btn");
     btn.textContent = opts.label || "Save Contact";
     btn.disabled = !opts.handler || opts.disabled === true;
-    $("export-row").hidden = opts.showExport !== true;
     if (opts.reset) {
       $("save-state").textContent = "";
       $("save-actions").textContent = "";
@@ -576,7 +581,6 @@
     } else {
       $("outcome-primary").hidden = true;
     }
-    $("export-row").hidden = o.showExport !== true;
     $("outcome-back").textContent = "Back to review";
     showView("outcome");
     shell.setSteps(3, { state: "failed", label: "Failed" });
@@ -660,7 +664,6 @@
             if (await connectAccount()) await doSave();
           }
         : undefined,
-      showExport: !!isBatch,
     });
   }
 
@@ -732,7 +735,6 @@
       icon: "users",
       label: "Sales Navigator · Search results",
       badge: pageBadge,
-      url: page && page.url ? page.url : "",
     });
   }
 
@@ -933,7 +935,6 @@
         handler: () => send({ type: "SAVE_INCLUDED_CONTACTS" }),
         label: included === 1 ? "Capture 1 prospect" : `Capture ${included} prospects`,
         disabled: included === 0,
-        showExport: true,
       });
     }
   }
@@ -1290,50 +1291,6 @@
     renderBatch(currentBatch);
   }
 
-  // ---- export -------------------------------------------------------------
-
-  async function doExport(format) {
-    const state = $("save-state");
-    const r = await send({ type: "EXPORT_BATCH", format });
-    const note = paragraph(
-      r && r.ok
-        ? `Downloaded ${r.filename} (${r.records} contacts).`
-        : (r && (r.message || r.error)) || "Export failed.",
-      { tiny: true, muted: true }
-    );
-    state.appendChild(note);
-  }
-
-  // ---- archived campaign-era drafts ---------------------------------------
-
-  /**
-   * DAT-018 C. The old "Workflow updated" card mixed two things: a status
-   * notice about the campaign-era retirement, and the ONLY route back to
-   * archived drafts held in local storage.
-   *
-   * Code inspection (service-worker `exportLegacyArchive`, storage key
-   * `cc_legacy_v1_archive`) shows the archive is genuinely recoverable state:
-   * if this affordance disappears while an archive exists, those drafts become
-   * unreachable. The notice text is not — it tells the operator nothing they
-   * can act on.
-   *
-   * So the notice is gone and the card now appears ONLY while an archive
-   * exists, named for the action it offers rather than for a workflow event.
-   */
-  function renderMigration(state) {
-    const card = $("archive-card");
-    const info = (state && state.migration) || {};
-    if (!info.hasArchive) {
-      card.hidden = true;
-      return;
-    }
-    card.hidden = false;
-    $("archive-message").textContent =
-      "Drafts from the campaign-era workflow are still stored locally. They " +
-      "cannot be submitted under the current contract — download them if you " +
-      "still need them, then discard.";
-  }
-
   // ---- connection ----------------------------------------------------------
 
   function loadPrefsIntoUi(prefs) {
@@ -1433,20 +1390,25 @@
   /** The single interactive sign-in action. */
   async function connectAccount() {
     const buttons = [$("account-connect"), $("signin-btn")].filter(Boolean);
+    const message = $("signin-message");
     for (const btn of buttons) btn.disabled = true;
-    // The token exchange behind the sign-in window is a cross-origin request, so
-    // it needs the optional host permission. This click is the user gesture that
-    // can ask for it — doing it here means the operator answers one prompt
-    // before the sign-in rather than watching the sign-in fail after it.
+    // Say that something is happening before anything opens. The sign-in window
+    // can take a moment to appear, and a button that greys out with no other
+    // change is indistinguishable from a click that did nothing.
+    if (message) message.textContent = "Opening the VMR Outbound sign-in window…";
+    // The hosted deployment is a REQUIRED host permission, so this resolves
+    // immediately and opens no dialog. It still runs because a development
+    // install can be pointed at a loopback backend, which is an optional
+    // permission and does need the click's gesture to request it.
     const permission = await ensureHostPermission(
       backendBase() + constants.ACCOUNT_LINK_PATHS.TOKEN
     );
     if (!permission.granted) {
       for (const btn of buttons) btn.disabled = false;
-      const message = $("signin-message");
       if (message) {
         message.textContent =
-          "Allow VM Prospector to reach VMR Outbound, then sign in. Nothing has been sent.";
+          "Allow VM Prospector to reach the configured backend, then sign in. " +
+          "Nothing has been sent.";
       }
       setConnection("not_allowed");
       return false;
@@ -1459,8 +1421,10 @@
       await probeConnection();
       return true;
     }
+    // One of the categories `account-link.js` classifies, so the panel names
+    // what actually went wrong instead of collapsing every failure into "the
+    // window was closed, or VMR Outbound declined this install".
     const described = handoff.describeSendError({ error: (r && r.error) || "sign_in_failed" });
-    const message = $("signin-message");
     if (message) message.textContent = `${described.headline} ${described.detail}`.trim();
     return false;
   }
@@ -1718,8 +1682,6 @@
     });
     $("select-all").addEventListener("change", (e) => setAllSelected(e.target.checked));
     $("only-issues").addEventListener("change", renderRecords);
-    $("export-json").addEventListener("click", () => doExport("json"));
-    $("export-csv").addEventListener("click", () => doExport("csv"));
     $("save-btn").addEventListener("click", doSave);
     $("save-settings").addEventListener("click", saveSettings);
     $("settings-close").addEventListener("click", closeSettings);
@@ -1752,11 +1714,6 @@
       persistCampaignSelection(e.target.value)
     );
     $("campaign-refresh").addEventListener("click", () => refreshCampaigns(true));
-    $("migration-dismiss").addEventListener("click", async () => {
-      await send({ type: "DISCARD_LEGACY_ARCHIVE" });
-      $("archive-card").hidden = true;
-    });
-    $("migration-export").addEventListener("click", () => send({ type: "EXPORT_LEGACY_ARCHIVE" }));
 
     showView("loading");
 
@@ -1769,7 +1726,6 @@
       currentFilingContext = state.filingContext || { campaignId: null };
       renderMetadata();
       renderCampaignSelection([]);
-      renderMigration(state);
       renderBatch(state.batchView);
       // Recovery: if contacts were already saved (panel closed/reloaded, or a
       // navigation failed), restore the outcome without recapturing or resaving.

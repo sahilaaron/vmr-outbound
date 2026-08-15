@@ -173,5 +173,6 @@ adapter — do not re-plumb the extension:
 5. Keep the endpoint local-only and behind the same environment guard the
    workbench uses.
 
-Until then the extension defaults to the **mock receiver** and JSON/CSV export;
-nothing is sent anywhere without an explicit operator “Send”.
+Until then the extension defaults to the **mock receiver**; nothing is sent
+anywhere without an explicit operator “Send”. The JSON/CSV export this used to
+mention alongside it was removed in #280.

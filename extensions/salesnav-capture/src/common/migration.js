@@ -14,12 +14,23 @@
  *  - re-sending the same reviewed content under a new contract would either
  *    conflict or silently create a second copy of the same evidence.
  *
- * So the migration is explicit, not silent: a legacy draft is ARCHIVED
- * (preserved verbatim under one archive key, exportable as JSON), the live
- * draft keys are cleared, `lastCampaignId` is dropped from preferences, and a
- * one-time notice records what happened so the side panel can tell the
- * operator. Nothing is deleted without being archived first, and nothing
- * archived is ever transmitted.
+ * So the superseded draft keys are cleared and `lastCampaignId` is dropped from
+ * preferences. Nothing archived is ever transmitted.
+ *
+ * WHAT THIS USED TO DO, AND WHY IT NO LONGER DOES. A legacy draft was copied
+ * verbatim into one archive key first, and the panel showed an "Archived drafts
+ * can still be downloaded" card offering it as a JSON download. That was the
+ * archive's only purpose — nothing else ever read it. With the extension's
+ * download capability removed there is no way to reach it and no reason to keep
+ * writing it, so the archive is no longer created.
+ *
+ * THE ONE PIECE OF COMPATIBILITY LOGIC RETAINED, and why it cannot be deleted
+ * yet: an install that ran an earlier version already has `cc_legacy_v1_archive`
+ * and `cc_migration_notice` sitting in `chrome.storage.local`. Neither is
+ * readable by anything that ships now. Leaving them would strand captured
+ * personal data in local storage indefinitely with no code path that can ever
+ * show or remove it, so both keys are cleared when they are found. That branch
+ * goes when there are no installs left that could still be carrying them.
  *
  * The function is pure over a plain object so it is fully unit-testable without
  * a browser.
@@ -52,6 +63,9 @@
   ];
   // Preference keys the contact-first workflow has no concept of.
   const REMOVED_PREFERENCE_KEYS = ["lastCampaignId"];
+  // Keys written by an earlier version of this module that nothing reads any
+  // more. See the module docstring: they are cleared rather than left behind.
+  const OBSOLETE_KEYS = [CONTACT_STORAGE.LEGACY_ARCHIVE, CONTACT_STORAGE.MIGRATION_NOTICE];
 
   /**
    * Decide what to do with a snapshot of `chrome.storage.local`.
@@ -59,28 +73,27 @@
    * @param {object} stored a plain read of every relevant storage key
    * @param {{migratedAt: string}} options a caller-supplied timestamp (the
    *        module never reads the clock itself, so results stay deterministic)
-   * @returns {{needed: boolean, set: object, remove: string[], notice: object|null}}
+   * @returns {{needed: boolean, set: object, remove: string[]}}
    */
   function planMigration(stored, options) {
     const data = stored || {};
     const opts = options || {};
+    void opts;
     const set = {};
     const remove = [];
 
-    // Already archived once? Never archive twice — that would overwrite the
-    // operator's only copy of the superseded draft.
-    const alreadyArchived = !!data[CONTACT_STORAGE.LEGACY_ARCHIVE];
-
-    const archivedDrafts = {};
     let draftCount = 0;
     for (const key of LEGACY_DRAFT_KEYS) {
       const value = data[key];
       if (value == null) continue;
-      archivedDrafts[key] = value;
       draftCount += 1;
       remove.push(key);
     }
     for (const key of LEGACY_RESULT_KEYS) {
+      if (data[key] != null) remove.push(key);
+    }
+    // The export-only state an earlier version left behind.
+    for (const key of OBSOLETE_KEYS) {
       if (data[key] != null) remove.push(key);
     }
 
@@ -106,53 +119,15 @@
     }
 
     const needed = draftCount > 0 || remove.length > 0 || prefsChanged;
-    if (!needed) return { needed: false, set: {}, remove: [], notice: null };
+    if (!needed) return { needed: false, set: {}, remove: [] };
 
-    if (draftCount > 0 && !alreadyArchived) {
-      set[CONTACT_STORAGE.LEGACY_ARCHIVE] = {
-        archivedAt: opts.migratedAt || null,
-        reason:
-          "campaign-era drafts cannot be resubmitted under the contact-first " +
-          "contract; archived verbatim and exportable, never resent",
-        contracts: ["salesnav-capture/1.0.0", "linkedin-profile-capture/1.0.0"],
-        drafts: archivedDrafts,
-      };
-    }
     if (prefsChanged && nextPrefs) set[STORAGE.PREFERENCES] = nextPrefs;
-
-    const notice = {
-      at: opts.migratedAt || null,
-      archivedDraftCount: alreadyArchived ? 0 : draftCount,
-      clearedKeys: remove.slice(),
-      campaignSelectionRemoved: prefsChanged,
-      message: buildMessage(alreadyArchived ? 0 : draftCount, prefsChanged),
-    };
-    set[CONTACT_STORAGE.MIGRATION_NOTICE] = notice;
-    return { needed: true, set, remove, notice };
-  }
-
-  function buildMessage(draftCount, prefsChanged) {
-    const parts = [];
-    if (draftCount > 0) {
-      parts.push(
-        `${draftCount} draft${draftCount === 1 ? "" : "s"} from the campaign-era workflow ` +
-          "were archived, not sent. Download them if you still need them, then capture again."
-      );
-    }
-    if (prefsChanged) {
-      parts.push("Campaign selection has been removed — captures no longer belong to a campaign.");
-    }
-    if (!parts.length) parts.push("Local state was updated for the contact-first workflow.");
-    return parts.join(" ");
+    return { needed: true, set, remove };
   }
 
   /** Every storage key `planMigration` needs to inspect. */
   function keysToRead() {
-    return LEGACY_DRAFT_KEYS.concat(LEGACY_RESULT_KEYS, [
-      STORAGE.PREFERENCES,
-      CONTACT_STORAGE.LEGACY_ARCHIVE,
-      CONTACT_STORAGE.MIGRATION_NOTICE,
-    ]);
+    return LEGACY_DRAFT_KEYS.concat(LEGACY_RESULT_KEYS, OBSOLETE_KEYS, [STORAGE.PREFERENCES]);
   }
 
   /**
@@ -175,5 +150,6 @@
     LEGACY_DRAFT_KEYS,
     LEGACY_RESULT_KEYS,
     REMOVED_PREFERENCE_KEYS,
+    OBSOLETE_KEYS,
   };
 });

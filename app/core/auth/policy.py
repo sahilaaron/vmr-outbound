@@ -529,13 +529,30 @@ def safe_next_path(raw: str | None, *, fallback: str) -> str:
         return fallback
     if any(character in raw for character in ("\r", "\n", "\t")):
         return fallback
-    lowered = raw.lower()
-    if "%2f" in lowered or "%5c" in lowered:
-        # An encoded separator. `/%2f%2fevil.example` stays same-origin in every
-        # browser that resolves it, so this is hardening rather than a fix — but
-        # no operator destination in this application needs an encoded slash or
-        # backslash, and a value that survives one more decoding step than it was
-        # checked against is exactly how a redirect filter is eventually escaped.
+    lowered_path = raw.partition("?")[0].lower()
+    if "%2f" in lowered_path or "%5c" in lowered_path:
+        # An encoded separator in the PATH. `/%2f%2fevil.example` stays
+        # same-origin in every browser that resolves it, so this is hardening
+        # rather than a fix — but no operator destination in this application
+        # needs an encoded slash or backslash in its path, and a value that
+        # survives one more decoding step than it was checked against is exactly
+        # how a redirect filter is eventually escaped.
+        #
+        # The rule is deliberately scoped to the path and no longer applied to
+        # the query string, because there it refused a destination this
+        # application genuinely produces. `GET /extension/authorize` carries
+        # `redirect_uri=https%3A%2F%2F<extension id>.chromiumapp.org%2F`, which a
+        # browser must percent-encode, so every anonymous hit on the extension
+        # authorize page had its `next` discarded and landed the operator on the
+        # dashboard instead of back at the authorization they were completing.
+        # For `chrome.identity.launchWebAuthFlow` that is indistinguishable from
+        # a refusal: the window never reaches the redirect URL, so the flow only
+        # ends when the operator closes it.
+        #
+        # Narrowing costs nothing here. Every rule above still applies to the
+        # whole value, so the result is always a single-slash-rooted local path;
+        # an encoded separator *after* the `?` is query data and cannot change
+        # which origin that path resolves against.
         return fallback
     if is_anonymous_path(raw.partition("?")[0]):
         # Bouncing back to the sign-in page after signing in is a loop, and a

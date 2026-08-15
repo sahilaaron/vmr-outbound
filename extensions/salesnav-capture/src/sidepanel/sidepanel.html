@@ -40,7 +40,6 @@
         <span class="context-label" id="context-label">Detecting the active page…</span>
         <span class="context-badge" id="context-badge"></span>
       </div>
-      <div class="context-url" id="surface-detail" hidden></div>
 
       <!-- ============ shared shell: three-step rail ============ -->
       <div class="steps" id="steps" role="group" aria-label="Capture progress" hidden>
@@ -64,20 +63,6 @@
             <button id="signin-btn" class="btn btn-sm" type="button">
               Sign in to VMR Outbound
             </button>
-          </div>
-        </section>
-
-        <!-- Shown ONLY while campaign-era drafts are still recoverable from
-             local storage. Downloading them is the only way to get them back,
-             so this is a required operator action, not a status notice. -->
-        <section class="callout" data-tone="brand" id="archive-card" hidden>
-          <span class="eyebrow step-label">Archived drafts can still be downloaded</span>
-          <div class="callout-body" id="archive-message"></div>
-          <div class="badge-row">
-            <button id="migration-export" class="btn btn-sm" type="button">
-              Download archived drafts
-            </button>
-            <button id="migration-dismiss" class="linkbtn muted" type="button">Discard</button>
           </div>
         </section>
 
@@ -239,10 +224,6 @@
           <section id="save-card" hidden>
             <div id="save-state" class="view" aria-live="polite"></div>
             <div id="save-actions" class="badge-row"></div>
-            <div class="badge-row" id="export-row" hidden>
-              <button id="export-json" class="btn btn-sm" type="button">Download JSON</button>
-              <button id="export-csv" class="btn btn-sm" type="button">Download CSV</button>
-            </div>
           </section>
 
           <section id="company-result-card" hidden>

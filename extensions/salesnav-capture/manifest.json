@@ -7,7 +7,6 @@
   "permissions": [
     "storage",
     "sidePanel",
-    "downloads",
     "activeTab",
     "scripting",
     "identity"
@@ -15,12 +14,12 @@
   "host_permissions": [
     "https://www.linkedin.com/sales/*",
     "https://www.linkedin.com/in/*",
-    "https://www.linkedin.com/company/*"
+    "https://www.linkedin.com/company/*",
+    "https://srv1885453.hstgr.cloud/*"
   ],
   "optional_host_permissions": [
     "http://127.0.0.1/*",
-    "http://localhost/*",
-    "https://srv1885453.hstgr.cloud/*"
+    "http://localhost/*"
   ],
   "background": {
     "service_worker": "src/background/service-worker.js"

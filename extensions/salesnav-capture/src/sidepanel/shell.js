@@ -217,6 +217,11 @@
   /**
    * Paint the detected-page strip. `label` is the plain-language name of the
    * surface the operator is on; the badge is the one-word state of that page.
+   *
+   * The strip used to be followed by the full URL of the active tab. It said
+   * nothing the operator could not read in their own address bar, wrapped over
+   * two or three lines on a Sales Navigator URL, and pushed the work down the
+   * panel; the compact label and badge are the whole indicator now.
    */
   function setContext(options) {
     const o = options || {};
@@ -234,10 +239,6 @@
         badge(o.badge.text, { tone: o.badge.tone, dot: o.badge.dot !== false })
       );
     }
-    const url = $("surface-detail");
-    url.textContent = o.url || "";
-    url.hidden = !o.url;
-    url.title = o.url || "";
   }
 
   // ---- step rail -----------------------------------------------------------

@@ -74,6 +74,24 @@ be designed and tested together with extension authentication.
 A write is **never** answered with a redirect. A `303` on a `POST` is followed as
 a `GET` and can look like success to a client that cannot see the address bar.
 
+#### What `next` may carry
+
+`next` is the **whole** original target — path *and* query string — and
+`safe_next_path` (`app/core/auth/policy.py`) decides whether it survives. Every
+rule that keeps it a single-slash-rooted local path applies to the entire value.
+
+The encoded-separator rule (`%2f`, `%5c`) applies to the **path only**, and that
+distinction is load-bearing rather than cosmetic. `GET /extension/authorize`
+carries `redirect_uri=https%3A%2F%2F<extension id>.chromiumapp.org%2F`, which a
+browser must percent-encode. Applying the rule to the whole value discarded that
+destination, so an operator signing in inside
+`chrome.identity.launchWebAuthFlow` landed on the dashboard instead of back at
+the authorization they were completing — and because the auth window then never
+reached `https://<id>.chromiumapp.org/`, the flow ended only when they closed
+it. An encoded separator after the `?` is query data and cannot change which
+origin a root-relative path resolves against; in the path it still can, so it is
+still refused there. See #280.
+
 ---
 
 ## 2. Identity

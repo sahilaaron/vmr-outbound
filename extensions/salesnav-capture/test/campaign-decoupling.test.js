@@ -99,7 +99,11 @@ test("committed examples show the valid Contact-only choice", () => {
   }
 });
 
-test("JSON and CSV export fallback remains available", () => {
-  assert.ok(PANEL_DOC.getElementById("export-json"));
-  assert.ok(PANEL_DOC.getElementById("export-csv"));
+test("the JSON and CSV export fallback is gone (#280)", () => {
+  // It was an offline fallback from before hosted capture: a reviewed contact
+  // is saved into the operator's VMR Outbound account or it is not saved at
+  // all. Removing the controls also let the `downloads` permission go — see
+  // test/config-parity.test.js and test/panel-layout.test.js.
+  assert.equal(PANEL_DOC.getElementById("export-json"), null);
+  assert.equal(PANEL_DOC.getElementById("export-csv"), null);
 });

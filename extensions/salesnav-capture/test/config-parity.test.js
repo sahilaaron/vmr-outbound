@@ -77,9 +77,14 @@ function validatorAccepts(urlStr) {
   return constants.ALLOWED_BACKEND_ORIGIN_PATTERNS.some((re) => re.test(origin));
 }
 
-test("every accepted backend target maps to a declared optional host permission", () => {
-  const declared = new Set(manifest.optional_host_permissions || []);
-  assert.ok(declared.size > 0, "the manifest must declare the loopback permissions");
+test("every accepted backend target maps to a declared host permission", () => {
+  // Either list will do here — what must never happen is a target the validator
+  // accepts that the manifest declares nowhere, which prompts the operator (or
+  // silently does not) and then fails every send with `permission_denied`.
+  // Which of the two lists each target belongs in is asserted below.
+  const optional = new Set(manifest.optional_host_permissions || []);
+  const required = new Set(manifest.host_permissions || []);
+  assert.ok(optional.size > 0, "the manifest must declare the loopback permissions");
 
   const accepted = CANDIDATE_TARGETS.filter(validatorAccepts);
   assert.ok(accepted.length > 0, "the validator must still accept the documented local targets");
@@ -88,11 +93,68 @@ test("every accepted backend target maps to a declared optional host permission"
     const pattern = perms.originPatternForUrl(target + "/api/intake/contact-captures");
     assert.ok(pattern, `${target} is accepted by the validator but yields no permission pattern`);
     assert.ok(
-      declared.has(pattern),
+      optional.has(pattern) || required.has(pattern),
       `${target} is accepted by the validator but its permission pattern ${pattern} is not ` +
-        `declared in manifest optional_host_permissions — it would prompt the operator and ` +
-        `then fail every send with permission_denied`
+        `declared in the manifest at all — it would fail every send with permission_denied`
     );
+  }
+});
+
+test("the fixed hosted origin is a REQUIRED host permission, not an optional one", () => {
+  // #280. As an optional permission this opened a Chrome dialog naming an
+  // unfamiliar server at the moment the operator pressed "Sign in to VMR
+  // Outbound", and dismissing it produced a click that did nothing visible. The
+  // origin is product configuration, so there was never a decision to take.
+  const optional = new Set(manifest.optional_host_permissions || []);
+  const required = new Set(manifest.host_permissions || []);
+  for (const origin of constants.HOSTED_BACKEND_ORIGINS) {
+    const pattern = perms.originPatternForUrl(origin + "/api/intake/contact-captures");
+    assert.ok(
+      required.has(pattern),
+      `${pattern} must be declared in manifest host_permissions so no runtime prompt is needed`
+    );
+    assert.ok(
+      !optional.has(pattern),
+      `${pattern} must NOT also be optional — two declarations of one origin is how the ` +
+        `runtime prompt came back`
+    );
+    assert.equal(
+      perms.requiresRuntimeGrant(origin + "/api/intake/contact-captures"),
+      false,
+      `${origin} must not be requested at runtime`
+    );
+  }
+});
+
+test("localhost development origins remain OPTIONAL and still requested at runtime", () => {
+  const optional = new Set(manifest.optional_host_permissions || []);
+  for (const target of ["http://127.0.0.1:8000", "http://localhost:8787"]) {
+    const pattern = perms.originPatternForUrl(target + "/api/intake/contact-captures");
+    assert.ok(optional.has(pattern), `${pattern} must stay in optional_host_permissions`);
+    assert.equal(
+      perms.requiresRuntimeGrant(target + "/api"),
+      true,
+      `${target} is a development origin and must still be asked for`
+    );
+  }
+});
+
+test("no wildcard or all-urls host permission is declared", () => {
+  // Pinning exactly what the extension needs is what makes moving the hosted
+  // origin into the required list a narrowing rather than a widening.
+  const declared = [
+    ...(manifest.host_permissions || []),
+    ...(manifest.optional_host_permissions || []),
+  ];
+  assert.ok(declared.length > 0);
+  for (const pattern of declared) {
+    assert.notEqual(pattern, "<all_urls>", "<all_urls> must never be declared");
+    assert.ok(
+      !/^\w+:\/\/\*(\/|$)/.test(pattern) && !/^\*:\/\//.test(pattern),
+      `${pattern} is a wildcard host pattern; every origin must be named exactly`
+    );
+    const host = pattern.replace(/^\w+:\/\//, "").replace(/\/.*$/, "");
+    assert.ok(!host.includes("*"), `${pattern} wildcards its host; name the deployment exactly`);
   }
 });
 
@@ -137,7 +199,7 @@ test("remote targets other than the named deployments are still refused", () => 
 // validator, the permission-pattern helper, and the manifest.
 
 test("every named hosted deployment is HTTPS, accepted, and declared", () => {
-  const declared = new Set(manifest.optional_host_permissions || []);
+  const declared = new Set(manifest.host_permissions || []);
   assert.ok(
     constants.HOSTED_BACKEND_ORIGINS.length > 0,
     "at least one hosted deployment must be named, or hosted capture cannot work at all"
@@ -151,7 +213,7 @@ test("every named hosted deployment is HTTPS, accepted, and declared", () => {
       `${origin} must be recognised as hosted, or its requests carry no credential`
     );
     const pattern = perms.originPatternForUrl(origin + "/api/intake/contact-captures");
-    assert.ok(declared.has(pattern), `${pattern} is not declared in optional_host_permissions`);
+    assert.ok(declared.has(pattern), `${pattern} is not declared in host_permissions`);
   }
 });
 
@@ -203,12 +265,32 @@ test("the manifest declares the identity permission the account link needs", () 
     "chrome.identity.launchWebAuthFlow is the whole sign-in path; without this " +
       "permission the extension cannot be linked to an account at all"
   );
-  // And nothing else was widened while adding it.
+  // And nothing else was widened while adding it. `downloads` left this set in
+  // #280 along with the JSON/CSV export and the archived-draft download; the
+  // extension has no remaining path that saves a file.
   assert.deepEqual(
     [...(manifest.permissions || [])].sort(),
-    ["activeTab", "downloads", "identity", "scripting", "sidePanel", "storage"],
+    ["activeTab", "identity", "scripting", "sidePanel", "storage"],
     "the permission set must not grow beyond the identity permission"
   );
+});
+
+test("the downloads permission is gone, and so is every caller of it", () => {
+  assert.ok(
+    !(manifest.permissions || []).includes("downloads"),
+    "nothing in the extension writes a file any more; the permission must not be requested"
+  );
+  const worker = fs.readFileSync(path.join(ROOT, "src", "background", "service-worker.js"), "utf8");
+  const panel = fs.readFileSync(path.join(ROOT, "src", "sidepanel", "sidepanel.js"), "utf8");
+  const html = fs.readFileSync(path.join(ROOT, "src", "sidepanel", "sidepanel.html"), "utf8");
+  for (const [name, source] of [["service worker", worker], ["panel", panel]]) {
+    assert.ok(
+      !/chrome\.downloads/.test(source),
+      `${name} still calls chrome.downloads, which the manifest no longer permits`
+    );
+  }
+  assert.ok(!/EXPORT_BATCH|EXPORT_LEGACY_ARCHIVE/.test(worker + panel), "export messages remain");
+  assert.ok(!/Download JSON|Download CSV|Download archived/i.test(html), "download controls remain");
 });
 
 test("the account-link endpoints live on the approved hosted origin", () => {
