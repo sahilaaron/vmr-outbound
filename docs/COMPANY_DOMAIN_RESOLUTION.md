@@ -128,12 +128,41 @@ different route.
 ## What a decision stores
 
 One append-only row per decision in `company_domain_resolutions`, at most one
-current per capture (partial unique index). Each row carries: state, policy
-version, original and normalized company name, the full candidate set with each
-candidate's eligibility and rejection reason, the selected candidate, provider,
-provider rank, deterministic reason codes, warnings, whether a paid provider call
-happened, the decision timestamp and actor, and links to the capture, the DAT-010
-candidate record and the resolved Company.
+current per **subject** (partial unique index per subject column). Each row
+carries: state, policy version, original and normalized company name, the full
+candidate set with each candidate's eligibility and rejection reason, the
+selected candidate, provider, provider rank, deterministic reason codes,
+warnings, whether a paid provider call happened, the decision timestamp and
+actor, and links to its subject, the DAT-010 candidate record and the resolved
+Company.
+
+## Two acquisition subjects, one process
+
+A decision is about whichever record the acquisition surface actually produced —
+`resolution.store.ResolutionSubject`, exactly one of:
+
+* a **capture** (`capture_id`) — the Chrome extension resolves the company before
+  any Contact exists, so the decision hangs off `linkedin_profile_snapshots`;
+* a **contact** (`contact_id`) — Google Sheets produces the permanent Contact
+  directly and has no capture, so the decision hangs off `contacts`.
+
+A check constraint requires exactly one: neither would be unattributable
+evidence, and both would let two surfaces claim the same decision row. The same
+rule gives `salesnav_company_enrichments` a third owner beside batch and capture,
+so a contact's lookup lands in the one candidate store rather than a second one.
+
+The entry points are `resolve(snapshot=...)` and `resolve_contact(contact=...)`.
+They share `_run_lookups` and `_apply`, so the evidence, the provider ladder, the
+policy, the decision row, the Company link and the gates are literally the same
+code. The only difference is that the capture path also has a promotion to
+finish, because its Contact does not exist yet.
+
+A contact-subject decision is reached by the **Company Agent** in the durable
+worker (`CompanyAgentAdapter`), which is where the company stage — and its cost —
+already belongs. It is deliberately *not* reached inside a Sheets intake request.
+The Agent does not consult the capture-promotion switch: that control governs
+turning captures into Contacts, and a spreadsheet-acquired Contact must not
+depend on it.
 
 A check constraint makes the state and the domain agree: `unresolved` carries no
 selected domain, and the other two must carry one. "Resolved, but to nothing" is

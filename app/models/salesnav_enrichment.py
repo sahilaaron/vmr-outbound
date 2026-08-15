@@ -8,17 +8,28 @@ entirely separately from the immutable raw evidence
 :class:`~app.models.linkedin_profile.LinkedInProfileSnapshot`, never mutated) and
 from a contact's :class:`~app.models.provenance.ProvenanceRecord`.
 
-One record is owned by **exactly one** of two things, enforced by a check
+One record is owned by **exactly one** of three things, enforced by a check
 constraint:
 
 * a staged import batch (DAT-010) — one record per unique company per batch, so
   a confirmed domain propagates to every matching staged row exactly once;
 * a contact capture (DAT-014) — one record per capture, resolving the single
-  company that capture observed.
+  company that capture observed;
+* a permanent contact — one record per contact, for a surface such as Google
+  Sheets that produces the person directly and has no capture to hang the
+  lookup off. Adding this owner is what lets an unseen company arriving from a
+  spreadsheet enter the *same* lookup, candidate store and confirmation path a
+  captured company uses, rather than a second one built beside it.
 
 The table name is historical: it began as Sales-Navigator-only and is now the
-one company-domain resolution store for both acquisition paths. There is
+one company-domain resolution store for every acquisition path. There is
 deliberately no second candidate store.
+
+Because a confirmation is keyed by ``company_key`` and read back by
+:func:`app.services.captures.promotion.prior_confirmed_domains` regardless of
+owner, a domain confirmed from one surface is immediately reusable by the
+others. That is the point: the surfaces share evidence rather than each
+accumulating their own.
 
 It is provenance/audit metadata: it holds what was searched, what candidates
 logo.dev returned, and which domain the operator confirmed (a candidate, a manual
@@ -79,12 +90,21 @@ class SalesNavCompanyEnrichment(Base):
             unique=True,
             postgresql_where="capture_id IS NOT NULL",
         ),
-        # Exactly one owner. A record with neither owner would be unreachable
-        # evidence; one with both would let a confirmation leak across paths.
+        # One record per permanent contact, for the surfaces that have no
+        # capture. Partial unique index for the same reason as the capture one.
+        Index(
+            "uq_salesnav_company_enrichments_contact",
+            "contact_id",
+            unique=True,
+            postgresql_where="contact_id IS NOT NULL",
+        ),
+        # Exactly one owner. A record with no owner would be unreachable
+        # evidence; one with two would let a confirmation leak across paths.
         # Bare name: the convention prepends ``ck_<table>_``. See the note in
         # ``app/models/collection.py`` and migration ``b6d4e07a1f38``.
         CheckConstraint(
-            "(batch_id IS NULL) <> (capture_id IS NULL)",
+            "(batch_id IS NOT NULL)::int + (capture_id IS NOT NULL)::int "
+            "+ (contact_id IS NOT NULL)::int = 1",
             name="single_owner",
         ),
     )
@@ -99,6 +119,13 @@ class SalesNavCompanyEnrichment(Base):
     capture_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("linkedin_profile_snapshots.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    # The permanent contact whose stated employer this record resolves, for a
+    # surface that produced the Contact without a capture.
+    contact_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("contacts.id", ondelete="CASCADE"),
         nullable=True,
     )
     # Normalized grouping key (collapsed, case-folded company name). Rows whose
@@ -201,9 +228,13 @@ class SalesNavCompanyEnrichment(Base):
 
     @property
     def owner_label(self) -> str:
-        """Which acquisition path owns this record ("batch" or "capture")."""
+        """Which acquisition path owns this record ("batch", "capture" or "contact")."""
 
-        return "capture" if self.capture_id is not None else "batch"
+        if self.capture_id is not None:
+            return "capture"
+        if self.contact_id is not None:
+            return "contact"
+        return "batch"
 
     def __repr__(self) -> str:  # pragma: no cover - debug helper
         return (

@@ -33,6 +33,7 @@ from app.core.config import get_settings
 from app.main import create_app
 from app.models.campaign import Campaign, CampaignContact
 from app.models.company import Company
+from app.models.company_domain_resolution import CompanyDomainResolution
 from app.models.contact import Contact
 from app.models.email_evidence import ExactEmailVerification
 from app.models.enums import (
@@ -46,10 +47,11 @@ from app.models.enums import (
     UserRole,
     UserState,
 )
+from app.models.pipeline import CampaignContactAgentState
 from app.models.suppression import Suppression
 from app.models.user import User
 from app.services import campaign_contacts
-from app.services.integrations.sheets import companies as sheet_companies
+from app.services.enrichment import logodev
 from app.services.integrations.sheets.contract import (
     RowStatus,
     SheetLocation,
@@ -58,6 +60,7 @@ from app.services.integrations.sheets.contract import (
     row_idempotency_key,
 )
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tests.gmail_factory import build_sequence
@@ -591,9 +594,17 @@ def test_a_row_with_no_domain_resolves_through_the_normal_company_path(
     assert contact.company_domain == "kiln.example"
 
 
-def test_an_unidentifiable_company_stops_the_row_with_an_actionable_sentence(
+def test_an_unseen_company_enters_the_pipeline_instead_of_being_refused(
     db_session: Session, enable_sheets: None
 ) -> None:
+    """The repair, stated as the behaviour that used to be impossible.
+
+    A company this deployment has never established is not a reason to refuse a
+    row. The Contact becomes permanent carrying the name it was given, the
+    membership is created, and the pipeline owns the rest. This is the exact row
+    shape that came back "could not prepare" in hosted UAT.
+    """
+
     user = make_user(db_session, email="mine@vmr.example")
     campaign = make_campaign(db_session, name="Mine", owner=user)
 
@@ -605,11 +616,218 @@ def test_an_unidentifiable_company_stops_the_row_with_an_actionable_sentence(
     )
 
     entry = response.json()["rows"][0]
-    assert entry["status"] == RowStatus.COULD_NOT_PREPARE.value
-    assert entry["failure_code"] == "company_domain_unresolved"
-    assert entry["safe_failure_reason"] == sheet_companies.UNRESOLVED_MESSAGE
-    assert db_session.query(Contact).count() == 0
-    assert db_session.query(CampaignContact).count() == 0
+    assert entry["status"] == RowStatus.PENDING.value
+    assert entry["failure_code"] is None
+    assert entry["safe_failure_reason"] is None
+    assert entry["submission_id"] is not None
+    assert entry["contact_id"] is not None
+    assert response.json()["counts"]["accepted"] == 1
+    assert response.json()["counts"]["could_not_prepare"] == 0
+
+    contact = db_session.get(Contact, uuid.UUID(entry["contact_id"]))
+    assert contact is not None
+    # The evidence the sheet supplied is preserved verbatim...
+    assert contact.company_name == "A Company Nobody Has Heard Of"
+    # ...and the link the sheet could not honestly establish is left NULL, which
+    # the Contact model documents as "not linked yet" rather than guessed.
+    assert contact.company_domain is None
+    assert contact.company_id is None
+    assert contact.natural_key is None
+
+    membership = db_session.get(CampaignContact, uuid.UUID(entry["submission_id"]))
+    assert membership is not None
+    assert membership.contact_id == contact.id
+
+
+def test_an_unseen_company_makes_no_provider_call_at_intake(
+    db_session: Session, enable_sheets: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deciding whether a row may enter must never spend money.
+
+    The brand matcher is replaced with a landmine rather than a spy: a call is
+    not merely counted, it fails the test where it happens. Any provider work an
+    unseen company needs belongs to the Agent that owns it, long after this
+    request has returned.
+    """
+
+    def _explode(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("intake asked a provider whether a row may enter")
+
+    monkeypatch.setattr(logodev, "search_brands", _explode)
+
+    user = make_user(db_session, email="mine@vmr.example")
+    campaign = make_campaign(db_session, name="Mine", owner=user)
+
+    client = make_client(db_session, {"tok": assertion_for(user)})
+    response = client.post(
+        "/integrations/sheets/batches",
+        json=batch_payload(campaign, [row("r1", company="Still Nobody Has Heard Of It")]),
+        headers={"Authorization": "Bearer tok"},
+    )
+
+    assert response.json()["rows"][0]["status"] == RowStatus.PENDING.value
+
+
+def test_an_established_company_also_makes_no_provider_call(
+    db_session: Session, enable_sheets: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The known-company path stays free, and stays linked."""
+
+    def _explode(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("intake asked a provider about an established company")
+
+    monkeypatch.setattr(logodev, "search_brands", _explode)
+
+    user = make_user(db_session, email="mine@vmr.example")
+    campaign = make_campaign(db_session, name="Mine", owner=user)
+    company = seed_company(db_session, name="Kiln Systems", domain="kiln.example")
+
+    client = make_client(db_session, {"tok": assertion_for(user)})
+    response = client.post(
+        "/integrations/sheets/batches",
+        json=batch_payload(campaign, [row("r1", company="  kiln   systems ")]),
+        headers={"Authorization": "Bearer tok"},
+    )
+
+    entry = response.json()["rows"][0]
+    assert entry["status"] == RowStatus.PENDING.value
+    contact = db_session.get(Contact, uuid.UUID(entry["contact_id"]))
+    assert contact is not None
+    assert contact.company_id == company.id
+    assert contact.company_domain == "kiln.example"
+    assert contact.natural_key is not None
+
+
+def test_an_unseen_company_starts_at_the_canonical_first_stage(
+    db_session: Session, enable_sheets: None
+) -> None:
+    """The precise existing invariant, not "a job exists".
+
+    ``initialize_pipeline`` is documented as "Capture as complete and Identity as
+    the first queued stage". A Sheets enrolment must land exactly there — the
+    same place a direct enrolment lands — so the assertion below is made against
+    a non-Sheets membership rather than against a literal.
+    """
+
+    user = make_user(db_session, email="mine@vmr.example")
+    campaign = make_campaign(db_session, name="Mine", owner=user)
+
+    client = make_client(db_session, {"tok": assertion_for(user)})
+    response = client.post(
+        "/integrations/sheets/batches",
+        json=batch_payload(campaign, [row("r1", company="An Unseen Company")]),
+        headers={"Authorization": "Bearer tok"},
+    )
+    entry = response.json()["rows"][0]
+    sheets_membership = db_session.get(CampaignContact, uuid.UUID(entry["submission_id"]))
+    assert sheets_membership is not None
+
+    # An equivalent enrolment that never went near a spreadsheet.
+    reference = Contact(first_name="Grace", last_name="Hopper", company_name="An Unseen Company")
+    db_session.add(reference)
+    db_session.flush()
+    direct = campaign_contacts.enrol_contact(
+        db_session,
+        campaign_id=campaign.id,
+        contact_id=reference.id,
+        source_type="manual",
+    ).membership
+
+    assert sheets_membership.next_stage is direct.next_stage
+    assert sheets_membership.current_stage is direct.current_stage
+    assert sheets_membership.pipeline_status is direct.pipeline_status
+    # Stated absolutely as well, so a change to both paths at once is still caught.
+    assert sheets_membership.next_stage is AgentIdentifier.IDENTITY
+
+    capture = db_session.scalars(
+        select(CampaignContactAgentState).where(
+            CampaignContactAgentState.campaign_contact_id == sheets_membership.id,
+            CampaignContactAgentState.agent_id == AgentIdentifier.CAPTURE,
+        )
+    ).one()
+    assert capture.status is PipelineStageStatus.COMPLETED
+
+
+def test_an_unseen_company_launders_no_domain(db_session: Session, enable_sheets: None) -> None:
+    """Accepting the row must not invent, confirm or record a company identity.
+
+    The old refusal existed to prevent exactly this. The repair honours it by
+    obtaining nothing uncertain rather than by grading it: no Company row, no
+    domain on the Contact, and no resolution decision claiming otherwise.
+    """
+
+    user = make_user(db_session, email="mine@vmr.example")
+    campaign = make_campaign(db_session, name="Mine", owner=user)
+    companies_before = db_session.query(Company).count()
+
+    client = make_client(db_session, {"tok": assertion_for(user)})
+    response = client.post(
+        "/integrations/sheets/batches",
+        json=batch_payload(campaign, [row("r1", company="Nobody Established This")]),
+        headers={"Authorization": "Bearer tok"},
+    )
+
+    entry = response.json()["rows"][0]
+    assert entry["status"] == RowStatus.PENDING.value
+    assert db_session.query(Company).count() == companies_before
+    assert db_session.query(CompanyDomainResolution).count() == 0
+    contact = db_session.get(Contact, uuid.UUID(entry["contact_id"]))
+    assert contact is not None
+    assert contact.company_domain is None
+
+
+def test_retrying_an_unseen_company_row_is_idempotent(
+    db_session: Session, enable_sheets: None
+) -> None:
+    """The new accepted path keeps the old idempotency contract."""
+
+    user = make_user(db_session, email="mine@vmr.example")
+    campaign = make_campaign(db_session, name="Mine", owner=user)
+    client = make_client(db_session, {"tok": assertion_for(user)})
+    payload = batch_payload(campaign, [row("r1", company="Unseen And Retried")])
+
+    first = client.post(
+        "/integrations/sheets/batches", json=payload, headers={"Authorization": "Bearer tok"}
+    ).json()["rows"][0]
+    second = client.post(
+        "/integrations/sheets/batches", json=payload, headers={"Authorization": "Bearer tok"}
+    ).json()["rows"][0]
+
+    assert first["submission_id"] == second["submission_id"]
+    assert second["already_submitted"] is True
+    assert second["status"] == RowStatus.PENDING.value
+    assert db_session.query(Contact).count() == 1
+    assert db_session.query(CampaignContact).count() == 1
+
+
+def test_an_unseen_company_row_reads_back_as_processing(
+    db_session: Session, enable_sheets: None
+) -> None:
+    """The results contract is unchanged: an accepted row is in progress.
+
+    It is not Ready — no address and no sequence exist yet — and it is not a
+    failure. That is the state the sheet should show while the pipeline works.
+    """
+
+    user = make_user(db_session, email="mine@vmr.example")
+    campaign = make_campaign(db_session, name="Mine", owner=user)
+    client = make_client(db_session, {"tok": assertion_for(user)})
+
+    submitted = client.post(
+        "/integrations/sheets/batches",
+        json=batch_payload(campaign, [row("r1", company="Unseen But Readable")]),
+        headers={"Authorization": "Bearer tok"},
+    ).json()["rows"][0]
+
+    results = client.post(
+        "/integrations/sheets/results",
+        json={"submission_ids": [submitted["submission_id"]]},
+        headers={"Authorization": "Bearer tok"},
+    ).json()["rows"][0]
+
+    assert results["status"] in {RowStatus.PENDING.value, RowStatus.PROCESSING.value}
+    assert results["email_address"] is None
+    assert results.get("messages") in (None, [])
 
 
 def test_a_suppressed_identity_creates_nothing(db_session: Session, enable_sheets: None) -> None:

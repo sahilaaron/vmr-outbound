@@ -4,6 +4,16 @@ Gathers the evidence the policy is allowed to see, decides whether a provider
 call is even warranted, records the decision, and applies it to the permanent
 Company and the Contact.
 
+**Two entry points, one process.** :func:`resolve` resolves the company a Chrome
+capture observed, before any Contact exists. :func:`resolve_contact` resolves
+the company a permanent Contact states, for a surface — Google Sheets — that
+produces the person directly and has no capture. They differ only in what the
+decision is *about* and in whether there is a promotion to finish; the evidence
+gathering, the provider ladder, the policy, the decision row, the Company link
+and the downstream gates are literally the same code. That is deliberate: a
+second acquisition surface must not acquire a second, quietly divergent notion
+of what a company is or how sure we are about its domain.
+
 Everything it can reuse, it reuses rather than reimplementing: DAT-010 owns the
 provider client and the candidate store, DAT-014 owns the promotion record and
 the company/person hints, DAT-005 owns provenance. This module adds the decision
@@ -36,9 +46,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from app.core.config import Settings
 from app.models.capture_promotion import ContactCapturePromotion
 from app.models.company import Company
 from app.models.company_domain_resolution import CompanyDomainResolution
@@ -58,7 +69,9 @@ from app.services.captures import promotion as capture_promotion
 from app.services.enrichment import companies as enrichment
 from app.services.enrichment import logodev, model_domain
 from app.services.imports import normalization as norm
+from app.services.operations import settings as operational
 from app.services.resolution import policy, store
+from app.services.thinking.claude_cli import ClaudeCliThinker
 from app.services.thinking.contracts import Thinker
 
 RESOLUTION_ACTOR = "domain-resolution"
@@ -171,6 +184,45 @@ class ModelAccess:
         return self.thinker_factory is not None
 
 
+def provider_access_for(session: Session, settings: Settings) -> ProviderAccess:
+    """How logo.dev may be reached right now, or an access with no key.
+
+    One definition, because three callers need the same answer and a fourth
+    reading of "is the provider usable?" is how two acquisition surfaces start
+    behaving differently. ``session`` is here because whether the provider may be
+    called is an administrator's durable setting rather than an environment
+    variable, so answering the question means reading the database.
+    """
+
+    usable = (
+        operational.enabled(session, "salesnav_domain_enrichment", settings)
+        and settings.has_logo_dev_key()
+    )
+    return ProviderAccess(
+        api_key=settings.logo_dev_api_key if usable else None,
+        search_url=settings.logo_dev_search_url,
+        timeout=settings.logo_dev_timeout_seconds,
+        max_candidates=settings.logo_dev_max_candidates,
+    )
+
+
+def model_access_for(session: Session, settings: Settings) -> ModelAccess:
+    """The model fallback, if an administrator has switched it on.
+
+    Suitable only for callers with no HTTP request to overrun — the durable
+    worker's backfill pass and the Agent that owns a Contact's company stage. A
+    model call with web search takes tens of seconds, which is why intake builds
+    a provider-only access instead of calling this.
+    """
+
+    if not operational.enabled(session, "model_company_domain_lookup", settings):
+        return ModelAccess()
+    return ModelAccess(
+        thinker_factory=lambda: ClaudeCliThinker(settings=settings),
+        timeout=settings.model_domain_lookup_timeout_seconds,
+    )
+
+
 #: Reason codes that mean "the deterministic path is finished and has no domain",
 #: which is the only state the model fallback is admitted in. Read from the policy
 #: rather than re-derived, so the two cannot drift.
@@ -211,13 +263,24 @@ def _existing_company_matches(
     * the normalized company name, compared in Python because the normalization
       (punctuation, spacing, trailing legal form) has no SQL equivalent.
 
-    The name axis is pre-filtered in SQL on the first normalized token so the
-    Python comparison runs over a small superset rather than every company. The
-    filter can only ever be *wider* than the exact match it feeds, with one
-    documented exception: a company name beginning with ``&`` normalizes its
-    first token to ``and``, which the raw name does not contain. Such a company
-    is not found, the capture stays unresolved, and an operator resolves it —
-    a miss, never a mismatch.
+    The name axis used to be pre-filtered in SQL with
+    ``LOWER(name) LIKE '%<first six characters of the folded name>%'``, and that
+    filter was **not** wider than the match it fed. Folding removes spaces, so
+    ``"Kiln Systems"`` folds to ``"kilnsystems"`` whose first six characters are
+    ``"kilnsy"`` — which never appears in ``"kiln systems"``. Any two-word
+    company failed to match its own permanent row. On this path that was a
+    missed cache and a wasted provider call; it became a correctness problem the
+    moment a second acquisition surface started reading the same evidence,
+    because the surface that scanned honestly and the surface that pre-filtered
+    would answer differently about the same established company and could end up
+    creating two Company rows for it.
+
+    So the prefilter is gone and the comparison runs over the companies that
+    carry a domain. At pilot scale that is a small, indexed-by-nothing scan
+    measured in milliseconds, and correctness beats a filter that silently loses
+    matches. The eventual fix is a stored, indexed normalized-name column, which
+    is a schema change worth making on its own evidence rather than folded in
+    here.
 
     **A company standing on a provisional decision is not established evidence.**
     This is the subtle half. A provisional decision creates a permanent Company
@@ -253,11 +316,7 @@ def _existing_company_matches(
             consider(company, "linkedin_company_id")
 
     if normalized_name:
-        token = _first_token(normalized_name)
-        stmt = select(Company).where(Company.domain.is_not(None))
-        if token:
-            stmt = stmt.where(func.lower(Company.name).like(f"%{token}%"))
-        for company in session.scalars(stmt):
+        for company in session.scalars(select(Company).where(Company.domain.is_not(None))):
             if policy.normalize_company_name(company.name) == normalized_name:
                 consider(company, "normalized_name")
 
@@ -275,14 +334,6 @@ def _is_established(session: Session, company: Company) -> bool:
 
     state = store.company_state(session, company.id)
     return state is None or state is DomainResolutionState.CONFIRMED
-
-
-def _first_token(normalized_name: str) -> str:
-    """A cheap SQL pre-filter token. Empty when there is nothing safe to filter on."""
-
-    # ``normalized_name`` is already [a-z0-9] only; take a short leading slice so
-    # the LIKE stays selective without assuming where token boundaries were.
-    return normalized_name[:6]
 
 
 def gather_evidence(
@@ -363,21 +414,192 @@ def resolve(
     """
 
     access = access or ProviderAccess()
+    subject = store.ResolutionSubject.for_capture(snapshot.id)
     promotion, record = capture_promotion.ensure_records(session, snapshot)
-    existing = store.current_decision(session, snapshot.id)
+    existing = _existing_or_none(session, subject=subject, force=force)
+    if isinstance(existing, ResolutionOutcome):
+        return existing
 
-    if existing is not None and not force:
+    hints = capture_promotion.company_hints(snapshot)
+    evidence, provider_call_made, model_call_made = _run_lookups(
+        session, record=record, hints=hints, access=access, model=model, actor=actor
+    )
+
+    decision = policy.evaluate(evidence)
+    return _apply(
+        session,
+        subject=subject,
+        snapshot=snapshot,
+        promotion=promotion,
+        record=record,
+        hints=hints,
+        evidence=evidence,
+        decision=decision,
+        kind=(
+            DomainResolutionKind.RECALCULATION
+            if existing is not None
+            else DomainResolutionKind.AUTOMATIC
+        ),
+        actor=actor,
+        provider_call_made=provider_call_made,
+        model_call_made=model_call_made,
+        audit_action=RESOLVE_AUDIT_ACTION,
+        # The automatic path, and only it. An operator correction is a
+        # deliberate act on a decision the operator is already looking at, so it
+        # keeps its explicit Promote step rather than acquiring a side effect.
+        auto_promote=True,
+    )
+
+
+def resolve_contact(
+    session: Session,
+    *,
+    contact: Contact,
+    access: ProviderAccess | None = None,
+    model: ModelAccess | None = None,
+    actor: str = RESOLUTION_ACTOR,
+    force: bool = False,
+) -> ResolutionOutcome:
+    """Resolve the company a permanent Contact states, for a surface with no capture.
+
+    The same process :func:`resolve` runs, about a different subject. A Contact
+    that arrived from a spreadsheet carries a company *name* and nothing else;
+    this is how that name enters the one company-resolution and evidence path
+    the product has, instead of waiting for somebody to re-acquire the same
+    person through the browser extension.
+
+    What is identical, and identical because it is the same code: which evidence
+    the policy may see, when a provider call is authorized at all, when the model
+    fallback is admitted, how the decision is graded, that the decision row keeps
+    its candidates and reasons, that a CONFIRMED decision becomes a reusable
+    approved mapping and a PROVISIONAL one deliberately does not, and that
+    :mod:`app.services.resolution.gates` decides what the result authorizes.
+
+    What is different, and only this: there is no capture to promote, because the
+    Contact already exists. A resolved decision links it to the permanent Company
+    and fills the company domain it did not have; nothing here creates a person,
+    a membership, or a campaign, and nothing here sends.
+
+    Idempotent on the same terms as the capture path: without ``force`` a Contact
+    that already has a decision gets it back untouched, with no evidence re-read
+    and no provider call. An operator correction is never recalculated over.
+    """
+
+    access = access or ProviderAccess()
+    subject = store.ResolutionSubject.for_contact(contact.id)
+    existing = _existing_or_none(session, subject=subject, force=force)
+    if isinstance(existing, ResolutionOutcome):
+        # Returning the decision is not enough: the link is what the rest of the
+        # product reads. A Contact whose edge was cleared after the decision was
+        # made would otherwise be handed back a resolved answer while still
+        # looking unresolved to every caller, and re-deciding is not the fix —
+        # the decision is already right.
+        existing.contact_linked = _link_subject_contact(
+            session,
+            contact=contact,
+            company=existing.company,
+            domain=existing.selected_domain,
+        )
+        return existing
+
+    hints = contact_company_hints(contact)
+    if not hints.has_company:
+        raise ResolutionError(
+            "this contact records no company name, so there is nothing to resolve; "
+            "supply the employer before asking for a domain"
+        )
+
+    record = enrichment.ensure_contact_record(
+        session, contact_id=contact.id, company_name=hints.name
+    )
+    evidence, provider_call_made, model_call_made = _run_lookups(
+        session, record=record, hints=hints, access=access, model=model, actor=actor
+    )
+
+    decision = policy.evaluate(evidence)
+    return _apply(
+        session,
+        subject=subject,
+        contact=contact,
+        record=record,
+        hints=hints,
+        evidence=evidence,
+        decision=decision,
+        kind=(
+            DomainResolutionKind.RECALCULATION
+            if existing is not None
+            else DomainResolutionKind.AUTOMATIC
+        ),
+        actor=actor,
+        provider_call_made=provider_call_made,
+        model_call_made=model_call_made,
+        audit_action=RESOLVE_AUDIT_ACTION,
+    )
+
+
+def contact_company_hints(contact: Contact) -> capture_promotion.CompanyHints:
+    """The employer hints a permanent Contact carries, without inferring anything.
+
+    A Contact records the company *name* and nothing else about the company's
+    identity — no LinkedIn company page, no company identifier, no role location.
+    Those fields are left empty rather than filled from something adjacent: the
+    model fallback is told exactly which identifiers it was given, and a guessed
+    hint would make a worse answer look better sourced than it is.
+    """
+
+    return capture_promotion.CompanyHints(
+        name=norm.collapse_whitespace(contact.company_name),
+        linkedin_url=None,
+        linkedin_id=None,
+        location=None,
+    )
+
+
+def _existing_or_none(
+    session: Session, *, subject: store.ResolutionSubject, force: bool
+) -> ResolutionOutcome | CompanyDomainResolution | None:
+    """The decision this subject already has, and what to do about it.
+
+    Returns a finished :class:`ResolutionOutcome` when the caller should simply
+    hand that back (a decision exists and nothing was forced), the existing row
+    when a recalculation may proceed over it, or ``None`` when this is the first
+    evaluation. Shared so both entry points enforce the same two rules: a
+    recorded decision is not re-derived for free, and an operator's correction is
+    never silently recalculated away.
+    """
+
+    existing = store.current_decision(session, subject)
+    if existing is None:
+        return None
+    if not force:
         return ResolutionOutcome(
             decision=existing, created=False, company=_company_of(session, existing)
         )
-
-    if existing is not None and existing.decision_kind is DomainResolutionKind.OPERATOR_CORRECTION:
+    if existing.decision_kind is DomainResolutionKind.OPERATOR_CORRECTION:
         raise ResolutionError(
             "an operator has already decided this company's domain by hand; "
             "correct that decision instead of recalculating over it"
         )
+    return existing
 
-    hints = capture_promotion.company_hints(snapshot)
+
+def _run_lookups(
+    session: Session,
+    *,
+    record: SalesNavCompanyEnrichment | None,
+    hints: capture_promotion.CompanyHints,
+    access: ProviderAccess,
+    model: ModelAccess | None,
+    actor: str,
+) -> tuple[policy.ResolutionEvidence, bool, bool]:
+    """Gather evidence, spending a provider and a model call only where warranted.
+
+    Extracted whole from the capture path so the second acquisition surface runs
+    the identical ladder rather than a similar one. Both rules below were argued
+    for on the capture path and are unchanged; what changed is that they now
+    apply to every surface by construction instead of by resemblance.
+    """
+
     evidence = gather_evidence(session, record=record, hints=hints)
 
     # The one place a provider call can be authorized: established evidence had
@@ -429,29 +651,7 @@ def resolve(
         model_call_made = True
         evidence = gather_evidence(session, record=record, hints=hints)
 
-    decision = policy.evaluate(evidence)
-    return _apply(
-        session,
-        snapshot=snapshot,
-        promotion=promotion,
-        record=record,
-        hints=hints,
-        evidence=evidence,
-        decision=decision,
-        kind=(
-            DomainResolutionKind.RECALCULATION
-            if existing is not None
-            else DomainResolutionKind.AUTOMATIC
-        ),
-        actor=actor,
-        provider_call_made=provider_call_made,
-        model_call_made=model_call_made,
-        audit_action=RESOLVE_AUDIT_ACTION,
-        # The automatic path, and only it. An operator correction is a
-        # deliberate act on a decision the operator is already looking at, so it
-        # keeps its explicit Promote step rather than acquiring a side effect.
-        auto_promote=True,
-    )
+    return evidence, provider_call_made, model_call_made
 
 
 def correct(
@@ -499,6 +699,7 @@ def correct(
     )
     return _apply(
         session,
+        subject=store.ResolutionSubject.for_capture(snapshot.id),
         snapshot=snapshot,
         promotion=promotion,
         record=record,
@@ -540,8 +741,7 @@ def _with_correction_warnings(
 def _apply(
     session: Session,
     *,
-    snapshot: LinkedInProfileSnapshot,
-    promotion: ContactCapturePromotion,
+    subject: store.ResolutionSubject,
     record: SalesNavCompanyEnrichment | None,
     hints: capture_promotion.CompanyHints,
     evidence: policy.ResolutionEvidence,
@@ -550,11 +750,22 @@ def _apply(
     actor: str,
     provider_call_made: bool,
     audit_action: str,
+    snapshot: LinkedInProfileSnapshot | None = None,
+    promotion: ContactCapturePromotion | None = None,
+    contact: Contact | None = None,
     model_call_made: bool = False,
     correction_note: str | None = None,
     auto_promote: bool = False,
 ) -> ResolutionOutcome:
-    """Persist a decision and make the world match it."""
+    """Persist a decision and make the world match it.
+
+    Shared by both subjects. ``promotion``/``snapshot`` are the capture path's
+    extra work — bringing the DAT-014 promotion record in line and creating the
+    Contact the capture implies — and are simply absent for a subject whose
+    Contact already exists. Everything above that line is common: the Company
+    row, the decision row, the approved-mapping write for a CONFIRMED decision,
+    the contact link and the audit event.
+    """
 
     company: Company | None = None
     if decision.selected_domain:
@@ -564,7 +775,7 @@ def _apply(
 
     row, created = store.record(
         session,
-        capture_id=snapshot.id,
+        subject=subject,
         decision=decision,
         kind=kind,
         actor=actor,
@@ -578,18 +789,24 @@ def _apply(
 
     if created:
         _apply_to_enrichment(session, record=record, decision=decision, actor=actor)
-        _apply_to_promotion(
-            session,
-            snapshot=snapshot,
-            promotion=promotion,
-            record=record,
-            hints=hints,
-            decision=decision,
-            company=company,
-            actor=actor,
-        )
+        if snapshot is not None and promotion is not None:
+            _apply_to_promotion(
+                session,
+                snapshot=snapshot,
+                promotion=promotion,
+                record=record,
+                hints=hints,
+                decision=decision,
+                company=company,
+                actor=actor,
+            )
 
-    contact_linked = _link_promoted_contact(session, promotion=promotion, company=company)
+    if promotion is not None:
+        contact_linked = _link_promoted_contact(session, promotion=promotion, company=company)
+    else:
+        contact_linked = _link_subject_contact(
+            session, contact=contact, company=company, domain=decision.selected_domain
+        )
 
     # --- DAT-017A: a resolved decision finishes the job ------------------------
     #
@@ -609,7 +826,7 @@ def _apply(
     # and missing evidence are exactly the cases where an operator's judgement is
     # the thing that was missing, so they keep their manual controls.
     promotion_result: capture_promotion.PromotionResult | None = None
-    if auto_promote and decision.is_resolved:
+    if auto_promote and decision.is_resolved and snapshot is not None:
         promotion_result = _auto_promote(session, snapshot=snapshot, actor=actor)
 
     outcome = ResolutionOutcome(
@@ -632,7 +849,14 @@ def _apply(
             new_state=row.state.value,
             reason="automatic company-domain resolution decision",
             context={
-                "capture_id": str(snapshot.id),
+                "subject_type": subject.label,
+                "subject_id": str(subject.reference),
+                # Kept alongside the subject fields rather than replaced by them:
+                # every reader written before a second subject existed looks for
+                # this key, and a capture decision still has exactly the same
+                # answer for it.
+                "capture_id": str(subject.capture_id) if subject.capture_id else None,
+                "contact_id": str(subject.contact_id) if subject.contact_id else None,
                 "decision_number": row.decision_number,
                 "decision_kind": row.decision_kind.value,
                 **outcome.summary(),
@@ -766,6 +990,54 @@ def _link_promoted_contact(
     return True
 
 
+def _link_subject_contact(
+    session: Session,
+    *,
+    contact: Contact | None,
+    company: Company | None,
+    domain: str | None,
+) -> bool:
+    """Apply a contact-subject decision to the Contact it was made about.
+
+    The counterpart of what promotion does for a capture: the Contact acquires
+    the permanent Company edge, and the company domain it did not have.
+
+    **Why filling ``company_domain`` here is not domain laundering.** The concern
+    is real and it is the reason the Sheets intake path refuses to write one: a
+    domain that arrives with no decision behind it reads, to every later reader,
+    exactly like an established one. This write is the opposite case. The
+    decision row exists, it is live, it names its state, and
+    :func:`app.services.resolution.store.company_state` reports that state for
+    this company to everything that asks — so a PROVISIONAL decision leaves the
+    company un-established for :func:`_is_established`, opens company research
+    and nothing else through :mod:`app.services.resolution.gates`, and is shown
+    as provisional wherever a decision is displayed. It is exactly the position
+    a capture-promoted Contact is in, reached by exactly the same policy.
+
+    Only blanks are filled, and the company edge is re-pointed rather than
+    merged: two Company rows that turn out to be one organisation stay two and
+    are reported as an APP-003 identity conflict, as everywhere else.
+
+    ``natural_key`` is deliberately left alone. It is a dedup fingerprint, and
+    minting one for a Contact that already exists can create an ambiguity
+    between two live records; that is a change to identity, which belongs to the
+    paths that own identity rather than to a domain decision.
+    """
+
+    if contact is None or company is None or not domain:
+        return False
+    changed = False
+    if contact.company_id != company.id:
+        contact.company_id = company.id
+        changed = True
+    if not contact.company_domain:
+        contact.company_domain = domain
+        changed = True
+    if changed:
+        session.flush()
+    return changed
+
+
 def _promoted_contact(session: Session, capture_id: uuid.UUID) -> Contact | None:
     promotion = capture_promotion.get_promotion(session, capture_id)
     if promotion is None or promotion.promoted_contact_id is None:
@@ -896,13 +1168,20 @@ def contact_view(session: Session, contact: Contact) -> DecisionView | None:
 
 
 def unresolved_captures(session: Session, *, limit: int = 200) -> list[CompanyDomainResolution]:
-    """Live decisions that reached no domain — the operator's review list."""
+    """Live *capture* decisions that reached no confirmed domain.
+
+    Restricted to capture subjects because this feeds the Capture page's review
+    count, and a Contact acquired without a capture has nothing to review there.
+    Its equivalent surfacing is the blocked Agent job on its Campaign, which is
+    where an operator is already looking for it.
+    """
 
     return list(
         session.scalars(
             select(CompanyDomainResolution)
             .where(
                 CompanyDomainResolution.is_current.is_(True),
+                CompanyDomainResolution.capture_id.is_not(None),
                 or_(
                     CompanyDomainResolution.state == DomainResolutionState.UNRESOLVED,
                     CompanyDomainResolution.state == DomainResolutionState.PROVISIONAL,

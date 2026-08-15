@@ -99,7 +99,7 @@ reason in `VMR Note`. Ready means a verified address *and* seven messages.
 | "VMR Outbound did not recognise this Google account" | The `aud` is not in `SHEETS__ALLOWED_AUDIENCES`, or the Google account has no active VMR Outbound account, or that account is disabled. All three answer identically on purpose. |
 | "Google did not provide an identity token" | The script is not attached to a standard Cloud project (step 2), or the `openid` scope was not granted — remove the add-on's authorisation and re-authorise. |
 | Rows stay Pending forever | `scripts/run_agent_worker.py` is not running. |
-| "The company could not be identified from this name" | Use the company's exact registered name, or capture the person through the VMR extension where a domain can be confirmed by hand. |
+| A row stays Pending and the app shows the Company stage blocked | The company has no established domain yet. Give it one — an import carrying `company_domain`, or a capture of someone there — and the stage resumes. The row is already a permanent Contact; nothing needs resubmitting. |
 | Every row says "Could not prepare" with a campaign message | The campaign has an Agent switched off that the pipeline needs. Fix it in the app; nothing in the sheet can. |
 
 ## Tests

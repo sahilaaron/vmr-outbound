@@ -204,7 +204,6 @@ def create_batch(
         rows=[item for item in parsed if isinstance(item, SubmittedRow)],
         generation=generation,
         batch_reference=reference,
-        settings=settings,
         actor=sheet_identity.actor_label(account),
     )
 

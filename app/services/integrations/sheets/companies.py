@@ -1,53 +1,69 @@
-"""Turning a company *name* from a spreadsheet cell into a permanent Company.
+"""Linking a spreadsheet's company *name* to a Company that already exists.
 
-The Company Agent needs two things before it will do anything: a
-``contact.company_domain`` and exactly one permanent ``Company`` carrying that
-exact domain. The Chrome capture path satisfies both before enrolment, through
-``app/services/resolution``. A spreadsheet row has to reach the same place, and
-this module is the shortest honest route — it reuses the same policy, the same
-provider client and the same Company writer, and adds no judgement of its own.
+This module answers one narrow question, with free database reads and nothing
+else: **has this deployment already established a domain for this company name?**
+If it has, the row can be linked to that permanent ``Company`` immediately. If it
+has not, that is not a failure and this module says nothing more — the row still
+enrols, and establishing the company becomes the canonical pipeline's work.
 
-What is reused, exactly
------------------------
+Why this module no longer resolves anything
+-------------------------------------------
 
-* ``resolution.policy.ResolutionEvidence`` — the same evidence shape, built from
-  the same two public inputs: domains an operator has already confirmed for this
-  name (``captures.promotion.prior_confirmed_domains``) and permanent Companies
-  whose own domain is established (``resolution.store.company_state``).
-* ``resolution.policy.evaluate`` — pure, unchanged, and the only thing allowed to
-  decide. This module never picks a domain; it presents evidence and stores the
-  answer.
-* ``captures.promotion.resolve_company_row`` — the one existing writer that
-  creates or reuses a ``Company`` for a domain, with no capture dependency.
+It used to. It called logo.dev (and, through the policy, a model fallback),
+graded the answer, and **refused the row** unless the result was ``CONFIRMED`` —
+which provider evidence can never be in v1. The consequence, found in hosted
+UAT, was that a spreadsheet could never introduce a company the product had not
+already seen: the first row for every new company came back "could not prepare"
+having spent a provider call to say so.
 
-The one rule this surface adds, and why
----------------------------------------
+That was a second acquisition pipeline living inside an acquisition surface. The
+canonical contract is that a surface supplies evidence and the Agent pipeline
+does the intelligence, so the lookup, the grading and the refusal are gone. What
+remains is a cache read: established evidence links the row immediately and for
+free; anything else leaves ``company_domain`` NULL, which the Contact model
+explicitly allows and documents as "not linked yet".
 
-**Only ``CONFIRMED`` is accepted. ``PROVISIONAL`` is refused.** A provisional
-domain is the policy saying "a matcher or a model suggested this and nothing has
-established it". On the capture path that state is safe because it is *recorded*:
-it lands in ``company_domain_resolutions``, the downstream gates read it, and the
-stages that spend money stay shut until an operator confirms. That ledger is
-keyed per capture and a spreadsheet row is not a capture, so a provisional domain
-accepted here would carry no such record — and a company created from it would
-read, to every later reader, exactly like one whose domain was established. That
-is domain laundering, and refusing the state outright is the only version of this
-that cannot do it by accident.
+What happens to a company nobody has established
+------------------------------------------------
 
-The operator-visible consequence is stated plainly in the sheet: the row says the
-company could not be identified, and the fix is a more exact company name, or
-capturing the person through the extension where the confirm-a-domain workflow
-exists. It is a smaller product than "we guessed", and it is the true one.
+The Contact is created carrying its ``company_name``, enrols, and the pipeline
+starts. ``CompanyAgentAdapter`` reaches the company stage, finds a Contact with a
+name and no company, and asks the shared company-domain resolution process to
+establish one — the same process, evidence, provider ladder, policy and decision
+ledger a Chrome capture goes through. The decision it records is about the
+Contact rather than about a capture, which is the whole of the difference; see
+``app.services.resolution.store.ResolutionSubject``.
+
+When that process cannot name a domain — nothing established, no provider
+configured, conflicting candidates, or the policy declining to guess — the Agent
+raises ``AgentBlocked("company_domain_missing")`` carrying what resolution
+actually tried. That is a documented *non-terminal* condition that pauses the
+job, moves the stage to ``BLOCKED`` and shows up in the operator's review
+surfaces with its reason. It is deliberately **not** reinvented here as an
+intake refusal.
+
+Domain laundering, unchanged
+----------------------------
+
+The original refusal existed for a real reason: a provisional domain accepted
+*here* would carry no decision row and would read, to every later reader, exactly
+like an established one. That reasoning still holds and is honoured the same way
+— **no provisional domain is accepted at intake, because none is ever obtained
+here.** This module reads only evidence something else already established.
+
+A provisional domain established later, by the Agent, is a different thing and is
+safe for the opposite reason: it has a live decision row naming its state, so
+``store.company_state`` reports it as provisional to everything that asks, the
+company is not treated as established evidence for the next company, and
+``resolution.gates`` opens company research and nothing else.
 
 Cost behaviour
 --------------
 
-At most **one** logo.dev call per distinct company name per submission. A name
-that resolves creates a permanent Company, so every later row naming that
-company — in this batch or any future one — is answered by established evidence
-with no provider call at all. A name that does not resolve costs one call and
-creates nothing, and the batch ceiling bounds how many of those one click can
-buy.
+**Zero provider calls.** Not "at most one per name" — none. Deciding whether a
+row may enter never spends money. Any provider work an unseen company needs
+happens later, in the Company Agent, inside the durable worker that owns that
+stage and accounts for its cost.
 """
 
 from __future__ import annotations
@@ -55,47 +71,37 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.config import Settings
 from app.models.company import Company
-from app.models.enums import DomainResolutionState, EnrichmentLookupStatus
+from app.models.enums import DomainResolutionState
 from app.services.audit import record_audit_event
 from app.services.captures import promotion as capture_promotion
 from app.services.enrichment import companies as enrichment
-from app.services.enrichment import logodev
-from app.services.operations import settings as operational
 from app.services.resolution import policy
-from app.services.resolution import store as resolution_store
+from app.services.resolution import service as resolution_service
 
 #: Recorded on every audit event this module writes, so a Company row created
 #: from a spreadsheet is distinguishable from one created from a capture.
 RESOLVER_VERSION = "sheets-company-resolution/1"
 
-#: What the operator sees when nothing established the domain. One sentence, no
-#: provider name, no internal code — the fix is the same whatever the provider
-#: said.
-UNRESOLVED_MESSAGE = (
-    "the company could not be identified from this name; use the company's exact "
-    "registered name, or capture this person through the VMR extension"
-)
-
-PROVISIONAL_MESSAGE = (
-    "the company name matched only a suggestion that nothing has confirmed; "
-    "confirm this company through the VMR app before submitting the row again"
-)
-
 
 @dataclass(frozen=True)
 class CompanyOutcome:
-    """The end of one company-name resolution: a Company, or a reason."""
+    """Whether established evidence already names a Company for this name.
+
+    There is no ``reason`` and no ``reason_code``, and their absence is the
+    point: "nothing has established this company yet" is an ordinary, expected
+    answer that the pipeline handles, not a refusal this surface reports.
+    """
 
     company: Company | None
     domain: str | None
-    provider_call_made: bool
-    reason: str | None = None
-    reason_code: str | None = None
+    #: Always ``False``. Kept, rather than deleted, so the submit path's
+    #: ``provider_calls_made`` counter survives as an executable invariant: a
+    #: regression that reintroduces a lookup into intake makes it non-zero and
+    #: fails a test, instead of quietly costing money again.
+    provider_call_made: bool = False
 
     @property
     def resolved(self) -> bool:
@@ -124,22 +130,26 @@ def new_cache() -> NameCache:
     return NameCache()
 
 
-def resolve_company(
+def link_established_company(
     session: Session,
     *,
     company_name: str,
-    settings: Settings,
     actor: str,
     cache: NameCache | None = None,
 ) -> CompanyOutcome:
-    """Resolve one company name to a permanent Company, or explain why not."""
+    """The permanent Company established evidence already names, or nothing.
+
+    Named for what it now does. It does not "resolve" a company: it looks one up
+    among the domains this deployment has already established, and an empty
+    answer is success-with-nothing-to-say rather than a refusal.
+    """
 
     key = enrichment.company_key(company_name)
     if cache is not None:
         cached = cache.get(key)
         if cached is not None:
             return cached
-    outcome = _resolve_uncached(session, company_name=company_name, settings=settings, actor=actor)
+    outcome = _resolve_uncached(session, company_name=company_name, actor=actor)
     if cache is not None:
         cache.put(key, outcome)
     return outcome
@@ -149,169 +159,49 @@ def _resolve_uncached(
     session: Session,
     *,
     company_name: str,
-    settings: Settings,
     actor: str,
 ) -> CompanyOutcome:
-    evidence = _evidence_for(session, company_name=company_name)
+    """Established evidence only.
 
+    ``evaluate_established_evidence`` reads operator-confirmed mappings and
+    permanent Companies whose own domain is established — both free database
+    reads. ``policy.evaluate`` is deliberately *not* called: it is the function
+    that grades provider candidates, and this path has none to grade. Anything
+    short of ``CONFIRMED`` means "not established yet", which is not this
+    module's problem to solve.
+    """
+
+    evidence = _evidence_for(session, company_name=company_name)
     settled = policy.evaluate_established_evidence(evidence)
     if settled is not None and settled.state is DomainResolutionState.CONFIRMED:
-        return _accept(
-            session,
-            decision=settled,
-            company_name=company_name,
-            actor=actor,
-            provider_call_made=False,
-        )
-
-    provider_call_made = False
-    if settled is None and _provider_available(session, settings):
-        evidence = _with_provider_candidates(evidence, company_name=company_name, settings=settings)
-        provider_call_made = True
-
-    decision = policy.evaluate(evidence)
-
-    if decision.state is DomainResolutionState.CONFIRMED:
-        return _accept(
-            session,
-            decision=decision,
-            company_name=company_name,
-            actor=actor,
-            provider_call_made=provider_call_made,
-        )
-    if decision.state is DomainResolutionState.PROVISIONAL:
-        return CompanyOutcome(
-            company=None,
-            domain=None,
-            provider_call_made=provider_call_made,
-            reason=PROVISIONAL_MESSAGE,
-            reason_code="company_domain_provisional",
-        )
-    return CompanyOutcome(
-        company=None,
-        domain=None,
-        provider_call_made=provider_call_made,
-        reason=UNRESOLVED_MESSAGE,
-        reason_code="company_domain_unresolved",
-    )
+        return _accept(session, decision=settled, company_name=company_name, actor=actor)
+    return CompanyOutcome(company=None, domain=None)
 
 
 def _evidence_for(session: Session, *, company_name: str) -> policy.ResolutionEvidence:
     """Everything the policy may consider about this name, and nothing it may not.
 
-    The shape is exactly ``resolution.service.gather_evidence`` builds for a
-    caller with no enrichment record, and both inputs come from the same public
-    helpers that path uses — ``prior_confirmed_domains`` for mappings an operator
-    has already confirmed, and permanent Companies for established evidence.
+    Delegated to ``resolution.service.gather_evidence`` with no enrichment record,
+    which is exactly the shape that path builds for a caller with no provider
+    candidates. It is delegated rather than reimplemented so this surface cannot
+    answer "has this company been established?" differently from the Agent that
+    will ask the same question about the same name a moment later — two readings
+    of established evidence is how one company ends up with two Company rows.
 
-    The existing-Company scan is written here rather than delegated, for one
-    concrete reason: ``service._existing_company_matches`` pre-filters candidates
-    in SQL with ``LOWER(name) LIKE '%<first six characters of the folded name>%'``,
-    and the folded name has had its spaces removed. ``"Kiln Systems"`` folds to
-    ``"kilnsystems"``, whose first six characters are ``"kilnsy"``, which does not
-    appear in ``"kiln systems"`` — so a two-word company never matches its own
-    permanent row. On the capture path that is a missed cache and nothing worse
-    (it falls through to a provider lookup), which is why it has gone unnoticed;
-    here it would be the difference between a spreadsheet working and not. The
-    comparison below is the same one the policy makes, without the prefilter that
-    loses it. Fixing the shared helper is a separate change against the capture
-    path, and is recorded in the post-launch backlog rather than made here.
+    (This module used to keep its own copy of the existing-Company scan, because
+    the shared helper's SQL prefilter dropped any two-word company. That prefilter
+    is gone; see ``service._existing_company_matches``.)
     """
 
-    normalized = policy.normalize_company_name(company_name)
-    approved = frozenset(
-        capture_promotion.prior_confirmed_domains(
-            session,
-            company_key_value=enrichment.company_key(company_name),
-            company_linkedin_id=None,
-        )
-    )
-    matches: list[policy.ExistingCompanyMatch] = []
-    if normalized:
-        for company in session.scalars(select(Company).where(Company.domain.is_not(None))):
-            if policy.normalize_company_name(company.name) != normalized:
-                continue
-            if not _is_established(session, company):
-                continue
-            assert company.domain is not None  # narrowed by the query
-            matches.append(
-                policy.ExistingCompanyMatch(
-                    company_id=company.id,
-                    name=company.name,
-                    domain=company.domain,
-                    matched_on="normalized_name",
-                )
-            )
-    return policy.ResolutionEvidence(
-        company_name=company_name,
-        normalized_company_name=normalized,
-        linkedin_company_id=None,
-        approved_mapping_domains=approved,
-        existing_companies=tuple(matches),
-    )
-
-
-def _is_established(session: Session, company: Company) -> bool:
-    """Whether this Company's domain is evidence, or merely a repeat of a guess.
-
-    The same rule ``resolution.service`` applies: no automatic decision at all
-    (imported, entered or confirmed by hand) or an explicitly confirmed one. A
-    company whose own domain is provisional cannot settle somebody else's.
-    """
-
-    state = resolution_store.company_state(session, company.id)
-    return state is None or state is DomainResolutionState.CONFIRMED
-
-
-def _provider_available(session: Session, settings: Settings) -> bool:
-    """Whether this deployment may spend a logo.dev lookup for a sheet row.
-
-    Both switches are read the same way the capture backfill reads them, through
-    the operator-controlled resolver, so turning domain resolution off in the
-    Admin screen turns it off here too without a deploy.
-    """
-
-    if not settings.has_logo_dev_key():
-        return False
-    return operational.enabled(
-        session, "automatic_company_domain_resolution", settings
-    ) and operational.enabled(session, "salesnav_domain_enrichment", settings)
-
-
-def _with_provider_candidates(
-    evidence: policy.ResolutionEvidence,
-    *,
-    company_name: str,
-    settings: Settings,
-) -> policy.ResolutionEvidence:
-    """One brand-matcher lookup, folded into the evidence the policy reads.
-
-    Every provider condition — no match, rate limited, unreachable, unreadable —
-    arrives as a status rather than an exception, and each one is carried into the
-    evidence unchanged so the policy can name it in its reasons. A failed lookup
-    is therefore an honest "we asked and got nothing", never a silent unresolved.
-    """
-
-    try:
-        result = logodev.search_brands(
-            company_name,
-            api_key=settings.logo_dev_api_key or "",
-            search_url=settings.logo_dev_search_url,
-            timeout=settings.logo_dev_timeout_seconds,
-            max_candidates=settings.logo_dev_max_candidates,
-        )
-    except ValueError:  # pragma: no cover - guarded by `_provider_available`
-        return dataclasses.replace(evidence, lookup_status=EnrichmentLookupStatus.API_UNAVAILABLE)
-
-    candidates = tuple(
-        {"domain": candidate.domain, "name": candidate.name, "rank": index}
-        for index, candidate in enumerate(result.candidates, start=1)
-    )
-    return dataclasses.replace(
-        evidence,
-        candidates=candidates,
-        lookup_status=result.status,
-        provider=enrichment.PROVIDER if candidates else evidence.provider,
+    return resolution_service.gather_evidence(
+        session,
+        record=None,
+        hints=capture_promotion.CompanyHints(
+            name=company_name,
+            linkedin_url=None,
+            linkedin_id=None,
+            location=None,
+        ),
     )
 
 
@@ -321,22 +211,15 @@ def _accept(
     decision: policy.PolicyDecision,
     company_name: str,
     actor: str,
-    provider_call_made: bool,
 ) -> CompanyOutcome:
     domain = decision.selected_domain
     if not domain:  # pragma: no cover - the policy's own state/domain invariant
-        return CompanyOutcome(
-            company=None,
-            domain=None,
-            provider_call_made=provider_call_made,
-            reason=UNRESOLVED_MESSAGE,
-            reason_code="company_domain_unresolved",
-        )
+        return CompanyOutcome(company=None, domain=None)
     company = capture_promotion.resolve_company_row(session, domain=domain, name=company_name)
     record_audit_event(
         session,
         actor=actor,
-        action="google_sheets.company_resolved",
+        action="google_sheets.company_linked",
         entity_type="company",
         entity_id=str(company.id),
         new_state=domain,
@@ -346,23 +229,17 @@ def _accept(
             "submitted_company_name": company_name,
             "policy_version": decision.policy_version,
             "state": decision.state.value,
-            "provider_call_made": provider_call_made,
+            "provider_call_made": False,
             "provider": decision.provider,
         },
     )
-    return CompanyOutcome(
-        company=company,
-        domain=domain,
-        provider_call_made=provider_call_made,
-    )
+    return CompanyOutcome(company=company, domain=domain)
 
 
 __all__ = [
-    "PROVISIONAL_MESSAGE",
     "NameCache",
     "RESOLVER_VERSION",
-    "UNRESOLVED_MESSAGE",
     "CompanyOutcome",
+    "link_established_company",
     "new_cache",
-    "resolve_company",
 ]

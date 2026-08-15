@@ -175,6 +175,65 @@ def ensure_records(
     return ordered
 
 
+def contact_record(session: Session, contact_id: uuid.UUID) -> SalesNavCompanyEnrichment | None:
+    """The candidate record owned by this permanent contact, if one exists."""
+
+    query = select(SalesNavCompanyEnrichment).where(
+        SalesNavCompanyEnrichment.contact_id == contact_id
+    )
+    return session.scalars(query).first()
+
+
+def ensure_contact_record(
+    session: Session,
+    *,
+    contact_id: uuid.UUID,
+    company_name: str | None,
+) -> SalesNavCompanyEnrichment | None:
+    """Create the contact-owned candidate record, once, for a surface with no capture.
+
+    The exact counterpart of the capture-owned record
+    :func:`app.services.captures.promotion.ensure_records` creates, and it exists
+    for the same reason: a company that has to be looked up needs somewhere
+    truthful to keep what the provider returned, what the model said, and what
+    an operator confirmed. A Contact acquired from a spreadsheet has no capture
+    to hang that off, and inventing a capture id for it would be a lie about
+    where the evidence came from — so the record is owned by the Contact.
+
+    Idempotent, and it never calls the provider. Returns ``None`` for a contact
+    with no usable company name: there is nothing to look up, and inventing a
+    query would be the first step toward inventing a domain.
+
+    The display name is refreshed on an existing record without disturbing the
+    lookup or the decision, matching the capture path exactly — but only while
+    the normalized key still matches. A contact whose employer has genuinely
+    changed is a different company to resolve, and quietly re-pointing the
+    record would leave its stored candidates, its lookup query and its
+    confirmation describing a company nobody asked about. That case keeps the
+    record it has and is left to an operator.
+    """
+
+    key = company_key(company_name)
+    if not key:
+        return None
+    record = contact_record(session, contact_id)
+    if record is None:
+        record = SalesNavCompanyEnrichment(
+            contact_id=contact_id,
+            company_key=key,
+            company_name=norm.collapse_whitespace(company_name) or "",
+            row_count=1,
+            lookup_status=EnrichmentLookupStatus.NOT_STARTED,
+            confirmation_status=EnrichmentConfirmationStatus.UNCONFIRMED,
+            lookup_attempts=0,
+        )
+        session.add(record)
+    elif record.company_key == key:
+        record.company_name = norm.collapse_whitespace(company_name) or record.company_name
+    session.flush()
+    return record
+
+
 # Identifies which provider answered and which lookup contract produced the
 # candidate list, so a stored candidate stays interpretable if either changes.
 PROVIDER = "logo.dev"

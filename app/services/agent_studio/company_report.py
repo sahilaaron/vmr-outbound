@@ -98,7 +98,8 @@ class DomainCandidateReport:
 @dataclass(frozen=True)
 class DomainDecisionReport:
     decision_id: uuid.UUID
-    capture_id: uuid.UUID
+    capture_id: uuid.UUID | None
+    contact_id: uuid.UUID | None
     company_id: uuid.UUID | None
     scope: str
     outcome: CompanyDomainOutcome
@@ -579,6 +580,7 @@ class DurableCompanyReportReader:
         return DomainDecisionReport(
             decision_id=row.id,
             capture_id=row.capture_id,
+            contact_id=row.contact_id,
             company_id=row.resolved_company_id,
             scope=scope,
             outcome=CompanyDomainOutcome(row.state.value),

@@ -1,6 +1,21 @@
 """Company-domain resolution decisions (DAT-017A).
 
-One row per decision, append-only, one current decision per capture.
+One row per decision, append-only, one current decision per **subject**.
+
+A subject is whatever the acquisition surface actually produced. A Chrome
+capture produces a ``linkedin_profile_snapshots`` row before any Contact exists,
+so the decision hangs off the capture. Google Sheets produces a permanent
+``Contact`` directly — there is no capture and inventing one would be a lie
+about where the evidence came from — so the decision hangs off the Contact.
+Exactly one of the two is set, enforced by a check constraint.
+
+That is the whole of what makes this ledger acquisition-source-agnostic, and it
+is deliberately a *second* subject column rather than a nullable capture plus a
+convention: a decision with neither owner would be unattributable evidence, and
+one with both would let two surfaces disagree about the same decision row.
+Everything downstream — the policy, the gates, the approved-mapping store, the
+Company link — is already keyed on the company and the evidence, not on how the
+person arrived, and none of it changes.
 
 DAT-010 stores what the provider *returned* and DAT-014 stores what the operator
 *confirmed*. Neither can answer the question DAT-017A has to answer afterwards:
@@ -25,17 +40,17 @@ row superseded and inserts a new one, so the earlier evidence — including the
 candidate set that was live at the time — survives the disagreement. Nothing in
 this module offers an update path for a decided row.
 
-**One current decision per capture**, enforced by a partial unique index. That
-is what makes a retry idempotent at the database rather than only in the service
-that happens to be writing.
+**One current decision per subject**, enforced by a partial unique index per
+subject column. That is what makes a retry idempotent at the database rather
+than only in the service that happens to be writing.
 
 **A state cannot contradict its domain.** A check constraint requires
 ``unresolved`` to carry no selected domain and the other two states to carry
 one, so "resolved, but to nothing" is unrepresentable rather than merely
 unwritten.
 
-The raw capture evidence is untouched, as always: this row points at the capture
-and at the DAT-010 candidate record, and rewrites neither.
+The raw acquisition evidence is untouched, as always: this row points at its
+subject and at the DAT-010 candidate record, and rewrites neither.
 """
 
 from __future__ import annotations
@@ -71,26 +86,48 @@ _STATE_MATCHES_DOMAIN = (
     "(state <> 'UNRESOLVED' AND selected_domain IS NOT NULL)"
 )
 
+#: Exactly one acquisition subject. Neither would be unattributable evidence;
+#: both would let two surfaces claim the same decision.
+_SINGLE_SUBJECT = "(capture_id IS NULL) <> (contact_id IS NULL)"
+
 
 class CompanyDomainResolution(Base):
-    """One company-domain resolution decision for one contact capture."""
+    """One company-domain resolution decision for one acquisition subject."""
 
     __tablename__ = "company_domain_resolutions"
     __table_args__ = (
-        # Decisions are numbered per capture, so history reads in order and a
-        # concurrent double-write collides instead of interleaving.
+        # Decisions are numbered per subject, so history reads in order and a
+        # concurrent double-write collides instead of interleaving. PostgreSQL
+        # treats NULLs as distinct in a unique constraint, so the capture
+        # constraint simply does not apply to contact-subject rows, and vice
+        # versa — which is why two constraints express the rule rather than one
+        # coalesced key that would have to invent a placeholder value.
         UniqueConstraint(
             "capture_id", "decision_number", name="uq_company_domain_resolutions_number"
         ),
-        # Exactly one live decision per capture. A retry that reaches the same
+        UniqueConstraint(
+            "contact_id", "decision_number", name="uq_company_domain_resolutions_contact_number"
+        ),
+        # Exactly one live decision per subject. A retry that reaches the same
         # answer writes nothing; a correction supersedes before it inserts.
         Index(
             "uq_company_domain_resolutions_current",
             "capture_id",
             unique=True,
-            postgresql_where="is_current",
+            postgresql_where="is_current AND capture_id IS NOT NULL",
+        ),
+        Index(
+            "uq_company_domain_resolutions_contact_current",
+            "contact_id",
+            unique=True,
+            postgresql_where="is_current AND contact_id IS NOT NULL",
         ),
         Index("ix_company_domain_resolutions_capture", "capture_id"),
+        Index(
+            "ix_company_domain_resolutions_contact",
+            "contact_id",
+            postgresql_where="contact_id IS NOT NULL",
+        ),
         Index(
             "ix_company_domain_resolutions_company",
             "resolved_company_id",
@@ -102,15 +139,26 @@ class CompanyDomainResolution(Base):
         # ``ck_company_domain_resolutions_ck_company_domain_resolutions_...``.
         CheckConstraint("decision_number > 0", name="decision_number_positive"),
         CheckConstraint(_STATE_MATCHES_DOMAIN, name="state_matches_domain"),
+        CheckConstraint(_SINGLE_SUBJECT, name="single_subject"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
     # --- What this decision is about ------------------------------------------
-    capture_id: Mapped[uuid.UUID] = mapped_column(
+    # The capture this decision is about, for a decision reached before any
+    # permanent Contact existed. NULL for a contact-subject decision.
+    capture_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("linkedin_profile_snapshots.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
+    )
+    # The permanent Contact this decision is about, for a surface that produced
+    # the person directly. CASCADE for the same reason the capture edge does: a
+    # decision about a record that no longer exists explains nothing.
+    contact_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("contacts.id", ondelete="CASCADE"),
+        nullable=True,
     )
     # The DAT-010 record holding the provider candidates this decision read.
     # SET NULL rather than CASCADE: losing the candidate store must not silently
@@ -200,9 +248,16 @@ class CompanyDomainResolution(Base):
 
         return self.is_resolved
 
+    @property
+    def subject_label(self) -> str:
+        """Which acquisition surface's record this decision is about."""
+
+        return "capture" if self.capture_id is not None else "contact"
+
     def __repr__(self) -> str:  # pragma: no cover - debug helper
+        subject = self.capture_id if self.capture_id is not None else self.contact_id
         return (
-            f"CompanyDomainResolution(capture_id={self.capture_id!r}, "
+            f"CompanyDomainResolution({self.subject_label}_id={subject!r}, "
             f"n={self.decision_number}, state={self.state.value!r}, "
             f"domain={self.selected_domain!r})"
         )
