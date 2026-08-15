@@ -122,7 +122,9 @@ function createWorker(options) {
         }
       },
     },
-    downloads: { download: () => Promise.resolve(1) },
+    // No `downloads` stub: the extension dropped that permission in #280, and a
+    // stub for an API the manifest no longer requests would let a reintroduced
+    // call pass here and fail in a real browser.
     sidePanel: { setPanelBehavior: () => Promise.resolve() },
   };
 

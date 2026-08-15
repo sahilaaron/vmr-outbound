@@ -40,6 +40,24 @@
  * Nothing here is ever handed to the panel: `state()` reports connected-or-not
  * and the account email, never a token.
  *
+ * FAILURE CATEGORIES. A failed connect returns one of a small, fixed set of
+ * names, and the panel maps each to a sentence an operator can act on:
+ *
+ *   sign_in_cancelled        the window was closed or the request declined
+ *   sign_in_declined         the authorization was refused at the consent page
+ *   sign_in_incomplete       the window returned without an authorization
+ *   authorization_expired    the code did not survive the round trip
+ *   extension_not_authorized this install is not approved for this deployment
+ *   account_link_revoked     the link is gone server-side; sign in again
+ *   backend_unreachable      the deployment could not be reached
+ *   token_endpoint_error     the deployment answered with a server error
+ *   state_mismatch           the redirect was not this flow's answer
+ *   sign_in_failed           anything else — deliberately generic
+ *
+ * Every one of them is derived from a status code, a server-chosen error name,
+ * or Chrome's own description of the *window*. None is derived from a code, a
+ * token, a verifier or a response body, so no category can carry one.
+ *
  * Every browser edge (chrome.*, crypto, fetch, clock) is injected, so the whole
  * flow is exercisable in `test/account-linking.test.js` without a browser.
  *
@@ -96,6 +114,30 @@
       out += B64URL_ALPHABET[b2 & 63];
     }
     return out;
+  }
+
+  /**
+   * Why an interactive sign-in ended without a link.
+   *
+   * Everything here is derived from Chrome's own failure message for
+   * `launchWebAuthFlow`, which describes the *window*, never the authorization:
+   * it has never seen a code, a token or a verifier, so nothing it says can leak
+   * one. The message is read for classification only and is never shown.
+   *
+   * Anything unrecognised falls through to the generic failure. A wrong-but-
+   * specific explanation sends an operator to fix something that was never
+   * broken, which is worse than saying plainly that it did not work.
+   */
+  function classifyLaunchFailure(error) {
+    const message = String((error && error.message) || "").toLowerCase();
+    if (!message) return "sign_in_failed";
+    if (/did not approve|cancel|closed by the user|user rejected/.test(message)) {
+      return "sign_in_cancelled";
+    }
+    if (/could not be loaded|network|unreachable|failed to load/.test(message)) {
+      return "backend_unreachable";
+    }
+    return "sign_in_failed";
   }
 
   /** The session id half of `vmre1.<session id>.<secret>`. Never throws. */
@@ -332,15 +374,35 @@
       }
       clearTimeout(timer);
       if (!resp.ok) {
-        // The server answers every refusal identically on purpose; the only
-        // thing worth distinguishing here is "this grant is dead" (4xx) from
-        // "the server is having a problem" (5xx), because only the first means
-        // the stored link should be dropped.
-        return {
-          ok: false,
-          error: resp.status >= 400 && resp.status < 500 ? "invalid_grant" : "token_endpoint_error",
-          status: resp.status,
-        };
+        // The server deliberately never says WHICH grant failed — an unknown
+        // code, an expired one, one already used, a wrong verifier and a
+        // disabled owner are one answer, and that property is not being
+        // weakened here. What it does distinguish is the *kind* of refusal, in
+        // its own two-word `error` field, and those two kinds need different
+        // things from the operator:
+        //
+        //   invalid_grant    the authorization is dead. Start again.
+        //   invalid_request  / unauthorized — this install is not one this
+        //                    deployment approves, or linking is switched off.
+        //                    Retrying cannot help; somebody has to approve it.
+        //
+        // The body is read only for that name. `invalid_grant` remains the
+        // classification that drops a stored link, so the existing refresh
+        // behaviour is unchanged.
+        let named = "";
+        try {
+          const failure = await resp.json();
+          if (failure && typeof failure.error === "string") named = failure.error;
+        } catch (_e) {
+          /* an unreadable body is simply an unnamed refusal */
+        }
+        if (resp.status >= 500) {
+          return { ok: false, error: "token_endpoint_error", status: resp.status };
+        }
+        if (named === "invalid_request" || named === "unauthorized") {
+          return { ok: false, error: "extension_not_authorized", status: resp.status };
+        }
+        return { ok: false, error: "invalid_grant", status: resp.status };
       }
       let data;
       try {
@@ -395,20 +457,29 @@
           url: base + ACCOUNT_LINK_PATHS.AUTHORIZE + "?" + query.toString(),
           interactive,
         });
-      } catch (_e) {
+      } catch (e) {
         // A silent attempt that could not complete without UI is the normal,
         // expected answer for "not linked yet" — not an error to shout about.
-        if (!interactive) silentFailedAt = now();
-        return {
-          ok: false,
-          error: interactive ? "sign_in_failed" : "account_link_required",
-        };
+        if (!interactive) {
+          silentFailedAt = now();
+          return { ok: false, error: "account_link_required" };
+        }
+        return { ok: false, error: classifyLaunchFailure(e) };
       }
 
       const parsed = parseRedirect(redirect);
       if (parsed.error || !parsed.code) {
-        if (!interactive) silentFailedAt = now();
-        return { ok: false, error: interactive ? "sign_in_failed" : "account_link_required" };
+        if (!interactive) {
+          silentFailedAt = now();
+          return { ok: false, error: "account_link_required" };
+        }
+        // The window came back, so this is not "closed or declined" — it
+        // returned to the extension carrying something other than an
+        // authorization. `access_denied` is the one value with a settled
+        // meaning; anything else is reported as an incomplete flow rather than
+        // guessed at.
+        if (parsed.error === "access_denied") return { ok: false, error: "sign_in_declined" };
+        return { ok: false, error: parsed.error ? "sign_in_failed" : "sign_in_incomplete" };
       }
       // A redirect whose state is not the one just minted is not this flow's
       // answer, so its code is not exchanged.
@@ -424,8 +495,19 @@
         },
         null
       );
-      if (exchanged.ok) silentFailedAt = 0;
-      else if (!interactive) silentFailedAt = now();
+      if (exchanged.ok) {
+        silentFailedAt = 0;
+        return exchanged;
+      }
+      if (!interactive) silentFailedAt = now();
+      // A dead grant on a code exchange means the authorization itself did not
+      // survive the round trip — a sixty-second code that expired while the
+      // operator read the consent page, or one already redeemed. Reported as
+      // its own category because "try again" genuinely is the fix, which is not
+      // true of the refusals it used to be lumped in with.
+      if (exchanged.error === "invalid_grant") {
+        return { ok: false, error: "authorization_expired", status: exchanged.status };
+      }
       return exchanged;
     }
 
@@ -448,7 +530,14 @@
         },
         link
       );
-      if (!result.ok && result.error === "invalid_grant") await forget();
+      if (!result.ok && result.error === "invalid_grant") {
+        await forget();
+        // The link is gone server-side — revoked from the VMR app, expired, the
+        // owning account disabled, or a refresh token replayed. The operator
+        // has to sign in again, and saying so is more useful than the bare
+        // "invalid_grant" this used to surface.
+        return { ok: false, error: "account_link_revoked", status: result.status };
+      }
       return result;
     }
 
@@ -472,8 +561,13 @@
         const refreshed = await refresh();
         if (refreshed.ok) return refreshed;
         // A server-side or transport failure is not a reason to send the
-        // operator through a sign-in window; say what happened instead.
-        if (refreshed.error !== "account_link_required" && refreshed.error !== "invalid_grant") {
+        // operator through a sign-in window; say what happened instead. Only
+        // the two "there is no usable link any more" outcomes fall through to a
+        // silent connect attempt.
+        if (
+          refreshed.error !== "account_link_required" &&
+          refreshed.error !== "account_link_revoked"
+        ) {
           return { ok: false, error: refreshed.error, status: refreshed.status };
         }
       }

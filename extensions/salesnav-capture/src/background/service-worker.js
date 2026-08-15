@@ -1,5 +1,5 @@
 /**
- * Service worker: extension state hub + backend communication + downloads.
+ * Service worker: extension state hub + backend communication.
  *
  * Responsibilities:
  *  - Own the recoverable reviewed drafts in chrome.storage.local.
@@ -7,9 +7,13 @@
  *    result rows (dedupe) into the reviewed batch.
  *  - Build the CONTACT-FIRST submission and POST it — ONLY on explicit operator
  *    action — to the local backend or the dev mock receiver.
- *  - Produce JSON / CSV downloads as an offline fallback.
  *  - Persist optional Campaign filing context independently from Contact capture.
- *  - Migrate superseded campaign-bound local state explicitly.
+ *  - Clear superseded campaign-bound local state explicitly.
+ *
+ * There is no export or download path. JSON/CSV downloads and the archived
+ * campaign-era drafts were an offline fallback from before hosted capture, and
+ * the `downloads` permission went with them: a reviewed contact is saved into
+ * the operator's VMR Outbound account or it is not saved at all.
  *
  * Campaign filing is optional and additive: acquisition always saves the person
  * first. Never posts to LinkedIn. Nothing is ever sent without an explicit
@@ -1503,95 +1507,6 @@ async function companySend() {
   }
 }
 
-// ---- downloads ------------------------------------------------------------
-
-function sanitizeFilename(name) {
-  return String(name)
-    .replace(/[^a-zA-Z0-9._-]+/g, "_")
-    .replace(/_{2,}/g, "_")
-    .replace(/^[_.]+|[_.]+$/g, "")
-    .slice(0, 120) || "batch";
-}
-
-function dataUrl(mime, text) {
-  return `data:${mime};charset=utf-8,` + encodeURIComponent(text);
-}
-
-/**
- * Offline fallback: download the reviewed submission the operator would have
- * saved. JSON is the exact contact-first body (so it can be inspected or
- * replayed by hand); CSV is a flat review sheet of the included rows.
- */
-async function exportBatch(format) {
-  const { payload, batch, records } = await buildBatchSubmission();
-  const stamp = batch.createdAt.replace(/[:.]/g, "-");
-  const base = sanitizeFilename(`contact_capture_${stamp}`);
-  let mime, text, ext;
-  if (format === "csv") {
-    mime = "text/csv";
-    text = schema.toCsv(records);
-    ext = "csv";
-  } else {
-    mime = "application/json";
-    text = JSON.stringify(payload, null, 2);
-    ext = "json";
-  }
-  const filename = `${base}.${ext}`;
-  await chrome.downloads.download({
-    url: dataUrl(mime, text),
-    filename,
-    saveAs: true,
-  });
-  return { ok: true, filename, records: payload.contacts.length };
-}
-
-/** Download the archived campaign-era drafts so nothing is lost on migration. */
-async function exportLegacyArchive() {
-  const data = await chrome.storage.local.get(CONTACT_STORAGE.LEGACY_ARCHIVE);
-  const archive = data[CONTACT_STORAGE.LEGACY_ARCHIVE];
-  if (!archive) return { ok: false, error: "no_legacy_archive" };
-  const filename = sanitizeFilename("vmr_legacy_capture_drafts") + ".json";
-  await chrome.downloads.download({
-    url: dataUrl("application/json", JSON.stringify(archive, null, 2)),
-    filename,
-    saveAs: true,
-  });
-  return { ok: true, filename };
-}
-
-async function getMigrationNotice() {
-  const data = await chrome.storage.local.get([
-    CONTACT_STORAGE.MIGRATION_NOTICE,
-    CONTACT_STORAGE.LEGACY_ARCHIVE,
-  ]);
-  return {
-    notice: data[CONTACT_STORAGE.MIGRATION_NOTICE] || null,
-    hasArchive: !!data[CONTACT_STORAGE.LEGACY_ARCHIVE],
-  };
-}
-
-/**
- * Discard the campaign-era archive (DAT-018 C).
- *
- * The archive card is shown only while an archive exists, so hiding it without
- * clearing the archive would make it reappear on the next panel load. Discard
- * therefore removes the archive itself, which is what the button says it does.
- * This is destructive and irreversible, so it is an explicit operator action
- * and the panel offers Download first.
- */
-async function discardLegacyArchive() {
-  await chrome.storage.local.remove([
-    CONTACT_STORAGE.MIGRATION_NOTICE,
-    CONTACT_STORAGE.LEGACY_ARCHIVE,
-  ]);
-  return { ok: true };
-}
-
-async function dismissMigrationNotice() {
-  await chrome.storage.local.remove(CONTACT_STORAGE.MIGRATION_NOTICE);
-  return { ok: true };
-}
-
 // ---- message router -------------------------------------------------------
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -1609,7 +1524,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           lastResultContext: retained.context,
           metadata: await getOperatorMetadata(),
           filingContext: await getFilingContext(),
-          migration: await getMigrationNotice(),
           credential: await credentialState(),
           account: await accountState(),
           dev: { enabled: await devModeEnabled() },
@@ -1701,15 +1615,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case "FETCH_CAMPAIGNS":
         sendResponse(await fetchCampaigns());
         break;
-      case "EXPORT_LEGACY_ARCHIVE":
-        sendResponse(await exportLegacyArchive());
-        break;
-      case "DISMISS_MIGRATION_NOTICE":
-        sendResponse(await dismissMigrationNotice());
-        break;
-      case "DISCARD_LEGACY_ARCHIVE":
-        sendResponse(await discardLegacyArchive());
-        break;
       case "DETECT_SURFACE":
         sendResponse(await detectActiveSurface());
         break;
@@ -1724,7 +1629,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           lastResultContext: retained.context,
           metadata: await getOperatorMetadata(),
           filingContext: await getFilingContext(),
-          migration: await getMigrationNotice(),
           account: await accountState(),
         });
         break;
@@ -1766,9 +1670,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         break;
       case "COMPANY_SEND":
         sendResponse(await companySend());
-        break;
-      case "EXPORT_BATCH":
-        sendResponse(await exportBatch(msg.format));
         break;
       default:
         sendResponse({ ok: false, error: "unknown_message" });

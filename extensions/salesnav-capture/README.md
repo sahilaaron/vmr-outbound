@@ -3,8 +3,10 @@
 **VM Prospector** is the operator-driven acquisition of **visible** LinkedIn
 and Sales Navigator people for the VMR Outbound Agent. It is the contact-acquisition **edge** of the
 system: it reads what the operator is already looking at, lets them review and
-annotate it, and submits those people to a narrow VMR intake endpoint (or a
-JSON/CSV export). Its responsibility ends there.
+annotate it, and submits those people to a narrow VMR intake endpoint. Its
+responsibility ends there. There is no export, download or offline copy: a
+reviewed contact is saved into the operator's VMR Outbound account or it is not
+saved at all.
 
 > **Save the person first. Decide what to do with them later.**
 >
@@ -70,23 +72,40 @@ Minimum Chrome version: 116 (side panel API).
 | --- | --- |
 | `storage` | Persist non-secret preferences and the recoverable draft batch |
 | `sidePanel` | The review/controls UI |
-| `downloads` | JSON / CSV export |
 | `activeTab` + `scripting` | Inject the reader into the current tab if needed |
 | `identity` | `launchWebAuthFlow` for the one-click VMR Outbound sign-in that links this install to the operator's own account (see below) |
 | host `https://www.linkedin.com/sales/*` (required) | Read the results page the operator opened (read-only), narrowly scoped |
 | host `https://www.linkedin.com/in/*` (required, DAT-012) | Read the MAIN profile page the operator opened (read-only) |
 | host `https://www.linkedin.com/company/*` (required, DAT-012) | Read the company page the operator opened (read-only) |
-| host the named hosted VMR deployment (**optional**) | POST the submission to the product's hosted backend and read the label list, campaigns and the existence-only lookup, under the account link |
+| host the named hosted VMR deployment (**required**) | POST the submission to the product's hosted backend and read the label list, campaigns and the existence-only lookup, under the account link |
 | host `http://127.0.0.1/*`, `http://localhost/*` (**optional**) | The same four routes against a local VMR backend / mock receiver, for development |
 
-The loopback hosts are declared as **optional** host permissions and are
-**requested explicitly, with a user gesture, before the first backend/mock
-save** (and before reading the label list). If the operator declines, the send is blocked
-with a clear message and a Retry — nothing is transmitted. See the granted vs
-denied evidence in `docs/screenshots/` (`02_side_panel.png`,
-`03_side_panel_permission_denied.png`). No `history`, no broad `<all_urls>`, no
-analytics, no third-party hosts. LinkedIn is a read surface; the extension never
-POSTs to it.
+`downloads` is **not** requested. It existed for the JSON/CSV export, which is
+gone.
+
+### Required vs optional, and why the hosted origin moved
+
+The hosted VMR deployment is a **required** host permission, granted at install.
+It used to be optional, which meant pressing *Sign in to VMR Outbound* first
+opened a Chrome dialog naming an unfamiliar server — and dismissing that dialog
+left the panel with a message and no sign-in window at all, a click that reads
+as a no-op. The origin is fixed product configuration, not an operator choice,
+so nothing was being decided by asking.
+
+The permission is not what protects the deployment. The extension holds an
+account-linked token bound to one approved `chrome-extension://` origin and the
+server admits it to exactly four routes; a host permission only decides which
+addresses the extension may open a connection to, and one exact HTTPS host is
+narrower than the dialog it replaced.
+
+The **loopback** hosts stay optional and are still **requested explicitly, with
+a user gesture, before the first local save** (and before reading the label
+list). If a developer declines, the send is blocked with a clear message and a
+Retry — nothing is transmitted. See the granted vs denied evidence in
+`docs/screenshots/` (`02_side_panel.png`, `03_side_panel_permission_denied.png`).
+
+No `history`, no broad `<all_urls>`, no wildcard host, no analytics, no
+third-party hosts. LinkedIn is a read surface; the extension never POSTs to it.
 
 ## Connecting to VMR Outbound
 
@@ -105,6 +124,35 @@ Outbound account**:
    (`vmrr1.…`, in `chrome.storage.local`). **A Chrome restart re-authorizes from
    the refresh token alone** — no re-entry of anything, ever.
 4. **Disconnect** on the connection screen revokes the link server-side.
+
+The click asks for no permission and opens no dialog of its own — the hosted
+origin is a required host permission (above) — so the first visible thing after
+pressing the button is VMR's own page. While the window is opening the panel
+says so, because a button that only greys out is indistinguishable from one that
+did nothing.
+
+### When sign-in does not complete
+
+The panel names the category rather than guessing a cause. Each is decided from
+a status code, the server's own two-word error name, or Chrome's description of
+the auth *window* — never from a code, token, verifier or response body, so none
+of these messages can carry credential material:
+
+| Category | What the operator is told |
+| --- | --- |
+| `sign_in_cancelled` | The window closed before it finished. Nothing changed. |
+| `sign_in_declined` | The connection request was refused at the consent page. |
+| `sign_in_incomplete` | The window came back without completing the connection. |
+| `authorization_expired` | The request is valid for a minute; complete it without pausing. |
+| `extension_not_authorized` | This install is not approved for this deployment — retrying cannot help. |
+| `account_link_revoked` | Disconnected, expired, or the account was disabled. Sign in again. |
+| `backend_unreachable` / `token_endpoint_error` | VMR could not be reached, or reported a problem. Nothing was sent. |
+| `state_mismatch` | The response did not match this request and was discarded. |
+| `sign_in_failed` | Anything else — deliberately generic. |
+
+This replaced one catch-all — *"The window was closed, or VMR Outbound declined
+this install"* — which named two unrelated causes at once and was wrong about
+both whenever the real cause was a third thing.
 
 No shared secret is shown to, typed by, or stored for the operator. The refresh
 token is bound to one VMR user, one approved extension id and one installation
@@ -228,8 +276,7 @@ not silently processed.
    not want. Move to the next page in Sales Navigator yourself and capture
    again — rows accumulate into one draft batch, de-duplicated by stable URL.
 4. Optionally add Collections (Labels), a note, and a Campaign filing target.
-5. Click *Review selected (N)*, check the set, then *Capture N prospects* — or
-   *Download JSON* / *Download CSV*.
+5. Click *Review selected (N)*, check the set, then *Capture N prospects*.
    Nothing is sent without this explicit action.
 6. Open the saved contacts from the returned submission record.
 
@@ -239,21 +286,34 @@ the side panel or refreshing the page. Use *Clear batch* to start over.
 ### Upgrading from the campaign-era extension
 
 On install and on browser start, campaign-era local state is retired
-**explicitly**: any v1 draft is archived verbatim under one storage key (and can
-be downloaded from the panel's one-time notice), the live draft keys and stale
-staged-result summaries are cleared, and the legacy campaign value is dropped.
-Contract 2.1 stores any new optional filing preference under a separate key. A
-v1 draft is never resubmitted — its idempotency keys may already have been
-accepted under the old contract, so replaying it would conflict or split one
-person's evidence in two. Capture again to save those people contact-first.
+**explicitly**: the live draft keys and stale staged-result summaries are
+cleared, and the legacy campaign value is dropped from preferences. Contract 2.1
+stores any new optional filing preference under a separate key. A v1 draft is
+never resubmitted — its idempotency keys may already have been accepted under
+the old contract, so replaying it would conflict or split one person's evidence
+in two. Capture again to save those people contact-first.
 
-## Export fallback and mock receiver
+Earlier versions also *archived* each v1 draft verbatim under
+`cc_legacy_v1_archive` and showed an "Archived drafts can still be downloaded"
+card. That card was the archive's only reader, and it is gone with the rest of
+the download capability — so the migration no longer writes an archive, and it
+**clears** `cc_legacy_v1_archive` and `cc_migration_notice` from any install
+that still carries them rather than stranding captured personal data under keys
+nothing can show or remove. That clearing branch is the only legacy handling
+retained, and it goes when no install can still be carrying those keys.
 
-Three output modes exist: **Download JSON**, **Download CSV**, and **Send to the
-local backend or a configurable local mock/HTTP receiver**
-(`tools/mock-receiver.js`). The production-facing default sends nowhere without an
-explicit operator action, and no remote URL is embedded — only loopback origins
-are permitted.
+## Mock receiver
+
+Captures go to the hosted VMR backend under the operator's account link, or —
+in development only — to a local VMR backend or the configurable mock/HTTP
+receiver (`tools/mock-receiver.js`). Nothing is sent without an explicit
+operator action, and no remote URL other than the named hosted deployment is
+reachable.
+
+There is no export fallback. **Download JSON**, **Download CSV** and the
+archived-draft download were an offline path from before hosted capture; they
+have been removed along with the `downloads` permission, the worker's download
+handlers and the CSV writer in `common/schema.js`.
 
 ## VMR backend contracts
 

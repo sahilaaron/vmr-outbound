@@ -105,7 +105,11 @@ function hostedServer(options) {
     calls.push({ url, init, body });
     if (url === TOKEN_URL) {
       if (o.tokenStatus && o.tokenStatus >= 400) {
-        return Promise.resolve(jsonResponse(o.tokenStatus, { error: "invalid_grant" }));
+        // `tokenError` lets a test choose which of the endpoint's three refusal
+        // names comes back, because the extension classifies on it (#280).
+        return Promise.resolve(
+          jsonResponse(o.tokenStatus, { error: o.tokenError || "invalid_grant" })
+        );
       }
       const pair = issued[Math.min(next, issued.length - 1)];
       next += 1;
@@ -736,18 +740,19 @@ test("a save that needs a sign-in offers the sign-in, then saves", async () => {
   assert.match(p.viewText(), /Prospect saved/);
 });
 
-test("a declined origin prompt stops before the sign-in window, and says so", async () => {
-  const p = await createPanel({
+/** A signed-out panel pointed at whichever backend the caller names. */
+async function signedOutPanelOn(prefs, permission) {
+  return createPanel({
     responses: {
       GET_STATE: {
         ok: true,
-        prefs: ORDINARY_PREFS,
+        prefs,
         metadata: { labels: [], note: null },
         batchView: null,
         account: { connected: false, accountEmail: null },
         dev: { enabled: false },
       },
-      PROFILE_GET_STATE: { ok: true, prefs: ORDINARY_PREFS, draftView: null },
+      PROFILE_GET_STATE: { ok: true, prefs, draftView: null },
       COMPANY_GET_STATE: { ok: true, draftView: null },
       GET_ACCOUNT_STATE: { ok: true, account: { connected: false, accountEmail: null } },
       FETCH_LABELS: { ok: true, labels: [] },
@@ -756,17 +761,74 @@ test("a declined origin prompt stops before the sign-in window, and says so", as
         surface: constants.SURFACES.UNSUPPORTED,
         url: "https://example.com/",
       },
+      CONNECT_ACCOUNT: { ok: false, error: "sign_in_cancelled" },
     },
-    permission: { granted: false, grantOnRequest: false },
+    permission,
   });
+}
+
+test("the hosted sign-in asks for no runtime host permission and starts anyway (#280)", async () => {
+  // The hosted origin moved from `optional_host_permissions` to
+  // `host_permissions`. It is held from install, so the click must go straight
+  // to the sign-in window — with a browser that would refuse a runtime grant.
+  //
+  // This is the no-op the UAT hit: as an optional permission, a dismissed
+  // dialog left the operator with a message and no auth window, which reads
+  // exactly like a button that does nothing.
+  const p = await signedOutPanelOn(ORDINARY_PREFS, { granted: false, grantOnRequest: false });
+  await p.flush();
+  const before = p.permissionCalls.length;
+  await p.click("signin-btn");
+
+  assert.equal(
+    p.sent.filter((m) => m.type === "CONNECT_ACCOUNT").length,
+    1,
+    "the sign-in must start: the host permission is already held"
+  );
+  assert.deepEqual(
+    p.permissionCalls.slice(before).filter((c) => c.call === "request"),
+    [],
+    "no runtime permission may be requested for the fixed hosted deployment"
+  );
+});
+
+test("the sign-in says it is opening a window before anything appears (#280)", async () => {
+  // "First click produces an obvious transition, not an apparent no-op."
+  const p = await signedOutPanelOn(ORDINARY_PREFS, { granted: false, grantOnRequest: false });
+  await p.flush();
+  let observed = "";
+  await new Promise((resolve) => {
+    p.responses.CONNECT_ACCOUNT = () => {
+      observed = p.$("signin-message").textContent;
+      resolve();
+      return { ok: false, error: "sign_in_cancelled" };
+    };
+    p.click("signin-btn");
+  });
+  assert.match(observed, /Opening the VMR Outbound sign-in window/);
+});
+
+test("a development install on loopback still answers the optional-permission prompt", async () => {
+  // The runtime request was not deleted, only narrowed to the origins that are
+  // still optional. A developer pointed at 127.0.0.1 keeps the old behaviour.
+  const localPrefs = Object.assign({}, ORDINARY_PREFS, {
+    backendBaseUrl: "http://127.0.0.1:8000",
+  });
+  const p = await signedOutPanelOn(localPrefs, { granted: false, grantOnRequest: false });
   await p.flush();
   await p.click("signin-btn");
   assert.equal(
     p.sent.filter((m) => m.type === "CONNECT_ACCOUNT").length,
     0,
-    "a sign-in must not be started when its token exchange cannot run"
+    "a local sign-in must not start when its token exchange cannot run"
   );
-  assert.match(p.$("signin-message").textContent, /Allow VM Prospector to reach VMR Outbound/);
+  assert.ok(
+    p.permissionCalls.some(
+      (c) => c.call === "request" && c.origins.includes("http://127.0.0.1/*")
+    ),
+    "the loopback origin must still be requested at runtime"
+  );
+  assert.match(p.$("signin-message").textContent, /Allow VM Prospector to reach/);
   assert.match(p.$("signin-message").textContent, /Nothing has been sent/);
 });
 
@@ -840,4 +902,236 @@ test("base64url encoding matches the encoding the server verifies against", () =
       sample
     );
   }
+});
+
+// --- 8. Safe failure categories (#280) ---------------------------------------
+//
+// Every interactive failure used to collapse into one message — "Sign-in did
+// not complete. The window was closed, or VMR Outbound declined this install."
+// It named two unrelated causes and was wrong about both whenever the real
+// cause was a third thing, which is what the hosted UAT hit. These hold the
+// replacement categories closed, and hold the line on what they may contain.
+
+const handoff = require("../src/common/handoff.js");
+
+/** The category one interactive connect attempt produces. */
+async function connectFailure(options) {
+  const { worker } = hostedWorker(options);
+  const r = await worker.dispatch({ type: "CONNECT_ACCOUNT" });
+  assert.equal(r.ok, false, "this helper is for failures only");
+  return r.error;
+}
+
+test("a closed or cancelled auth window is reported as cancelled, not as a refusal", async () => {
+  const error = await connectFailure({
+    onAuthFlow: () => {
+      throw new Error("The user did not approve access.");
+    },
+  });
+  assert.equal(error, "sign_in_cancelled");
+  const described = handoff.describeSendError({ error });
+  assert.match(described.headline, /cancelled/i);
+  assert.equal(described.canRetry, true);
+});
+
+test("a declined consent page is reported as declined", async () => {
+  const error = await connectFailure({
+    onAuthFlow: (details) => {
+      const redirect = new URL(new URL(details.url).searchParams.get("redirect_uri"));
+      redirect.searchParams.set("error", "access_denied");
+      return redirect.toString();
+    },
+  });
+  assert.equal(error, "sign_in_declined");
+  assert.match(handoff.describeSendError({ error }).headline, /declined/i);
+});
+
+test("a window that returns without an authorization is reported as incomplete", async () => {
+  // The shape the `next=` defect produced: the window came back, but never
+  // carrying a code.
+  const error = await connectFailure({
+    onAuthFlow: (details) => new URL(details.url).searchParams.get("redirect_uri"),
+  });
+  assert.equal(error, "sign_in_incomplete");
+  assert.match(handoff.describeSendError({ error }).headline, /did not finish/i);
+});
+
+test("a dead authorization code is reported as expired, not as a refused install", async () => {
+  const error = await connectFailure({
+    server: hostedServer({ tokenStatus: 400, tokenError: "invalid_grant" }),
+    onAuthFlow: (details) => redirectWithCode(details),
+  });
+  assert.equal(error, "authorization_expired");
+  assert.equal(handoff.describeSendError({ error }).canRetry, true);
+});
+
+test("an install this deployment does not approve is told so, and not to retry", async () => {
+  for (const [status, named] of [
+    [401, "unauthorized"],
+    [400, "invalid_request"],
+  ]) {
+    const error = await connectFailure({
+      server: hostedServer({ tokenStatus: status, tokenError: named }),
+      onAuthFlow: (details) => redirectWithCode(details),
+    });
+    assert.equal(error, "extension_not_authorized", `${status} ${named}`);
+    const described = handoff.describeSendError({ error });
+    assert.match(described.headline, /not approved/i);
+    assert.equal(described.canRetry, false, "retrying an unapproved install cannot help");
+  }
+});
+
+test("a server error during the exchange is not read as a dead grant", async () => {
+  const error = await connectFailure({
+    server: hostedServer({ tokenStatus: 503, tokenError: "unauthorized" }),
+    onAuthFlow: (details) => redirectWithCode(details),
+  });
+  assert.equal(error, "token_endpoint_error");
+});
+
+/** The account-link client over a plain in-memory store, for direct calls. */
+function directLink(options) {
+  const o = options || {};
+  const local = Object.assign({}, o.local);
+  const session = {};
+  const area = (bag) => ({
+    get: async (key) => (key in bag ? { [key]: bag[key] } : {}),
+    set: async (values) => Object.assign(bag, values),
+    remove: async (key) => {
+      for (const k of [].concat(key)) delete bag[k];
+    },
+  });
+  const link = accountLinkModule.createAccountLink({
+    chrome: {
+      storage: { local: area(local), session: area(session) },
+      runtime: { id: "test-extension" },
+      identity: { getRedirectURL: () => "https://test-extension.chromiumapp.org/" },
+    },
+    crypto: nodeCrypto.webcrypto,
+    fetch: o.fetch,
+    backendBaseUrl: async () => HOSTED_BASE,
+  });
+  return { link, local, session };
+}
+
+test("a revoked or disabled link is named as such, and the local link is dropped", async () => {
+  // `refresh()` is internal to the worker's own token handling, so it is
+  // exercised directly here rather than through a message that does not exist.
+  const server = hostedServer({ tokenStatus: 400, tokenError: "invalid_grant" });
+  const { link, local } = directLink({
+    fetch: server.fetchImpl,
+    local: {
+      [constants.ACCOUNT_STORAGE.INSTALLATION_ID]: "11111111-2222-4333-8444-555555555555",
+      [constants.ACCOUNT_STORAGE.ACCOUNT_LINK]: {
+        sessionId: "0123456789abcdef0123456789abcdef",
+        refreshToken: REFRESH_0,
+        accountEmail: "operator@example.com",
+        scope: "capture",
+      },
+    },
+  });
+
+  const r = await link.refresh();
+  assert.equal(r.ok, false);
+  assert.equal(r.error, "account_link_revoked");
+  assert.equal(
+    local[constants.ACCOUNT_STORAGE.ACCOUNT_LINK],
+    undefined,
+    "a dead grant must not leave a refresh token behind"
+  );
+  const described = handoff.describeSendError({ error: r.error });
+  assert.match(described.headline, /no longer connected/i);
+});
+
+test("a server error on refresh keeps the link instead of signing the operator out", async () => {
+  // The other half of the rule: only a *decided* refusal drops a link. A 5xx
+  // means the server is unwell, not that this install lost its authorization.
+  const server = hostedServer({ tokenStatus: 503, tokenError: "unauthorized" });
+  const { link, local } = directLink({
+    fetch: server.fetchImpl,
+    local: {
+      [constants.ACCOUNT_STORAGE.INSTALLATION_ID]: "11111111-2222-4333-8444-555555555555",
+      [constants.ACCOUNT_STORAGE.ACCOUNT_LINK]: {
+        sessionId: "0123456789abcdef0123456789abcdef",
+        refreshToken: REFRESH_0,
+        accountEmail: "operator@example.com",
+        scope: "capture",
+      },
+    },
+  });
+
+  const r = await link.refresh();
+  assert.equal(r.ok, false);
+  assert.equal(r.error, "token_endpoint_error");
+  assert.ok(
+    local[constants.ACCOUNT_STORAGE.ACCOUNT_LINK],
+    "a server-side failure must not throw away a working link"
+  );
+});
+
+test("a SILENT attempt still reports only 'sign in required', whatever failed", async () => {
+  // Categories are for the action an operator took. A background attempt that
+  // could not complete without UI is the normal answer for "not linked yet"
+  // and must not surface as an error at all.
+  const { worker } = hostedWorker({});
+  const r = await worker.dispatch({ type: "GET_ACCOUNT_STATE", autoConnect: true });
+  assert.equal(r.ok, true);
+  assert.equal(r.account.connected, false);
+  assert.equal(r.reason, "account_link_required");
+});
+
+test("no failure category leaks a code, token, verifier or challenge", async () => {
+  // The categories are derived from a status code, a server-chosen error name,
+  // or Chrome's description of the WINDOW — never from credential material.
+  // This walks the messages an operator can actually be shown and proves it.
+  const SECRETS = [
+    "auth-code-1",
+    ACCESS_1,
+    ACCESS_2,
+    REFRESH_0,
+    REFRESH_1,
+    "code_verifier",
+    "code_challenge",
+  ];
+  const categories = [
+    "sign_in_cancelled",
+    "sign_in_declined",
+    "sign_in_incomplete",
+    "authorization_expired",
+    "extension_not_authorized",
+    "account_link_revoked",
+    "backend_unreachable",
+    "token_endpoint_error",
+    "state_mismatch",
+    "identity_unavailable",
+    "sign_in_failed",
+  ];
+  for (const error of categories) {
+    const described = handoff.describeSendError({ error });
+    const shown = `${described.headline} ${described.detail}`;
+    assert.equal(described.code, error, `${error} must classify to itself`);
+    assert.ok(described.headline, `${error} must have an operator-facing headline`);
+    for (const secret of SECRETS) {
+      assert.ok(!shown.includes(secret), `${error} must not mention ${secret}`);
+    }
+    assert.ok(!/vmre1\.|vmrr1\.|vmrx1\./.test(shown), `${error} must not show a token`);
+    assert.ok(!/Bearer /.test(shown), `${error} must not show an authorization header`);
+  }
+});
+
+test("an interactive failure the extension cannot classify stays generic", async () => {
+  // The safe default. A wrong-but-specific explanation sends an operator to fix
+  // something that was never broken.
+  const error = await connectFailure({
+    onAuthFlow: () => {
+      throw new Error("something nobody has seen before");
+    },
+  });
+  assert.equal(error, "sign_in_failed");
+  const described = handoff.describeSendError({ error });
+  assert.match(described.detail, /Nothing was connected/);
+  assert.ok(
+    !/window was closed|declined this install/i.test(described.detail),
+    "the generic message must stop asserting two specific causes it cannot know"
+  );
 });

@@ -151,49 +151,11 @@
     return Buffer.byteLength(str, "utf8");
   }
 
-  // ---- CSV export ---------------------------------------------------------
-
-  const CSV_COLUMNS = [
-    ["rawFullName", "raw_full_name"],
-    ["firstName", "first_name"],
-    ["lastName", "last_name"],
-    ["title", "title"],
-    ["companyName", "company_name"],
-    ["location", "location"],
-    ["linkedinProfileUrl", "linkedin_profile_url"],
-    ["salesNavLeadUrl", "sales_nav_lead_url"],
-    ["companyLinkedInUrl", "company_linkedin_url"],
-    ["salesNavCompanyUrl", "sales_nav_company_url"],
-    ["visibleCompanyMetadata", "visible_company_metadata"],
-    ["sourceSearchUrl", "source_search_url"],
-    ["sourcePageNumber", "source_page_number"],
-    ["sourcePosition", "source_position"],
-    ["capturedAt", "captured_at"],
-    ["warnings", "warnings"],
-  ];
-
-  function csvCell(value) {
-    let s;
-    if (value == null) s = "";
-    else if (Array.isArray(value)) {
-      s = value
-        .map((v) => (v && typeof v === "object" ? JSON.stringify(v) : String(v)))
-        .join(" | ");
-    } else if (typeof value === "object") s = JSON.stringify(value);
-    else s = String(value);
-    // RFC-4180 quoting; also neutralize spreadsheet formula injection.
-    if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
-    if (/[",\n\r]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
-    return s;
-  }
-
-  function toCsv(records) {
-    const header = CSV_COLUMNS.map(([, h]) => h).join(",");
-    const rows = (records || []).map((r) =>
-      CSV_COLUMNS.map(([k]) => csvCell(r[k])).join(",")
-    );
-    return [header, ...rows].join("\r\n");
-  }
+  // The CSV writer that used to live here (`toCsv`, `csvCell`, `CSV_COLUMNS`)
+  // existed for one caller: the panel's "Download CSV" button. That button, its
+  // JSON twin and the `downloads` permission are gone, so the writer went with
+  // them rather than staying as an unreachable second serializer of captured
+  // personal data.
 
   return {
     newBatchId,
@@ -202,8 +164,6 @@
     validatePayload,
     serializePayload,
     byteLength,
-    toCsv,
     RECORD_FIELDS,
-    CSV_COLUMNS,
   };
 });

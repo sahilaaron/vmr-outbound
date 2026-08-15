@@ -18,6 +18,7 @@ import time
 import uuid
 from collections.abc import Iterator
 from typing import Any
+from urllib.parse import unquote, urlencode
 
 import httpx
 import pytest
@@ -634,6 +635,84 @@ def test_a_legitimate_destination_survives() -> None:
     # Ordinary percent-encoding in a query value is untouched; only an encoded
     # path *separator* is refused.
     assert safe_next_path("/app/contacts?q=a%20b", fallback="/app") == "/app/contacts?q=a%20b"
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        # The real one: `redirect_uri` on the extension authorize page.
+        "/extension/authorize?redirect_uri=https%3A%2F%2Fabc.chromiumapp.org%2F",
+        # The general shape — an encoded separator anywhere in the query.
+        "/app/campaigns?back=%2Fapp%2Fcontacts",
+        "/app/imports?path=a%5Cb",
+    ],
+)
+def test_an_encoded_separator_in_the_QUERY_does_not_discard_the_destination(
+    candidate: str,
+) -> None:
+    """#280. The encoded-separator rule used to apply to the whole value.
+
+    That refused a destination this application itself produces. A signed-out
+    ``GET /extension/authorize?...`` is sent to ``/auth/login?next=<that URL>``
+    by the default-deny middleware, and its ``redirect_uri`` parameter is
+    ``https%3A%2F%2F<extension id>.chromiumapp.org%2F`` — percent-encoded
+    because a query value must be. The ``%2f`` test then matched, ``next`` was
+    dropped, and after signing in the operator landed on the dashboard instead
+    of back at the authorization they were completing.
+
+    For ``chrome.identity.launchWebAuthFlow`` that is indistinguishable from a
+    refusal: the window never reaches ``https://<id>.chromiumapp.org/``, so the
+    flow ends only when the operator closes it, and the panel reported "the
+    window was closed, or VMR Outbound declined this install".
+
+    The rule still applies in full to the path — see the test above — which is
+    the only place an encoded separator could change which origin the
+    destination resolves against.
+    """
+
+    assert safe_next_path(candidate, fallback="/app") == candidate
+
+
+def test_the_extension_authorize_destination_survives_the_whole_sign_in_round_trip(
+    staging_client: TestClient,
+) -> None:
+    """End to end through the middleware, not just the helper.
+
+    An anonymous browser navigation to the authorize page must come back with a
+    ``next`` that still carries every authorization parameter, and that value
+    must survive ``safe_next_path`` when the sign-in page reads it back.
+    """
+
+    extension_id = "a" * 32
+    query = urlencode(
+        {
+            "extension_id": extension_id,
+            "installation_id": "3f1c8a2e-0b7d-4c66-9f21-8a0d5e6b7c31",
+            "code_challenge": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+            "code_challenge_method": "S256",
+            "state": "hZ2Xk9QpR7nT4vB1cE6yUu0iOa3sDfGh5jKlZxCvBnM",
+            "redirect_uri": f"https://{extension_id}.chromiumapp.org/",
+        }
+    )
+    target = f"/extension/authorize?{query}"
+
+    response = staging_client.get(
+        target,
+        headers={"accept": "text/html", "sec-fetch-mode": "navigate"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    location = response.headers["location"]
+    assert location.startswith("/auth/login?next=")
+
+    # What FastAPI hands the sign-in route as `next` — one decode of the value.
+    handed_back = unquote(location.partition("next=")[2])
+    assert handed_back == target
+
+    # And what the sign-in route then does with it. Before #280 this was "/app",
+    # which is exactly where the sign-in window got stuck.
+    assert safe_next_path(handed_back, fallback="/app") == target
+    assert "redirect_uri=https%3A%2F%2F" in safe_next_path(handed_back, fallback="/app")
 
 
 # ---------------------------------------------------------------------------

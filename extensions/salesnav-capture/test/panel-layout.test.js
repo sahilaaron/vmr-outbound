@@ -115,36 +115,50 @@ test("the 'Workflow updated' notice is gone", () => {
   assert.equal(PANEL_DOC.getElementById("migration-message"), null);
 });
 
-test("the archived-drafts affordance is retained and named for its action", () => {
-  // Code inspection justification: `exportLegacyArchive` reads storage key
-  // `cc_legacy_v1_archive`, and this button is the only caller. Removing it
-  // while an archive exists would strand recoverable data — so this card is
-  // kept, renamed to describe the operator action rather than a workflow event.
-  const card = PANEL_DOC.getElementById("archive-card");
-  assert.ok(card, "the archived-drafts card must be retained");
-  assert.ok(card.hasAttribute("hidden"), "it must start hidden");
-  assert.ok(PANEL_DOC.getElementById("migration-export"), "the download button is required");
-  const label = card.querySelector(".step-label").textContent.toLowerCase();
-  assert.ok(
-    label.includes("archived drafts"),
-    "the label must describe the data, not a workflow event"
-  );
-  assert.ok(WORKER_JS.includes("exportLegacyArchive"), "the export path must still exist");
+test("the archived-drafts card and its download are gone entirely (#280)", () => {
+  // The card was retained in DAT-018 C because the download it offered was the
+  // only route back to `cc_legacy_v1_archive`. #280 removes the extension's
+  // download capability outright, so the card, the button, the worker handler
+  // and the archive itself go together — the migration now clears that key
+  // instead of writing it (see test/migration.test.js).
+  assert.equal(PANEL_DOC.getElementById("archive-card"), null);
+  assert.equal(PANEL_DOC.getElementById("archive-message"), null);
+  assert.equal(PANEL_DOC.getElementById("migration-export"), null);
+  assert.equal(PANEL_DOC.getElementById("migration-dismiss"), null);
+  assert.ok(!/Archived drafts/i.test(PANEL_HTML), "the card's heading must be gone");
+  for (const name of [
+    "exportLegacyArchive",
+    "discardLegacyArchive",
+    "EXPORT_LEGACY_ARCHIVE",
+    "DISCARD_LEGACY_ARCHIVE",
+    "DISMISS_MIGRATION_NOTICE",
+  ]) {
+    assert.ok(!WORKER_JS.includes(name), `${name} must be gone from the service worker`);
+    assert.ok(!PANEL_JS.includes(name), `${name} must be gone from the panel`);
+  }
 });
 
-test("the archive card is shown only while an archive actually exists", () => {
-  // Not on the presence of a notice — that was the old, valueless trigger.
-  assert.ok(PANEL_JS.includes("info.hasArchive"), "must gate on hasArchive");
-  assert.ok(!PANEL_JS.includes("info.notice"), "must not gate on the retired notice");
+test("the JSON and CSV export controls are gone, with their handlers (#280)", () => {
+  for (const id of ["export-row", "export-json", "export-csv"]) {
+    assert.equal(PANEL_DOC.getElementById(id), null, `${id} must be removed from the panel`);
+  }
+  assert.ok(!/Download JSON|Download CSV/i.test(PANEL_HTML));
+  assert.ok(!PANEL_JS.includes("EXPORT_BATCH"), "the panel must not message an export");
+  assert.ok(!WORKER_JS.includes("EXPORT_BATCH"), "the worker must not handle an export");
+  assert.ok(!WORKER_JS.includes("chrome.downloads"), "no download call may remain");
+  assert.ok(!WORKER_JS.includes("async function exportBatch"));
 });
 
-test("discarding clears the archive so the card cannot silently return", () => {
-  assert.ok(PANEL_JS.includes("DISCARD_LEGACY_ARCHIVE"));
-  assert.ok(WORKER_JS.includes("DISCARD_LEGACY_ARCHIVE"));
-  assert.ok(
-    WORKER_JS.includes("async function discardLegacyArchive"),
-    "discard must be implemented, not just messaged"
-  );
+test("the full active-page URL line under the detected-page strip is gone (#280)", () => {
+  // The compact strip (icon, label, badge) is the whole indicator now. The URL
+  // repeated the address bar, wrapped on Sales Navigator URLs, and pushed the
+  // operator's actual work down the panel.
+  assert.equal(PANEL_DOC.getElementById("surface-detail"), null);
+  assert.ok(!PANEL_HTML.includes("context-url"), "the URL line's class must be gone too");
+  // The strip itself must survive.
+  assert.ok(PANEL_DOC.getElementById("surface-indicator"), "the compact strip must remain");
+  assert.ok(PANEL_DOC.getElementById("context-label"));
+  assert.ok(PANEL_DOC.getElementById("context-badge"));
 });
 
 // --- what must NOT have been lost ---------------------------------------------

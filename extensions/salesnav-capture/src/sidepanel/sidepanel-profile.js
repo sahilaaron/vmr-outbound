@@ -218,7 +218,6 @@
         label: ctx.label,
         tone: ctx.tone,
         badge: contextBadgeFor(mode),
-        url: r.url || "",
       });
     }
 
@@ -592,7 +591,6 @@
       icon: MODE_CONTEXT[SURFACES.PERSON_PROFILE].icon,
       label: MODE_CONTEXT[SURFACES.PERSON_PROFILE].label,
       badge: contextBadgeFor(SURFACES.PERSON_PROFILE),
-      url: $("surface-detail").textContent,
     });
     if (profileMatch !== renderedMatch) {
       renderedMatch = profileMatch;
@@ -670,6 +668,9 @@
   async function ensureHostPermission(url) {
     const pattern = permissions.originPatternForUrl(url);
     if (!pattern) return { granted: false, pattern: null };
+    // The hosted deployment is a required host permission; only the optional
+    // loopback development origins are still requested at runtime.
+    if (!permissions.requiresRuntimeGrant(url)) return { granted: true, pattern, required: true };
     try {
       const has = await chrome.permissions.contains({ origins: [pattern] });
       if (has) return { granted: true, pattern };

@@ -289,8 +289,9 @@ test("an unreachable backend says nothing was saved and keeps the draft", async 
   assert.equal(p.connection(), "Not connected");
   assert.equal(p.$("outcome-primary").hidden, false);
   assert.equal(p.$("outcome-primary").textContent.trim(), "Try again");
-  // The file fallback is offered when the backend cannot be reached.
-  assert.equal(p.$("export-row").hidden, false);
+  // #280: there is no file fallback any more. The reviewed draft is kept and
+  // retried against the backend; it is never written to disk.
+  assert.equal(p.$("export-row"), null);
 });
 
 test("a rejected submission is not offered a pointless retry", async () => {

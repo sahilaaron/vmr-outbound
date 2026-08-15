@@ -58,6 +58,7 @@ async function createPanel(options) {
   const responses = Object.assign({}, o.responses);
   const permission = Object.assign({ granted: true, grantOnRequest: true }, o.permission);
   const sent = [];
+  const permissionCalls = [];
 
   const html = fs
     .readFileSync(path.join(SRC, "sidepanel", "sidepanel.html"), "utf8")
@@ -97,9 +98,18 @@ async function createPanel(options) {
         },
       },
     },
+    // Recorded, not just answered: since the hosted origin became a REQUIRED
+    // host permission (#280), "was the operator prompted at all?" is itself
+    // something tests assert.
     permissions: {
-      contains: () => Promise.resolve(permission.granted),
-      request: () => Promise.resolve(permission.grantOnRequest),
+      contains: (query) => {
+        permissionCalls.push({ call: "contains", origins: (query && query.origins) || [] });
+        return Promise.resolve(permission.granted);
+      },
+      request: (query) => {
+        permissionCalls.push({ call: "request", origins: (query && query.origins) || [] });
+        return Promise.resolve(permission.grantOnRequest);
+      },
     },
     tabs: { onUpdated: noopEvent, onActivated: noopEvent, onRemoved: noopEvent },
     webNavigation: { onHistoryStateUpdated: noopEvent, onCompleted: noopEvent },
@@ -132,6 +142,7 @@ async function createPanel(options) {
     $,
     sent,
     permission,
+    permissionCalls,
     responses,
     flush,
     /** The view currently on screen. */

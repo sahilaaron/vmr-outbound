@@ -72,8 +72,9 @@
   // is no pattern, no wildcard and no operator-typed hostname here on purpose:
   // a send target is where reviewed personal data goes, and "whatever the
   // operator pasted" is not a boundary. Adding a deployment is a deliberate
-  // release that also declares the matching optional host permission in the
-  // manifest — `test/config-parity.test.js` fails if the two drift.
+  // release that also declares the matching REQUIRED host permission in the
+  // manifest — `test/config-parity.test.js` fails if the two drift, and fails
+  // if a hosted origin is declared as optional instead.
   //
   // HTTPS only. A hosted capture carries a bearer credential, and a credential
   // over plaintext is a credential given away.
@@ -302,7 +303,12 @@
   };
 
   // Contact-first storage: the operator metadata attached to the next
-  // submission, and the archive a superseded campaign-era draft is moved to.
+  // submission, plus two keys nothing writes any more.
+  //
+  // `LEGACY_ARCHIVE` and `MIGRATION_NOTICE` are named here only so
+  // `common/migration.js` can CLEAR them from installs that ran an earlier
+  // version. They existed to feed the archived-draft download, which no longer
+  // exists; see that module for why the clearing branch cannot go yet.
   const CONTACT_STORAGE = {
     OPERATOR_METADATA: "cc_operator_metadata",
     FILING_CONTEXT: "cc_filing_context",
