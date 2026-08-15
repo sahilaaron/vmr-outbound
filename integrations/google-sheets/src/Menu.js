@@ -46,9 +46,6 @@ function sidebarState() {
     limits: null,
     error: null,
   };
-  if (!state.baseUrl) {
-    return state;
-  }
   try {
     state.audience = identityAudience();
     var response = fetchCampaigns();
@@ -59,11 +56,6 @@ function sidebarState() {
     state.error = error.message;
   }
   return state;
-}
-
-function saveBaseUrl(value) {
-  setApiBaseUrl(value);
-  return sidebarState();
 }
 
 /**
