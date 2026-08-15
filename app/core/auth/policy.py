@@ -134,6 +134,40 @@ _ANONYMOUS_EXTENSION_PATHS: frozenset[str] = frozenset(
     }
 )
 
+# The Google Sheets add-on's three endpoints. Anonymous *to this middleware* and
+# to nothing else — the word is doing less work here than it looks like it is.
+#
+# The add-on runs server-side inside Google Apps Script. It has no cookie, cannot
+# be given one, and holds no secret of ours; what it presents is a Google-signed
+# OpenID Connect ID token for the person running the sheet, minted fresh on every
+# execution. That credential is a *stronger* statement of identity than a session
+# cookie, but it is not one this middleware can check: verifying it needs the
+# published Google key set and an audience allow-list, and resolving it to an
+# account needs a database session the middleware does not open on this path.
+#
+# So the decision is recorded here and the enforcement lives one layer in, as a
+# router-level dependency on `app/api/integrations_sheets.py` — the same shape
+# `require_admin` and `require_csrf` already use. Three properties keep that from
+# being a hole:
+#
+# * The dependency is declared on the *router*, so it covers every route mounted
+#   on it, present and future, rather than being remembered per handler. A test
+#   asserts that, and a second test asserts this set matches the live routes.
+# * Nothing on the router reads a session, a cookie or a CSRF token, so a stale
+#   cookie riding along in the same request grants exactly nothing.
+# * With `FEATURES__GOOGLE_SHEETS_INTEGRATION` off, every one of them answers 404
+#   before any credential is examined.
+#
+# Enumerated exactly, like every other entry above, so no route added under
+# `/integrations/` later inherits this.
+_ANONYMOUS_INTEGRATION_PATHS: frozenset[str] = frozenset(
+    {
+        "/integrations/sheets/campaigns",
+        "/integrations/sheets/batches",
+        "/integrations/sheets/results",
+    }
+)
+
 #: The subset the authentication middleware exempts from the cross-site backstop
 #: when — and only when — the request carries an approved extension origin. The
 #: backstop compares `Origin` against this site's own origin, which a legitimate
@@ -448,7 +482,12 @@ def anonymous_application_paths() -> frozenset[str]:
     table rather than against a second hand-written copy of it.
     """
 
-    return _ANONYMOUS_EXACT_PATHS | _ANONYMOUS_AUTH_ROUTES | _ANONYMOUS_EXTENSION_PATHS
+    return (
+        _ANONYMOUS_EXACT_PATHS
+        | _ANONYMOUS_AUTH_ROUTES
+        | _ANONYMOUS_EXTENSION_PATHS
+        | _ANONYMOUS_INTEGRATION_PATHS
+    )
 
 
 def is_identity_free_path(path: str) -> bool:
@@ -497,6 +536,7 @@ def is_anonymous_path(path: str) -> bool:
         normalized in _ANONYMOUS_EXACT_PATHS
         or normalized in _ANONYMOUS_AUTH_ROUTES
         or normalized in _ANONYMOUS_EXTENSION_PATHS
+        or normalized in _ANONYMOUS_INTEGRATION_PATHS
     ):
         return True
     # Normalisation has already resolved `..` and `.`, so `/static/../admin`

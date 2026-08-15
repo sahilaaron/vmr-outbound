@@ -1,0 +1,291 @@
+"""Reading a submitted row's current state back out, in four words.
+
+The whole read model. It writes nothing, it starts nothing, and it invents no
+state of its own: every value below is projected from what the pipeline, the
+verification policy and the sequence store already say.
+
+The four words
+--------------
+
+``pending``            accepted, waiting its turn
+``processing``         an Agent currently holds it
+``ready``              a usable verified address **and** a validated sequence
+``could_not_prepare``  it stopped, and a person has to do something
+
+They are deliberately not the nine Agent names. A salesperson reading a
+spreadsheet is deciding whether to wait, whether to act, or whether the row is
+finished, and "waiting on the Insights Agent" answers none of those. The stage
+detail still exists, is still authoritative and is one click away in the app.
+
+Why ``ready`` requires *both* halves
+------------------------------------
+
+The output contract of this surface is an address to write to and seven messages
+to send. A verified address with no sequence is not usable, and seven messages
+addressed to an unverified mailbox are worse than nothing. So the row turns
+``ready`` only when the address is ``VALID`` under the existing verification
+policy — not catch-all, not role-based, not vendor-claimed — and the sequence is
+generated complete, validated and exactly seven messages long. Anything less
+stays ``processing``, because it is.
+
+Why a stopped row is not simply "failed"
+----------------------------------------
+
+Three different things stop a row and they call for three different actions: a
+suppressed identity is a decision the system is defending, a blocked stage is
+usually missing configuration, and a failed stage is usually a bad input. Each
+gets its own sentence, sanitized, and none of them names a provider, a key or an
+internal identifier.
+"""
+
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass
+from datetime import datetime
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.models.campaign import CampaignContact
+from app.models.contact import Contact
+from app.models.email_sequence import SEQUENCE_LENGTH, EmailSequence
+from app.models.enums import (
+    ContactWorkflowState,
+    EmailVisualStatus,
+    PipelineStageStatus,
+    SequenceGenerationStatus,
+    SequenceValidationStatus,
+)
+from app.models.pipeline import CampaignContactAgentState
+from app.services import campaign_access, campaign_contacts
+from app.services.integrations.sheets.contract import RowStatus
+from app.services.sequences import read as sequence_read
+from app.services.verification import status as verification_status
+from app.services.workbench_agents.sanitize import sanitize_text
+
+#: Stage states that mean a person must act before the row can move again.
+_STOPPED_STAGE_STATES = frozenset({PipelineStageStatus.FAILED, PipelineStageStatus.BLOCKED})
+
+#: Stage states that mean an Agent is switched off rather than the row being
+#: wrong. Reported as still pending, with a note, because the fix is a control an
+#: administrator flips and not an edit the salesperson can make in the sheet.
+_HELD_STAGE_STATES = frozenset({PipelineStageStatus.PAUSED, PipelineStageStatus.DISABLED})
+
+_SUPPRESSED_MESSAGE = (
+    "this person or their company is on the suppression list, so no outreach was prepared"
+)
+_GENERIC_STOP_MESSAGE = (
+    "this row stopped before an outbound package was produced; open it in VMR Outbound to see why"
+)
+
+
+@dataclass(frozen=True)
+class SequenceMessage:
+    """One message of the canonical seven, as the sheet receives it."""
+
+    sequence_index: int
+    elapsed_day: int
+    subject: str
+    body: str
+
+
+@dataclass(frozen=True)
+class RowResult:
+    """One submitted row's current answer."""
+
+    submission_id: uuid.UUID
+    status: RowStatus
+    email_address: str | None = None
+    messages: tuple[SequenceMessage, ...] = ()
+    safe_failure_reason: str | None = None
+    note: str | None = None
+    contact_id: uuid.UUID | None = None
+    campaign_id: uuid.UUID | None = None
+    updated_at: datetime | None = None
+
+    @property
+    def ready(self) -> bool:
+        return self.status is RowStatus.READY
+
+
+def results_for(
+    session: Session,
+    *,
+    submission_ids: list[uuid.UUID],
+    actor: campaign_access.CampaignActor,
+) -> list[RowResult]:
+    """Project each submission this account may read. Unknown ids are omitted.
+
+    Omitted rather than reported as missing: telling a caller that an id exists
+    but belongs to somebody else is the difference between a result set and an
+    enumeration oracle. An id this account cannot reach and an id that was never
+    minted produce the same silence, and the add-on treats both as "no answer
+    yet".
+    """
+
+    accessible = campaign_access.accessible_campaign_ids(session, actor)
+    results: list[RowResult] = []
+    for submission_id in submission_ids:
+        membership = session.get(CampaignContact, submission_id)
+        if membership is None:
+            continue
+        if accessible is not None and membership.campaign_id not in accessible:
+            continue
+        results.append(result_for(session, membership=membership))
+    return results
+
+
+def result_for(session: Session, *, membership: CampaignContact) -> RowResult:
+    """Project one membership. The only place the four words are decided."""
+
+    contact = session.get(Contact, membership.contact_id)
+
+    def answer(
+        status: RowStatus,
+        *,
+        email_address: str | None = None,
+        messages: tuple[SequenceMessage, ...] = (),
+        safe_failure_reason: str | None = None,
+        note: str | None = None,
+    ) -> RowResult:
+        return RowResult(
+            submission_id=membership.id,
+            status=status,
+            email_address=email_address,
+            messages=messages,
+            safe_failure_reason=safe_failure_reason,
+            note=note,
+            contact_id=membership.contact_id,
+            campaign_id=membership.campaign_id,
+            updated_at=membership.updated_at,
+        )
+
+    stop = _stop_reason(session, membership=membership)
+    if stop is not None:
+        return answer(RowStatus.COULD_NOT_PREPARE, safe_failure_reason=stop)
+
+    address = _usable_address(session, contact=contact)
+    sequence = sequence_read.sequence_for_membership(session, campaign_contact_id=membership.id)
+    messages = _messages(session, sequence=sequence)
+
+    if address is not None and messages:
+        return answer(RowStatus.READY, email_address=address, messages=messages)
+
+    return answer(
+        _in_flight_status(membership),
+        email_address=address,
+        note=_held_note(session, membership=membership),
+    )
+
+
+def _usable_address(session: Session, *, contact: Contact | None) -> str | None:
+    """The address this row may be sent to, or nothing.
+
+    ``VALID`` and only ``VALID``. ``CATCH_ALL`` and ``UNKNOWN`` are unresolved by
+    definition, ``ROLE_BASED`` is a real mailbox that policy still refuses, and an
+    imported address with no provider evidence is a vendor's claim rather than a
+    verification. Each of those is already decided by
+    ``app/services/verification``; this reads the decision and does not restate
+    it.
+    """
+
+    if contact is None:
+        return None
+    view = verification_status.derive_status_for_contact(session, contact)
+    if view.visual is not EmailVisualStatus.SUCCESSFUL:
+        return None
+    return view.email
+
+
+def _messages(session: Session, *, sequence: EmailSequence | None) -> tuple[SequenceMessage, ...]:
+    """The seven messages, or nothing at all. Never a partial sequence."""
+
+    if sequence is None:
+        return ()
+    if sequence.generation_status is not SequenceGenerationStatus.COMPLETE:
+        return ()
+    if sequence.validation_status is SequenceValidationStatus.FAILED:
+        return ()
+    details = sequence_read.message_details(session, sequence=sequence)
+    if len(details) != SEQUENCE_LENGTH:
+        # A sequence is never persisted partial, so this is a belt-and-braces
+        # refusal rather than an expected branch: writing four messages into a
+        # seven-column layout would read as a finished sequence with three blanks.
+        return ()
+    return tuple(
+        SequenceMessage(
+            sequence_index=detail.row.position,
+            elapsed_day=detail.row.recommended_elapsed_day,
+            subject=detail.row.subject,
+            body=detail.body,
+        )
+        for detail in details
+    )
+
+
+def _stop_reason(session: Session, *, membership: CampaignContact) -> str | None:
+    """Why this row stopped, in one operator sentence, or ``None`` if it has not."""
+
+    if membership.state is ContactWorkflowState.SUPPRESSED:
+        return _SUPPRESSED_MESSAGE
+    if membership.state is ContactWorkflowState.EXCLUDED:
+        return sanitize_text(_first_detail(membership)) or _GENERIC_STOP_MESSAGE
+    if campaign_contacts.is_terminally_blocked(session, membership=membership):
+        if _suppression_named(membership):
+            return _SUPPRESSED_MESSAGE
+        return sanitize_text(_first_detail(membership)) or _GENERIC_STOP_MESSAGE
+    if membership.pipeline_status in _STOPPED_STAGE_STATES:
+        stage = _current_stage(session, membership=membership)
+        detail = stage.reason_detail if stage is not None else None
+        return sanitize_text(detail) or _GENERIC_STOP_MESSAGE
+    return None
+
+
+def _in_flight_status(membership: CampaignContact) -> RowStatus:
+    if membership.pipeline_status in (
+        PipelineStageStatus.RUNNING,
+        PipelineStageStatus.RETRYING,
+    ):
+        return RowStatus.PROCESSING
+    return RowStatus.PENDING
+
+
+def _held_note(session: Session, *, membership: CampaignContact) -> str | None:
+    """A note for a row that is waiting on a control rather than on a queue."""
+
+    if membership.pipeline_status not in _HELD_STAGE_STATES:
+        return None
+    stage = _current_stage(session, membership=membership)
+    detail = sanitize_text(stage.reason_detail) if stage is not None else None
+    return detail or "an Agent this row needs is currently switched off"
+
+
+def _current_stage(
+    session: Session, *, membership: CampaignContact
+) -> CampaignContactAgentState | None:
+    if membership.current_stage is None:
+        return None
+    return session.scalars(
+        select(CampaignContactAgentState).where(
+            CampaignContactAgentState.campaign_contact_id == membership.id,
+            CampaignContactAgentState.agent_id == membership.current_stage,
+        )
+    ).first()
+
+
+def _first_detail(membership: CampaignContact) -> str | None:
+    for reason in membership.blocking_reasons or []:
+        if isinstance(reason, dict) and reason.get("detail"):
+            return str(reason["detail"])
+    return None
+
+
+def _suppression_named(membership: CampaignContact) -> bool:
+    for reason in membership.blocking_reasons or []:
+        if isinstance(reason, dict) and "suppress" in str(reason.get("code", "")).lower():
+            return True
+    return False
+
+
+__all__ = ["RowResult", "SequenceMessage", "result_for", "results_for"]

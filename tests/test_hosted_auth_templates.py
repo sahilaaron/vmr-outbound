@@ -38,7 +38,19 @@ SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "TRACE"}
 # only exemption, and its behaviour is asserted directly in `test_hosted_auth.py`
 # (`test_logout_without_a_token_is_refused_while_signed_in` and
 # `test_logout_without_a_session_still_lands_on_the_signed_out_page`).
-ROUTER_CSRF_EXEMPTIONS = {"app.web.auth_routes"}
+#
+# `app.api.integrations_sheets` is the second, and it is exempt for a reason CSRF
+# does not apply to rather than one it is being excused from. Cross-site request
+# forgery is an attack on a credential the *browser attaches automatically*; the
+# Google Sheets router reads no cookie and no session, and authenticates every
+# request by a Google identity assertion the caller has to present deliberately.
+# `require_csrf` itself already states this — it returns immediately when the
+# credential is not a cookie — so declaring it there would add a no-op, not a
+# guard. What that router does declare instead is `require_account`, and
+# `test_google_sheets_integration.py` asserts that it is present on the router
+# rather than on individual handlers, which is the same invariant this test
+# exists to keep.
+ROUTER_CSRF_EXEMPTIONS = {"app.web.auth_routes", "app.api.integrations_sheets"}
 
 
 def _template_files() -> list[Path]:
@@ -232,6 +244,26 @@ EXPECTED_ANONYMOUS_PATHS = {
     # `/auth/login` — which is the single sign-in action the product asks for.
     "/extension/token",
     "/extension/revoke",
+    # Added by the Google Sheets add-on. Anonymous to the middleware and to
+    # nothing else: every one of the three is authenticated by
+    # `require_account` declared on the router in
+    # `app/api/integrations_sheets.py`, which verifies a Google-signed identity
+    # assertion for the person running the sheet, checks it was minted for this
+    # deployment's own add-on, and resolves it to an active `users` row before
+    # any handler runs.
+    #
+    # They are here rather than session-gated because an Apps Script add-on runs
+    # server-side: it cannot hold a cookie, and giving it a long-lived VMR
+    # credential to store would put that credential inside a document the
+    # operator can share. What it presents instead is minted fresh by Google on
+    # every execution, is never persisted anywhere, and stops working the moment
+    # the account is disabled.
+    #
+    # With `FEATURES__GOOGLE_SHEETS_INTEGRATION` off — the default — all three
+    # answer 404 before any credential is read.
+    "/integrations/sheets/campaigns",
+    "/integrations/sheets/batches",
+    "/integrations/sheets/results",
 }
 
 #: The one router other than the sign-in router that deliberately serves an
@@ -240,6 +272,9 @@ EXPECTED_ANONYMOUS_PATHS = {
 DELIBERATELY_ANONYMOUS_ROUTES = {
     "app.web.extension_link_routes:/extension/token",
     "app.web.extension_link_routes:/extension/revoke",
+    "app.api.integrations_sheets:/integrations/sheets/campaigns",
+    "app.api.integrations_sheets:/integrations/sheets/batches",
+    "app.api.integrations_sheets:/integrations/sheets/results",
 }
 
 

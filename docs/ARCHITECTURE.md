@@ -48,6 +48,13 @@ The product has two server-rendered presentation layers over the same services a
 
 The customer interface is not a Workbench reskin. The two surfaces share domain services, not presentation code.
 
+A third surface is an intake and output client rather than an interface: the
+Google Sheets add-on (`integrations/google-sheets/`, routes under
+`/integrations/sheets`). It submits name-and-company rows into the same Contact,
+Campaign and Agent path everything else uses, and reads back the verified address
+and the seven-message sequence. It holds no state, adds no schema and makes no
+decision of its own. See [GOOGLE_SHEETS_INTEGRATION.md](GOOGLE_SHEETS_INTEGRATION.md).
+
 The Admin Workbench also contains Agent Studio at `/admin/agents/studio`. Its
 common shell is a projection of the authoritative Agent registry, controls and
 durable queue. Agent-specific modules own their own typed configuration and

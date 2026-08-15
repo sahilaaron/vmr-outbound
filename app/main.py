@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import __version__
+from app.api.integrations_sheets import router as integrations_sheets_router
 from app.api.phase2 import router as phase2_router
 from app.api.routes import router as api_router
 from app.core.auth.accounts import AccountDirectory
@@ -20,6 +21,7 @@ from app.core.auth.csrf import CsrfError
 from app.core.auth.extension_link import ExtensionLinkDirectory
 from app.core.auth.identity import IdentityProvider
 from app.core.auth.middleware import OperatorAuthenticationMiddleware
+from app.core.auth.sheets_assertion import AssertionVerifier, GoogleAssertionVerifier
 from app.core.auth.startup import HostedAuthConfigurationError, validate_hosted_auth_settings
 from app.core.config import Settings, get_settings
 from app.core.health import DatabaseReadinessProbe, ReadinessProbe, run_readiness_probe
@@ -47,6 +49,7 @@ def create_app(
     identity_provider: IdentityProvider | None = None,
     account_directory: AccountDirectory | None = None,
     extension_link_directory: ExtensionLinkDirectory | None = None,
+    sheets_assertion_verifier: AssertionVerifier | None = None,
 ) -> FastAPI:
     """Application factory.
 
@@ -55,6 +58,12 @@ def create_app(
     the authentication boundary can be exercised without a database. Left as
     ``None`` the middleware resolves the database-backed directory lazily, so
     building an app never opens a connection as a side effect.
+
+    ``sheets_assertion_verifier`` is the fourth of the same kind. It answers "is
+    this a Google identity assertion minted for our add-on, and whose is it",
+    reads Google's published key set rather than a table, and is constructed
+    eagerly because it holds only configuration and a lazily-filled key cache —
+    building one opens no connection and contacts nothing.
 
     ``extension_link_directory`` is the third of the same kind, and it exists for
     the same reason: it answers "which VMR account does this ``vmre1`` token
@@ -135,6 +144,18 @@ def create_app(
     # routes resolve exactly the configuration this app was built with, and so a
     # test can inject a deterministic provider with no network.
     app.state.vmr_settings = settings
+    # Also published under the plain name the integration routers read, so a
+    # router does not have to know the historical key.
+    app.state.settings = settings
+    # The Sheets add-on's credential verifier. One instance per application, so a
+    # batch of add-on calls shares one cached Google key set instead of fetching
+    # it per request. Constructed whatever the feature switch says; the routes
+    # refuse with 404 before it is ever consulted.
+    app.state.sheets_assertion_verifier = sheets_assertion_verifier or GoogleAssertionVerifier(
+        allowed_audiences=settings.sheets.allowed_audiences,
+        accepted_issuers=settings.auth.google_issuers,
+        timeout_seconds=settings.auth.google_request_timeout_seconds,
+    )
     if identity_provider is not None:
         setattr(app.state, IDENTITY_PROVIDER_STATE_KEY, identity_provider)
 
@@ -308,6 +329,18 @@ def create_app(
     # explicitly in `app/core/auth/policy.py` with the reasoning. The two
     # `/extension/authorize` routes are ordinary signed-in operator pages.
     app.include_router(extension_link_router)
+
+    # The Google Sheets add-on. Mounted unconditionally, like the two routers
+    # above and for the same reason: the classification in
+    # `app/core/auth/policy.py` then covers it whatever the feature switch says,
+    # and a disabled deployment answers 404 rather than advertising its feature
+    # state through a different refusal. Every route on it refuses outright when
+    # `FEATURES__GOOGLE_SHEETS_INTEGRATION` is false.
+    #
+    # Deliberately not mounted under `/api`, which is administrator-only by
+    # policy. This surface is for ordinary accounts acting on their own
+    # Campaigns.
+    app.include_router(integrations_sheets_router)
 
     app.include_router(phase2_router)
     app.include_router(api_router)
