@@ -27,8 +27,7 @@
         font-weight: 500;
         margin-bottom: 4px;
       }
-      select,
-      input[type='text'] {
+      select {
         width: 100%;
         box-sizing: border-box;
         padding: 6px;
@@ -78,17 +77,11 @@
   <body>
     <div id="problem" class="problem" style="display: none"></div>
 
-    <section id="setup" style="display: none">
-      <h2>Connect this sheet</h2>
-      <label for="base-url">VMR Outbound address</label>
-      <input id="base-url" type="text" placeholder="https://vmr.example.com" />
-      <button id="save-url">Save</button>
-      <p class="muted" id="audience-hint"></p>
-    </section>
-
     <section id="main" style="display: none">
       <h2>Account</h2>
       <p class="muted" id="account"></p>
+      <p class="muted" id="endpoint"></p>
+      <p class="muted" id="audience-hint"></p>
 
       <label for="campaign">Campaign</label>
       <select id="campaign"></select>
@@ -149,18 +142,17 @@
       function render(next) {
         state = next;
         problem(state.error);
-        show('setup', !state.baseUrl || Boolean(state.error));
-        show('main', Boolean(state.baseUrl) && !state.error);
-        document.getElementById('base-url').value = state.baseUrl || '';
+        show('main', !state.error);
+        if (state.error) {
+          return;
+        }
+        document.getElementById('endpoint').textContent = 'Connected to ' + state.baseUrl;
         if (state.audience) {
           document.getElementById('audience-hint').innerHTML =
             'If VMR Outbound refuses this add-on, an administrator must add this ' +
             'client id to <code>SHEETS__ALLOWED_AUDIENCES</code>:<br /><code>' +
             state.audience +
             '</code>';
-        }
-        if (!state.baseUrl || state.error) {
-          return;
         }
         document.getElementById('account').textContent =
           'Connected as ' + (state.account ? state.account.email : 'unknown');
@@ -191,20 +183,6 @@
           (counts.could_not_prepare || 0) +
           ' could not prepare';
       }
-
-      document.getElementById('save-url').addEventListener('click', function () {
-        busy(true);
-        google.script.run
-          .withSuccessHandler(function (next) {
-            busy(false);
-            render(next);
-          })
-          .withFailureHandler(function (error) {
-            busy(false);
-            problem(error.message);
-          })
-          .saveBaseUrl(document.getElementById('base-url').value);
-      });
 
       document.getElementById('process').addEventListener('click', function () {
         busy(true);
