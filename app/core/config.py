@@ -22,6 +22,7 @@ from app.core.auth.config import AuthSettings
 from app.core.auth.extension import ExtensionAuthSettings
 from app.core.features import FeatureFlags
 from app.core.gmail_config import GmailSettings
+from app.core.sheets_config import SheetsIntegrationSettings
 
 
 def canonical_trusted_host(value: str) -> str:
@@ -496,6 +497,12 @@ class Settings(BaseSettings):
     # configuration block. Defaults to unconfigured, so an environment that says
     # nothing about Gmail has no mailbox authority at all.
     gmail: GmailSettings = Field(default_factory=GmailSettings)
+
+    # The Google Sheets add-on seam (env prefix ``SHEETS__``). A fourth separate
+    # authority, kept apart from the three above for the same reason they are
+    # kept apart from each other. Defaults to accepting no audience at all, so an
+    # environment that says nothing about Sheets grants nothing to Sheets.
+    sheets: SheetsIntegrationSettings = Field(default_factory=SheetsIntegrationSettings)
 
     @property
     def is_production(self) -> bool:

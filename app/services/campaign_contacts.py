@@ -524,6 +524,12 @@ def _record_source(
     return source, True
 
 
+#: The pipeline stage an enrolment aims at unless a caller says otherwise. Named
+#: here rather than repeated as a literal so that a second surface adopting "the
+#: same target the product uses" cannot drift from it silently.
+DEFAULT_DESIRED_STAGE = AgentIdentifier.SENDING
+
+
 def enrol_contact(
     session: Session,
     *,
@@ -538,7 +544,7 @@ def enrol_contact(
     idempotency_key: str | None = None,
     actor: str = "operator",
     enqueue: bool = True,
-    desired_stage: AgentIdentifier = AgentIdentifier.SENDING,
+    desired_stage: AgentIdentifier = DEFAULT_DESIRED_STAGE,
 ) -> EnrollmentResult:
     """Idempotently upsert one permanent Contact's Campaign participation."""
 

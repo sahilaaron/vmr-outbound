@@ -217,6 +217,25 @@ class FeatureFlags(BaseModel):
     # It also requires ``email_sequences``, because it acts on a sequence rather
     # than being a route of its own.
     gmail_drafts: bool = False
+    # The Google Sheets add-on intake/output surface.
+    #
+    # Off by default, and off means the surface does not exist: every route under
+    # ``/integrations/sheets`` answers 404, no Google key set is fetched and no
+    # row is accepted on any code path.
+    #
+    # Turning it on adds one thin client and no new intelligence. A row submitted
+    # from a sheet becomes a permanent Contact and a Campaign membership through
+    # the same services the capture path uses, runs the same Agents under the
+    # same Campaign switches, and returns the same verified address and the same
+    # seven-message sequence the operator product shows. It creates no sending
+    # capability, contacts no mailbox, and cannot bypass suppression, Campaign
+    # access, provider authorization or the Agent controls — each of those is
+    # decided by the code it calls, not by the caller.
+    #
+    # It also requires ``email_sequences``, because a "Ready" row is defined as a
+    # usable verified address *and* a validated seven-message sequence, and
+    # without that flag no sequence is ever produced.
+    google_sheets_integration: bool = False
     # Phase 7 — Saleshandy
     saleshandy: bool = False
 

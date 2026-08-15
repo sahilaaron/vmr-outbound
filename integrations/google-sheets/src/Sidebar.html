@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top" />
+    <style>
+      body {
+        font-family: Roboto, Arial, sans-serif;
+        font-size: 13px;
+        color: #202124;
+        margin: 0;
+        padding: 12px;
+      }
+      h2 {
+        font-size: 14px;
+        margin: 0 0 4px;
+      }
+      section {
+        border-top: 1px solid #e0e0e0;
+        padding: 12px 0;
+      }
+      section:first-of-type {
+        border-top: none;
+        padding-top: 0;
+      }
+      label {
+        display: block;
+        font-weight: 500;
+        margin-bottom: 4px;
+      }
+      select {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 6px;
+        margin-bottom: 8px;
+        border: 1px solid #dadce0;
+        border-radius: 4px;
+      }
+      button {
+        width: 100%;
+        padding: 9px;
+        border: none;
+        border-radius: 4px;
+        background: #1a73e8;
+        color: #fff;
+        font-weight: 500;
+        cursor: pointer;
+        margin-bottom: 6px;
+      }
+      button.secondary {
+        background: #f1f3f4;
+        color: #202124;
+      }
+      button[disabled] {
+        opacity: 0.5;
+        cursor: default;
+      }
+      .muted {
+        color: #5f6368;
+      }
+      .row {
+        display: flex;
+        justify-content: space-between;
+        padding: 2px 0;
+      }
+      .problem {
+        background: #fce8e6;
+        border-radius: 4px;
+        padding: 8px;
+        margin-bottom: 8px;
+      }
+      code {
+        font-size: 11px;
+        word-break: break-all;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="problem" class="problem" style="display: none"></div>
+
+    <section id="main" style="display: none">
+      <h2>Account</h2>
+      <p class="muted" id="account"></p>
+      <p class="muted" id="endpoint"></p>
+      <p class="muted" id="audience-hint"></p>
+
+      <label for="campaign">Campaign</label>
+      <select id="campaign"></select>
+
+      <h2>Input mapping</h2>
+      <div id="mapping"></div>
+
+      <button id="process">Process selected rows</button>
+      <button id="refresh" class="secondary">Refresh results</button>
+
+      <div id="summary" class="muted"></div>
+    </section>
+
+    <script>
+      var state = null;
+
+      function show(id, visible) {
+        document.getElementById(id).style.display = visible ? 'block' : 'none';
+      }
+
+      function problem(message) {
+        var element = document.getElementById('problem');
+        element.textContent = message || '';
+        show('problem', Boolean(message));
+      }
+
+      function busy(value) {
+        document.getElementById('process').disabled = value;
+        document.getElementById('refresh').disabled = value;
+      }
+
+      function renderMapping() {
+        var container = document.getElementById('mapping');
+        container.innerHTML = '';
+        state.fields.forEach(function (field) {
+          var column = state.mapping[field.key];
+          var line = document.createElement('div');
+          line.className = 'row';
+          var name = document.createElement('span');
+          name.textContent = field.label + (field.required ? ' *' : '');
+          var value = document.createElement('span');
+          value.className = 'muted';
+          value.textContent =
+            column === undefined || column === null ? 'not found' : state.headers[column];
+          line.appendChild(name);
+          line.appendChild(value);
+          container.appendChild(line);
+        });
+        if (state.missingRequired.length) {
+          problem(
+            'Add a ' +
+              state.missingRequired.join(', ') +
+              ' column to this sheet, then reopen the sidebar.'
+          );
+        }
+      }
+
+      function render(next) {
+        state = next;
+        problem(state.error);
+        show('main', !state.error);
+        if (state.error) {
+          return;
+        }
+        document.getElementById('endpoint').textContent = 'Connected to ' + state.baseUrl;
+        if (state.audience) {
+          document.getElementById('audience-hint').innerHTML =
+            'If VMR Outbound refuses this add-on, an administrator must add this ' +
+            'client id to <code>SHEETS__ALLOWED_AUDIENCES</code>:<br /><code>' +
+            state.audience +
+            '</code>';
+        }
+        document.getElementById('account').textContent =
+          'Connected as ' + (state.account ? state.account.email : 'unknown');
+        var select = document.getElementById('campaign');
+        select.innerHTML = '';
+        state.campaigns.forEach(function (campaign) {
+          var option = document.createElement('option');
+          option.value = campaign.id;
+          option.textContent = campaign.name;
+          select.appendChild(option);
+        });
+        if (!state.campaigns.length) {
+          problem('You have no campaigns in VMR Outbound yet.');
+        }
+        renderMapping();
+      }
+
+      function summarise(counts, prefix) {
+        document.getElementById('summary').textContent =
+          prefix +
+          ' — ' +
+          (counts.pending || 0) +
+          ' pending, ' +
+          (counts.processing || 0) +
+          ' processing, ' +
+          (counts.ready || 0) +
+          ' ready, ' +
+          (counts.could_not_prepare || 0) +
+          ' could not prepare';
+      }
+
+      document.getElementById('process').addEventListener('click', function () {
+        busy(true);
+        problem('');
+        google.script.run
+          .withSuccessHandler(function (result) {
+            busy(false);
+            document.getElementById('summary').textContent =
+              result.counts.submitted +
+              ' submitted, ' +
+              result.counts.accepted +
+              ' accepted, ' +
+              result.counts.could_not_prepare +
+              ' could not prepare. Press Refresh results in a few minutes.';
+          })
+          .withFailureHandler(function (error) {
+            busy(false);
+            problem(error.message);
+          })
+          .submitSelection(document.getElementById('campaign').value);
+      });
+
+      document.getElementById('refresh').addEventListener('click', function () {
+        busy(true);
+        problem('');
+        google.script.run
+          .withSuccessHandler(function (result) {
+            busy(false);
+            summarise(result.counts, result.checked + ' rows checked');
+          })
+          .withFailureHandler(function (error) {
+            busy(false);
+            problem(error.message);
+          })
+          .refreshResults();
+      });
+
+      google.script.run
+        .withSuccessHandler(render)
+        .withFailureHandler(function (error) {
+          problem(error.message);
+        })
+        .sidebarState();
+    </script>
+  </body>
+</html>

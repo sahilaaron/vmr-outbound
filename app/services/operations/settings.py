@@ -181,6 +181,40 @@ def _needs_claude_cli(settings: Settings, _stored: Mapping[str, bool]) -> Capabi
     )
 
 
+def _needs_sheets_audience(settings: Settings, stored: Mapping[str, bool]) -> Capability:
+    """The Sheets add-on is useless — and confusing — with no audience configured.
+
+    Turning the surface on without ``SHEETS__ALLOWED_AUDIENCES`` produces a
+    deployment that answers every add-on request with the same 401 it gives a
+    forged one, which reads on the operator's screen as "the integration is
+    broken". Stating the missing configuration here turns that into an
+    instruction. The value cannot be set from this screen: it is the check that
+    decides which application may present a credential, and a security boundary
+    does not belong behind a product toggle.
+    """
+
+    if not settings.sheets.allowed_audiences:
+        return Capability(
+            available=False,
+            reason=(
+                "No add-on client id is configured. Set SHEETS__ALLOWED_AUDIENCES in the "
+                "deployment environment to the client id shown in the add-on's own "
+                "sidebar; it cannot be set from this screen."
+            ),
+            evidence=(("Add-on client id configured", False),),
+        )
+    if not _resolve(settings, stored, "email_sequences"):
+        return Capability(
+            available=False,
+            reason=(
+                "Email sequences are off, so no sheet row could ever reach Ready — a Ready "
+                "row is a verified address and a validated seven-message sequence."
+            ),
+            evidence=(("Email sequences enabled", False),),
+        )
+    return Capability(available=True)
+
+
 def _needs_gmail_client(settings: Settings, stored: Mapping[str, bool]) -> Capability:
     configured = bool(settings.gmail.client_id and settings.gmail.client_secret)
     sequences = _resolve(settings, stored, "email_sequences")
@@ -419,6 +453,18 @@ PRODUCT_CONTROLS: tuple[ControlSpec, ...] = (
         ),
         group="Drafting",
         capability=_needs_gmail_client,
+    ),
+    ControlSpec(
+        key="google_sheets_integration",
+        label="Google Sheets add-on",
+        summary=(
+            "Lets a Google Sheets add-on submit name-and-company rows into a campaign and "
+            "read back the verified address and the seven-message sequence. It adds no "
+            "intelligence of its own and cannot send, schedule or draft anything. Turning "
+            "it off makes every add-on route answer as though it does not exist."
+        ),
+        group="Operator interface",
+        capability=_needs_sheets_audience,
     ),
     ControlSpec(
         key="csv_import",

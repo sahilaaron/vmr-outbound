@@ -86,6 +86,7 @@ be left unclassified.
 | Personalization drafting | Claude CLI command |
 | Email sequences | — |
 | Gmail drafts | Gmail OAuth client; Email sequences |
+| Google Sheets add-on | `SHEETS__ALLOWED_AUDIENCES`; Email sequences |
 | Spreadsheet import | — |
 | Suppression management | operator interface mounted |
 | Knowledge Base | operator interface mounted |
