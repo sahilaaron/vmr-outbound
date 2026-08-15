@@ -186,37 +186,50 @@ Existing product idempotency is unchanged and is what actually enforces this:
 
 ## 7. Company domain, without a domain column
 
-The Company Agent needs `contact.company_domain` and exactly one permanent
-`Company` with that domain. The capture path satisfies this through
-`app/services/resolution`; a spreadsheet row reaches the same place through
-`app/services/integrations/sheets/companies.py`, which reuses the same policy,
-the same provider client and the same Company writer:
+The sheet supplies a company **name**. It does not resolve it, and a name nobody
+has established is not a reason to refuse the row.
+
+`app/services/integrations/sheets/companies.py` performs one free lookup:
 
 1. Evidence is assembled from domains an operator has already confirmed for that
    name (`prior_confirmed_domains`) and from permanent Companies whose own domain
    is established (`resolution.store.company_state`).
-2. `resolution.policy.evaluate` — pure and unchanged — decides.
-3. If nothing established it, at most **one** logo.dev lookup per distinct
-   company name, gated on `automatic_company_domain_resolution` and
-   `salesnav_domain_enrichment` as read through the operator-controlled resolver.
+2. `resolution.policy.evaluate_established_evidence` decides. `CONFIRMED` links
+   the Contact to that permanent `Company` immediately.
+3. Anything else links nothing. `contact.company_domain` stays NULL — which the
+   Contact model documents as "not linked yet" — and the row enrols anyway.
 
-**Only `CONFIRMED` is accepted. `PROVISIONAL` is refused.** On the capture path a
-provisional domain is safe because it is recorded in `company_domain_resolutions`
-and the downstream gates read it; that ledger is keyed per capture, and a
-spreadsheet row is not a capture. A provisional domain accepted here would create
-a Company indistinguishable from an established one — domain laundering — so the
-state is refused outright and the row says so.
+**Zero provider calls.** Deciding whether a row may enter never asks logo.dev, a
+model, or anything else, and therefore never spends money.
 
-Cost: a name that resolves creates a permanent Company, so every later row naming
-that company is answered with no provider call at all. The batch ceiling bounds
-what one click can buy.
+A Contact with no domain reaches the Company Agent, which raises
+`AgentBlocked("company_domain_missing")`: a documented *non-terminal* condition
+that pauses the job, moves the stage to `BLOCKED`, and surfaces in the operator's
+review screens with its reason. That is the canonical representation of "this
+needs company evidence" and is the same one every other blocked stage uses.
+
+Stated plainly, because it is a real limit: **the pipeline has no name-to-domain
+discovery stage of its own.** An unseen company still needs operator evidence or
+a capture before it advances past Company. What changed is *where* that work is
+represented — a reviewable blocked stage inside the canonical pipeline, instead
+of an intake refusal that discarded the row and the Contact with it.
+
+### Why no provisional domain is accepted
+
+This is unchanged in effect and simpler in mechanism. `company_domain_resolutions`
+is keyed per capture, so a provisional domain accepted here would carry no
+decision row and would read, to every later reader, exactly like an established
+one — domain laundering. Previously that was prevented by obtaining a provisional
+answer and refusing it. Now it is prevented by never obtaining one: this path
+reads only evidence something else already established, so it has nothing
+uncertain to launder.
 
 ## 8. Async model
 
 The add-on never holds a request open while the pipeline runs.
 
-**Submit** is bounded, deterministic database work plus at most one brand-matcher
-lookup per distinct new company name. It returns one identifier per row.
+**Submit** is bounded, deterministic database work and nothing else — no
+provider call, no model call. It returns one identifier per row.
 
 **Refresh** asks about the identifiers the sheet already holds, skipping rows that
 are already Ready, chunked against the server's own stated `max_result_ids`.
@@ -322,8 +335,8 @@ The first UAT is one user and one sheet. Nothing here forecloses 100–500:
   whole when exceeded;
 - **idempotent** by derived key, so client retries are free;
 - authorization is evaluated per request from the current account;
-- provider spend stays attributable through the existing usage ledger and Agent
-  jobs.
+- submit spends nothing, so there is no intake spend to attribute; provider
+  spend belongs to the Agent that makes the call and is accounted for there.
 
 What 500 users would additionally need — per-account rate limiting, a job-level
 fair-share across accounts, published Marketplace distribution — is listed in

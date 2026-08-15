@@ -60,7 +60,6 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.config import Settings
 from app.models.campaign import Campaign, CampaignContact
 from app.models.contact import Contact
 from app.models.pipeline import CampaignContactSource
@@ -124,7 +123,6 @@ def submit_rows(
     rows: list[SubmittedRow],
     generation: int,
     batch_reference: str,
-    settings: Settings,
     actor: str,
 ) -> BatchSubmission:
     """Accept a validated batch. One row's refusal never affects another's."""
@@ -161,7 +159,6 @@ def submit_rows(
                 row=row,
                 generation=generation,
                 idempotency_key=key,
-                settings=settings,
                 actor=actor,
                 cache=cache,
                 counters=result,
@@ -200,31 +197,33 @@ def _submit_one(
     row: SubmittedRow,
     generation: int,
     idempotency_key: str,
-    settings: Settings,
     actor: str,
     cache: sheet_companies.NameCache,
     counters: BatchSubmission,
 ) -> RowSubmission:
-    company_outcome = sheet_companies.resolve_company(
+    # A cache read, not a resolution. Established evidence links the row
+    # immediately and for free; nothing established is an ordinary answer that
+    # leaves the link NULL and lets the pipeline take it from there. Either way
+    # no provider is asked, so this step can neither refuse a row nor spend
+    # money — see `companies.py` on why the previous behaviour was wrong.
+    company_outcome = sheet_companies.link_established_company(
         session,
         company_name=row.company_name,
-        settings=settings,
         actor=actor,
         cache=cache,
     )
-    if company_outcome.provider_call_made:
+    if company_outcome.provider_call_made:  # pragma: no cover - structurally impossible
         counters.provider_calls_made += 1
-    if not company_outcome.resolved:
-        raise RowContractError(
-            company_outcome.reason or sheet_companies.UNRESOLVED_MESSAGE,
-            code=company_outcome.reason_code or "company_domain_unresolved",
-        )
     company = company_outcome.company
     domain = company_outcome.domain
-    assert company is not None and domain is not None  # narrowed by `resolved`
 
     contact = _resolve_contact(session, row=row, company_domain=domain)
 
+    # Asked before anything is created, exactly as before. A row with no domain
+    # yet is evaluated on the identity it does have; `evaluate_suppression`
+    # already takes an optional domain, so nothing here is relaxed — a domain
+    # suppression simply has no domain to match until the pipeline finds one,
+    # and every later advancing path asks the ledger again.
     decision = evaluate_suppression(
         session, email=contact.email if contact is not None else None, domain=domain
     )
@@ -240,16 +239,28 @@ def _submit_one(
             first_name=row.first_name,
             last_name=row.last_name,
             company_name=row.company_name,
+            # NULL when nothing has established this company. The model documents
+            # that as "not linked yet" and deliberately prefers it to a guess.
             company_domain=domain,
-            company_id=company.id,
+            company_id=company.id if company is not None else None,
             title=row.job_title,
             linkedin_url=row.linkedin_url,
-            natural_key=norm.build_natural_key(row.first_name, row.last_name, domain),
+            # The natural key is a name-plus-*domain* fingerprint, so it only
+            # exists once a domain does. Left NULL rather than built from a
+            # placeholder, which would make two different people collide.
+            natural_key=(
+                norm.build_natural_key(row.first_name, row.last_name, domain) if domain else None
+            ),
         )
         session.add(contact)
         session.flush()
     else:
-        _fill_blanks(contact, row=row, company_id=company.id, domain=domain)
+        _fill_blanks(
+            contact,
+            row=row,
+            company_id=company.id if company is not None else None,
+            domain=domain,
+        )
 
     existing = _membership_for(session, campaign_id=campaign.id, contact_id=contact.id)
     # Adopted, not chosen. See the module docstring: a sheet joins a membership on
@@ -280,7 +291,9 @@ def _submit_one(
     )
 
 
-def _resolve_contact(session: Session, *, row: SubmittedRow, company_domain: str) -> Contact | None:
+def _resolve_contact(
+    session: Session, *, row: SubmittedRow, company_domain: str | None
+) -> Contact | None:
     """The existing permanent Contact this row names, or ``None`` for a new one.
 
     Two matchers, in the order the rest of the system uses them. An exact
@@ -289,6 +302,15 @@ def _resolve_contact(session: Session, *, row: SubmittedRow, company_domain: str
     returning more than one candidate is an ambiguity, and this surface refuses
     the row rather than choosing — merging the wrong two people is not something
     a retry can undo.
+
+    With no established domain only the first matcher runs, and that is the
+    honest answer rather than a degraded one: the natural key *is*
+    name-plus-domain, so without a domain there is no deterministic key to
+    compare. Matching on name-and-company-string instead would be a new,
+    fuzzier identity rule invented for this surface alone, which is exactly the
+    kind of divergence this repair removes. The cost is recorded in the handoff:
+    a domainless row resubmitted under a new ``generation`` can create a second
+    Contact, where a row with a domain would have matched.
 
     No identity link is written for a spreadsheet-supplied URL. An identity link
     is a record of a handle *observed on a page*; a URL typed into a cell is an
@@ -308,6 +330,9 @@ def _resolve_contact(session: Session, *, row: SubmittedRow, company_domain: str
         if len(matches) == 1:
             return matches[0]
 
+    if not company_domain:
+        return None
+
     natural_key = norm.build_natural_key(row.first_name, row.last_name, company_domain)
     deduped = dedup.find_existing_contact(session, email=None, natural_key=natural_key)
     if deduped.ambiguous:
@@ -320,7 +345,7 @@ def _resolve_contact(session: Session, *, row: SubmittedRow, company_domain: str
 
 
 def _fill_blanks(
-    contact: Contact, *, row: SubmittedRow, company_id: uuid.UUID, domain: str
+    contact: Contact, *, row: SubmittedRow, company_id: uuid.UUID | None, domain: str | None
 ) -> None:
     """Add what the permanent record is missing, and overwrite nothing.
 
