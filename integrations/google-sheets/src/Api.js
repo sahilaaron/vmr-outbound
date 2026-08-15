@@ -15,19 +15,26 @@
  * must get right is presenting the token and never persisting it.
  */
 
-/** Read the deployment's base URL, which an operator sets once per document. */
+/**
+ * The only production origin an authenticated add-on request may reach.
+ *
+ * This value is code-owned on purpose. A spreadsheet collaborator must never be
+ * able to redirect a fresh Google identity token by editing a document property.
+ * Development against another host requires a deliberate source/build change,
+ * not a value carried by the sheet.
+ */
+var VMR_API_ORIGIN = 'https://srv1885453.hstgr.cloud';
+
 function apiBaseUrl() {
-  var stored = PropertiesService.getDocumentProperties().getProperty('VMR_BASE_URL');
-  return stored ? String(stored).replace(/\/+$/, '') : '';
+  return VMR_API_ORIGIN;
 }
 
-function setApiBaseUrl(value) {
-  var cleaned = String(value || '').trim().replace(/\/+$/, '');
-  if (cleaned && !/^https:\/\//i.test(cleaned)) {
-    throw new Error('The VMR Outbound address must start with https://');
+function trustedApiUrl(path) {
+  var value = String(path || '');
+  if (!/^\/integrations\/sheets(?:\/|$)/.test(value)) {
+    throw new Error('The requested VMR Outbound integration path is not allowed.');
   }
-  PropertiesService.getDocumentProperties().setProperty('VMR_BASE_URL', cleaned);
-  return cleaned;
+  return VMR_API_ORIGIN + value;
 }
 
 /**
@@ -82,10 +89,9 @@ function identityAudience() {
 }
 
 function request_(path, method, payload) {
-  var base = apiBaseUrl();
-  if (!base) {
-    throw new Error('Set the VMR Outbound address in the sidebar before connecting.');
-  }
+  // Resolve and validate the destination before asking Google for an identity
+  // token. The token must never exist in a request path chosen by sheet content.
+  var url = trustedApiUrl(path);
   var token = ScriptApp.getIdentityToken();
   if (!token) {
     throw new Error(
@@ -102,7 +108,7 @@ function request_(path, method, payload) {
     options.contentType = 'application/json';
     options.payload = JSON.stringify(payload);
   }
-  var response = UrlFetchApp.fetch(base + path, options);
+  var response = UrlFetchApp.fetch(url, options);
   var code = response.getResponseCode();
   var text = response.getContentText();
   if (code === 401) {
