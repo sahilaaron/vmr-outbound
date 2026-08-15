@@ -202,27 +202,61 @@ has established is not a reason to refuse the row.
 **Zero provider calls.** Deciding whether a row may enter never asks logo.dev, a
 model, or anything else, and therefore never spends money.
 
-A Contact with no domain reaches the Company Agent, which raises
-`AgentBlocked("company_domain_missing")`: a documented *non-terminal* condition
-that pauses the job, moves the stage to `BLOCKED`, and surfaces in the operator's
-review screens with its reason. That is the canonical representation of "this
-needs company evidence" and is the same one every other blocked stage uses.
+A Contact with no domain reaches the **Company Agent**, and that is where an
+unseen company is established. The Agent tries three things in order:
 
-Stated plainly, because it is a real limit: **the pipeline has no name-to-domain
-discovery stage of its own.** An unseen company still needs operator evidence or
-a capture before it advances past Company. What changed is *where* that work is
-represented — a reviewable blocked stage inside the canonical pipeline, instead
-of an intake refusal that discarded the row and the Contact with it.
+1. the permanent `contact.company_id` edge, if the Contact already has one;
+2. exactly one permanent `Company` carrying the Contact's exact normalized
+   domain;
+3. **the shared company-domain resolution process**, asked about this Contact —
+   `resolution.service.resolve_contact`.
 
-### Why no provisional domain is accepted
+Step 3 is the same process a Chrome capture goes through: the same evidence, the
+same logo.dev-then-model ladder, the same policy, the same decision ledger and
+the same downstream gates. The only difference is what the decision is *about*.
 
-This is unchanged in effect and simpler in mechanism. `company_domain_resolutions`
-is keyed per capture, so a provisional domain accepted here would carry no
-decision row and would read, to every later reader, exactly like an established
-one — domain laundering. Previously that was prevented by obtaining a provisional
-answer and refusing it. Now it is prevented by never obtaining one: this path
-reads only evidence something else already established, so it has nothing
-uncertain to launder.
+### One ledger, two acquisition subjects
+
+`company_domain_resolutions` used to be keyed per capture — `capture_id` was NOT
+NULL — which is precisely why a Sheets Contact could never establish a company:
+it has no capture, and inventing one would be a lie about where the evidence came
+from. The ledger is now keyed per **subject**
+(`resolution.store.ResolutionSubject`): exactly one of a capture or a permanent
+Contact, enforced by a check constraint. `salesnav_company_enrichments` — the one
+candidate store — gained the matching third owner alongside batch and capture.
+
+Because a confirmation is keyed by normalized company name and read back by
+`prior_confirmed_domains` regardless of owner, **a domain confirmed from one
+surface is immediately free for the other**. The surfaces share evidence rather
+than each accumulating their own.
+
+When resolution still cannot name a domain — nothing established, no provider
+configured, conflicting candidates, or the policy declining to guess — the Agent
+raises `AgentBlocked("company_domain_missing")` carrying what resolution actually
+tried, under `domain_resolution_attempt`. That is a documented *non-terminal*
+condition that pauses the job, moves the stage to `BLOCKED`, and surfaces in the
+operator's review screens with its reason.
+
+**With no usable provider, nothing is recorded at all.** The policy could only
+conclude "the lookup was not run", which is the absence of a decision rather than
+a decision, and a recorded decision is not recalculated without an explicit
+force — so storing it would freeze the Contact at a decision nobody made. The
+same rule intake and the backfill pass already apply.
+
+### Why no provisional domain is accepted at intake
+
+Unchanged. A provisional domain accepted *in this module* would carry no decision
+row and would read, to every later reader, exactly like an established one —
+domain laundering. It is prevented by never obtaining one here: this path reads
+only evidence something else already established, so it has nothing uncertain to
+launder.
+
+A provisional domain established later, by the Agent, is safe for the opposite
+reason: it has a live decision row naming its state. `store.company_state`
+reports it as provisional to everything that asks, the company is not treated as
+established evidence for the next contact, and `resolution.gates` opens company
+research and nothing after it. That is exactly the position a capture-promoted
+Contact is in.
 
 ## 8. Async model
 

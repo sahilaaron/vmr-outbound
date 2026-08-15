@@ -240,9 +240,46 @@ class IdentityAgentAdapter:
 
 
 class CompanyAgentAdapter:
-    """Resolve only an existing permanent Company or one exact unique domain."""
+    """Establish the Contact's permanent Company, by evidence or by resolution.
+
+    Three ways in, tried in that order, and the order is the safety property:
+
+    1. the Contact already carries the permanent ``company_id`` edge;
+    2. it carries a domain, and exactly one permanent Company has that exact
+       normalized domain;
+    3. it carries only the company *name*, and the shared company-domain
+       resolution process is asked to establish one.
+
+    Step 3 is what makes this Agent the single place a company is established,
+    whichever surface the Contact arrived from. A Chrome capture reaches its
+    company before the Contact exists — resolution runs against the capture at
+    intake and in the backfill pass — so by the time this Agent sees it, step 1
+    or 2 answers. Google Sheets produces the Contact directly and has no capture
+    to resolve against, so its unseen companies arrive here with a name and
+    nothing else, and this is where they enter the *same* process: same evidence,
+    same provider ladder, same policy, same decision ledger, same gates.
+
+    The alternative — a name-to-domain lookup inside the Sheets intake request —
+    is what this repair exists to remove. Intake stays free and spends nothing;
+    the Agent that owns the company stage owns the cost of establishing one, in
+    the durable worker where a slow provider or model call has no request to
+    overrun.
+    """
 
     agent_id = AgentIdentifier.COMPANY
+
+    def __init__(
+        self,
+        *,
+        access_factory: Callable[[Session, Settings], Any] | None = None,
+        model_factory: Callable[[Session, Settings], Any] | None = None,
+    ) -> None:
+        # Seams, in the shape ResearchAgentAdapter uses: a test drives a stubbed
+        # provider transport without an API key, and production takes the shared
+        # builders so this Agent cannot develop its own reading of whether the
+        # provider may be called.
+        self._access_factory = access_factory
+        self._model_factory = model_factory
 
     def execute(self, context: AgentExecutionContext) -> AgentExecutionResult:
         contact = context.contact
@@ -254,6 +291,17 @@ class CompanyAgentAdapter:
         linked_by_agent = False
         candidate_ids: list[str] = []
         identity_match_key = "contact.company_id"
+        resolution_summary: dict[str, Any] | None = None
+        if company is None and not contact.company_domain:
+            resolution_summary = self._resolve_company_domain(context)
+            company = (
+                context.session.get(Company, contact.company_id)
+                if contact.company_id is not None
+                else None
+            )
+            if company is not None:
+                linked_by_agent = True
+                identity_match_key = "company.resolved_domain"
         if company is None:
             if not contact.company_domain:
                 raise AgentBlocked(
@@ -263,7 +311,8 @@ class CompanyAgentAdapter:
                         context,
                         match_key="contact.company_domain",
                         candidate_ids=(),
-                        reason="No observed or approved Contact company domain was available.",
+                        reason=self._unresolved_reason(resolution_summary),
+                        resolution=resolution_summary,
                     ),
                 )
             identity_match_key = "company.domain"
@@ -345,8 +394,13 @@ class CompanyAgentAdapter:
             if not later_gate.allowed
             else "continue"
         )
+        resolved_here = identity_match_key == "company.resolved_domain"
         lineage = {
             "schema_version": "company-agent-report/1",
+            # Present only when this execution asked the shared resolution process
+            # to establish the company, so a reviewer can tell a Company that was
+            # looked up here from one that was already on the Contact.
+            "domain_resolution_attempt": resolution_summary,
             "identity": {
                 "match_key": identity_match_key,
                 "match_value": (
@@ -356,10 +410,13 @@ class CompanyAgentAdapter:
                 ),
                 "candidate_company_ids": candidate_ids,
                 "selected_company_id": str(company.id),
-                "company_action": "reused",
+                "company_action": "resolved" if resolved_here else "reused",
                 "contact_link_action": "linked" if linked_by_agent else "already_linked",
                 "reason": (
-                    "Selected the one permanent Company with the exact normalized domain."
+                    "Established the company domain through automatic company-domain "
+                    "resolution and linked the resulting permanent Company."
+                    if resolved_here
+                    else "Selected the one permanent Company with the exact normalized domain."
                     if linked_by_agent
                     else "Reused the Contact's existing permanent Company association."
                 ),
@@ -429,6 +486,101 @@ class CompanyAgentAdapter:
             output_reference=output,
         )
 
+    def _resolve_company_domain(self, context: AgentExecutionContext) -> dict[str, Any] | None:
+        """Establish this Contact's company through the shared resolution process.
+
+        Returns what the decision said, or a note saying why resolution was not
+        attempted, or ``None`` when there was nothing to attempt. "Not attempted"
+        and "attempted and found nothing" are different facts about a Contact and
+        an operator acts on them differently, so they are never reported as one.
+
+        **A missing provider means no attempt, not a recorded failure.** This is
+        the same rule intake and the backfill pass apply, for the same reason: with
+        no usable provider the policy could only conclude "the lookup was not run",
+        which is the absence of a decision rather than a decision — and because a
+        recorded decision is not recalculated without an explicit force, writing
+        that non-decision would stop this Contact ever resolving automatically
+        again. So nothing is written and the job blocks exactly as it did before,
+        which is where it would have been anyway.
+
+        Note which switch is *not* consulted: capture promotion. That control
+        governs turning captures into Contacts, and requiring it here would tie a
+        spreadsheet-acquired Contact back to the browser extension — the precise
+        coupling this repair removes.
+        """
+
+        contact = context.contact
+        if not contact.company_name:
+            return None
+
+        settings = get_settings()
+        if not operational.enabled(
+            context.session, "automatic_company_domain_resolution", settings
+        ):
+            return {
+                "attempted": False,
+                "skipped_because": "automatic_company_domain_resolution is switched off",
+            }
+
+        # Imported here rather than at module scope: the resolution package pulls
+        # in the provider and model seams, and the common case for this Agent is a
+        # Contact whose company is already established.
+        from app.services.resolution import service as resolution_service
+
+        access_factory = self._access_factory or resolution_service.provider_access_for
+        access = access_factory(context.session, settings)
+        if not access.available:
+            return {
+                "attempted": False,
+                "skipped_because": (
+                    "no company-domain provider is available, so nothing was decided rather "
+                    "than a non-decision being recorded"
+                ),
+            }
+        model_factory = self._model_factory or resolution_service.model_access_for
+        model = model_factory(context.session, settings)
+
+        try:
+            outcome = resolution_service.resolve_contact(
+                context.session,
+                contact=contact,
+                access=access,
+                model=model,
+                actor="company-agent",
+                # Never force: a decision already recorded for this Contact —
+                # including an operator's correction — is a decision, and
+                # recalculating over it would discard it.
+                force=False,
+            )
+        except resolution_service.ResolutionError as exc:
+            return {"attempted": True, "error": str(exc)}
+
+        return {
+            "attempted": True,
+            "subject": "contact",
+            "decision_id": str(outcome.decision.id),
+            **outcome.summary(),
+        }
+
+    @staticmethod
+    def _unresolved_reason(resolution: dict[str, Any] | None) -> str:
+        """Why this Contact still has no company, in the operator's terms."""
+
+        if resolution is None:
+            return "No observed or approved Contact company domain was available."
+        if not resolution.get("attempted"):
+            return (
+                "No Contact company domain was available and automatic resolution did not "
+                f"run: {resolution.get('skipped_because')}."
+            )
+        if resolution.get("error"):
+            return f"Automatic company-domain resolution could not run: {resolution['error']}"
+        reasons = ", ".join(str(reason) for reason in resolution.get("reasons") or ())
+        return (
+            "Automatic company-domain resolution ran and could not establish a domain"
+            f"{f' ({reasons})' if reasons else ''}."
+        )
+
     @staticmethod
     def _blocked_detail(
         context: AgentExecutionContext,
@@ -436,9 +588,11 @@ class CompanyAgentAdapter:
         match_key: str,
         candidate_ids: tuple[str, ...],
         reason: str,
+        resolution: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return {
             "schema_version": "company-agent-report/1",
+            "domain_resolution_attempt": resolution,
             "identity": {
                 "match_key": match_key,
                 "match_value": context.contact.company_domain,

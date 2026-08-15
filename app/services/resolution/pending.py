@@ -28,7 +28,6 @@ from app.models.company_domain_resolution import CompanyDomainResolution
 from app.models.linkedin_profile import LinkedInProfileSnapshot
 from app.services.operations import settings as operational
 from app.services.resolution import service as resolution_service
-from app.services.thinking.claude_cli import ClaudeCliThinker
 
 ACTOR = "resolution-backfill"
 
@@ -54,21 +53,13 @@ class BackfillResult:
 def _provider_access(session: Session, settings: Settings) -> resolution_service.ProviderAccess:
     """How logo.dev may be reached on this pass, or an access with no key.
 
-    ``session`` is here because whether the provider may be called is an
-    administrator's durable setting rather than an environment variable, so
-    answering the question means reading the database.
+    Delegated rather than defined here: the Company Agent asks the same question
+    about a Contact acquired without a capture, and two readings of "is the
+    provider usable?" is how the two acquisition surfaces would start behaving
+    differently without anyone deciding they should.
     """
 
-    usable = (
-        operational.enabled(session, "salesnav_domain_enrichment", settings)
-        and settings.has_logo_dev_key()
-    )
-    return resolution_service.ProviderAccess(
-        api_key=settings.logo_dev_api_key if usable else None,
-        search_url=settings.logo_dev_search_url,
-        timeout=settings.logo_dev_timeout_seconds,
-        max_candidates=settings.logo_dev_max_candidates,
-    )
+    return resolution_service.provider_access_for(session, settings)
 
 
 def _model_access(session: Session, settings: Settings) -> resolution_service.ModelAccess:
@@ -79,17 +70,9 @@ def _model_access(session: Session, settings: Settings) -> resolution_service.Mo
     inside an HTTP request can cost a whole submission, and it bounds even the
     fast provider call to a share of its budget. This pass has no request to
     overrun, which is the entire reason it exists.
-
-    ``session`` is here because the switch is an administrator's durable setting
-    rather than an environment variable, so reading it needs the database.
     """
 
-    if not operational.enabled(session, "model_company_domain_lookup", settings):
-        return resolution_service.ModelAccess()
-    return resolution_service.ModelAccess(
-        thinker_factory=lambda: ClaudeCliThinker(settings=settings),
-        timeout=settings.model_domain_lookup_timeout_seconds,
-    )
+    return resolution_service.model_access_for(session, settings)
 
 
 @dataclass(frozen=True)
@@ -239,8 +222,14 @@ def pending_capture_ids(session: Session, *, limit: int = 50) -> list[uuid.UUID]
     captures belong to the operator, not to a background pass.
     """
 
+    # ``capture_id IS NOT NULL`` is load-bearing, not tidiness. The ledger now
+    # also holds decisions whose subject is a Contact, and those rows carry a
+    # NULL capture_id — a single NULL inside a ``NOT IN`` subquery makes the
+    # whole predicate unknown for every row, which would silently return no
+    # pending captures at all.
     decided = select(CompanyDomainResolution.capture_id).where(
-        CompanyDomainResolution.is_current.is_(True)
+        CompanyDomainResolution.is_current.is_(True),
+        CompanyDomainResolution.capture_id.is_not(None),
     )
     rows = session.scalars(
         select(LinkedInProfileSnapshot.id)

@@ -60,6 +60,12 @@ _DAT_017A_PARENT = _load_migration(
 #: The revision immediately below KB-001, for the same reason.
 _KB_001_PARENT = _load_migration("b8e5d34a91c7_kb_001_seller_knowledge_base.py").down_revision
 
+#: The revision immediately below the source-agnostic resolution subject, for the
+#: same reason.
+_SUBJECT_PARENT = _load_migration(
+    "f4c9a2e70b18_source_agnostic_company_domain_resolution.py"
+).down_revision
+
 _INS_002_PARENT = "f2a91d7c4e60"
 
 
@@ -518,6 +524,122 @@ def test_dat_017a_downgrade_refuses_while_a_promotion_uses_the_new_enum_label(
         blocked = _alembic(["downgrade", _DAT_017A_PARENT], temp_database_url)
         assert blocked.returncode != 0, "the downgrade must refuse while the label is in use"
         assert "labels it added" in (blocked.stdout + blocked.stderr)
+    finally:
+        engine.dispose()
+
+
+def test_a_decision_must_name_exactly_one_acquisition_subject(
+    temp_database_url: str,
+) -> None:
+    """The subject rule is enforced by the schema, not only by the service.
+
+    A decision with neither subject is unattributable evidence; one with both
+    would let two acquisition surfaces claim the same decision row. Both are
+    unrepresentable rather than merely undocumented, so a script, a repair or a
+    later feature that writes the table directly cannot create one.
+    """
+
+    assert _alembic(["upgrade", "head"], temp_database_url).returncode == 0
+
+    engine = create_engine(temp_database_url)
+    insert = text(
+        "INSERT INTO company_domain_resolutions "
+        " (id, capture_id, contact_id, decision_number, is_current, state, decision_kind, "
+        "  policy_version, reasons) "
+        "VALUES (:id, :cap, :con, 1, true, 'UNRESOLVED', 'AUTOMATIC', 'test', '[]'::jsonb)"
+    )
+    try:
+        with engine.begin() as conn:
+            capture_id = _seed_capture(conn)
+            contact_id = _seed_contact(conn, first="Ada", domain="subject.example")
+
+        for capture_value, contact_value, why in (
+            (capture_id, contact_id, "two subjects"),
+            (None, None, "no subject"),
+        ):
+            with engine.begin() as conn, pytest.raises(Exception) as caught:
+                conn.execute(
+                    insert, {"id": uuid.uuid4(), "cap": capture_value, "con": contact_value}
+                )
+            assert "single_subject" in str(caught.value), why
+
+        # And exactly one of each is accepted, so the constraint refuses only
+        # what it is meant to.
+        with engine.begin() as conn:
+            conn.execute(insert, {"id": uuid.uuid4(), "cap": capture_id, "con": None})
+            conn.execute(insert, {"id": uuid.uuid4(), "cap": None, "con": contact_id})
+    finally:
+        engine.dispose()
+
+
+def test_the_subject_downgrade_refuses_while_a_contact_decision_exists(
+    temp_database_url: str,
+) -> None:
+    """Narrowing the ledger back to captures would have to delete evidence.
+
+    A contact-subject decision is the only record of why a Contact acquired
+    without a capture carries the company it carries and how certain that was.
+    The reversal refuses rather than dropping it — and reverses cleanly once
+    there is nothing to lose, which is what keeps the round trip meaningful.
+    """
+
+    assert _alembic(["upgrade", "head"], temp_database_url).returncode == 0
+
+    engine = create_engine(temp_database_url)
+    try:
+        with engine.begin() as conn:
+            contact_id = _seed_contact(conn, first="Ada", domain="seed.example")
+            conn.execute(
+                text(
+                    "INSERT INTO company_domain_resolutions "
+                    " (id, contact_id, decision_number, is_current, state, decision_kind, "
+                    "  policy_version, selected_domain, reasons) "
+                    "VALUES (:id, :con, 1, true, 'PROVISIONAL', 'AUTOMATIC', "
+                    " 'company-domain-resolution/practical-v1', 'seed.example', "
+                    " '[\"single_aligned_provider_candidate\"]'::jsonb)"
+                ),
+                {"id": uuid.uuid4(), "con": contact_id},
+            )
+
+        blocked = _alembic(["downgrade", _SUBJECT_PARENT], temp_database_url)
+        assert blocked.returncode != 0, "the downgrade must refuse while a decision exists"
+        assert "contact-subject" in (blocked.stdout + blocked.stderr)
+
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM company_domain_resolutions"))
+
+        cleared = _alembic(["downgrade", _SUBJECT_PARENT], temp_database_url)
+        assert cleared.returncode == 0, f"{cleared.stdout}\n{cleared.stderr}"
+    finally:
+        engine.dispose()
+
+
+def test_the_subject_downgrade_refuses_while_a_contact_owns_candidates(
+    temp_database_url: str,
+) -> None:
+    """A contact-owned candidate record holds a confirmation other surfaces read back."""
+
+    assert _alembic(["upgrade", "head"], temp_database_url).returncode == 0
+
+    engine = create_engine(temp_database_url)
+    try:
+        with engine.begin() as conn:
+            contact_id = _seed_contact(conn, first="Ada", domain="subject.example")
+            conn.execute(
+                text(
+                    "INSERT INTO salesnav_company_enrichments "
+                    " (id, contact_id, company_key, company_name, row_count, lookup_status, "
+                    "  confirmation_status, lookup_attempts, model_lookup_status, "
+                    "  model_lookup_attempts) "
+                    "VALUES (:id, :con, 'meridian works', 'Meridian Works', 1, 'NOT_STARTED', "
+                    " 'UNCONFIRMED', 0, 'NOT_STARTED', 0)"
+                ),
+                {"id": uuid.uuid4(), "con": contact_id},
+            )
+
+        blocked = _alembic(["downgrade", _SUBJECT_PARENT], temp_database_url)
+        assert blocked.returncode != 0, "the downgrade must refuse while a record exists"
+        assert "contact-owned candidate record" in (blocked.stdout + blocked.stderr)
     finally:
         engine.dispose()
 

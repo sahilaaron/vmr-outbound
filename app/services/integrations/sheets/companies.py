@@ -27,35 +27,43 @@ What happens to a company nobody has established
 ------------------------------------------------
 
 The Contact is created carrying its ``company_name``, enrols, and the pipeline
-starts. ``CompanyAgentAdapter`` then raises ``AgentBlocked("company_domain_missing")``
-— a documented *non-terminal* condition that pauses the job, moves the stage to
-``BLOCKED`` and shows up in the operator's review surfaces with its reason. That
-is the canonical representation of "this needs company evidence", and it is the
-same one every other blocked stage uses. It is deliberately **not** reinvented
-here as an intake refusal.
+starts. ``CompanyAgentAdapter`` reaches the company stage, finds a Contact with a
+name and no company, and asks the shared company-domain resolution process to
+establish one — the same process, evidence, provider ladder, policy and decision
+ledger a Chrome capture goes through. The decision it records is about the
+Contact rather than about a capture, which is the whole of the difference; see
+``app.services.resolution.store.ResolutionSubject``.
 
-Note what this does not do: the pipeline has no name-to-domain discovery stage of
-its own, so an unseen company still needs operator evidence or a capture before
-it advances. The repair moves that work to the canonical, reviewable place; it
-does not claim the pipeline will silently solve it.
+When that process cannot name a domain — nothing established, no provider
+configured, conflicting candidates, or the policy declining to guess — the Agent
+raises ``AgentBlocked("company_domain_missing")`` carrying what resolution
+actually tried. That is a documented *non-terminal* condition that pauses the
+job, moves the stage to ``BLOCKED`` and shows up in the operator's review
+surfaces with its reason. It is deliberately **not** reinvented here as an
+intake refusal.
 
 Domain laundering, unchanged
 ----------------------------
 
-The previous refusal existed for a real reason: ``company_domain_resolutions`` is
-keyed per capture, so a provisional domain accepted here would carry no decision
-row and would read, to every later reader, exactly like an established one. That
-reasoning still holds and is honoured more simply than before — **no provisional
-domain is accepted, because none is ever obtained.** This module reads only
-evidence something else already established, so there is nothing uncertain for it
-to launder.
+The original refusal existed for a real reason: a provisional domain accepted
+*here* would carry no decision row and would read, to every later reader, exactly
+like an established one. That reasoning still holds and is honoured the same way
+— **no provisional domain is accepted at intake, because none is ever obtained
+here.** This module reads only evidence something else already established.
+
+A provisional domain established later, by the Agent, is a different thing and is
+safe for the opposite reason: it has a live decision row naming its state, so
+``store.company_state`` reports it as provisional to everything that asks, the
+company is not treated as established evidence for the next company, and
+``resolution.gates`` opens company research and nothing else.
 
 Cost behaviour
 --------------
 
 **Zero provider calls.** Not "at most one per name" — none. Deciding whether a
 row may enter never spends money. Any provider work an unseen company needs
-happens later, inside the execution path that owns it and accounts for it.
+happens later, in the Company Agent, inside the durable worker that owns that
+stage and accounts for its cost.
 """
 
 from __future__ import annotations
@@ -63,7 +71,6 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.company import Company
@@ -72,7 +79,7 @@ from app.services.audit import record_audit_event
 from app.services.captures import promotion as capture_promotion
 from app.services.enrichment import companies as enrichment
 from app.services.resolution import policy
-from app.services.resolution import store as resolution_store
+from app.services.resolution import service as resolution_service
 
 #: Recorded on every audit event this module writes, so a Company row created
 #: from a spreadsheet is distinguishable from one created from a capture.
@@ -174,68 +181,28 @@ def _resolve_uncached(
 def _evidence_for(session: Session, *, company_name: str) -> policy.ResolutionEvidence:
     """Everything the policy may consider about this name, and nothing it may not.
 
-    The shape is exactly ``resolution.service.gather_evidence`` builds for a
-    caller with no enrichment record, and both inputs come from the same public
-    helpers that path uses — ``prior_confirmed_domains`` for mappings an operator
-    has already confirmed, and permanent Companies for established evidence.
+    Delegated to ``resolution.service.gather_evidence`` with no enrichment record,
+    which is exactly the shape that path builds for a caller with no provider
+    candidates. It is delegated rather than reimplemented so this surface cannot
+    answer "has this company been established?" differently from the Agent that
+    will ask the same question about the same name a moment later — two readings
+    of established evidence is how one company ends up with two Company rows.
 
-    The existing-Company scan is written here rather than delegated, for one
-    concrete reason: ``service._existing_company_matches`` pre-filters candidates
-    in SQL with ``LOWER(name) LIKE '%<first six characters of the folded name>%'``,
-    and the folded name has had its spaces removed. ``"Kiln Systems"`` folds to
-    ``"kilnsystems"``, whose first six characters are ``"kilnsy"``, which does not
-    appear in ``"kiln systems"`` — so a two-word company never matches its own
-    permanent row. On the capture path that is a missed cache and nothing worse
-    (it falls through to a provider lookup), which is why it has gone unnoticed;
-    here it would be the difference between a spreadsheet working and not. The
-    comparison below is the same one the policy makes, without the prefilter that
-    loses it. Fixing the shared helper is a separate change against the capture
-    path, and is recorded in the post-launch backlog rather than made here.
+    (This module used to keep its own copy of the existing-Company scan, because
+    the shared helper's SQL prefilter dropped any two-word company. That prefilter
+    is gone; see ``service._existing_company_matches``.)
     """
 
-    normalized = policy.normalize_company_name(company_name)
-    approved = frozenset(
-        capture_promotion.prior_confirmed_domains(
-            session,
-            company_key_value=enrichment.company_key(company_name),
-            company_linkedin_id=None,
-        )
+    return resolution_service.gather_evidence(
+        session,
+        record=None,
+        hints=capture_promotion.CompanyHints(
+            name=company_name,
+            linkedin_url=None,
+            linkedin_id=None,
+            location=None,
+        ),
     )
-    matches: list[policy.ExistingCompanyMatch] = []
-    if normalized:
-        for company in session.scalars(select(Company).where(Company.domain.is_not(None))):
-            if policy.normalize_company_name(company.name) != normalized:
-                continue
-            if not _is_established(session, company):
-                continue
-            assert company.domain is not None  # narrowed by the query
-            matches.append(
-                policy.ExistingCompanyMatch(
-                    company_id=company.id,
-                    name=company.name,
-                    domain=company.domain,
-                    matched_on="normalized_name",
-                )
-            )
-    return policy.ResolutionEvidence(
-        company_name=company_name,
-        normalized_company_name=normalized,
-        linkedin_company_id=None,
-        approved_mapping_domains=approved,
-        existing_companies=tuple(matches),
-    )
-
-
-def _is_established(session: Session, company: Company) -> bool:
-    """Whether this Company's domain is evidence, or merely a repeat of a guess.
-
-    The same rule ``resolution.service`` applies: no automatic decision at all
-    (imported, entered or confirmed by hand) or an explicitly confirmed one. A
-    company whose own domain is provisional cannot settle somebody else's.
-    """
-
-    state = resolution_store.company_state(session, company.id)
-    return state is None or state is DomainResolutionState.CONFIRMED
 
 
 def _accept(

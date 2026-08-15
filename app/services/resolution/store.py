@@ -11,14 +11,20 @@ in place.** ``record`` supersedes the current row and inserts a new one, and it
 declines to insert at all when the new decision says exactly what the current
 one already says. That is what makes recalculation idempotent — not a check
 somewhere upstream that a future caller might forget.
+
+A second rule became explicit when a second acquisition surface arrived:
+**a decision is about a subject, not about a capture.** See
+:class:`ResolutionSubject`. Nothing else in this module changed, because
+nothing else ever depended on where the person came from.
 """
 
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, select
 from sqlalchemy.orm import Session
 
 from app.models.company_domain_resolution import CompanyDomainResolution
@@ -26,19 +32,93 @@ from app.models.enums import DomainResolutionKind, DomainResolutionState
 from app.services.resolution import policy
 
 
-def current_decision(session: Session, capture_id: uuid.UUID) -> CompanyDomainResolution | None:
-    """The live decision for a capture, or None if it has never been resolved."""
+@dataclass(frozen=True)
+class ResolutionSubject:
+    """What one decision is about: exactly one acquisition surface's record.
+
+    A Chrome capture exists before any Contact does, so its decisions hang off
+    the capture. A surface such as Google Sheets produces the permanent Contact
+    directly and has no capture; its decisions hang off the Contact. Both are
+    first-class, and the difference between them stops here — the policy, the
+    gates, the approved-mapping store and the Company link are all keyed on the
+    company and the evidence, never on the surface.
+
+    Constructed through :meth:`for_capture` / :meth:`for_contact` so a caller
+    cannot accidentally build one that names both subjects or neither. The same
+    rule is a check constraint on the table, so a path that bypasses this class
+    still cannot write an unattributable decision.
+    """
+
+    capture_id: uuid.UUID | None = None
+    contact_id: uuid.UUID | None = None
+
+    def __post_init__(self) -> None:
+        if (self.capture_id is None) == (self.contact_id is None):
+            raise ValueError(
+                "a company-domain decision is about exactly one subject: a capture or a contact"
+            )
+
+    @classmethod
+    def for_capture(cls, capture_id: uuid.UUID) -> ResolutionSubject:
+        return cls(capture_id=capture_id)
+
+    @classmethod
+    def for_contact(cls, contact_id: uuid.UUID) -> ResolutionSubject:
+        return cls(contact_id=contact_id)
+
+    @property
+    def label(self) -> str:
+        """``"capture"`` or ``"contact"`` — for audit context and messages."""
+
+        return "capture" if self.capture_id is not None else "contact"
+
+    @property
+    def reference(self) -> uuid.UUID:
+        """The id of whichever subject this is."""
+
+        # One of the two is always set; __post_init__ is what guarantees it.
+        return self.capture_id if self.capture_id is not None else self.contact_id  # type: ignore[return-value]
+
+    def filter(self) -> ColumnElement[bool]:
+        """The WHERE clause selecting this subject's decisions."""
+
+        if self.capture_id is not None:
+            return CompanyDomainResolution.capture_id == self.capture_id
+        return CompanyDomainResolution.contact_id == self.contact_id
+
+
+def _coerce(subject: ResolutionSubject | uuid.UUID) -> ResolutionSubject:
+    """Accept a bare capture id from the readers that predate a second subject.
+
+    Every caller that passes a plain UUID is asking about a capture — that was
+    the only kind of subject when those call sites were written, and reading
+    them that way keeps the capture path byte-identical rather than churning it
+    to prove a point. The writer, :func:`record`, takes no such shortcut: a
+    decision is only ever persisted against an explicit subject.
+    """
+
+    if isinstance(subject, ResolutionSubject):
+        return subject
+    return ResolutionSubject.for_capture(subject)
+
+
+def current_decision(
+    session: Session, subject: ResolutionSubject | uuid.UUID
+) -> CompanyDomainResolution | None:
+    """The live decision for a subject, or None if it has never been resolved."""
 
     return session.scalars(
         select(CompanyDomainResolution).where(
-            CompanyDomainResolution.capture_id == capture_id,
+            _coerce(subject).filter(),
             CompanyDomainResolution.is_current.is_(True),
         )
     ).first()
 
 
-def decision_history(session: Session, capture_id: uuid.UUID) -> list[CompanyDomainResolution]:
-    """Every decision ever made for a capture, newest first.
+def decision_history(
+    session: Session, subject: ResolutionSubject | uuid.UUID
+) -> list[CompanyDomainResolution]:
+    """Every decision ever made for a subject, newest first.
 
     Superseded rows are included deliberately: the history is the audit, and a
     correction is only trustworthy if what it replaced is still readable.
@@ -47,7 +127,7 @@ def decision_history(session: Session, capture_id: uuid.UUID) -> list[CompanyDom
     return list(
         session.scalars(
             select(CompanyDomainResolution)
-            .where(CompanyDomainResolution.capture_id == capture_id)
+            .where(_coerce(subject).filter())
             .order_by(CompanyDomainResolution.decision_number.desc())
         )
     )
@@ -101,7 +181,7 @@ def company_state(session: Session, company_id: uuid.UUID) -> DomainResolutionSt
 def record(
     session: Session,
     *,
-    capture_id: uuid.UUID,
+    subject: ResolutionSubject,
     decision: policy.PolicyDecision,
     kind: DomainResolutionKind,
     actor: str,
@@ -126,7 +206,7 @@ def record(
     domain, not a repeat of the automatic reasoning that produced it.
     """
 
-    existing = current_decision(session, capture_id)
+    existing = current_decision(session, subject)
     if (
         existing is not None
         and kind is not DomainResolutionKind.OPERATOR_CORRECTION
@@ -148,7 +228,8 @@ def record(
         session.flush()
 
     row = CompanyDomainResolution(
-        capture_id=capture_id,
+        capture_id=subject.capture_id,
+        contact_id=subject.contact_id,
         enrichment_id=enrichment_id,
         resolved_company_id=resolved_company_id,
         decision_number=(existing.decision_number + 1) if existing is not None else 1,
