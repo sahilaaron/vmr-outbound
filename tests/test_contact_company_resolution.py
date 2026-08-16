@@ -665,6 +665,39 @@ class TestTheCompanyAgentIsWhereItHappens:
         assert decision.provider_call_made is True
         assert decision.provider == "logo.dev"
         assert decision.reasons
+        detail = (blocked.job.error or {}).get("detail") or {}
+        attempt = detail.get("domain_resolution_attempt") or {}
+        assert attempt.get("decision_id") == str(decision.id)
+        assert attempt.get("state") == DomainResolutionState.UNRESOLVED.value
+        assert contact.company_domain is None
+        assert contact.company_id is None
+        assert transport.calls == 1
+
+    def test_ambiguous_provider_candidates_remain_unresolved_and_auditable(
+        self, db_session: Session, resolution_on: None
+    ) -> None:
+        """Preservation must not turn ambiguity into a fabricated domain."""
+
+        campaign = campaign_for(db_session)
+        contact = sheet_contact(db_session, company="New Culture")
+        _enrol(db_session, campaign, contact)
+        transport = CountingTransport(
+            [
+                {"domain": "newculture.com", "name": "New Culture"},
+                {"domain": "newculture.io", "name": "New Culture"},
+            ]
+        )
+        adapters = _adapters(_company_adapter(transport))
+
+        run_next(db_session, worker_id="test", adapters=adapters)
+        blocked = run_next(db_session, worker_id="test", adapters=adapters)
+
+        assert blocked.public_status == "paused"
+        decision = current(db_session, contact)
+        assert decision is not None
+        assert decision.state is DomainResolutionState.UNRESOLVED
+        assert decision.selected_domain is None
+        assert len(decision.candidates or []) == 2
         assert contact.company_domain is None
         assert contact.company_id is None
         assert transport.calls == 1

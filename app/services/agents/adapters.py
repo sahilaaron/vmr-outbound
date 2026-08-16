@@ -314,6 +314,15 @@ class CompanyAgentAdapter:
                         reason=self._unresolved_reason(resolution_summary),
                         resolution=resolution_summary,
                     ),
+                    # A decision id means the canonical resolver completed and
+                    # wrote a truthful outcome (normally UNRESOLVED). Keep that
+                    # savepoint: rolling it back cannot undo the provider call,
+                    # and would erase the exact evidence that explains this
+                    # block. Feature/provider skips have no decision id and
+                    # deliberately remain no-decision states.
+                    preserve_outcome=bool(
+                        resolution_summary and resolution_summary.get("decision_id")
+                    ),
                 )
             identity_match_key = "company.domain"
             candidates = list(
