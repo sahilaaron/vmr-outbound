@@ -522,7 +522,8 @@ def test_the_nine_agent_pipeline_remains_visible_as_observability(
     customer = client.get(_campaign_url(scenario)).text
     assert "Agent" not in customer.split("<main")[1].split("Recent activity")[0]
 
-    diagnostics = client.get(f"/app/admin/campaigns/{_membership(scenario).campaign_id}/diagnostics")
+    campaign_id = _membership(scenario).campaign_id
+    diagnostics = client.get(f"/app/admin/campaigns/{campaign_id}/diagnostics")
     assert diagnostics.status_code == 200
     for agent_id in PIPELINE_ORDER:
         assert AGENT_SPECS[agent_id].display_name in diagnostics.text

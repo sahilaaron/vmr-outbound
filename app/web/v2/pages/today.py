@@ -87,7 +87,7 @@ def today_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
             "contacts_total": contacts_total,
             "companies_total": companies_total,
             "confirmed_addresses": confirmed,
-                    },
+        },
     )
 
 
@@ -109,5 +109,6 @@ def _campaign_progress_sentence(
     if progress.ready_for_sending:
         return "Every contact that could be prepared is ready."
     return "Nothing is in progress."
+
 
 __all__ = ["router"]

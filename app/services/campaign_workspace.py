@@ -11,6 +11,7 @@ Admin.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -354,7 +355,7 @@ def _ready_since(session: Session, membership_ids: list[uuid.UUID]) -> dict[uuid
     return {membership_id: created_at for membership_id, created_at in rows}
 
 
-def _rows(session: Session, rows: list[Any]) -> list[PersonRow]:
+def _rows(session: Session, rows: Sequence[Any]) -> list[PersonRow]:
     stopped_ids = [
         membership.id
         for membership, _contact, outcome in rows
@@ -565,13 +566,14 @@ def list_rows(session: Session, campaigns: list[Campaign]) -> list[CampaignListR
     if not campaigns:
         return []
     ids = [campaign.id for campaign in campaigns]
-    latest = dict(
-        session.execute(
+    latest: dict[uuid.UUID, datetime | None] = {
+        campaign_id: changed
+        for campaign_id, changed in session.execute(
             select(CampaignContact.campaign_id, func.max(CampaignContact.updated_at))
             .where(CampaignContact.campaign_id.in_(ids))
             .group_by(CampaignContact.campaign_id)
         ).all()
-    )
+    }
     rows: list[CampaignListRow] = []
     for campaign in campaigns:
         changed = latest.get(campaign.id)
