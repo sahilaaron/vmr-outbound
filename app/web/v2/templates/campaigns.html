@@ -1,99 +1,52 @@
 {% extends "base.html" %}
-{% from "_ui.html" import tag, campaign_state, empty %}
+{% from "_ui.html" import lifecycle_pill, empty %}
 {% block content %}
-<div class="v2-page">
-
+<div class="v2-page narrow">
   <div class="v2-head">
     <div>
-      <h1 class="v2-h1">Campaigns</h1>
-      <p class="v2-lede">
-        A campaign is what enrols captured people into the pipeline. A person exists once and
-        permanently; a campaign only decides which nine-Agent run they are part of, so leaving
-        one never deletes anybody.
-      </p>
+      <h1 class="v2-h1 big">Campaigns</h1>
+      <p class="v2-lede">Create a Campaign, add people, and come back when their emails are ready.</p>
     </div>
-    <a class="v2-btn primary" href="/app/campaigns/new">New campaign</a>
+    <a class="v2-btn primary" href="/app/campaigns/new">New Campaign</a>
   </div>
 
   <div class="v2-card clip v2-mt">
     {% if rows %}
     <div class="v2-table-wrap">
-      <table>
+      <table class="v2-rowlinks">
         <thead>
           <tr>
             <th>Campaign</th>
             <th>State</th>
-            <th class="num">Contacts</th>
+            <th class="num">People</th>
             <th class="num">Processing</th>
             <th class="num">Ready for Sending</th>
             <th class="num">Could not prepare</th>
-            <th>Progress</th>
-            <th></th>
+            <th class="num">Last change</th>
           </tr>
         </thead>
         <tbody>
           {% for row in rows %}
           <tr>
             <td>
-              <a href="/app/campaigns/{{ row.campaign.id }}">{{ row.campaign.name }}</a>
-              <div class="v2-sub">
-                created {{ row.campaign.created_at | day }}
-                {%- if row.campaign.description %} · {{ row.campaign.description | truncate(70) }}{% endif %}
-              </div>
+              <a class="v2-rowlink" href="/app/campaigns/{{ row.campaign.id }}">{{ row.campaign.name | neutralize }}</a>
+              {% if row.campaign.description %}<div class="v2-sub">{{ row.campaign.description | neutralize | truncate(80) }}</div>{% endif %}
             </td>
-            <td>{{ campaign_state(row.campaign.status, row.campaign.execution_enabled) }}</td>
-            <td class="num m">{{ row.contacts | thousands }}</td>
-            <td class="num m">{{ row.progress.processing }}</td>
-            <td class="num m">{{ row.progress.ready_for_sending }}</td>
-            <td class="num m">{{ row.progress.could_not_prepare }}</td>
-            <td class="v2-note">{{ row.state }}</td>
-            <td class="v2-row-actions">
-              <a class="v2-btn small" href="/app/campaigns/{{ row.campaign.id }}/edit">Edit</a>
-              {% if row.campaign.status.value != 'archived' %}
-              <form method="post" action="/app/campaigns/{{ row.campaign.id }}/archive"
-                    data-archive-confirm="Archive {{ row.campaign.name }}? Execution turns off for good and this cannot be undone; contacts, drafts and history stay.">
-                <button class="v2-btn small danger" type="submit">Archive</button>
-              </form>
-              {% endif %}
-            </td>
+            <td>{{ lifecycle_pill(row.lifecycle, row.lifecycle_label) }}</td>
+            <td class="num m">{{ row.progress.total | thousands }}</td>
+            <td class="num m">{{ row.progress.processing | thousands }}</td>
+            <td class="num m {{ 'v2-ok' if row.progress.ready_for_sending }}">{{ row.progress.ready_for_sending | thousands }}</td>
+            <td class="num m">{{ row.progress.could_not_prepare | thousands }}</td>
+            <td class="num v2-nowrap v2-muted">{{ row.last_change | when }}</td>
           </tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
-    <div class="v2-cardlist">
-      {% for row in rows %}
-      <div class="v2-item">
-        <div class="v2-item-top">
-          <a href="/app/campaigns/{{ row.campaign.id }}">{{ row.campaign.name }}</a>
-        </div>
-        <div class="v2-chipline">
-          {{ campaign_state(row.campaign.status, row.campaign.execution_enabled) }}
-          {{ tag(row.contacts ~ ' contacts') }}
-          {% if row.progress.ready_for_sending %}{{ tag(row.progress.ready_for_sending ~ ' ready for sending', 'ok') }}{% endif %}
-        </div>
-        <p class="v2-note">{{ row.state }}</p>
-        <div class="v2-row-actions">
-          <a class="v2-btn small" href="/app/campaigns/{{ row.campaign.id }}/edit">Edit</a>
-          {% if row.campaign.status.value != 'archived' %}
-          <form method="post" action="/app/campaigns/{{ row.campaign.id }}/archive"
-                data-archive-confirm="Archive {{ row.campaign.name }}? Execution turns off for good and this cannot be undone; contacts, drafts and history stay.">
-            <button class="v2-btn small danger" type="submit">Archive</button>
-          </form>
-          {% endif %}
-        </div>
-      </div>
-      {% endfor %}
-    </div>
     {% else %}
-      {{ empty('No campaigns yet', 'Create one, attach the offering it may talk about, then enrol contacts into it.') }}
+      {{ empty('No Campaigns yet', 'A Campaign is where you add people and where their emails appear once VMR has prepared them.') }}
+      <div class="v2-card-foot"><a class="v2-btn primary" href="/app/campaigns/new">Create your first Campaign</a></div>
     {% endif %}
   </div>
-
-  <p class="v2-hint v2-page-actions">
-    Sent and reply figures are shown as unavailable because they are: no sending adapter is
-    registered, so this product has never sent an email and has no inbound channel.
-  </p>
 </div>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', path='campaigns.js') }}?v={{ campaigns_js_version }}" defer></script>{% endblock %}

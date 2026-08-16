@@ -346,7 +346,7 @@
         {% for link in detail.linked_contacts %}
         <div class="v2-row tight">
           <div class="v2-sidelist-top">
-            <a href="/app/contacts/{{ link.contact.id }}">{{ link.display_name | neutralize }}</a>
+            <a href="/app/people/{{ link.contact.id }}">{{ link.display_name | neutralize }}</a>
             <span class="v2-hint">{{ (link.contact.title | neutralize) or 'no title' }}</span>
           </div>
         </div>
@@ -363,7 +363,7 @@
           </div>
           {% for link in detail.transitional_contacts %}
           <div class="v2-hint">
-            <a href="/app/contacts/{{ link.contact.id }}">{{ link.display_name | neutralize }}</a> — {{ (link.contact.title | neutralize) or 'no title' }}
+            <a href="/app/people/{{ link.contact.id }}">{{ link.display_name | neutralize }}</a> — {{ (link.contact.title | neutralize) or 'no title' }}
           </div>
           {% endfor %}
         </div>

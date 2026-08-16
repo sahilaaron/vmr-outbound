@@ -50,7 +50,8 @@ from app.services.users import service as user_service
 # Imported rather than rebuilt. See the module docstring: one page shell and one
 # filter registry for the whole customer-facing interface, of which this screen
 # is a part.
-from app.web.v2.routes import _redirect, _render
+from app.web.v2.shell import redirect as _redirect
+from app.web.v2.shell import render as _render
 
 router = APIRouter(
     prefix="/app/admin",

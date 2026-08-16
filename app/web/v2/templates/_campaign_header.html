@@ -1,0 +1,71 @@
+{#
+  The persistent Campaign header: name, lifecycle, note, the three outcome
+  counts, Add people, and the tabs. Included by every Campaign tab.
+  Expects: campaign, header, tab, tabs, base_href.
+#}
+{% from "_ui.html" import lifecycle_pill %}
+<div class="v2-camp-head">
+  <div class="v2-camp-head-inner">
+    <nav class="v2-crumbs" aria-label="Breadcrumb">
+      <a href="/app/campaigns">Campaigns</a>
+      <span class="sep" aria-hidden="true">/</span>
+      <span>{{ campaign.name | neutralize }}</span>
+    </nav>
+    <div class="v2-title-row">
+      <div class="v2-title-main">
+        <div class="v2-title-line">
+          <h1>{{ campaign.name | neutralize }}</h1>
+          {{ lifecycle_pill(header.lifecycle, header.lifecycle_label) }}
+        </div>
+        {% if campaign.description %}<p class="v2-lede">{{ campaign.description | neutralize }}</p>{% endif %}
+        <div class="v2-camp-counts">
+          <a href="{{ base_href }}/people"><b class="m">{{ header.people | thousands }}</b> people</a>
+          <span class="sep">·</span>
+          <a href="{{ base_href }}/people?outcome=processing"><b class="m">{{ header.progress.processing | thousands }}</b> Processing</a>
+          <span class="sep">·</span>
+          <a href="{{ base_href }}/people?outcome=ready_for_sending" class="{{ 'v2-ok' if header.progress.ready_for_sending }}"><b class="m">{{ header.progress.ready_for_sending | thousands }}</b> Ready for Sending</a>
+          <span class="sep">·</span>
+          <a href="{{ base_href }}/people?outcome=could_not_prepare"><b class="m">{{ header.progress.could_not_prepare | thousands }}</b> Could not prepare</a>
+        </div>
+      </div>
+      <div class="v2-title-actions">
+        {% if not header.is_archived %}
+        <a class="v2-btn primary" href="{{ base_href }}/add-people">Add people</a>
+        {% endif %}
+        <details class="v2-menu">
+          <summary class="v2-btn v2-more" title="More"><span aria-hidden="true">···</span><span class="v2-sr">More actions</span></summary>
+          <div class="v2-menu-panel">
+            {% if header.lifecycle == 'active' %}
+            <form method="post" action="{{ base_href }}/lifecycle" class="v2-menu-item">
+              <input type="hidden" name="action" value="pause">
+              <input type="hidden" name="back" value="{{ base_href }}">
+              <button type="submit" class="v2-menu-button"><b>Pause Campaign</b><span>Nothing new is prepared until it is resumed</span></button>
+            </form>
+            {% elif header.lifecycle == 'paused' %}
+            <form method="post" action="{{ base_href }}/lifecycle" class="v2-menu-item">
+              <input type="hidden" name="action" value="resume">
+              <input type="hidden" name="back" value="{{ base_href }}">
+              <button type="submit" class="v2-menu-button"><b>Resume Campaign</b><span>Carry on preparing people</span></button>
+            </form>
+            {% elif header.lifecycle == 'draft' %}
+            <form method="post" action="{{ base_href }}/lifecycle" class="v2-menu-item">
+              <input type="hidden" name="action" value="start">
+              <input type="hidden" name="back" value="{{ base_href }}">
+              <button type="submit" class="v2-menu-button"><b>Start Campaign</b><span>VMR prepares everyone in it</span></button>
+            </form>
+            {% endif %}
+            <a class="v2-menu-item" href="{{ base_href }}/setup"><b>Setup</b><span>Offering, preparation, access</span></a>
+            {% if not header.is_archived %}
+            <a class="v2-menu-item last" href="{{ base_href }}/setup#archive"><b>Archive…</b><span>Retire this Campaign from the list</span></a>
+            {% endif %}
+          </div>
+        </details>
+      </div>
+    </div>
+    <nav class="v2-tabs" aria-label="Campaign sections">
+      {% for key, label in tabs %}
+      <a class="v2-tab {{ 'on' if key == tab }}" href="{{ base_href }}{{ '' if key == 'overview' else '/' ~ key }}"{% if key == tab %} aria-current="page"{% endif %}>{{ label }}</a>
+      {% endfor %}
+    </nav>
+  </div>
+</div>

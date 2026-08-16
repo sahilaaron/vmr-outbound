@@ -1,0 +1,50 @@
+{#
+  Admin: the machinery room, in the same shell. A list of where things live
+  today; the six-section Admin arrives in the consolidation slice.
+#}
+{% extends "base.html" %}
+{% block content %}
+<div class="v2-page narrow">
+  <h1 class="v2-h1 big">Admin</h1>
+  <p class="v2-lede">The machinery behind the product. Nothing here is part of a normal day's work.</p>
+
+  <div class="v2-admin-grid v2-mt">
+    <a class="v2-admin-card" href="/app/admin/agents">
+      <b>Agents</b>
+      <span>What each Agent may do, and the log of what it did.</span>
+    </a>
+    <a class="v2-admin-card" href="/app/admin/users">
+      <b>Users &amp; access</b>
+      <span>Who may sign in, their role, and Campaign assignments.</span>
+    </a>
+    <a class="v2-admin-card" href="/app/admin/suppressions">
+      <b>Suppression list</b>
+      <span>Addresses and domains that are never contacted.</span>
+    </a>
+    <a class="v2-admin-card" href="/admin">
+      <b>Operator Workbench</b>
+      <span>Imports, queues, failures, providers, configuration and raw records.</span>
+    </a>
+    <a class="v2-admin-card" href="/admin/agents/studio">
+      <b>Agent Studio</b>
+      <span>Policies, previews and reports for the writing Agents.</span>
+    </a>
+    <a class="v2-admin-card" href="/admin/company-intelligence">
+      <b>Company Intelligence</b>
+      <span>Classification runs, taxonomy and backfills.</span>
+    </a>
+  </div>
+
+  {% if campaigns %}
+  <h2 class="v2-section-title">Campaign diagnostics</h2>
+  <div class="v2-card">
+    {% for item in campaigns %}
+    <div class="v2-row tight v2-reason-row">
+      <a href="/app/admin/campaigns/{{ item.id }}/diagnostics">{{ item.name | neutralize }}</a>
+      <span class="v2-hint">stopped people, re-runs, live opt-ins</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

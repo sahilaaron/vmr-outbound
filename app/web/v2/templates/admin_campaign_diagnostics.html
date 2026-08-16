@@ -1,0 +1,142 @@
+{#
+  Per-Campaign diagnostics for administrators: where people rest per Agent,
+  who stopped and why, re-runs, and the live opt-in for the Agents that need one.
+  Technical vocabulary is allowed here and nowhere in the customer product.
+#}
+{% extends "base.html" %}
+{% from "_ui.html" import tag, control_state, empty, lifecycle_pill %}
+{% block content %}
+<div class="v2-page">
+  <nav class="v2-crumbs" aria-label="Breadcrumb">
+    <a href="/app/admin">Admin</a>
+    <span class="sep" aria-hidden="true">/</span>
+    <a href="/app/campaigns/{{ campaign.id }}">{{ campaign.name | neutralize }}</a>
+    <span class="sep" aria-hidden="true">/</span>
+    <span>Diagnostics</span>
+  </nav>
+  <div class="v2-head">
+    <div>
+      <div class="v2-title-line">
+        <h1 class="v2-h1 big">{{ campaign.name | neutralize }}</h1>
+        {{ lifecycle_pill(header.lifecycle, header.lifecycle_label) }}
+      </div>
+      <p class="v2-lede">
+        {{ header.progress.processing }} processing · {{ header.progress.ready_for_sending }} ready for sending · {{ header.progress.could_not_prepare }} could not prepare
+      </p>
+    </div>
+    <a class="v2-btn" href="/app/campaigns/{{ campaign.id }}">Open Campaign</a>
+  </div>
+
+  <div class="v2-card clip v2-mt">
+    <div class="v2-card-head tight"><h2>Where people rest, per Agent</h2><span class="v2-hint push">pick an Agent to see who stopped there</span></div>
+    <div class="v2-table-wrap">
+      <table>
+        <thead><tr><th>#</th><th>Agent</th><th>Control</th><th class="num">Resting here</th><th class="num">Failed</th><th></th></tr></thead>
+        <tbody>
+          {% for row in stage_rows %}
+          <tr class="{{ 'is-selected' if row.selected }}">
+            <td class="m">{{ row.index }}</td>
+            <td><a href="{{ row.href }}">{{ row.label }}</a></td>
+            <td class="v2-nowrap">
+              {% if row.control %}{{ control_state(row.control.status) }}
+              {% if row.control.campaign_scoped %}{{ tag('campaign override', 'brand', small=true) }}{% endif %}
+              {% if row.control.live_opt_in_missing %}{{ tag('live work off', 'warn', small=true) }}{% endif %}
+              {% if not row.control.implemented %}{{ tag('no adapter', '', small=true) }}{% endif %}
+              {% endif %}
+            </td>
+            <td class="num m">{{ row.resting }}</td>
+            <td class="num m {{ 'v2-err' if row.failed }}">{{ row.failed }}</td>
+            <td class="num"><a class="v2-btn small" href="{{ row.href }}">Open</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  {% if selected %}
+  <div class="v2-split">
+    <div class="v2-stack">
+      <div class="v2-card">
+        <div class="v2-card-head tight"><h2>{{ selected_label }} — stopped people</h2></div>
+        {% if rerun_candidates %}
+        {% set runnable = rerun_candidates | selectattr('runnable') | list %}
+        <div class="v2-row">
+          <b>{{ rerun_candidates | length }} stopped here.</b>
+          {% if runnable %}
+          <form class="v2-inline-form v2-mt-sm" method="post" action="/app/admin/campaigns/{{ campaign.id }}/agents/{{ selected }}/rerun">
+            <input type="hidden" name="back" value="/app/admin/campaigns/{{ campaign.id }}/diagnostics?stage={{ selected }}">
+            <label class="v2-sr" for="rerun-reason">What changed</label>
+            <input class="v2-input" id="rerun-reason" name="reason" maxlength="500" placeholder="What changed? (kept on the record)">
+            <button class="v2-btn primary" type="submit">{% if runnable | length == 1 %}Run again for this person{% else %}Run again for all {{ runnable | length }}{% endif %}</button>
+          </form>
+          <div class="v2-hint v2-mt-sm">
+            Each gets a fresh attempt budget; the earlier failure stays on record.
+            {% if rerun_spends %}<b>This Agent spends per person.</b>{% endif %}
+            {% if runnable | length >= rerun_ceiling %}At most {{ rerun_ceiling }} are taken at a time.{% endif %}
+          </div>
+          {% endif %}
+        </div>
+        {% for candidate in rerun_candidates %}
+        <div class="v2-row tight">
+          <div class="v2-sidelist-top">
+            <a href="/app/people/{{ candidate.contact_id }}?campaign={{ campaign.id }}">{{ candidate.contact_label | neutralize }}</a>
+            {{ tag(candidate.status.value, 'err', small=true) }}
+            {% if candidate.runnable %}
+            <form method="post" action="/app/admin/campaigns/{{ campaign.id }}/agents/{{ selected }}/rerun" class="push">
+              <input type="hidden" name="campaign_contact_id" value="{{ candidate.campaign_contact_id }}">
+              <input type="hidden" name="back" value="/app/admin/campaigns/{{ campaign.id }}/diagnostics?stage={{ selected }}">
+              <button class="v2-btn small" type="submit">Run again</button>
+            </form>
+            {% else %}
+            <span class="v2-hint push">{{ candidate.standing_block }}</span>
+            {% endif %}
+          </div>
+          <div class="v2-hint m">{{ (candidate.reason_detail or candidate.reason_code or 'No reason was recorded.') | nice }}</div>
+        </div>
+        {% endfor %}
+        {% else %}
+          {{ empty('Nobody is stopped here', 'The count above is who is resting on this Agent; nobody has failed or been blocked at it.') }}
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="v2-aside plain">
+      {% if selected_control and selected_control.requires_live_opt_in %}
+      <div class="v2-card">
+        <div class="v2-card-head tight"><h2>Live work</h2></div>
+        <div class="v2-row tight v2-note">
+          {% if selected_control.live_opt_in %}Live {{ selected_label }} work is <b>enabled</b> for this Campaign.
+          {% else %}Live {{ selected_label }} work is <b>not enabled</b> for this Campaign — the Agent claims each person and refuses.{% endif %}
+        </div>
+        <div class="v2-row tight">
+          <form class="v2-inline-form" method="post" action="/app/admin/campaigns/{{ campaign.id }}/agents/{{ selected }}/live">
+            <input type="hidden" name="expected_version" value="{{ selected_control.campaign_version if selected_control.campaign_version is not none else '' }}">
+            <input type="hidden" name="live" value="{{ '0' if selected_control.live_opt_in else '1' }}">
+            <input type="hidden" name="back" value="/app/admin/campaigns/{{ campaign.id }}/diagnostics?stage={{ selected }}">
+            <label class="v2-sr" for="live-reason">Why</label>
+            <input class="v2-input" id="live-reason" name="reason" maxlength="500" placeholder="Why (kept on the record)">
+            <button class="v2-btn {{ '' if selected_control.live_opt_in else 'primary' }}" type="submit">{{ 'Stop live work' if selected_control.live_opt_in else 'Enable live work' }}</button>
+          </form>
+        </div>
+      </div>
+      {% endif %}
+      <div class="v2-card">
+        <div class="v2-card-head tight"><h2>Recent pipeline events</h2></div>
+        {% for event in activity[:15] %}
+        <div class="v2-activity-row">
+          <span class="v2-activity-time">{{ event.occurred_at | clock }}</span>
+          <div>
+            <div class="v2-activity-text">{{ (event.contact_label or 'A person') | neutralize }} — {{ event.event_type.value | nice }}</div>
+            <div class="v2-activity-meta m">{{ event.agent_id.value if event.agent_id else 'pipeline' }}{% if event.reason_code %} · {{ event.reason_code }}{% endif %}</div>
+          </div>
+        </div>
+        {% else %}
+        <div class="v2-row tight v2-note">No events yet.</div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

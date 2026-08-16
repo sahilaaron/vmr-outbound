@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="v2-page wiz">
+  <h1 class="v2-h1 big">Connections</h1>
+  <p class="v2-lede">Services connected to your own account. Nothing here belongs to a Campaign or to a teammate.</p>
+
+  <div class="v2-card v2-mt">
+    <div class="v2-card-head tight"><h2>Gmail</h2></div>
+    <div class="v2-card-body roomy">
+      {% if not gmail_drafts_on or not mailbox.available %}
+      <p class="v2-note">Gmail drafts are not available in this environment{% if not signed_in %} — connecting a mailbox needs a signed-in account{% endif %}.</p>
+      {% elif mailbox.connected %}
+      <div class="v2-chipline">
+        <span class="v2-fact ok">Connected · {{ mailbox.mailbox_address }}</span>
+      </div>
+      <p class="v2-note v2-mt-sm">VMR can create drafts in this mailbox when you ask it to, one email at a time. It cannot send: no send call exists.</p>
+      <form method="post" action="/gmail/disconnect" class="v2-mt-sm">
+        <input type="hidden" name="back" value="/app/account/connections">
+        <button class="v2-btn" type="submit">Disconnect Gmail</button>
+      </form>
+      {% elif mailbox.needs_reconnect %}
+      <div class="v2-chipline">
+        <span class="v2-fact warn">Needs reconnecting · {{ mailbox.mailbox_address }}</span>
+      </div>
+      <p class="v2-note v2-mt-sm">Google no longer accepts the earlier authorization. Drafts already created are still in the mailbox; reconnecting restores draft creation.</p>
+      <form method="post" action="/gmail/connect" class="v2-mt-sm">
+        <input type="hidden" name="back" value="/app/account/connections">
+        <button class="v2-btn primary" type="submit">Reconnect Gmail</button>
+      </form>
+      {% else %}
+      <p class="v2-note">Not connected. Connecting asks Google, on its own consent screen, for permission to create drafts in one mailbox — the narrowest permission Google offers, and never permission to send.</p>
+      <form method="post" action="/gmail/connect" class="v2-mt-sm">
+        <input type="hidden" name="back" value="/app/account/connections">
+        <button class="v2-btn primary" type="submit">Connect Gmail</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

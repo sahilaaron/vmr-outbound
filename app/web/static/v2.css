@@ -2862,3 +2862,394 @@ progress.v2-progress::-moz-progress-bar {
 }
 .v2-menu-signout b { display: block; }
 .v2-menu-signout span { display: block; }
+
+/* ==========================================================================
+   Pass 2 shell: four destinations, Campaign workspace, Add people.
+   ========================================================================== */
+
+/* ---------------- Header ---------------- */
+.v2-navlink.admin {
+  color: var(--n-500);
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+}
+.v2-navlink.admin.active {
+  color: var(--n-800);
+  box-shadow: inset 0 -2px 0 var(--n-500);
+}
+.v2-btn.sm {
+  height: 30px;
+  padding: 0 12px;
+  font-size: 12.5px;
+}
+.v2-select.sm {
+  height: 30px;
+  font-size: 12.5px;
+}
+.v2-ok {
+  color: var(--ok-700);
+}
+.v2-err {
+  color: var(--err-700);
+}
+
+/* ---------------- Row links ---------------- */
+.v2-rowlinks tbody tr {
+  cursor: pointer;
+}
+.v2-rowlink {
+  font-weight: 600;
+  color: var(--ink);
+}
+.v2-rowlink:hover {
+  color: var(--indigo-700);
+}
+.v2-count {
+  margin-left: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--n-500);
+}
+
+/* ---------------- Campaign header + tabs ---------------- */
+.v2-camp-head-inner {
+  max-width: 1560px;
+  margin: 0 auto;
+  padding: 16px var(--gutter) 0;
+}
+.v2-camp-head .v2-crumbs {
+  margin-bottom: 8px;
+}
+.v2-camp-head .v2-title-row {
+  align-items: flex-start;
+}
+.v2-camp-head .v2-lede {
+  margin-top: 4px;
+  max-width: 720px;
+}
+.v2-camp-counts {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  font-size: 12.5px;
+  color: var(--n-500);
+}
+.v2-camp-counts a {
+  color: var(--n-600);
+}
+.v2-camp-counts a b {
+  color: var(--n-800);
+  font-weight: 600;
+  margin-right: 3px;
+}
+.v2-camp-counts a.v2-ok b {
+  color: var(--ok-700);
+}
+.v2-camp-counts .sep {
+  color: var(--n-300);
+}
+.v2-tabs {
+  display: flex;
+  gap: 4px;
+  margin-top: 14px;
+  border-bottom: 1px solid transparent;
+}
+.v2-tab {
+  display: inline-flex;
+  align-items: center;
+  height: 36px;
+  padding: 0 12px;
+  font-family: var(--font-display);
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--n-600);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.v2-tab:hover {
+  text-decoration: none;
+  color: var(--indigo-700);
+}
+.v2-tab.on {
+  color: var(--indigo-700);
+  border-bottom-color: var(--indigo-500);
+}
+summary.v2-more {
+  list-style: none;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  padding: 0 10px;
+}
+summary.v2-more::-webkit-details-marker {
+  display: none;
+}
+.v2-menu-button {
+  all: unset;
+  display: block;
+  width: 100%;
+  cursor: pointer;
+}
+.v2-menu-button b {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.v2-menu-button span {
+  display: block;
+  font-size: 12px;
+  color: var(--n-500);
+}
+form.v2-menu-item {
+  padding: 0;
+}
+form.v2-menu-item .v2-menu-button {
+  padding: 10px 14px;
+}
+
+/* ---------------- Outcomes bar ---------------- */
+.v2-outcomes {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.v2-outcome-bar {
+  display: flex;
+  height: 12px;
+  border-radius: var(--r-pill);
+  overflow: hidden;
+  background: var(--n-100);
+}
+.v2-outcome-bar .seg {
+  display: block;
+  height: 100%;
+}
+.v2-outcome-bar .processing,
+.v2-outcome-legend .swatch.processing {
+  background: var(--info-500);
+}
+.v2-outcome-bar .ready,
+.v2-outcome-legend .swatch.ready {
+  background: var(--ok-500);
+}
+.v2-outcome-bar .stopped,
+.v2-outcome-legend .swatch.stopped {
+  background: var(--n-300);
+}
+.v2-outcome-legend {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+.v2-outcome-legend a {
+  color: var(--n-700);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.v2-outcome-legend .swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+.v2-outcome-legend b {
+  font-weight: 600;
+}
+
+/* ---------------- Fact lists (Setup summary) ---------------- */
+.v2-facts {
+  margin: 0;
+  padding: 4px 0;
+}
+.v2-fact-row {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr);
+  gap: 10px;
+  padding: 7px 15px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--n-100);
+}
+.v2-fact-row:last-child {
+  border-bottom: none;
+}
+.v2-fact-row dt {
+  color: var(--n-500);
+}
+.v2-fact-row dd {
+  margin: 0;
+  color: var(--n-800);
+}
+.v2-reason-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+
+/* ---------------- Answers and notices ---------------- */
+.v2-answer {
+  margin-top: 18px;
+  padding: 12px 16px;
+  border-radius: var(--r-lg);
+  border: 1px solid var(--n-200);
+  background: var(--n-0);
+  font-size: 13.5px;
+}
+.v2-answer.ok {
+  border-color: #bfe6d3;
+  background: var(--ok-50);
+  color: var(--ok-700);
+}
+.v2-answer.warn {
+  border-color: #f2ddb0;
+  background: var(--warn-50);
+  color: var(--warn-700);
+}
+.v2-answer-notice {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.v2-answer-notice form {
+  margin-left: auto;
+}
+
+/* ---------------- Toolbar + search ---------------- */
+.v2-card-head.v2-toolbar {
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.v2-search {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.v2-search .v2-input {
+  width: 260px;
+}
+.v2-view-switch {
+  margin-bottom: 14px;
+}
+
+/* ---------------- Setup ---------------- */
+.v2-setup-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 16px;
+  align-items: start;
+}
+.v2-form-card {
+  padding: 22px 24px;
+}
+.v2-form-actions {
+  margin-top: 4px;
+}
+.v2-danger {
+  border-color: #f0c9c6;
+}
+.v2-danger .v2-card-head h2 {
+  color: var(--err-700);
+}
+.v2-confirm-form {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.v2-check-inline {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 13px;
+  color: var(--n-700);
+}
+.v2-sidelist-top form.push,
+.v2-sidelist-top .push {
+  margin-left: auto;
+}
+
+/* ---------------- Add people ---------------- */
+.v2-source-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+.v2-source {
+  background: var(--n-0);
+  border: 1px solid var(--n-200);
+  border-radius: var(--r-xl);
+  padding: 18px 20px;
+  box-shadow: var(--sh-xs);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.v2-source.is-off {
+  background: var(--n-50);
+}
+.v2-source-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.v2-source-head h2 {
+  font-size: 15px;
+  font-weight: 700;
+}
+.v2-steps {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--n-700);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* ---------------- Admin landing ---------------- */
+.v2-admin-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+.v2-admin-card {
+  display: block;
+  background: var(--n-0);
+  border: 1px solid var(--n-200);
+  border-radius: var(--r-xl);
+  padding: 16px 18px;
+  color: var(--ink);
+  box-shadow: var(--sh-xs);
+}
+.v2-admin-card:hover {
+  text-decoration: none;
+  border-color: var(--n-300);
+  box-shadow: var(--sh-md);
+}
+.v2-admin-card b {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+.v2-admin-card span {
+  font-size: 12.5px;
+  color: var(--n-500);
+}
+body.v2 tbody tr.is-selected {
+  background: var(--indigo-50);
+}
+
+@media (max-width: 1100px) {
+  .v2-setup-grid,
+  .v2-source-grid,
+  .v2-admin-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

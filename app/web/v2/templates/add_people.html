@@ -1,0 +1,102 @@
+{#
+  Add people: one action, a compact source chooser. The source is a delivery
+  mechanism, not the goal — every source creates the same permanent People and
+  the same Campaign membership.
+#}
+{% extends "base.html" %}
+{% from "_ui.html" import tag %}
+{% block content %}
+<div class="v2-page wiz">
+  <nav class="v2-crumbs" aria-label="Breadcrumb">
+    <a href="/app/campaigns">Campaigns</a>
+    {% if campaign %}
+    <span class="sep" aria-hidden="true">/</span>
+    <a href="/app/campaigns/{{ campaign.id }}">{{ campaign.name | neutralize }}</a>
+    {% endif %}
+    <span class="sep" aria-hidden="true">/</span>
+    <span>Add people</span>
+  </nav>
+  <h1 class="v2-h1 big">Add people{% if campaign %} to {{ campaign.name | neutralize }}{% endif %}</h1>
+  <p class="v2-lede">
+    Pick where they are coming from. Whichever you use, VMR starts preparing their emails as soon as they arrive.
+  </p>
+
+  {% if not campaign %}
+    {% if campaigns %}
+    <form class="v2-card v2-mt" method="get" action="/app/add-people">
+      <div class="v2-card-body roomy v2-inline-form">
+        <label for="add-campaign"><b>Which Campaign?</b></label>
+        <select class="v2-select" id="add-campaign" name="campaign" required>
+          <option value="">Choose a Campaign…</option>
+          {% for item in campaigns %}
+          <option value="{{ item.id }}">{{ item.name | neutralize }}</option>
+          {% endfor %}
+        </select>
+        <button class="v2-btn primary" type="submit">Continue</button>
+        <span class="v2-hint">or <a href="/app/campaigns/new">create a new Campaign</a></span>
+      </div>
+    </form>
+    {% else %}
+    <div class="v2-card v2-mt">
+      <div class="v2-card-body roomy">
+        <b>Create a Campaign first.</b>
+        <p class="v2-note">People are added to a Campaign, and that is where their emails appear.</p>
+        <div class="v2-btn-row v2-mt-sm"><a class="v2-btn primary" href="/app/campaigns/new">New Campaign</a></div>
+      </div>
+    </div>
+    {% endif %}
+  {% else %}
+
+  <div class="v2-source-grid v2-mt">
+
+    <div class="v2-source {{ '' if capture_on else 'is-off' }}">
+      <div class="v2-source-head">
+        <h2>Chrome extension</h2>
+        {% if capture_on %}{{ tag('ready', 'ok', small=true) }}{% else %}{{ tag('switched off', '', small=true) }}{% endif %}
+      </div>
+      <p class="v2-note">Capture people from LinkedIn or Sales Navigator pages you already have open. Best for a handful at a time.</p>
+      <ol class="v2-steps">
+        <li>Open a profile or a search results page in Chrome.</li>
+        <li>Open the <b>VM Prospector</b> panel and file into <b>{{ campaign.name | neutralize }}</b>.</li>
+        <li>Save. Each person is added here within seconds.</li>
+      </ol>
+      {% if not capture_on %}<p class="v2-hint">Capture is switched off in this environment; an administrator can turn it on.</p>{% endif %}
+    </div>
+
+    <div class="v2-source {{ '' if sheets_on else 'is-off' }}">
+      <div class="v2-source-head">
+        <h2>Google Sheets</h2>
+        {% if sheets_on %}{{ tag('ready', 'ok', small=true) }}{% else %}{{ tag('switched off', '', small=true) }}{% endif %}
+      </div>
+      <p class="v2-note">Send rows from a sheet — first name, last name and company are enough. The address and emails are written back into the sheet too.</p>
+      <ol class="v2-steps">
+        <li>Open your sheet and choose <b>Extensions → VMR Outbound → Open VMR Outbound</b>.</li>
+        <li>Choose <b>{{ campaign.name | neutralize }}</b> and send the rows.</li>
+        <li>Watch them arrive here; results also fill the sheet.</li>
+      </ol>
+      {% if not sheets_on %}<p class="v2-hint">The Sheets add-on is switched off in this environment; an administrator can turn it on.</p>{% endif %}
+    </div>
+
+    <div class="v2-source {{ '' if import_on else 'is-off' }}">
+      <div class="v2-source-head">
+        <h2>Import a file</h2>
+        {% if import_on %}{{ tag('ready', 'ok', small=true) }}{% else %}{{ tag('switched off', '', small=true) }}{% endif %}
+      </div>
+      <p class="v2-note">Upload a <code>.csv</code> or <code>.xlsx</code> export. You see exactly what will happen before anything is added.</p>
+      {% if import_on and campaign.status.value != 'archived' %}
+      <div class="v2-btn-row"><a class="v2-btn primary" href="/app/campaigns/{{ campaign.id }}/imports">Choose a file</a></div>
+      {% elif not import_on %}
+      <p class="v2-hint">File import is switched off in this environment; an administrator can turn it on.</p>
+      {% else %}
+      <p class="v2-hint">This Campaign is archived and cannot receive people.</p>
+      {% endif %}
+    </div>
+
+  </div>
+
+  <p class="v2-hint v2-mt">
+    People are permanent records: adding someone to this Campaign never removes them from anywhere else, and capturing someone twice never creates a second record.
+  </p>
+  {% endif %}
+</div>
+{% endblock %}

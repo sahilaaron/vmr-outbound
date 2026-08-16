@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% from "_ui.html" import outcome_tag, empty, pager %}
+{% block content %}
+{% include "_campaign_header.html" %}
+
+<div class="v2-page">
+  <div class="v2-card clip">
+    <div class="v2-card-head v2-toolbar">
+      <div class="v2-chips">
+        {% for key, label in filters %}
+        <a class="v2-chip sm {{ 'on' if key == outcome }}" href="{{ base_href }}/people?outcome={{ key }}{% if q %}&q={{ q | urlencode }}{% endif %}">{{ label }}</a>
+        {% endfor %}
+      </div>
+      <form class="v2-search push" method="get" action="{{ base_href }}/people" role="search">
+        <input type="hidden" name="outcome" value="{{ outcome }}">
+        <label class="v2-sr" for="people-q">Search people</label>
+        <input class="v2-input sm" id="people-q" name="q" value="{{ q }}" placeholder="Search name, company or email">
+        <button class="v2-btn small" type="submit">Search</button>
+      </form>
+    </div>
+
+    {% if rows %}
+    <div class="v2-table-wrap">
+      <table class="v2-rowlinks">
+        <thead>
+          <tr>
+            <th>Person</th>
+            <th>Company</th>
+            <th>Email address</th>
+            <th>Outcome</th>
+            <th>Detail</th>
+            <th class="num">Changed</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr>
+            <td><a class="v2-rowlink" href="/app/people/{{ row.contact_id }}?campaign={{ campaign.id }}">{{ row.name | neutralize }}</a></td>
+            <td>{{ (row.company | neutralize) or '—' }}</td>
+            <td class="m">{{ (row.email | neutralize) or '—' }}</td>
+            <td class="v2-nowrap">{{ outcome_tag(row.outcome, row.outcome_label, small=true) }}</td>
+            <td class="v2-note">{{ row.detail }}{% if row.ready %} · <a href="/app/people/{{ row.contact_id }}?campaign={{ campaign.id }}#emails">Open emails</a>{% endif %}</td>
+            <td class="num v2-nowrap v2-muted">{{ row.updated_at | when }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="v2-card-foot">
+      {{ pager(page, pages, total, base_url, 'people') }}
+    </div>
+    {% elif q %}
+      {{ empty('Nobody matches', 'Try a different name, company or email.') }}
+    {% elif outcome != 'all' %}
+      {{ empty('Nobody here', 'No one in this Campaign has that outcome right now.') }}
+    {% else %}
+      {{ empty('Nobody has been added yet', 'Add people from the Chrome extension, Google Sheets or a file.') }}
+      <div class="v2-card-foot"><a class="v2-btn primary" href="{{ base_href }}/add-people">Add people</a></div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

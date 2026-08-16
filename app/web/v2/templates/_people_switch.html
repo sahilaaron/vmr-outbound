@@ -1,0 +1,5 @@
+{# People · Companies is one destination with a local switch. Expects `people_view`. #}
+<div class="v2-chips v2-view-switch">
+  <a class="v2-chip {{ 'on' if people_view == 'people' }}" href="/app/people">People</a>
+  <a class="v2-chip {{ 'on' if people_view == 'companies' }}" href="/app/companies">Companies</a>
+</div>

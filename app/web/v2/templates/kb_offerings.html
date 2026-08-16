@@ -87,7 +87,7 @@
         </div>
         {% for offering in offerings %}
         <a class="v2-sidelist-item {{ 'on' if selected and offering.id == selected.id }}{{ ' dim' if offering.state.value == 'archived' }}"
-           href="/app/knowledge/offerings?offering={{ offering.id }}">
+           href="/app/library/offerings?offering={{ offering.id }}">
           <div class="v2-sidelist-top">
             <b>{{ offering.name }}</b>
             {% if offering.state.value == 'archived' %}{{ tag('archived', '', small=true) }}{% endif %}
