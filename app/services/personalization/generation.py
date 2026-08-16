@@ -113,6 +113,16 @@ class GeneratedPersonalization:
     producer_version: str
 
 
+def public_decision_rationale(decision: ContextDecision) -> str:
+    """A deterministic, public summary of policy provenance, never model reasoning."""
+
+    return (
+        f"Policy selected {decision.strategy.identifier} via "
+        f"{decision.fallback_identifier}; selected {len(decision.used)} context item(s) "
+        f"and omitted {len(decision.rejected)}."
+    )
+
+
 _TOKEN = re.compile(r"[a-z0-9]{3,}")
 _STOP = frozenset(
     {
@@ -679,8 +689,7 @@ Return exactly one JSON object:
 {{
   "subject": "under 60 characters",
   "body": "plain-text email",
-  "evidence_insight_ids": ["only supplied insight ids actually used"],
-  "rationale": "a concise decision explanation, not private reasoning"
+  "evidence_insight_ids": ["only supplied insight ids actually used"]
 }}
 """
 
@@ -791,12 +800,6 @@ def generate(
     subject = subject_raw.strip()[:300]
     body = body_raw.strip()[:20_000]
     _enforce_copy_contract(body, max_words=bounded_max_words)
-    rationale_raw = answer.payload.get("rationale")
-    rationale = (
-        rationale_raw.strip()[:2_000]
-        if isinstance(rationale_raw, str) and rationale_raw.strip()
-        else None
-    )
     allowed = {item.evidence_id for item in decision.used if item.evidence_id}
     cited_raw = answer.payload.get("evidence_insight_ids")
     cited = tuple(
@@ -817,7 +820,7 @@ def generate(
     return GeneratedPersonalization(
         subject=subject,
         body=body,
-        rationale=rationale,
+        rationale=public_decision_rationale(decision),
         evidence_insight_ids=cited,
         policy_version_id=policy.id,
         policy_version_number=policy.version_number,

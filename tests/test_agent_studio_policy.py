@@ -438,6 +438,7 @@ def test_shared_prompt_makes_the_copy_standard_operational(
     assert "Do not force every available fact" in prompt
     assert "praise, flattery, fake familiarity, and performative research" in prompt
     assert "Use the earnest offering-led fallback as a successful outcome" in prompt
+    assert '"rationale"' not in prompt
 
 
 def test_preview_rejects_performative_or_assumptive_generated_copy(

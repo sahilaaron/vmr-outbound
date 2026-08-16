@@ -70,7 +70,7 @@ from app.services.thinking.contracts import Thinker, ThinkingRequest
 #: Bumping this is a statement that the same inputs would now produce a
 #: different sequence, so it is part of the input digest. Prompt shape, purpose
 #: framework and parse contract all live behind it.
-SEQUENCE_PRODUCER_VERSION = "sequence-builder/v1"
+SEQUENCE_PRODUCER_VERSION = "sequence-builder/v2"
 
 #: What each position is for, and the shape of the ask it carries. These are
 #: purposes, not templates -- the Campaign offering, the CTA, the active policy
@@ -473,7 +473,6 @@ shorter rather than progressively more insistent.
 
 Return exactly one JSON object with exactly {SEQUENCE_LENGTH} messages, in order:
 {{
-  "rationale": "a concise explanation of how the sequence was planned",
   "messages": [
     {{
       "position": 1,
@@ -844,7 +843,7 @@ def generate_sequence(
         research_lineage=research_lineage,
         insights_lineage=insights_lineage,
         intelligence_lineage=intelligence_lineage,
-        rationale=_text(answer.payload.get("rationale"), limit=2_000),
+        rationale=generation.public_decision_rationale(decision),
         warnings=tuple(answer.warnings) + findings.sequence_warnings,
         validation_findings=findings.summary(),
     )

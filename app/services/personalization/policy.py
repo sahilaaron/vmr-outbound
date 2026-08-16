@@ -483,7 +483,10 @@ def default_policy() -> PolicyConfig:
             True,
             "A current, supported Company fact has explicit offering relevance.",
             ("company", "combined"),
-            "State one sourced fact briefly, then ask a curiosity-led question.",
+            (
+                "State the selected sourced Company context briefly, then ask a "
+                "curiosity-led question."
+            ),
             "Introduce the seller after the question, never inside the factual statement.",
             "Invite a reply to the question rather than asking for calendar time.",
             ("company summary", "praise", "unsupported implication"),
@@ -510,7 +513,7 @@ def default_policy() -> PolicyConfig:
             True,
             "A supported, current Company fact materially changes the offering's relevance.",
             ("company", "combined"),
-            "Use one short Company-context reference; never describe the organisation.",
+            "Use selected Company context briefly; never describe the organisation.",
             "Introduce the offering after the relevance link is clear.",
             "Ask a narrow question about whether the connection matters.",
             ("fact stacking", "company explanation", "intelligence display"),
@@ -552,7 +555,7 @@ _TEMPERAMENT_INSTRUCTIONS: Final[dict[str, tuple[str, ...]]] = {
     "company_context_usage": (
         "Do not use Company context.",
         "Use Company context only when it is the clearest available relevance link.",
-        "Use one Company fact when it materially improves relevance.",
+        "Use Company context when it materially improves relevance.",
         "Prefer a useful Company connection when it clears every evidence gate.",
         "Lead from Company context whenever a supported, relevant fact is available.",
     ),

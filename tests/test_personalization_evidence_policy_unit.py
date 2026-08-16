@@ -283,6 +283,21 @@ def test_company_context_limit_is_explicit_and_bounded(
     assert policy.company_context_limit(config) == expected_limit
 
 
+def test_default_policy_has_one_cardinality_owner_for_company_context() -> None:
+    config = policy.default_policy()
+    instructions = policy.temperament_instructions(config)
+
+    assert config.temperament.personalization_depth is policy.Scale.LOW
+    assert policy.company_context_limit(config) == 2
+    assert instructions[0] == "Use Company context when it materially improves relevance."
+    assert instructions[3].startswith("Use at most two connected Company insights")
+    assert all(
+        "one sourced fact" not in strategy.opening_shape.casefold()
+        and "one short company-context" not in strategy.opening_shape.casefold()
+        for strategy in config.strategies
+    )
+
+
 def test_equal_confidence_candidates_have_a_stable_evidence_id_tiebreaker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
