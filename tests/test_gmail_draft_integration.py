@@ -1539,22 +1539,27 @@ def test_the_page_shows_the_connected_mailbox_and_the_create_action(
     )
     committed_session.commit()
 
-    # The person page shows the emails and points into the Campaign; the
+    # The person page carries no emails; it points into the Campaign. The
     # one-email draft action lives on the sending desk, per selected email.
     page = client.get(f"/app/people/{fixture.contact.id}?campaign={fixture.campaign.id}")
     assert page.status_code == 200
     assert "Open in Campaign" in page.text
-    assert "gmail-drafts" not in page.text
-    for version_id in fixture.version_ids:
-        assert str(version_id) in page.text
+    assert "gmail-draft" not in page.text
 
-    desk = client.get(
-        f"/app/campaigns/{fixture.campaign.id}?section=all&person={fixture.membership.id}"
-    )
-    assert desk.status_code == 200
-    assert oauth.mailbox_address in desk.text
-    assert f"/desk/{fixture.membership.id}/1/gmail-draft" in desk.text
-    assert "Nothing is sent or scheduled" in desk.text
+    for position, version_id in enumerate(fixture.version_ids, start=1):
+        desk = client.get(
+            f"/app/campaigns/{fixture.campaign.id}"
+            f"?section=all&person={fixture.membership.id}&email={position}"
+        )
+        assert desk.status_code == 200
+        assert oauth.mailbox_address in desk.text
+        assert f"/desk/{fixture.membership.id}/{position}/gmail-draft" in desk.text
+        # The action names this email's exact version, and no other's.
+        assert f'name="version_id" value="{version_id}"' in desk.text
+        for other in fixture.version_ids:
+            if other != version_id:
+                assert str(other) not in desk.text
+        assert "Nothing is sent or scheduled" in desk.text
 
 
 def test_the_review_page_does_not_offer_the_draft_action(
@@ -2044,9 +2049,13 @@ def test_a_password_authenticated_operator_can_connect_and_draft(
     fixture = build_sequence(committed_session, owner_user_id=operator.user_id)
     committed_session.commit()
 
-    page = client.get(f"/app/people/{fixture.contact.id}?campaign={fixture.campaign.id}")
-    assert page.status_code == 200
-    assert oauth.mailbox_address in page.text
+    # The connected mailbox is named on the sending desk, where the draft action is.
+    desk = client.get(
+        f"/app/campaigns/{fixture.campaign.id}?section=all&person={fixture.membership.id}"
+    )
+    assert desk.status_code == 200
+    assert oauth.mailbox_address in desk.text
+    assert f"/desk/{fixture.membership.id}/1/gmail-draft" in desk.text
 
     created = client.post(
         f"/app/review/sequence/{fixture.sequence.id}/gmail-drafts",

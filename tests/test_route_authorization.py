@@ -479,7 +479,8 @@ def test_the_classification_counts_are_the_ones_deliberately_recorded() -> None:
     # and the per-Campaign re-run / live routes are withheld under `/app/admin`.
     # And 94 to 100 with the inline sending desk: five explicit manual acts on
     # one email (actioned, edit, gmail-draft, skip, undo) and Today's dismiss.
-    assert len(EXPECTED_USER_REACHABLE) == 100, len(EXPECTED_USER_REACHABLE)
+    # And 100 to 101: adding existing people to a Campaign from the People list.
+    assert len(EXPECTED_USER_REACHABLE) == 101, len(EXPECTED_USER_REACHABLE)
 
 
 def test_reading_the_verification_page_is_not_spending(client: TestClient) -> None:
@@ -996,6 +997,7 @@ EXPECTED_USER_REACHABLE: frozenset[str] = frozenset(
         "GET /app/library",
         "GET /app/library/{section}",
         "GET /app/people",
+        "POST /app/people/add-to-campaign",
         "GET /app/people/{contact_id}",
         "POST /app/review/sequence/messages/{version_id}/approve",
         "POST /app/review/sequence/messages/{version_id}/discard",

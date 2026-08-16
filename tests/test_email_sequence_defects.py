@@ -30,7 +30,6 @@ from app.models.email_sequence import (
     EmailSequenceMessageVersion,
 )
 from app.models.enums import (
-    SequenceGenerationStatus,
     SequenceReviewState,
     SequenceStopReason,
     SequenceStopState,
@@ -48,7 +47,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import event, func, select
 from sqlalchemy.orm import Session
 
-from tests.test_email_sequence import SUBJECTS, build
+from tests.test_email_sequence import build
 from tests.test_email_sequence import scenario as _scenario
 
 scenario = _scenario
@@ -86,30 +85,12 @@ def client_off(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> Iterator
 
 
 # ===========================================================================
-# D-1 / D-2 — the UI gate must agree with the generation gate, and every
-# declared state must be reachable with its own wording.
+# D-1 / D-2 — the UI gate must agree with the generation gate.
+#
+# The person page no longer carries per-state sequence notices (opted out,
+# never opted in, nothing generated, refused), so those wording tests are gone;
+# the route-level refusal is the part that survives.
 # ===========================================================================
-
-
-def test_an_opted_out_campaign_keeps_its_sequence_but_says_it_is_read_only(
-    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
-) -> None:
-    """D-1: the two gates used to disagree, so both outcomes looked current."""
-
-    campaign, _company, contact, membership, _policy, _evidence = scenario
-    build(db_session, scenario)
-    campaign.cadence_config = {"sequence": {"enabled": False}}
-    db_session.flush()
-
-    body = client.get(f"/app/people/{contact.id}?campaign={membership.campaign_id}").text
-
-    # Still shown -- the work happened.
-    assert "The seven-message sequence" in body
-    assert SUBJECTS[0] in body
-    # And explained, rather than left to look current.
-    assert "Read-only" in body
-    assert "no longer configured to generate sequences" in body
-    assert "kept read-only" in body
 
 
 def test_an_opted_out_campaign_refuses_new_review_decisions(
@@ -136,72 +117,9 @@ def test_an_opted_out_campaign_refuses_new_review_decisions(
     assert db_session.scalar(select(func.count(EmailSequenceMessageReview.id))) == 0
 
 
-def test_a_campaign_that_never_opted_in_is_told_so(
-    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
-) -> None:
-    """D-2: the campaign_off state is reachable and does not say 'pending'."""
-
-    campaign, _company, contact, membership, _policy, _evidence = scenario
-    campaign.cadence_config = {"sequence": {"enabled": False}}
-    db_session.flush()
-
-    body = client.get(f"/app/people/{contact.id}?campaign={membership.campaign_id}").text
-    assert "not set up to generate sequences" in body
-    assert "No sequence has been written yet" not in body
-
-
-def test_an_opted_in_campaign_with_nothing_generated_is_told_to_wait(
-    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
-) -> None:
-    """D-2: pending keeps its own wording, and only where it is true."""
-
-    _campaign, _company, contact, membership, _policy, _evidence = scenario
-    body = client.get(f"/app/people/{contact.id}?campaign={membership.campaign_id}").text
-    assert "No sequence has been written yet" in body
-    assert "This campaign is opted in" in body
-
-
-def test_a_refused_generation_says_it_was_refused(
-    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
-) -> None:
-    """D-2: the failed state is reachable and never implies work in progress."""
-
-    _campaign, _company, contact, membership, _policy, _evidence = scenario
-    sequence = build(db_session, scenario)
-    sequence.generation_status = SequenceGenerationStatus.FAILED
-    db_session.flush()
-
-    body = client.get(f"/app/people/{contact.id}?campaign={membership.campaign_id}").text
-    assert "did not produce a usable sequence" in body
-    assert "Nothing further will appear here on its own" in body
-    assert "When it finishes" not in body
-
-
 # ===========================================================================
-# D-3 — the deployment flag stops generation, not disclosure.
+# D-3 — the deployment flag stops generation, and refuses new decisions.
 # ===========================================================================
-
-
-def test_flag_off_keeps_approved_work_visible_and_read_only(
-    db_session: Session, client_off: TestClient, scenario: tuple[Any, ...]
-) -> None:
-    _campaign, _company, contact, membership, _policy, _evidence = scenario
-    sequence = build(db_session, scenario)
-    rows = sequence_read.message_rows(db_session, sequence=sequence)
-    sequence_review.approve_sequence(
-        db_session,
-        sequence_id=sequence.id,
-        expected_version_ids=tuple(row.version_id for row in rows),
-    )
-
-    contact_page = client_off.get(
-        f"/app/people/{contact.id}?campaign={membership.campaign_id}"
-    ).text
-    assert "The seven-message sequence" in contact_page
-    assert "switched off in this environment" in contact_page
-    assert "7 approved" in contact_page
-    assert "7 approved by you" in contact_page
-    assert f"/app/review/sequence/messages/{rows[0].version_id}/approve" not in contact_page
 
 
 def test_flag_off_refuses_new_decisions_but_changes_nothing_recorded(
@@ -888,16 +806,24 @@ def test_the_sequence_pages_run_no_script_under_the_deployed_csp(
 
     Asserted on the rendered pages rather than by reading the templates, so a
     macro that grew a handler in a partial this test does not know about is
-    still caught.
+    still caught. The emails are read on the inline sending desk of Campaign
+    Overview; the person page only points there.
     """
 
+    from tests.test_customer_operating_model import _ready
+
     _campaign, _company, contact, membership, _policy, _evidence = scenario
-    sequence = build(db_session, scenario)
+    sequence = _ready(db_session, scenario)
     rows = sequence_read.message_rows(db_session, sequence=sequence)
-    urls = (f"/app/people/{contact.id}?campaign={membership.campaign_id}&step=1",)
+    urls = (
+        f"/app/people/{contact.id}?campaign={membership.campaign_id}",
+        f"/app/campaigns/{membership.campaign_id}?section=all&person={membership.id}&email=1",
+    )
     for url in urls:
         body = client.get(url).text
         assert "<script>" not in body, url
         for handler in ("onclick=", "onsubmit=", "onchange=", "onload=", "javascript:"):
             assert handler not in body, f"{handler} on {url}"
-        assert str(rows[0].version_id) in body or "v2-seq" in body
+    # The desk really rendered the email, with the exact version its edit form acts on.
+    assert 'class="v2-desk"' in body
+    assert str(rows[0].version_id) in body
