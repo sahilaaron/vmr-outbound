@@ -42,9 +42,9 @@ from app.models.enums import (
 )
 from app.models.pipeline import CampaignContactAgentState
 from app.services import customer_status
-from app.services.agents.registry import PIPELINE_ORDER
+from app.services.agents.registry import AGENT_SPECS, PIPELINE_ORDER
 from app.services.personalization import cadence as cadence_service
-from app.web.v2 import context as shell
+from app.web.v2 import shell
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -112,7 +112,7 @@ def _campaign_url(scenario: tuple[Any, ...]) -> str:
 
 def _contact_url(scenario: tuple[Any, ...]) -> str:
     membership = _membership(scenario)
-    return f"/app/contacts/{scenario[2].id}?campaign={membership.campaign_id}"
+    return f"/app/people/{scenario[2].id}?campaign={membership.campaign_id}"
 
 
 def _walk_to_personalization(db: Session, membership: CampaignContact) -> None:
@@ -223,30 +223,27 @@ def test_customer_nav_carries_no_badge_of_any_kind(
     membership.eligibility_status = CampaignContactEligibility.BLOCKED
     db_session.flush()
 
-    groups = shell.nav_groups()
-    for group in groups:
-        for item in group.items:
-            assert not hasattr(item, "badge")
-            assert not hasattr(item, "badge_tone")
+    for item in shell.primary_nav():
+        assert not hasattr(item, "badge")
+        assert not hasattr(item, "badge_tone")
 
-    for path in ("/app", "/app/campaigns", "/app/review", "/app/contacts"):
+    for path in ("/app", "/app/campaigns", "/app/people", "/app/library"):
         assert "v2-nav-badge" not in client.get(path).text, path
 
 
-def test_review_is_reached_as_emails_not_as_a_queue(client: TestClient) -> None:
-    """Requirement 13, second half: Review is no longer a task destination.
+def test_emails_and_review_are_not_destinations(client: TestClient) -> None:
+    """Requirement 13, second half: emails are Campaign output, not a place.
 
-    The route is deliberately kept — it is where the seven generated messages are
-    read — but it is named for its contents rather than for an action the
-    customer is expected to perform on a backlog.
+    The customer navigation is exactly Today · Campaigns · People · Library. A
+    legacy Emails/Review link resolves back into Campaigns.
     """
 
-    keys = {item.key: item.label for group in shell.nav_groups() for item in group.items}
-    assert keys["emails"] == "Emails"
-    assert "review" not in keys
+    keys = [item.key for item in shell.primary_nav()]
+    assert keys == ["today", "campaigns", "people", "library"]
 
-    body = client.get("/app").text
-    assert "Emails" in body
+    response = client.get("/app/review", follow_redirects=False)
+    assert response.status_code == 308
+    assert response.headers["location"].startswith("/app/campaigns")
 
 
 # ===========================================================================
@@ -275,8 +272,8 @@ def test_the_campaign_page_does_not_call_stopped_stages_needs_you(
     body = client.get(_campaign_url(scenario)).text
     for phrase in FORBIDDEN_TASK_LANGUAGE:
         assert phrase not in body, phrase
-    assert "Where contacts stand" in body
-    assert "waiting on a decision from you" in body
+    assert "Where people stand" in body
+    assert "Could not prepare" in body
 
 
 def test_the_campaigns_list_reports_progress_rather_than_arrears(
@@ -476,10 +473,6 @@ def test_optional_inspect_and_edit_remain_available(
 
     sequence = _ready(db_session, scenario)
 
-    emails = client.get("/app/review")
-    assert emails.status_code == 200
-    assert "v2-seq-card" in emails.text
-
     contact = client.get(_contact_url(scenario))
     assert contact.status_code == 200
     # All seven bodies are readable on the page an operator came to read them on.
@@ -526,9 +519,13 @@ def test_the_nine_agent_pipeline_remains_visible_as_observability(
 ) -> None:
     """Visible, and explicitly not the customer's to operate."""
 
-    body = client.get(_campaign_url(scenario)).text
-    assert body.count('class="v2-pipe-stage') == len(PIPELINE_ORDER)
-    assert "none of them is yours to operate" in body
+    customer = client.get(_campaign_url(scenario)).text
+    assert "Agent" not in customer.split("<main")[1].split("Recent activity")[0]
+
+    diagnostics = client.get(f"/app/admin/campaigns/{_membership(scenario).campaign_id}/diagnostics")
+    assert diagnostics.status_code == 200
+    for agent_id in PIPELINE_ORDER:
+        assert AGENT_SPECS[agent_id].display_name in diagnostics.text
 
 
 # ===========================================================================
@@ -601,11 +598,10 @@ def test_a_genuine_setup_condition_is_kept_separate_from_a_machine_failure(
     db_session.flush()
 
     body = client.get(_campaign_url(scenario)).text
-    assert "Your setup" in body
-    assert "This campaign is paused" in body
-    assert "These are settings you control. They are not pipeline failures." in body
+    assert "Paused. Resume the Campaign" in body
+    assert "Resume Campaign" in body
     # And the machine outcome is reported separately, as status.
-    assert "Where contacts stand" in body
+    assert "Where people stand" in body
     assert "Could not prepare" in body
 
 
@@ -619,7 +615,8 @@ def test_a_configured_running_campaign_shows_no_setup_card_at_all(
     _ready(db_session, scenario)
 
     body = client.get(_campaign_url(scenario)).text
-    assert "Your setup" not in body
+    assert "Resume Campaign" not in body
+    assert "Start Campaign" not in body
 
 
 # ===========================================================================

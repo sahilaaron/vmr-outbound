@@ -658,7 +658,7 @@ def test_the_control_appears_only_where_something_is_stopped(
     client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
 ) -> None:
     _enable(db_session)
-    url = f"/app/campaigns/{scenario.campaign.id}?stage=research"
+    url = f"/app/admin/campaigns/{scenario.campaign.id}/diagnostics?stage=research"
 
     assert "Run again for all" not in client.get(url).text
 
@@ -667,8 +667,8 @@ def test_the_control_appears_only_where_something_is_stopped(
     body = client.get(url).text
     # "all 1" would be the natural output of a count-driven label and reads as a bug.
     assert "Run again for all" not in body
-    assert "Run again for this contact" in body
-    assert "Why each one stopped" in body
+    assert "Run again for this person" in body
+    assert "stopped here" in body
 
 
 def test_the_page_states_the_reason_where_a_re_run_cannot_help(
@@ -681,9 +681,10 @@ def test_the_page_states_the_reason_where_a_re_run_cannot_help(
     _suppress_after_the_fact(db_session, scenario, "healthy")
     db_session.commit()
 
-    body = client.get(f"/app/campaigns/{scenario.campaign.id}?stage=research").text
-    assert "1 contact stopped here" in body
-    assert "It cannot be re-run" in body
+    body = client.get(
+        f"/app/admin/campaigns/{scenario.campaign.id}/diagnostics?stage=research"
+    ).text
+    assert "1 stopped here" in body
     assert "outranks a re-run" in body
     assert "Run again" not in body
 
@@ -699,8 +700,10 @@ def test_a_stage_stopped_only_by_a_block_still_explains_itself(
     contact that most needed one. The scenario's Identity block is that case.
     """
 
-    body = client.get(f"/app/campaigns/{scenario.campaign.id}?stage=identity").text
-    assert "contact stopped here" in body
+    body = client.get(
+        f"/app/admin/campaigns/{scenario.campaign.id}/diagnostics?stage=identity"
+    ).text
+    assert "stopped here" in body
     assert "outranks a re-run" in body
 
 
@@ -710,8 +713,10 @@ def test_the_page_warns_that_the_agent_spends_before_a_bulk_run(
     _enable(db_session)
     _stop_stage(db_session, scenario, "healthy")
     db_session.commit()
-    body = client.get(f"/app/campaigns/{scenario.campaign.id}?stage=research").text
-    assert "This Agent spends per contact" in body
+    body = client.get(
+        f"/app/admin/campaigns/{scenario.campaign.id}/diagnostics?stage=research"
+    ).text
+    assert "This Agent spends per person" in body
 
 
 def test_running_again_over_http_reports_what_happened(
@@ -722,7 +727,7 @@ def test_running_again_over_http_reports_what_happened(
     db_session.commit()
 
     response = client.post(
-        f"/app/campaigns/{scenario.campaign.id}/agents/research/rerun",
+        f"/app/admin/campaigns/{scenario.campaign.id}/agents/research/rerun",
         data={"reason": "fixed it"},
         follow_redirects=True,
     )
@@ -741,7 +746,7 @@ def test_a_refusal_over_http_names_the_contact(
     db_session.commit()
 
     response = client.post(
-        f"/app/campaigns/{scenario.campaign.id}/agents/research/rerun",
+        f"/app/admin/campaigns/{scenario.campaign.id}/agents/research/rerun",
         data={},
         follow_redirects=True,
     )
@@ -752,7 +757,7 @@ def test_a_refusal_over_http_names_the_contact(
 def test_an_unknown_agent_or_campaign_is_refused(client: TestClient) -> None:
     assert (
         client.post(
-            f"/app/campaigns/{uuid.uuid4()}/agents/nonsense/rerun",
+            f"/app/admin/campaigns/{uuid.uuid4()}/agents/nonsense/rerun",
             data={},
             follow_redirects=False,
         ).status_code
@@ -760,7 +765,7 @@ def test_an_unknown_agent_or_campaign_is_refused(client: TestClient) -> None:
     )
     assert (
         client.post(
-            "/app/campaigns/not-a-uuid/agents/research/rerun", data={}, follow_redirects=False
+            "/app/admin/campaigns/not-a-uuid/agents/research/rerun", data={}, follow_redirects=False
         ).status_code
         == 303
     )

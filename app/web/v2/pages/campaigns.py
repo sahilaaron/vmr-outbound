@@ -72,6 +72,7 @@ def _workspace_context(
         "page_title": campaign.name,
         "campaign": campaign,
         "header": header,
+        "answer": _setup_answer(db, campaign, header),
         "tab": tab,
         "tabs": TABS,
         "base_href": f"/app/campaigns/{campaign.id}",
@@ -83,10 +84,24 @@ def _workspace_context(
 def _setup_answer(
     db: Session, campaign: Campaign, header: campaign_workspace.CampaignHeader
 ) -> dict[str, Any]:
-    """The one computed sentence Setup ends with, and Overview repeats when needed."""
+    """The one computed sentence Setup ends with, and Overview repeats when needed.
+
+    Said before any button is pressed: a Campaign held by an administrator
+    setting is told so here, in the customer's words, rather than being offered
+    a Start that would be refused. Which Agents are off is Admin's to see, on
+    the diagnostics page.
+    """
 
     if header.is_archived:
         return {"ready": False, "text": "Archived. Nothing more will be prepared."}
+    if campaign_opted_in(campaign):
+        readiness = agent_readiness.execution_readiness(db, campaign=campaign)
+        if not readiness.runnable:
+            return {
+                "ready": False,
+                "text": "Preparation is being held by an administrator setting.",
+                "admin": True,
+            }
     if header.is_draft:
         return {
             "ready": False,
@@ -99,14 +114,6 @@ def _setup_answer(
             "text": "Paused. Resume the Campaign to carry on preparing people.",
             "action": "resume",
         }
-    if campaign_opted_in(campaign):
-        readiness = agent_readiness.execution_readiness(db, campaign=campaign)
-        if not readiness.runnable:
-            return {
-                "ready": False,
-                "text": "Preparation is being held by an administrator setting.",
-                "admin": True,
-            }
     return {"ready": True, "text": "Ready to prepare people."}
 
 
@@ -244,7 +251,6 @@ def campaign_overview(
             "sequence_on": campaign_opted_in(campaign),
             "cadence_text": CADENCE_TEXT,
             "access_people": campaign_access.campaign_people(db, campaign),
-            "answer": _setup_answer(db, campaign, header),
             "activity": campaign_workspace.activity(
                 db, campaign_id=campaign.id, limit=ACTIVITY_PREVIEW
             ),
@@ -332,7 +338,6 @@ def campaign_setup(
     if campaign is None:
         return shell.not_found(request, db, "That Campaign does not exist.")
     context = _workspace_context(request, db, campaign, "setup")
-    header = context["header"]
     settings = get_settings()
     kb_on = shell.kb_on(db, settings)
     linked = seller_campaign_offerings.offerings_for_campaign(db, campaign.id) if kb_on else []
@@ -349,7 +354,6 @@ def campaign_setup(
             "access_owner": campaign_access.campaign_owner(db, campaign),
             "access_people": campaign_access.campaign_people(db, campaign),
             "assignable_users": campaign_access.assignable_users(db, campaign),
-            "answer": _setup_answer(db, campaign, header),
         }
     )
     return shell.render(request, db, "campaign_setup.html", context)

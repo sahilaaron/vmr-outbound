@@ -46,13 +46,11 @@ from app.db.session import SessionLocal
 from app.main import create_app
 from app.models.campaign import Campaign, CampaignContact, CampaignUserAssignment
 from app.models.contact import Contact
-from app.models.draft import DraftApproval, DraftVersion
 from app.models.email_sequence import EmailSequenceMessageReview
-from app.models.enums import ApprovalStatus, UserRole, UserState
+from app.models.enums import UserRole, UserState
 from app.models.user import User
 from app.services import campaign_access
 from app.services import campaigns as campaign_service
-from app.services import drafts as draft_service
 from app.services.campaign_access import CampaignActor
 from app.services.users import service as users_service
 from fastapi.testclient import TestClient
@@ -233,39 +231,6 @@ def _seed_campaign(name: str, *, owner: _Operator | None = None) -> uuid.UUID:
         )
         session.commit()
         return campaign.id
-
-
-def _seed_draft(campaign_id: uuid.UUID) -> uuid.UUID:
-    """One committed draft version inside ``campaign_id``, awaiting a decision.
-
-    Written directly rather than generated, for the reason
-    ``tests/test_v2_customer_ui.py`` records about the same rows: the only path
-    that produces a draft for real runs the local ``claude`` executable, which is
-    a model call a test must never make. The columns are the ones the
-    Personalization Agent commits, and the review routes read nothing else.
-    """
-
-    with SessionLocal() as session:
-        contact = Contact(
-            first_name="Ada",
-            last_name="Lovelace",
-            email=f"ada-{uuid.uuid4().hex[:8]}@kiln.example",
-            natural_key=f"ada|lovelace|{uuid.uuid4()}",
-        )
-        session.add(contact)
-        session.flush()
-        draft = DraftVersion(
-            contact_id=contact.id,
-            campaign_id=campaign_id,
-            version_number=1,
-            subject="Your Q3 batch-release target",
-            body="Ada — your published quality roadmap names batch-release review first.",
-            rationale="Opened on the roadmap page because it is the only recent sourced fact.",
-            created_by="personalization-agent",
-        )
-        session.add(draft)
-        session.commit()
-        return draft.id
 
 
 def _seed_membership(campaign_id: uuid.UUID) -> uuid.UUID:
@@ -618,12 +583,14 @@ def test_a_user_is_refused_when_they_post_to_a_campaign_they_were_never_assigned
     stranger = _user_session(client, email="stranger@vmr.example")
 
     _assert_campaign_refused(
-        _post(client, f"/app/campaigns/{campaign_id}/execution", stranger, enabled="true"),
-        "POST execution",
+        _post(client, f"/app/campaigns/{campaign_id}/lifecycle", stranger, action="start"),
+        "POST lifecycle",
     )
     _assert_campaign_refused(
-        _post(client, f"/app/campaigns/{campaign_id}/edit", stranger, name="Renamed by a stranger"),
-        "POST edit",
+        _post(
+            client, f"/app/campaigns/{campaign_id}/setup", stranger, name="Renamed by a stranger"
+        ),
+        "POST setup",
     )
 
     # Nothing was changed on the way to being refused, and the owner can still
@@ -635,7 +602,7 @@ def test_a_user_is_refused_when_they_post_to_a_campaign_they_were_never_assigned
         assert campaign.execution_enabled is False
 
     _resume(client, creator)
-    allowed = _post(client, f"/app/campaigns/{campaign_id}/execution", creator, enabled="true")
+    allowed = _post(client, f"/app/campaigns/{campaign_id}/lifecycle", creator, action="start")
     assert allowed.status_code == 303, allowed.text[:200]
 
 
@@ -910,89 +877,6 @@ def test_creating_a_campaign_records_the_operator_who_created_it(client: TestCli
 # answer forges a signature rather than merely leaking a page.
 
 
-def test_a_user_cannot_approve_or_discard_a_draft_from_a_campaign_they_were_never_assigned(
-    client: TestClient,
-) -> None:
-    """The refusal, and the absence of the row it would otherwise have written.
-
-    The status is not enough on its own here. A handler that refused *after*
-    recording the decision, or that answered 403 from the CSRF layer while
-    leaving the write path open to somebody who sent a token, would both satisfy
-    a status-only assertion — so the error body names the campaign rule, and the
-    ``draft_approvals`` table is read afterwards and must be empty.
-    """
-
-    creator = _user_session(client, email="creator@vmr.example")
-    campaign_id = _seed_campaign("Nordic pharma outreach", owner=creator)
-    draft_id = _seed_draft(campaign_id)
-    stranger = _user_session(client, email="stranger@vmr.example")
-
-    _assert_campaign_refused(
-        _post(client, f"/app/review/{draft_id}/approve", stranger, reason="mine now"),
-        f"POST /app/review/{draft_id}/approve",
-    )
-    _assert_campaign_refused(
-        _post(client, f"/app/review/{draft_id}/discard", stranger, reason="mine now"),
-        f"POST /app/review/{draft_id}/discard",
-    )
-
-    with SessionLocal() as session:
-        assert session.scalars(select(DraftApproval)).all() == [], (
-            "a decision was recorded against a draft in somebody else's campaign"
-        )
-
-    # The queue this account is shown excludes the draft as well, so the two
-    # halves of the defence are both present rather than one standing in for the
-    # other. Asserted against the scoped reader the page calls rather than
-    # against the rendered HTML, because the page also renders a landing panel
-    # chosen by `draft_service.first_awaiting`, which takes no authorization
-    # argument — a separate finding, reported rather than pinned here, and not
-    # something this test should either bless or fail on.
-    with SessionLocal() as session:
-        actor = CampaignActor(user_id=uuid.UUID(stranger.user_id), role=UserRole.USER)
-        rows = draft_service.list_queue(
-            session,
-            campaign_ids=campaign_access.accessible_campaign_ids(session, actor),
-            limit=100,
-        ).rows
-    assert [row.draft_version_id for row in rows] == []
-
-
-def test_a_user_can_approve_a_draft_once_an_administrator_assigns_them_the_campaign(
-    client: TestClient,
-) -> None:
-    """The counterweight, and the thing that makes the refusal above mean something.
-
-    Refusing every review write would pass the test above and break the product.
-    The same account, the same draft and the same request succeed once the
-    campaign is assigned to them, so what the gate refuses is a relationship and
-    not the route.
-    """
-
-    creator = _user_session(client, email="creator@vmr.example")
-    campaign_id = _seed_campaign("Nordic pharma outreach", owner=creator)
-    draft_id = _seed_draft(campaign_id)
-    colleague = _user_session(client, email="colleague@vmr.example")
-
-    _assert_campaign_refused(
-        _post(client, f"/app/review/{draft_id}/approve", colleague, reason="before"),
-        "before the assignment",
-    )
-
-    admin = _admin_session(client)
-    assert _assign(client, admin, campaign_id, colleague).status_code == 303
-
-    _resume(client, colleague)
-    approved = _post(client, f"/app/review/{draft_id}/approve", colleague, reason="read it")
-    assert approved.status_code == 303, approved.text[:200]
-
-    with SessionLocal() as session:
-        decisions = session.scalars(
-            select(DraftApproval).where(DraftApproval.draft_version_id == draft_id)
-        ).all()
-    assert [decision.status for decision in decisions] == [ApprovalStatus.APPROVED]
-
-
 def test_a_user_cannot_approve_a_sequence_from_a_campaign_they_were_never_assigned(
     client: TestClient,
 ) -> None:
@@ -1148,7 +1032,7 @@ def test_a_creator_keeps_access_when_an_assignment_row_for_them_is_removed(
     # And a write, not only a read: creator access is whole rather than partial.
     assert (
         _post(
-            client, f"/app/campaigns/{campaign_id}/execution", creator, enabled="true"
+            client, f"/app/campaigns/{campaign_id}/lifecycle", creator, action="start"
         ).status_code
         == 303
     )

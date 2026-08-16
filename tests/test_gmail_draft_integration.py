@@ -281,7 +281,11 @@ def _signed_in(client: TestClient) -> str:
 
 
 def _connect(
-    client: TestClient, oauth: FakeGmailOAuthClient, csrf: str, *, back: str = "/app/review"
+    client: TestClient,
+    oauth: FakeGmailOAuthClient,
+    csrf: str,
+    *,
+    back: str = "/app/account/connections",
 ) -> Any:
     """Drive the real connect round trip and return the callback response."""
 
@@ -354,7 +358,7 @@ def test_gmail_consent_only_begins_from_an_explicit_connect_click(
     csrf = _signed_in(client)
 
     # Every read of the operator surface, and the sign-in surface itself.
-    for path in ("/app/review", "/app/contacts", "/auth/login"):
+    for path in ("/app/campaigns", "/app/people", "/auth/login"):
         client.get(path)
     assert oauth.authorization_calls == []
 
@@ -364,7 +368,7 @@ def test_gmail_consent_only_begins_from_an_explicit_connect_click(
 
     started = client.post(
         "/gmail/connect",
-        data={"back": "/app/review", "_csrf": csrf},
+        data={"back": "/app/account/connections", "_csrf": csrf},
         headers={"sec-fetch-site": "same-origin"},
     )
     assert started.status_code == 303
@@ -380,7 +384,9 @@ def test_connect_is_refused_without_the_session_csrf_token(
     client, oauth, _ = hosted
     _signed_in(client)
     refused = client.post(
-        "/gmail/connect", data={"back": "/app/review"}, headers={"sec-fetch-site": "same-origin"}
+        "/gmail/connect",
+        data={"back": "/app/account/connections"},
+        headers={"sec-fetch-site": "same-origin"},
     )
     assert refused.status_code == 403
     assert oauth.authorization_calls == []
@@ -444,7 +450,7 @@ def test_an_oauth_state_mismatch_is_refused(
     csrf = _signed_in(client)
     started = client.post(
         "/gmail/connect",
-        data={"back": "/app/review", "_csrf": csrf},
+        data={"back": "/app/account/connections", "_csrf": csrf},
         headers={"sec-fetch-site": "same-origin"},
     )
     assert started.status_code == 303
@@ -465,7 +471,7 @@ def test_a_callback_cannot_bind_a_mailbox_to_a_different_operator(
     csrf = _signed_in(client)
     started = client.post(
         "/gmail/connect",
-        data={"back": "/app/review", "_csrf": csrf},
+        data={"back": "/app/account/connections", "_csrf": csrf},
         headers={"sec-fetch-site": "same-origin"},
     )
     assert started.status_code == 303
@@ -636,7 +642,7 @@ def test_no_gmail_secret_reaches_a_rendered_page(
     )
     committed_session.commit()
 
-    page = client.get(f"/app/contacts/{fixture.contact.id}?campaign={fixture.campaign.id}")
+    page = client.get(f"/app/people/{fixture.contact.id}?campaign={fixture.campaign.id}")
     assert page.status_code == 200
     body = page.text
     grant = committed_session.scalars(select(GmailMailboxGrant)).one()
@@ -1348,7 +1354,7 @@ def test_disconnect_forgets_the_token_and_asks_google_to_revoke(
 
     response = client.post(
         "/gmail/disconnect",
-        data={"back": "/app/review", "_csrf": csrf},
+        data={"back": "/app/account/connections", "_csrf": csrf},
         headers={"sec-fetch-site": "same-origin"},
     )
     assert response.status_code == 303
@@ -1376,7 +1382,7 @@ def test_disconnect_still_forgets_the_token_when_google_cannot_be_reached(
     oauth.revoke = _explode  # type: ignore[method-assign]
     response = client.post(
         "/gmail/disconnect",
-        data={"back": "/app/review", "_csrf": csrf},
+        data={"back": "/app/account/connections", "_csrf": csrf},
         headers={"sec-fetch-site": "same-origin"},
     )
     assert response.status_code == 303
@@ -1507,7 +1513,7 @@ def test_the_page_offers_connect_when_no_mailbox_is_connected(
     )
     committed_session.commit()
 
-    page = client.get(f"/app/contacts/{fixture.contact.id}?campaign={fixture.campaign.id}")
+    page = client.get(f"/app/people/{fixture.contact.id}?campaign={fixture.campaign.id}")
     assert page.status_code == 200
     assert 'action="/gmail/connect"' in page.text
     assert "Create Gmail drafts" not in page.text
@@ -1524,7 +1530,7 @@ def test_the_page_shows_the_connected_mailbox_and_the_create_action(
     )
     committed_session.commit()
 
-    page = client.get(f"/app/contacts/{fixture.contact.id}?campaign={fixture.campaign.id}")
+    page = client.get(f"/app/people/{fixture.contact.id}?campaign={fixture.campaign.id}")
     assert page.status_code == 200
     assert oauth.mailbox_address in page.text
     assert f"/app/review/sequence/{fixture.sequence.id}/gmail-drafts" in page.text
@@ -1552,11 +1558,14 @@ def test_the_review_page_does_not_offer_the_draft_action(
     )
     committed_session.commit()
 
+    # A legacy Emails link resolves to the person inside their Campaign; the
+    # draft action lives on that page and nowhere global.
     page = client.get(f"/app/review?sequence={fixture.sequence.id}")
-    assert page.status_code == 200
-    assert oauth.mailbox_address in page.text
-    assert "/gmail-drafts" not in page.text
-    assert f"/app/contacts/{fixture.contact.id}" in page.text
+    assert page.status_code == 308
+    assert page.headers["location"].startswith(f"/app/people/{fixture.contact.id}")
+    campaign = client.get(f"/app/campaigns/{fixture.campaign.id}")
+    assert campaign.status_code == 200
+    assert "/gmail-drafts" not in campaign.text
 
 
 def test_the_one_click_route_creates_the_drafts_and_reports_honestly(
@@ -1576,7 +1585,7 @@ def test_the_one_click_route_creates_the_drafts_and_reports_honestly(
         f"/app/review/sequence/{fixture.sequence.id}/gmail-drafts",
         data={
             "version_ids": fixture.version_ids_csv,
-            "back": f"/app/contacts/{fixture.contact.id}",
+            "back": f"/app/people/{fixture.contact.id}",
             "_csrf": csrf,
         },
         headers={"sec-fetch-site": "same-origin"},
@@ -1591,7 +1600,7 @@ def test_the_one_click_route_creates_the_drafts_and_reports_honestly(
         f"/app/review/sequence/{fixture.sequence.id}/gmail-drafts",
         data={
             "version_ids": fixture.version_ids_csv,
-            "back": f"/app/contacts/{fixture.contact.id}",
+            "back": f"/app/people/{fixture.contact.id}",
             "_csrf": csrf,
         },
         headers={"sec-fetch-site": "same-origin"},
@@ -1613,7 +1622,11 @@ def test_the_one_click_route_refuses_without_a_connected_mailbox(
 
     response = client.post(
         f"/app/review/sequence/{fixture.sequence.id}/gmail-drafts",
-        data={"version_ids": fixture.version_ids_csv, "back": "/app/review", "_csrf": csrf},
+        data={
+            "version_ids": fixture.version_ids_csv,
+            "back": "/app/account/connections",
+            "_csrf": csrf,
+        },
         headers={"sec-fetch-site": "same-origin"},
     )
     assert response.status_code == 303
@@ -1634,7 +1647,11 @@ def test_the_one_click_route_is_refused_cross_site(
 
     response = client.post(
         f"/app/review/sequence/{fixture.sequence.id}/gmail-drafts",
-        data={"version_ids": fixture.version_ids_csv, "back": "/app/review", "_csrf": csrf},
+        data={
+            "version_ids": fixture.version_ids_csv,
+            "back": "/app/account/connections",
+            "_csrf": csrf,
+        },
         headers={"sec-fetch-site": "cross-site", "origin": "https://evil.example"},
     )
     assert response.status_code in {303, 403}
@@ -1667,13 +1684,13 @@ def test_the_feature_does_not_exist_while_the_switch_is_off(
     assert (
         client.post(
             "/gmail/connect",
-            data={"back": "/app/review", "_csrf": csrf},
+            data={"back": "/app/account/connections", "_csrf": csrf},
             headers={"sec-fetch-site": "same-origin"},
         ).status_code
         == 404
     )
     assert client.get("/gmail/callback?code=x&state=y").status_code == 404
-    page = client.get(f"/app/contacts/{fixture.contact.id}?campaign={fixture.campaign.id}")
+    page = client.get(f"/app/people/{fixture.contact.id}?campaign={fixture.campaign.id}")
     assert page.status_code == 200
     assert "Connect Gmail" not in page.text
     assert "gmail-drafts" not in page.text
@@ -1699,7 +1716,7 @@ def test_local_development_has_no_operator_to_bind_a_mailbox_to(
         app = create_app(readiness_probe=_AlwaysReadyProbe())
         setattr(app.state, GMAIL_OAUTH_CLIENT_STATE_KEY, FakeGmailOAuthClient())
         with TestClient(app, follow_redirects=False) as client:
-            response = client.post("/gmail/connect", data={"back": "/app/review"})
+            response = client.post("/gmail/connect", data={"back": "/app/account/connections"})
             assert response.status_code == 303
             assert "signed-in operator" in _flash(response)
     finally:
@@ -1713,7 +1730,7 @@ def test_the_gmail_transaction_cookie_is_scoped_and_httponly(
     csrf = _signed_in(client)
     started = client.post(
         "/gmail/connect",
-        data={"back": "/app/review", "_csrf": csrf},
+        data={"back": "/app/account/connections", "_csrf": csrf},
         headers={"sec-fetch-site": "same-origin"},
     )
     header = started.headers["set-cookie"]
@@ -1909,7 +1926,11 @@ def test_one_operator_never_sees_another_operators_mailbox(
 
     client.post(
         f"/app/review/sequence/{fixture.sequence.id}/gmail-drafts",
-        data={"version_ids": fixture.version_ids_csv, "back": "/app/review", "_csrf": csrf},
+        data={
+            "version_ids": fixture.version_ids_csv,
+            "back": "/app/account/connections",
+            "_csrf": csrf,
+        },
         headers={"sec-fetch-site": "same-origin"},
     )
     assert committed_session.scalars(select(GmailDraftRecord)).all()
@@ -1925,7 +1946,7 @@ def test_one_operator_never_sees_another_operators_mailbox(
     _grant_campaign_access(committed_session, fixture.campaign.id, second)
     other_cookie, _ = _session_cookie(second, subject="operator-google-subject-2")
     client.cookies.set(SESSION_COOKIE_NAME, other_cookie, domain=STAGING_HOST)
-    page = client.get(f"/app/contacts/{fixture.contact.id}?campaign={fixture.campaign.id}")
+    page = client.get(f"/app/people/{fixture.contact.id}?campaign={fixture.campaign.id}")
     assert page.status_code == 200
     assert oauth.mailbox_address not in page.text
     assert "drafted in" not in page.text
@@ -2005,13 +2026,17 @@ def test_a_password_authenticated_operator_can_connect_and_draft(
     fixture = build_sequence(committed_session, owner_user_id=operator.user_id)
     committed_session.commit()
 
-    page = client.get(f"/app/contacts/{fixture.contact.id}?campaign={fixture.campaign.id}")
+    page = client.get(f"/app/people/{fixture.contact.id}?campaign={fixture.campaign.id}")
     assert page.status_code == 200
     assert oauth.mailbox_address in page.text
 
     created = client.post(
         f"/app/review/sequence/{fixture.sequence.id}/gmail-drafts",
-        data={"version_ids": fixture.version_ids_csv, "back": "/app/review", "_csrf": csrf},
+        data={
+            "version_ids": fixture.version_ids_csv,
+            "back": "/app/account/connections",
+            "_csrf": csrf,
+        },
         headers={"sec-fetch-site": "same-origin"},
     )
     assert created.status_code == 303
@@ -2063,7 +2088,7 @@ def test_a_second_operator_can_neither_use_nor_disconnect_the_first_ones_mailbox
         f"/app/review/sequence/{fixture.sequence.id}/gmail-drafts",
         data={
             "version_ids": fixture.version_ids_csv,
-            "back": "/app/review",
+            "back": "/app/account/connections",
             "_csrf": stranger_csrf,
         },
         headers={"sec-fetch-site": "same-origin"},
@@ -2075,7 +2100,7 @@ def test_a_second_operator_can_neither_use_nor_disconnect_the_first_ones_mailbox
 
     disconnected = client.post(
         "/gmail/disconnect",
-        data={"back": "/app/review", "_csrf": stranger_csrf},
+        data={"back": "/app/account/connections", "_csrf": stranger_csrf},
         headers={"sec-fetch-site": "same-origin"},
     )
     assert disconnected.status_code == 303
@@ -2181,7 +2206,7 @@ def test_an_administrator_does_not_inherit_another_users_mailbox(
         committed_session, owner_user_id=_default_operator_id(committed_session)
     )
     committed_session.commit()
-    page = client.get(f"/app/contacts/{fixture.contact.id}?campaign={fixture.campaign.id}")
+    page = client.get(f"/app/people/{fixture.contact.id}?campaign={fixture.campaign.id}")
     assert page.status_code == 200
     assert 'action="/gmail/connect"' in page.text
     assert "shared-outbox@vmr.example" not in page.text
@@ -2206,7 +2231,7 @@ def test_a_callback_started_by_one_account_cannot_bind_to_another(
 
     started = client.post(
         "/gmail/connect",
-        data={"back": "/app/review", "_csrf": starter_csrf},
+        data={"back": "/app/account/connections", "_csrf": starter_csrf},
         headers={"sec-fetch-site": "same-origin"},
     )
     assert started.status_code == 303
@@ -2250,7 +2275,7 @@ def test_a_disabled_accounts_open_session_cannot_touch_gmail(
         committed_session, owner_user_id=_default_operator_id(committed_session)
     )
     committed_session.commit()
-    assert client.get("/app/review").status_code == 200
+    assert client.get("/app/campaigns").status_code == 200
 
     with SessionLocal() as session:
         user = session.get(User, _uuid.UUID(operator.user_id))
@@ -2262,17 +2287,21 @@ def test_a_disabled_accounts_open_session_cannot_touch_gmail(
     for response in (
         client.post(
             "/gmail/disconnect",
-            data={"back": "/app/review", "_csrf": csrf},
+            data={"back": "/app/account/connections", "_csrf": csrf},
             headers={"sec-fetch-site": "same-origin"},
         ),
         client.post(
             "/gmail/connect",
-            data={"back": "/app/review", "_csrf": csrf},
+            data={"back": "/app/account/connections", "_csrf": csrf},
             headers={"sec-fetch-site": "same-origin"},
         ),
         client.post(
             f"/app/review/sequence/{fixture.sequence.id}/gmail-drafts",
-            data={"version_ids": fixture.version_ids_csv, "back": "/app/review", "_csrf": csrf},
+            data={
+                "version_ids": fixture.version_ids_csv,
+                "back": "/app/account/connections",
+                "_csrf": csrf,
+            },
             headers={"sec-fetch-site": "same-origin"},
         ),
     ):
@@ -2341,7 +2370,7 @@ def test_the_extension_capture_credential_reaches_no_gmail_route(
         # The control: this credential is real and this deployment accepts it.
         assert client.get("/api/contact-labels", headers=bearer).status_code == 200
 
-        form = {"back": "/app/review"}
+        form = {"back": "/app/account/connections"}
         assert client.post("/gmail/connect", data=form, headers=bearer).status_code == 401
         assert client.post("/gmail/disconnect", data=form, headers=bearer).status_code == 401
         callback = client.get("/gmail/callback?code=x&state=y", headers=bearer)

@@ -61,7 +61,7 @@ from sqlalchemy.orm import Session
 
 from tests import apollo_factory as af
 from tests.test_campaign_import_final_review import _live_formulas
-from tests.test_email_sequence import BODIES, SUBJECTS, CountingThinker, sequence_payload
+from tests.test_email_sequence import CountingThinker, sequence_payload
 
 IMPORTED_ADDRESS = "ada@engines.example"
 
@@ -588,32 +588,12 @@ def test_an_imported_contact_with_sequences_off_keeps_its_import_truth(
     # No sequence row exists on any path.
     assert db_session.scalar(select(func.count(EmailSequence.id))) == 0
 
-    body = client_off.get(f"/app/contacts/{contact.id}?campaign={membership.campaign_id}").text
+    body = client_off.get(f"/app/people/{contact.id}?campaign={membership.campaign_id}").text
     assert "The seven-message sequence" not in body
     # Import provenance is untouched and still rendered.
     assert db_session.scalars(
         select(ImportedContactEmail).where(ImportedContactEmail.contact_id == contact.id)
     ).all()
-
-
-def test_a_legacy_draft_for_an_imported_contact_is_unaffected_by_sequences(
-    db_session: Session, client_off: TestClient, imported: tuple[Any, ...]
-) -> None:
-    _campaign, contact, membership, _policy, _result = imported
-    db_session.add(
-        DraftVersion(
-            contact_id=contact.id,
-            campaign_id=membership.campaign_id,
-            version_number=1,
-            subject="A single draft for an imported contact",
-            body="Written in single-draft mode, and unchanged by the sequence feature.",
-        )
-    )
-    db_session.flush()
-
-    body = client_off.get("/app/review").text
-    assert "A single draft for an imported contact" in body
-    assert "v2-seq-card" not in body
 
 
 # ===========================================================================
@@ -777,20 +757,6 @@ def test_the_combined_admin_diagnosis_query_count_is_bounded_by_history(
     )
 
 
-def test_the_review_queue_stays_compact_for_imported_contacts(
-    db_session: Session, client: TestClient, imported: tuple[Any, ...]
-) -> None:
-    """A collapsed card carries no message body, imported or not."""
-
-    _generate(db_session, imported)
-    body = client.get("/app/review").text
-
-    assert body.count("v2-seq-card") == 1
-    for text in BODIES:
-        assert text not in body
-    assert SUBJECTS[0] in body
-
-
 def test_hostile_import_values_stay_escaped_on_the_sequence_pages(
     db_session: Session, client: TestClient
 ) -> None:
@@ -821,35 +787,12 @@ def test_hostile_import_values_stay_escaped_on_the_sequence_pages(
     )
 
     for url in (
-        "/app/review",
-        f"/app/contacts/{contact.id}?campaign={campaign.id}&step=1",
+        f"/app/people/{contact.id}?campaign={campaign.id}&step=1",
         f"/admin/campaigns/{campaign.id}/contacts/{membership.id}",
     ):
         body = client.get(url).text
         assert "<script>alert(1)</script>" not in body, url
         assert "<img src=x>" not in body, url
-
-
-def test_sequence_and_draft_filters_remain_independent_after_reconciliation(
-    db_session: Session, client: TestClient, imported: tuple[Any, ...]
-) -> None:
-    sequence, _thinker = _generate(db_session, imported)
-    rows = sequence_read.message_rows(db_session, sequence=sequence)
-    sequence_review.approve_sequence(
-        db_session,
-        sequence_id=sequence.id,
-        expected_version_ids=tuple(row.version_id for row in rows),
-    )
-
-    # Updated for default approval: the sequence filters no longer describe a
-    # backlog, so the pair asserted here is "contains a discard" (empty -- this
-    # sequence has none) against "you reviewed these" (populated by the bulk
-    # confirmation above). The property under test is unchanged: the draft
-    # filter must not reinterpret the sequence one.
-    discarded = client.get("/app/review?view=discarded&sview=discarded").text
-    assert "v2-seq-card" not in discarded
-    reviewed = client.get("/app/review?view=discarded&sview=reviewed").text
-    assert "v2-seq-card" in reviewed
 
 
 def test_same_origin_protection_still_refuses_after_reconciliation(
@@ -935,9 +878,7 @@ def _seq_urls(contact: Contact, campaign_id: Any, membership_id: Any) -> dict[st
     """Every surface that renders sequence content from imported fields."""
 
     return {
-        "review_queue": "/app/review",
-        "review_expanded": "/app/review?sview=all",
-        "contact_sequence": f"/app/contacts/{contact.id}?campaign={campaign_id}&step=1",
+        "contact_sequence": f"/app/people/{contact.id}?campaign={campaign_id}&step=1",
         "admin_sequence_diagnosis": f"/admin/campaigns/{campaign_id}/contacts/{membership_id}",
     }
 

@@ -35,7 +35,9 @@
         <details class="v2-menu">
           <summary class="v2-btn v2-more" title="More"><span aria-hidden="true">···</span><span class="v2-sr">More actions</span></summary>
           <div class="v2-menu-panel">
-            {% if header.lifecycle == 'active' %}
+            {% if answer.admin %}
+            <div class="v2-menu-item"><b>Held by an administrator setting</b><span>Start and resume are unavailable until it is changed</span></div>
+            {% elif header.lifecycle == 'active' %}
             <form method="post" action="{{ base_href }}/lifecycle" class="v2-menu-item">
               <input type="hidden" name="action" value="pause">
               <input type="hidden" name="back" value="{{ base_href }}">

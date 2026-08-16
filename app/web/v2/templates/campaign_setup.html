@@ -170,7 +170,9 @@
             {% else %}Archived. This Campaign is retired.{% endif %}
           </div>
         </div>
-        {% if header.lifecycle in ('active', 'paused', 'draft') %}
+        {% if answer.admin %}
+        <div class="v2-row tight v2-note">{{ answer.text }}{% if is_admin %} <a href="/app/admin/campaigns/{{ campaign.id }}/diagnostics">Open diagnostics</a>{% endif %}</div>
+        {% elif header.lifecycle in ('active', 'paused', 'draft') %}
         <div class="v2-row tight">
           <form method="post" action="{{ base_href }}/lifecycle">
             <input type="hidden" name="action" value="{{ 'pause' if header.lifecycle == 'active' else ('resume' if header.lifecycle == 'paused' else 'start') }}">

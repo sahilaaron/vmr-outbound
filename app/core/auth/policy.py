@@ -359,31 +359,14 @@ _ADMIN_ONLY_UNSAFE_PATTERNS: tuple[re.Pattern[str], ...] = (
     # USER -- operator entry is the only approval KB-001 has, and withholding it
     # would leave the knowledge base empty rather than safe.
     re.compile(r"^/knowledge-base/generate$"),
-    # Agent controls are platform-wide, not campaign-wide: posting here with no
-    # campaign names one reaches `set_global_agent_status` and can halt or
-    # resume every campaign's pipeline, the sending agent included. Reading
-    # `/app/agents` stays operator work -- an operator needs to see which agents
-    # are enabled, and the resume preflight tells them what is missing -- but
-    # changing a global control is administration.
-    re.compile(r"^/app/agents/[^/]+/control$"),
-    # The campaign live opt-in. Campaign-scoped rather than platform-wide, so it
-    # is not the rule above wearing a different path — but it is the switch that
-    # authorises every metered thing the pipeline can do for one campaign at
-    # once. Research fetches other organisations' websites and may spend the
-    # Claude fallback, Verification spends MillionVerifier credits per contact,
-    # and Insights and Personalization spend model budget per contact; all four
-    # refuse until this is on. That is the same authority as the three
-    # provider-spend carve-outs above, granted for a whole cohort in one press
-    # rather than one contact at a time, so it sits with the administrators who
-    # hold the deployment's credentials.
-    #
-    # Reading it stays with the operator, deliberately and for the same reason
-    # `/verification` does: the campaign page shows every operator whether the
-    # opt-in is on, because an Agent that is enabled and still refusing every job
-    # is precisely what an operator has to be able to see and name. Only the verb
-    # moved. A campaign path parameter also means `require_campaign_path_access`
-    # has already scoped the request to a campaign the caller may use.
-    re.compile(r"^/app/campaigns/[^/]+/agents/[^/]+/live$"),
+    # The Campaign's website-research switch (the Research Agent's live opt-in,
+    # written from Campaign Setup). Campaign-scoped, but it authorises fetching
+    # other organisations' websites and metered model spend for a whole cohort
+    # in one press, so it sits with the administrators who hold the deployment's
+    # credentials. Reading Setup stays with the operator; only the verb moved.
+    # The global Agent controls and per-Campaign re-run / live opt-in routes
+    # live under `/app/admin/...` and are covered by that prefix.
+    re.compile(r"^/app/campaigns/[^/]+/setup/research$"),
 )
 
 
