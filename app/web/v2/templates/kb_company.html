@@ -1,12 +1,14 @@
 {% extends "base.html" %}
 {% from "_ui.html" import empty %}
+{% from "_library_forms.html" import profile_form %}
 {% block content %}
 <div class="v2-page">
   {% include "_kb_head.html" %}
 
   {% if not profile %}
   <div class="v2-card v2-mt">
-    {{ empty('No company profile is stored', 'Enter it on the admin Knowledge Base. Until then a draft has no description of the seller to paraphrase.') }}
+    {{ empty('No business profile yet', 'Until it exists, the emails have no description of who we are to draw on.') }}
+    {% if is_admin %}<div class="v2-card-body roomy">{{ profile_form(none) }}</div>{% endif %}
   </div>
   {% else %}
   <div class="v2-split">
@@ -15,8 +17,13 @@
         <div class="v2-card-head">
           <h2>Who we are</h2>
           <span class="v2-note">One profile. Drafts paraphrase it and never quote it.</span>
-          <a class="v2-btn small push" href="/knowledge-base/company">Edit in admin</a>
         </div>
+        {% if is_admin %}
+        <details class="v2-disclose v2-row">
+          <summary>Edit the business profile</summary>
+          {{ profile_form(profile) }}
+        </details>
+        {% endif %}
         <div class="v2-card-body roomy">
           <div><div class="v2-eyebrow">Company name</div><div class="v2-kb-value">{{ profile.name }}</div></div>
           <div><div class="v2-eyebrow">Short description</div><div class="v2-kb-prose">{{ profile.short_description or 'not entered' }}</div></div>
@@ -56,7 +63,7 @@
         <div class="v2-card-head tight"><h2>How we should sound</h2></div>
         <div class="v2-card-body v2-kb-prose">{{ profile.communication_guidance or 'Not entered.' }}</div>
         <div class="v2-card-foot plain">
-          Things we must never say belong in Restricted Claims, where each one can be withdrawn on
+          Things we must never say belong in Message rules, where each one can be withdrawn on
           its own.
         </div>
       </div>
