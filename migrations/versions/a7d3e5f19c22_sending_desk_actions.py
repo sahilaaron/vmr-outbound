@@ -34,7 +34,7 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 _KIND = postgresql.ENUM(
-    "actioned", "skipped", "undone", name="email_action_kind", create_type=False
+    "ACTIONED", "SKIPPED", "UNDONE", name="email_action_kind", create_type=False
 )
 
 

@@ -141,7 +141,7 @@ def test_root_lands_on_the_customer_interface(client: TestClient) -> None:
 def test_root_followed_through_renders_today(client: TestClient) -> None:
     response = client.get("/")
     assert response.status_code == 200
-    assert "Where your contacts stand" in response.text
+    assert "Campaigns in motion" in response.text or "No Campaigns yet" in response.text
 
 
 def test_admin_workbench_kept_its_overview_at_its_own_address(client: TestClient) -> None:

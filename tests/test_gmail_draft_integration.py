@@ -642,7 +642,9 @@ def test_no_gmail_secret_reaches_a_rendered_page(
     )
     committed_session.commit()
 
-    page = client.get(f"/app/people/{fixture.contact.id}?campaign={fixture.campaign.id}")
+    page = client.get(
+        f"/app/campaigns/{fixture.campaign.id}?section=all&person={fixture.membership.id}"
+    )
     assert page.status_code == 200
     body = page.text
     grant = committed_session.scalars(select(GmailMailboxGrant)).one()
@@ -1513,10 +1515,17 @@ def test_the_page_offers_connect_when_no_mailbox_is_connected(
     )
     committed_session.commit()
 
-    page = client.get(f"/app/people/{fixture.contact.id}?campaign={fixture.campaign.id}")
-    assert page.status_code == 200
-    assert 'action="/gmail/connect"' in page.text
-    assert "Create Gmail drafts" not in page.text
+    # The desk offers the way to connect, never a dead Create button; the
+    # Connections page carries the connect form itself.
+    desk = client.get(
+        f"/app/campaigns/{fixture.campaign.id}?section=all&person={fixture.membership.id}"
+    )
+    assert desk.status_code == 200
+    assert "Connect Gmail to draft" in desk.text
+    assert "gmail-draft" not in desk.text.split("Connect Gmail to draft")[0]
+    connections = client.get("/app/account/connections")
+    assert 'action="/gmail/connect"' in connections.text
+    assert "Create Gmail drafts" not in connections.text
 
 
 def test_the_page_shows_the_connected_mailbox_and_the_create_action(
@@ -1530,13 +1539,22 @@ def test_the_page_shows_the_connected_mailbox_and_the_create_action(
     )
     committed_session.commit()
 
+    # The person page shows the emails and points into the Campaign; the
+    # one-email draft action lives on the sending desk, per selected email.
     page = client.get(f"/app/people/{fixture.contact.id}?campaign={fixture.campaign.id}")
     assert page.status_code == 200
-    assert oauth.mailbox_address in page.text
-    assert f"/app/review/sequence/{fixture.sequence.id}/gmail-drafts" in page.text
-    assert "VMR cannot send" in page.text
+    assert "Open in Campaign" in page.text
+    assert "gmail-drafts" not in page.text
     for version_id in fixture.version_ids:
         assert str(version_id) in page.text
+
+    desk = client.get(
+        f"/app/campaigns/{fixture.campaign.id}?section=all&person={fixture.membership.id}"
+    )
+    assert desk.status_code == 200
+    assert oauth.mailbox_address in desk.text
+    assert f"/desk/{fixture.membership.id}/1/gmail-draft" in desk.text
+    assert "Nothing is sent or scheduled" in desk.text
 
 
 def test_the_review_page_does_not_offer_the_draft_action(
@@ -2202,11 +2220,9 @@ def test_an_administrator_does_not_inherit_another_users_mailbox(
         == "disconnected"
     )
 
-    fixture = build_sequence(
-        committed_session, owner_user_id=_default_operator_id(committed_session)
-    )
+    build_sequence(committed_session, owner_user_id=_default_operator_id(committed_session))
     committed_session.commit()
-    page = client.get(f"/app/people/{fixture.contact.id}?campaign={fixture.campaign.id}")
+    page = client.get("/app/account/connections")
     assert page.status_code == 200
     assert 'action="/gmail/connect"' in page.text
     assert "shared-outbox@vmr.example" not in page.text

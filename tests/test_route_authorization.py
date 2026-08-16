@@ -477,7 +477,9 @@ def test_the_classification_counts_are_the_ones_deliberately_recorded() -> None:
     # legacy Emails/Contacts/Knowledge/Capture URLs stayed as redirects; and
     # `POST .../setup/research`, the Admin section, the global Agent controls
     # and the per-Campaign re-run / live routes are withheld under `/app/admin`.
-    assert len(EXPECTED_USER_REACHABLE) == 94, len(EXPECTED_USER_REACHABLE)
+    # And 94 to 100 with the inline sending desk: five explicit manual acts on
+    # one email (actioned, edit, gmail-draft, skip, undo) and Today's dismiss.
+    assert len(EXPECTED_USER_REACHABLE) == 100, len(EXPECTED_USER_REACHABLE)
 
 
 def test_reading_the_verification_page_is_not_spending(client: TestClient) -> None:
@@ -977,6 +979,15 @@ EXPECTED_USER_REACHABLE: frozenset[str] = frozenset(
         "POST /app/campaigns/{campaign_id}/imports/staged/{staged_id}/discard",
         "GET /app/campaigns/{campaign_id}/imports/{batch_id}",
         "POST /app/campaigns/{campaign_id}/lifecycle",
+        # The inline sending desk: explicit manual acts on one email of one
+        # ready person, all scoped by the Campaign path guard.
+        "POST /app/campaigns/{campaign_id}/desk/{membership_id}/{position}/actioned",
+        "POST /app/campaigns/{campaign_id}/desk/{membership_id}/{position}/edit",
+        "POST /app/campaigns/{campaign_id}/desk/{membership_id}/{position}/gmail-draft",
+        "POST /app/campaigns/{campaign_id}/desk/{membership_id}/{position}/skip",
+        "POST /app/campaigns/{campaign_id}/desk/{membership_id}/{position}/undo",
+        # Today's per-user "hide this card until tomorrow".
+        "POST /app/today/dismiss",
         "GET /app/campaigns/{campaign_id}/people",
         "GET /app/campaigns/{campaign_id}/setup",
         "POST /app/campaigns/{campaign_id}/setup",

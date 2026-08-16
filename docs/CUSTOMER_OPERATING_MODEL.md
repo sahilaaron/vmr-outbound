@@ -206,6 +206,30 @@ opt-ins, global Agent controls and the suppression list live under
 Routes are one module per destination in `app/web/v2/pages/`; the shell (nav,
 render, filters, feature switches) is `app/web/v2/shell.py`.
 
+## 12. The sending desk and Today
+
+Ready people are worked **inside the Campaign**. Selecting a person in the
+Ready for Sending table opens the workbook in place (`?person=…&email=n`):
+a roster of ready people, the seven-email rail, and one document card with
+**Copy**, **Create Gmail draft** (one email, one draft — nothing sent or
+scheduled) and **Mark actioned**. Edit, Why this email?, History, Skip
+follow-up and Undo sit underneath. Vertical movement is people (J/K, arrows),
+horizontal is emails (left/right), Escape closes.
+
+**Mark actioned** is the explicit human record that the manual sending-related
+step for that exact message version was completed. It is the only thing that
+advances the cycle: **Email 1 marked Actioned establishes Day 0**, and Emails
+2–7 are due on whole local days (`APP_TIMEZONE`) from that anchor — never
+relative to the previous action. Copying or drafting never marks anything.
+The ledger is `sequence_email_actions` (Actioned / Skipped / Undone,
+append-only); the projection is `app/services/email_progress.py`.
+
+**Today** is the return surface: due follow-ups grouped by Campaign, ready
+first emails, Campaigns in motion, and the rare customer-owned setup item.
+"Dismiss for today" hides one Campaign's card for one user until the next
+local day (`today_dismissals`) and changes no shared state; **Skip follow-up**
+is a deliberate shared act on one email. The two verbs are never interchangeable.
+
 ---
 
 *Tests holding this contract:* `tests/test_customer_operating_model.py`.

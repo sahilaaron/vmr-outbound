@@ -125,14 +125,13 @@
 
       {% if membership and sequence_section_visible %}
       <div class="v2-card" id="sequence">
+        <a id="emails"></a>
         <div class="v2-card-head">
-          <h2>The seven-message sequence</h2>
+          <h2>The seven emails</h2>
           <span class="v2-note">
-            Written as one unit. All seven are readable here; reviewing any of them is optional.
+            Written as one unit and readable here. Working them — Copy, Gmail draft, Mark actioned — happens inside the Campaign.
           </span>
-          {# The way back to the campaign this membership belongs to. The roster
-             links here; this link closes the loop. #}
-          <a class="v2-btn sm ghost" href="/app/campaigns/{{ membership.campaign_id }}">Open the campaign</a>
+          <a class="v2-btn sm primary" href="/app/campaigns/{{ membership.campaign_id }}?section=all&person={{ membership.id }}#ready">Open in Campaign</a>
         </div>
 
         {#
@@ -259,12 +258,6 @@
             them: the action covers the whole sequence, and putting it next to
             message 1 would read as an action on message 1.
           #}
-          {{ seq.gmail_panel(
-               mailbox,
-               sequence_summary,
-               sequence_rows,
-               "/app/people/" ~ detail.contact.id ~ "?campaign=" ~ membership.campaign_id ~ "#sequence",
-               read_only=sequence_availability.read_only) }}
           <div class="v2-seq-copystatus" id="seq-copy-status" role="status" aria-live="polite"></div>
           {% for message_detail in sequence_details %}
           {{ seq.full_message(

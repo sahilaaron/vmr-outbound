@@ -214,7 +214,10 @@ def test_the_campaign_people_tab_links_to_the_person_and_back(
     assert f'href="/app/people/{contact.id}?campaign={membership.campaign_id}"' in roster
 
     contact_page = client.get(_contact_url(scenario)).text
-    assert f'href="/app/campaigns/{membership.campaign_id}"' in contact_page
+    assert (
+        f'href="/app/campaigns/{membership.campaign_id}?section=all&person={membership.id}#ready"'
+        in contact_page
+    )
 
 
 # ===========================================================================
