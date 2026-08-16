@@ -3,6 +3,7 @@
 {% block content %}
 <div class="v2-page narrow">
   <h1 class="v2-h1">Suppression list</h1>
+  {% set admin_section = 'data' %}{% include "_admin_nav.html" %}
   <p class="v2-lede">
     {{ total | thousands }} active entr{{ 'y' if total == 1 else 'ies' }}. Suppression wins over
     every other decision, including your approval: a suppressed address or domain is never written

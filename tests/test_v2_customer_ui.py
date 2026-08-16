@@ -156,7 +156,7 @@ def test_admin_workbench_kept_its_overview_at_its_own_address(client: TestClient
 
 
 def test_admin_pages_are_untouched_by_the_new_interface(client: TestClient) -> None:
-    for path in ("/campaigns", "/imports", "/contacts", "/companies", "/review", "/workbench"):
+    for path in ("/imports", "/review", "/workbench"):
         response = client.get(path)
         assert response.status_code == 200, path
         assert "app.css" in response.text, path

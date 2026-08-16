@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% from "_ui.html" import lifecycle_pill %}
+{% block content %}
+<div class="v2-page narrow">
+  <h1 class="v2-h1 big">Diagnostics</h1>
+  <p class="v2-lede">Where people stopped and why, per Campaign; jobs, queues, retries and raw codes live in the Workbench.</p>
+  {% set admin_section = 'diagnostics' %}{% include "_admin_nav.html" %}
+
+  <div class="v2-card">
+    <div class="v2-card-head tight"><h2>Campaign diagnostics</h2></div>
+    {% for row in campaign_rows %}
+    <div class="v2-row tight v2-reason-row">
+      <span><a href="/app/admin/campaigns/{{ row.campaign.id }}/diagnostics">{{ row.campaign.name | neutralize }}</a> {{ lifecycle_pill(row.lifecycle, row.lifecycle_label) }} <span class="v2-hint">{{ row.progress.could_not_prepare }} could not prepare · {{ row.progress.processing }} processing</span></span>
+      <a class="v2-btn small" href="/app/admin/campaigns/{{ row.campaign.id }}/diagnostics">Open</a>
+    </div>
+    {% else %}
+    <div class="v2-row tight v2-note">No Campaigns yet.</div>
+    {% endfor %}
+  </div>
+
+  <div class="v2-admin-grid v2-mt">
+    <a class="v2-admin-card" href="/admin/failures"><b>Failures</b><span>Every failed job with its error class and retry state.</span></a>
+    <a class="v2-admin-card" href="/admin/stages"><b>Stages</b><span>Per-Agent stage ledgers across Campaigns.</span></a>
+    <a class="v2-admin-card" href="/admin/system"><b>System</b><span>Workers, leases, environment settings and feature flags.</span></a>
+    <a class="v2-admin-card" href="/admin/diagnostics"><b>All diagnostics</b><span>The full Workbench diagnostics index.</span></a>
+  </div>
+</div>
+{% endblock %}

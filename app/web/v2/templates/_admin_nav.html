@@ -1,0 +1,9 @@
+{# The six Admin sections, in the same shell as the product. Expects `admin_section`. #}
+<div class="v2-chips v2-view-switch">
+  <a class="v2-chip {{ 'on' if admin_section == 'home' }}" href="/app/admin">Home</a>
+  <a class="v2-chip {{ 'on' if admin_section == 'capabilities' }}" href="/app/admin/agents">Capabilities</a>
+  <a class="v2-chip" href="/admin/providers">Providers &amp; Spend ↗</a>
+  <a class="v2-chip {{ 'on' if admin_section == 'users' }}" href="/app/admin/users">Users &amp; Access</a>
+  <a class="v2-chip {{ 'on' if admin_section == 'data' }}" href="/app/admin/data-tools">Data tools</a>
+  <a class="v2-chip {{ 'on' if admin_section == 'diagnostics' }}" href="/app/admin/diagnostics">Diagnostics</a>
+</div>

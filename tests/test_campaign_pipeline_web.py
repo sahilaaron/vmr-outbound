@@ -182,7 +182,7 @@ def test_the_contacts_page_enrols_a_selection(client: TestClient, db_session: Se
     db_session.commit()
 
     response = client.post(
-        "/contacts/add-to-campaign",
+        "/app/people/add-to-campaign",
         data={"campaign_id": str(campaign.id), "contact_ids": [str(first.id), str(second.id)]},
         follow_redirects=False,
     )
@@ -206,7 +206,7 @@ def test_the_contacts_page_enrols_a_selection(client: TestClient, db_session: Se
 def test_the_enrolment_form_refuses_incomplete_input(
     client: TestClient, payload: dict[str, object], expected: str
 ) -> None:
-    response = client.post("/contacts/add-to-campaign", data=payload, follow_redirects=False)
+    response = client.post("/app/people/add-to-campaign", data=payload, follow_redirects=False)
     assert response.status_code == 303
     assert expected in _flash(response)
 

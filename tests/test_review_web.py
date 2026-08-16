@@ -172,7 +172,7 @@ def test_assign_preview_then_confirm_resolves(
         follow_redirects=False,
     )
     assert confirm.status_code == 303
-    assert confirm.headers["location"].startswith(f"/contacts/{target.id}")
+    assert confirm.headers["location"].startswith(f"/app/people/{target.id}")
     assert (
         db_session.scalar(
             select(func.count(CampaignContact.id)).where(

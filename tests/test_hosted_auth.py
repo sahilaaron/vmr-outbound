@@ -455,8 +455,6 @@ def test_anonymous_non_browser_reads_are_refused(staging_client: TestClient, pat
         ("delete", "/api/collections/1/contacts/1", None),
         ("post", "/app/campaigns/new", None),
         ("post", "/admin/jobs/1/retry", None),
-        ("post", "/campaigns/create", None),
-        ("post", "/knowledge-base/company", None),
         ("post", "/admin/companies/1/intelligence/run", None),
     ],
 )

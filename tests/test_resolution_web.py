@@ -312,7 +312,7 @@ def test_the_company_workspace_shows_the_state_and_research_readiness(
     outcome = _resolve(committed_session, capture, "clean_single_match")
     assert outcome.company is not None
 
-    body = client.get(f"/companies/{outcome.company.id}").text
+    body = client.get(f"/app/companies/{outcome.company.id}").text
 
     assert "Domain resolution" in body
     assert "domain provisional" in body
@@ -329,7 +329,7 @@ def test_a_company_with_no_decision_is_not_reported_as_uncertain(
     committed_session.add(company)
     committed_session.commit()
 
-    body = client.get(f"/companies/{company.id}").text
+    body = client.get(f"/app/companies/{company.id}").text
 
     assert "not auto-resolved" in body
     assert "No automatic resolution decision for this company." in body
@@ -344,7 +344,7 @@ def test_the_contact_page_shows_the_decision_behind_its_company_link(
     committed_session.commit()
     assert result.contact is not None
 
-    body = client.get(f"/contacts/{result.contact.id}").text
+    body = client.get(f"/app/people/{result.contact.id}").text
 
     assert "domain provisional" in body
     assert "Why this domain — the resolution decision" in body

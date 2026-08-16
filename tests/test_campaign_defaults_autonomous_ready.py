@@ -249,7 +249,7 @@ def test_the_workbench_creation_path_uses_the_same_defaults(
     _user_id, csrf = _sign_in(hosted, role="admin", email=ADMIN_EMAIL)
 
     created = hosted.post(
-        "/campaigns/create",
+        "/app/campaigns/new",
         data={"name": "Admin cohort", "status": "draft", "_csrf": csrf},
         headers={"Sec-Fetch-Site": "same-origin"},
     )

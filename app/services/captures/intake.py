@@ -574,7 +574,7 @@ def submission_url(operator_base_url: str, submission_id: uuid.UUID | str) -> st
 
 
 def contact_url(operator_base_url: str, contact_id: uuid.UUID | str) -> str:
-    return f"{operator_base_url.rstrip('/')}/contacts/{contact_id}"
+    return f"{operator_base_url.rstrip('/')}/app/people/{contact_id}"
 
 
 # --- Persistence helpers ------------------------------------------------------

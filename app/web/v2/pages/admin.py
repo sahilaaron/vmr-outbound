@@ -22,6 +22,7 @@ from app.models.suppression import Suppression
 from app.services import campaign_workspace, customer_status, workbench_agents
 from app.services import campaigns as campaign_service
 from app.services import drafts as draft_service
+from app.services.admin_workbench.reader import AdminWorkbenchReader
 from app.services.agents import rerun as agent_rerun
 from app.services.agents.registry import AGENT_SPECS, PIPELINE_ORDER
 from app.services.campaign_access import actor_from_request
@@ -100,11 +101,29 @@ AGENT_BLURBS: dict[AgentIdentifier, str] = {
 # ---------------------------------------------------------------------------
 
 
+def _campaign_rows(request: Request, db: Session) -> list[campaign_workspace.CampaignListRow]:
+    return campaign_workspace.list_rows(
+        db,
+        [
+            overview.campaign
+            for overview in campaign_service.list_campaigns(db, actor=actor_from_request(request))
+        ],
+    )
+
+
 @router.get("/admin")
 def admin_home(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    """The Admin entry: where the machinery lives, in one list."""
+    """Admin — Home / Health: what is running, what needs an administrator."""
 
     settings = get_settings()
+    overview = None
+    failed_jobs: dict[Any, int] = {}
+    if shell.agent_workbench_on(db, settings):
+        try:
+            overview = AdminWorkbenchReader(db, settings=settings).overview()
+            failed_jobs = {row.campaign_id: row.failed_jobs for row in overview.campaigns}
+        except Exception:  # pragma: no cover - a health page must render on a sick system
+            overview = None
     return shell.render(
         request,
         db,
@@ -112,13 +131,38 @@ def admin_home(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
         {
             "active_nav": "admin",
             "page_title": "Admin",
-            "agent_workbench_on": shell.agent_workbench_on(db, settings),
-            "campaigns": [
-                overview.campaign
-                for overview in campaign_service.list_campaigns(
-                    db, actor=actor_from_request(request)
-                )
-            ],
+            "overview": overview,
+            "failed_jobs": failed_jobs,
+            "campaign_rows": _campaign_rows(request, db),
+            "release_id": settings.release_id,
+        },
+    )
+
+
+@router.get("/admin/data-tools")
+def admin_data_tools(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    return shell.render(
+        request,
+        db,
+        "admin_data_tools.html",
+        {
+            "active_nav": "admin",
+            "page_title": "Data tools",
+            "local_env": get_settings().app_env == "local",
+        },
+    )
+
+
+@router.get("/admin/diagnostics")
+def admin_diagnostics(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    return shell.render(
+        request,
+        db,
+        "admin_diagnostics.html",
+        {
+            "active_nav": "admin",
+            "page_title": "Diagnostics",
+            "campaign_rows": _campaign_rows(request, db),
         },
     )
 
