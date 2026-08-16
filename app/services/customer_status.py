@@ -59,6 +59,7 @@ from app.models.enums import (
     SequenceValidationStatus,
 )
 from app.models.pipeline import CampaignContactAgentState
+from app.services.agents.registry import AGENTS_WITHOUT_ADAPTER
 
 
 class CustomerContactStatus(enum.StrEnum):
@@ -166,6 +167,30 @@ def _unrecoverable_stage_statement() -> Select[tuple[uuid.UUID]]:
     )
 
 
+def _permanently_disabled_stage_statement() -> Select[tuple[uuid.UUID]]:
+    """Memberships parked at a stage no operator action can ever start.
+
+    A disabled stage is normally a wait, not an outcome: an administrator flips
+    the control and the work resumes, which is why "disabled" belongs in
+    Processing. An Agent with no executable adapter is the exception — the
+    control service refuses to enable one, so nothing about the deployment can
+    change and the contact is not waiting for anything.
+
+    That is exactly the state a finished contact used to be left in. It reported
+    Processing forever while the package it had already produced sat beside it,
+    which is why the boundary in
+    :func:`~app.services.agents.registry.next_preparation_agent` exists. This
+    stays anyway, and stays *after* the package test: a contact that reached this
+    state before that boundary existed is still owed a truthful answer, and a
+    contact holding a complete package is Ready regardless of what stage 9 says.
+    """
+
+    return select(CampaignContactAgentState.campaign_contact_id).where(
+        CampaignContactAgentState.status == PipelineStageStatus.DISABLED,
+        CampaignContactAgentState.agent_id.in_(AGENTS_WITHOUT_ADAPTER),
+    )
+
+
 def _status_expression() -> Case[str]:
     """The single rule, as one SQL expression used by every caller.
 
@@ -181,10 +206,11 @@ def _status_expression() -> Case[str]:
        The address is re-asserted here anyway: a package with nowhere to send it
        is not ready.
     3. **Then the other terminal stops** — a blocked pipeline, an unrecoverable
-       stage, or a pipeline that reached its end without producing a package.
-    4. **Everything else is Processing**, including waiting, running, retrying,
-       paused and parked at Sending. The customer does not need to tell those
-       apart; Admin does, and Admin still can.
+       stage, a stage disabled on an Agent that can never be enabled, or a
+       pipeline that reached its end without producing a package.
+    4. **Everything else is Processing**, including waiting, running, retrying
+       and paused — every state something can still move out of. The customer
+       does not need to tell those apart; Admin does, and Admin still can.
     """
 
     policy_stopped = or_(
@@ -198,6 +224,7 @@ def _status_expression() -> Case[str]:
     stopped_without_package = or_(
         CampaignContact.pipeline_status == PipelineStageStatus.BLOCKED,
         CampaignContact.id.in_(_unrecoverable_stage_statement()),
+        CampaignContact.id.in_(_permanently_disabled_stage_statement()),
         and_(
             CampaignContact.next_stage.is_(None),
             CampaignContact.pipeline_status == PipelineStageStatus.COMPLETED,

@@ -12,6 +12,10 @@ The four words
 ``ready``              a usable verified address **and** a validated sequence
 ``could_not_prepare``  it stopped, and a person has to do something
 
+``pending`` is a promise that the row will move, so it is only ever said of a row
+that still can. A row whose preparation has ended — however it ended — is
+reported as stopped rather than left waiting; see :func:`_parked_reason`.
+
 They are deliberately not the nine Agent names. A salesperson reading a
 spreadsheet is deciding whether to wait, whether to act, or whether the row is
 finished, and "waiting on the Insights Agent" answers none of those. The stage
@@ -58,7 +62,7 @@ from app.models.enums import (
     SequenceValidationStatus,
 )
 from app.models.pipeline import CampaignContactAgentState
-from app.services import campaign_access, campaign_contacts
+from app.services import campaign_access, campaign_contacts, customer_status
 from app.services.integrations.sheets.contract import RowStatus
 from app.services.sequences import read as sequence_read
 from app.services.verification import status as verification_status
@@ -172,6 +176,16 @@ def result_for(session: Session, *, membership: CampaignContact) -> RowResult:
     if address is not None and messages:
         return answer(RowStatus.READY, email_address=address, messages=messages)
 
+    # Asked only after Ready has been ruled out, because the questions are
+    # different: "has preparation stopped" is not "did preparation succeed", and
+    # a row holding a complete package is finished no matter which stage its
+    # history ends on.
+    parked = _parked_reason(session, membership=membership)
+    if parked is not None:
+        return answer(
+            RowStatus.COULD_NOT_PREPARE, email_address=address, safe_failure_reason=parked
+        )
+
     return answer(
         _in_flight_status(membership),
         email_address=address,
@@ -239,6 +253,44 @@ def _stop_reason(session: Session, *, membership: CampaignContact) -> str | None
         stage = _current_stage(session, membership=membership)
         detail = stage.reason_detail if stage is not None else None
         return sanitize_text(detail) or _GENERIC_STOP_MESSAGE
+    return None
+
+
+def _parked_reason(session: Session, *, membership: CampaignContact) -> str | None:
+    """Why this row will not move again, or ``None`` if it still might.
+
+    ``pending`` is a promise: the row was accepted and is waiting its turn. A row
+    that has run out of turns and produced no package is not waiting for
+    anything, and reporting it as pending told a salesperson to keep refreshing a
+    cell that would never change. That is exactly what the live campaign did — it
+    walked into a Sending stage that is disabled, has no adapter and cannot be
+    enabled, and every read after that said "pending" forever.
+
+    Two questions, and the order matters.
+
+    The canonical customer model is asked first, so the sheet and the app cannot
+    disagree about whether somebody is finished — a stopped row is stopped in
+    both vocabularies or in neither. Then the sheet asks its own, because it
+    holds a stricter definition of a usable package: a ``VALID`` address, not
+    merely an address. A pipeline that ran to its end is finished whatever the
+    app makes of what it produced, and this surface has already ruled Ready out
+    by the time it gets here.
+
+    What that ordering protects is the ordinary case: a row whose address is
+    still being resolved has a next stage, so neither question fires and it stays
+    pending, which is exactly what it is.
+    """
+
+    if (
+        customer_status.status_for_membership(session, campaign_contact_id=membership.id)
+        is customer_status.CustomerContactStatus.COULD_NOT_PREPARE
+    ) or (
+        membership.next_stage is None
+        and membership.pipeline_status is PipelineStageStatus.COMPLETED
+    ):
+        stage = _current_stage(session, membership=membership)
+        detail = sanitize_text(stage.reason_detail) if stage is not None else None
+        return detail or _GENERIC_STOP_MESSAGE
     return None
 
 

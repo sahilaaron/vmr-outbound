@@ -612,6 +612,13 @@ def _committed_campaign(name: str, *, owner_id: str | None = None) -> uuid.UUID:
     Committed through ``SessionLocal`` rather than the rolled-back test session,
     because a ``TestClient`` request runs against the application's session and
     would not see it otherwise.
+
+    The campaign-level overrides a new campaign is created with are cleared
+    first. That is not undoing the product's default so much as stating this
+    file's premise out loud: every test below is about a campaign that has *not*
+    yet been given the live opt-in, which is precisely the deployment state the
+    repair was written for. Leaving the default in place would make each of them
+    assert that a switch already on can be turned on.
     """
 
     with SessionLocal() as session:
@@ -620,6 +627,7 @@ def _committed_campaign(name: str, *, owner_id: str | None = None) -> uuid.UUID:
             name=name,
             created_by_user_id=uuid.UUID(owner_id) if owner_id else None,
         )
+        workbench_scenario.clear_new_campaign_defaults(session, campaign.id)
         controls.set_global_control(
             session, agent_id=RESEARCH, status=AgentControlStatus.ENABLED, config={}
         )

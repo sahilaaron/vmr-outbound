@@ -33,6 +33,20 @@ class AgentSpec:
     #: says which of them have one. ``tests/test_campaign_live_opt_in.py`` pins
     #: the two together so the flag cannot drift from the code that enforces it.
     requires_live_opt_in: bool = False
+    #: Whether this Agent is part of *preparing* the outbound package.
+    #:
+    #: The product is autonomous until Ready for Sending: preparation runs on its
+    #: own, and sending is a separate, manual, human action. That boundary needs
+    #: to exist somewhere the pipeline can read, because without it the walk kept
+    #: going — a Contact whose seven messages were written advanced into Sending,
+    #: found it disabled and not skippable, and parked there permanently while
+    #: the finished package sat next to it.
+    #:
+    #: So Sending stays stage 9 for the registry, the Workbench and stage
+    #: history, and stops being an execution prerequisite. Preparation ends at
+    #: the last preparation Agent; what happens after that is not this pipeline's
+    #: to schedule.
+    preparation: bool = True
 
 
 _SPECS = (
@@ -134,6 +148,7 @@ _SPECS = (
         AgentControlStatus.DISABLED,
         False,
         max_attempts=1,
+        preparation=False,
     ),
 )
 
@@ -144,6 +159,32 @@ PIPELINE_ORDER = tuple(spec.identifier for spec in _SPECS)
 #: order. Derived from the specs rather than written out a second time.
 LIVE_OPT_IN_AGENTS: tuple[AgentIdentifier, ...] = tuple(
     spec.identifier for spec in _SPECS if spec.requires_live_opt_in
+)
+
+#: Every Agent a Contact must pass through to reach Ready for Sending, in
+#: pipeline order. Derived from ``AgentSpec.preparation`` rather than listed a
+#: second time, so an Agent added to the pipeline is in this set by default and
+#: excluding one is a deliberate edit to its spec.
+PREPARATION_AGENTS: tuple[AgentIdentifier, ...] = tuple(
+    spec.identifier for spec in _SPECS if spec.preparation
+)
+
+#: Every Agent that is *not* preparation. Sending is the only member today, and
+#: naming the set rather than the Agent keeps callers from hardcoding it.
+NON_PREPARATION_AGENTS: tuple[AgentIdentifier, ...] = tuple(
+    spec.identifier for spec in _SPECS if not spec.preparation
+)
+
+#: Where preparation stops. Completing this Agent completes the pipeline.
+PREPARATION_TERMINAL_AGENT: AgentIdentifier = PREPARATION_AGENTS[-1]
+
+#: Every Agent that has no executable adapter. A stage sitting at ``DISABLED`` on
+#: one of these is parked permanently rather than waiting: ``controls`` refuses
+#: to enable an Agent with nothing to run, so no operator action exists that
+#: would move it. Callers projecting a truthful status need to tell that apart
+#: from a stage an administrator can simply switch back on.
+AGENTS_WITHOUT_ADAPTER: tuple[AgentIdentifier, ...] = tuple(
+    spec.identifier for spec in _SPECS if not spec.implemented
 )
 
 
@@ -157,6 +198,22 @@ def get_agent_spec(agent_id: AgentIdentifier) -> AgentSpec:
 def next_agent(agent_id: AgentIdentifier) -> AgentIdentifier | None:
     position = PIPELINE_ORDER.index(agent_id)
     return PIPELINE_ORDER[position + 1] if position + 1 < len(PIPELINE_ORDER) else None
+
+
+def next_preparation_agent(agent_id: AgentIdentifier) -> AgentIdentifier | None:
+    """The next Agent the *preparation* pipeline runs, or ``None`` at the boundary.
+
+    Distinct from :func:`next_agent`, which answers "what is stage N+1" and is
+    still the right question for the registry, the Workbench and stage history.
+    This answers "what does the pipeline run next", and the two differ at exactly
+    one place: after the last preparation Agent there is no next stage to run,
+    because sending is a manual action rather than queued work.
+    """
+
+    following = next_agent(agent_id)
+    if following is None or not get_agent_spec(following).preparation:
+        return None
+    return following
 
 
 def agents_through(desired: AgentIdentifier) -> tuple[AgentIdentifier, ...]:
