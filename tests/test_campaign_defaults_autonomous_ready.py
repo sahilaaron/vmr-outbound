@@ -600,12 +600,11 @@ def test_a_finished_pipeline_the_sheet_cannot_call_ready_is_not_pending(
     fixture.membership.pipeline_status = PipelineStageStatus.COMPLETED
     db_session.flush()
 
-    assert (
-        customer_status.status_for_membership(
-            db_session, campaign_contact_id=fixture.membership.id
-        )
-        is customer_status.CustomerContactStatus.READY_FOR_SENDING
+    app_status = customer_status.status_for_membership(
+        db_session, campaign_contact_id=fixture.membership.id
     )
+    assert app_status is customer_status.CustomerContactStatus.READY_FOR_SENDING
+
     result = result_for(db_session, membership=fixture.membership)
     assert result.status is RowStatus.COULD_NOT_PREPARE
     assert result.safe_failure_reason
