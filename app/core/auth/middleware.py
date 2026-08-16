@@ -786,8 +786,16 @@ def _has_control_character(path: str) -> bool:
     return any(character < " " or character == "\x7f" for character in path)
 
 
-def _prefers_html(scope: Scope) -> bool:
-    """Whether this looks like a browser navigation rather than an API call."""
+def is_browser_navigation(scope: Scope) -> bool:
+    """Whether this looks like a browser navigation rather than an API call.
+
+    Public because two places now have to agree on the answer, and a second
+    hand-written copy of this test is exactly the kind of thing that drifts.
+    The middleware uses it to choose between a sign-in redirect and a JSON
+    ``401``; ``app/web/extension_link_routes.py`` uses it to decide whether a
+    refusal on the authorization entrypoint is a page a human is about to read
+    or a status code a program is about to check.
+    """
 
     accepts = _headers(scope, b"accept")
     if len(accepts) != 1:
@@ -801,6 +809,11 @@ def _prefers_html(scope: Scope) -> bool:
         # to ask for HTML; a non-navigation must still get the JSON refusal.
         return False
     return True
+
+
+#: The name this predicate has always carried inside the middleware. Kept so the
+#: two call sites above read the way they always have.
+_prefers_html = is_browser_navigation
 
 
 def _requested_target(scope: Scope) -> str | None:
