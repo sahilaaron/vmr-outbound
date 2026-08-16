@@ -1,8 +1,10 @@
 # Research workers
 
-The Research Agent does not know how to research anything. It knows how
-to run **workers**, store what they return, and be honest about what they
-could not find. A worker is one source of sourced company facts.
+The Research Agent stores sourced facts, a raw submission and a versioned
+dossier through one persistence chain. Production uses the bounded Claude CLI
+web-research source described below. The registered deterministic worker system
+remains available for tests, diagnostics and future explicitly approved
+alternate modes; it is not part of normal production execution.
 
 This split exists so a research source can be added, swapped or removed
 without touching the pipeline, the job queue, or the evidence model.
@@ -53,7 +55,7 @@ raises an Agent adapter exception; the Agent owns that vocabulary.
 register_worker("my_source", MySourceWorker)
 ```
 
-Which workers actually run is operator configuration, not code:
+Legacy diagnostic/experimental callers can select registered workers:
 
 ```python
 controls.set_global_control(
@@ -68,9 +70,10 @@ controls.set_global_control(
 )
 ```
 
-Workers run in the order listed. Naming a worker this build does not have
-is an error, not a silent skip — a research run that quietly did less
-than was asked is not an acceptable outcome.
+This configuration does not select the production Research source. The
+production adapter ignores `workers` and `worker_options`, invokes Claude web
+research once, and never constructs the deterministic registry. Naming a worker
+this build does not have remains an error in the explicit legacy mode.
 
 ## What ships today
 
@@ -81,6 +84,10 @@ a structured-data value (JSON-LD / Open Graph), or a clearly-labelled
 heuristic signal. Bounded to 25 pages, depth 3, with a one-second
 politeness delay and a hard floor under all three — an operator can
 tighten the crawl, never widen it.
+
+It does not run on the normal production Research path. Retaining it is not a
+silent downgrade policy: if required Claude Research is unavailable or fails,
+the Agent reports BLOCKED, RETRY or TERMINAL as appropriate.
 
 The vendored directory is excluded from `ruff` and from strict `mypy`
 because it is upstream code. Fix a defect upstream and re-vendor rather
@@ -112,35 +119,23 @@ divergence before the next re-vendor; it is deliberate.
 `robots.py` also diverges deliberately: this copy is fail-closed, where
 the prototype allows a crawl when robots.txt cannot be read.
 
-## The Claude CLI fallback (RES-002)
+## Primary Claude CLI web research
 
-`app/services/research/fallback.py`. **Not a registered worker**, and it
-must never appear in `config["workers"]`. It is a *second attempt* inside
-the same Research Agent execution, reached only when the deterministic
-attempt produced nothing usable.
-
-The trigger is deliberately coarse. `app/services/research/agent.py`
-asks one question — is the deterministic result usable? — and never asks
-*why* it was not before deciding to fall back. Three unusable shapes are
-distinguished for the operator's report and for nothing else:
-
-| Reason code | What happened |
-| --- | --- |
-| `deterministic_worker_failed` | every worker raised, whatever the cause |
-| `empty_extraction` | a worker ran and extracted no fact at all |
-| `insufficient_evidence` | facts were extracted but not enough to describe the company |
-
-An unreachable site, an expired certificate, an off-host redirect, a
-parser failure, a JavaScript-only page and a four-word marketing site all
-land in one of those three without anyone classifying them first. An
-operator never has to.
+`app/services/research/fallback.py`. The file and several internal type names
+retain RES-002's legacy terminology, but the runtime role is no longer a
+fallback. It is **not a registered worker** and must never appear in
+`config["workers"]`. Every production execution that clears Company Research,
+Campaign live, Company/domain existence and domain authorization invokes it as
+the required primary source. The deterministic worker is neither attempted nor
+consulted first.
 
 ### What bounds it
 
-* `FEATURES__RESEARCH_CLAUDE_FALLBACK`, default off, on top of
-  `FEATURES__COMPANY_RESEARCH`. A Campaign may switch it *off* with the
-  Agent config `{"claude_fallback": false}`; a Campaign can never switch
-  it on.
+* `FEATURES__RESEARCH_CLAUDE_FALLBACK`, default off, remains as a backward-
+  compatible availability control on top of `FEATURES__COMPANY_RESEARCH`.
+  Its name is legacy. Off means Research is unavailable; it does not restore
+  deterministic production Research. A Campaign's legacy
+  `{"claude_fallback": false}` opt-out has the same blocking semantics.
 * `allowed_tools=("WebSearch", "WebFetch")` — the narrowest permission
   set that still allows finding pages and reading them. Deliberately not
   the `allowed_tools=()` Insights and Personalization run under, because
@@ -163,25 +158,24 @@ the Agent's field-to-section map, so the model cannot invent a section.
 Model-supplied confidence is clamped, and `retrieved_at` is this
 process's wall clock rather than anything the answer claimed.
 
-Everything it stores stays labelled: worker name `claude_web`,
-`extraction_method` `claude_cli_web_fallback:model_cited`. Deterministic
-website evidence, Claude-assisted web evidence and later Insights
-interpretation remain three distinguishable things in the evidence
-tables, in the dossier sections and in the Research report. Neither
-research source writes a canonical Company field.
+Everything it stores stays labelled: worker name `claude_web`, extraction
+method `claude_cli_web_research:model_cited`, durable research mode
+`claude_primary`, and dossier basis `claude_cli_web_research`. Later Insights
+interpretation remains distinguishable from cited Research evidence. Neither
+stage writes a canonical Company field.
 
 ### Retries
 
 Safe to retry, and idempotent for the same job. Evidence rows are keyed
 `research:{job_id}:{worker}:{index}`, so re-running writes the same rows.
-A job that already committed a fallback attempt rebuilds it from the
+A job that already committed its Claude attempt rebuilds it from the
 stored raw payload rather than spending a second model call, which also
 makes the resubmitted payload hash to the submission that already exists;
 an identical reading of an identical submission then reuses the dossier
 version instead of writing a second one.
 
-A transient Claude CLI or web failure keeps the existing retryable
-semantics. A *completed* fallback that could cite nothing does not: that
+A transient Claude CLI or web failure keeps the existing retryable semantics.
+A completed Claude execution that could cite nothing does not retry: that
 is a truthful finding about the company's public web presence, it is
 committed with warnings, and it does not retry forever.
 
@@ -213,19 +207,14 @@ a module.
 Three things must be settled before that is built, and none of them are
 technical conveniences:
 
-1. **Both scripts shell out to the Claude CLI.** That is an LLM
-   invocation inside a stage whose entire contract is "deterministic,
-   sourced facts, no inference". RES-002 settled the narrow version of
-   this question — see the fallback section above — and the answer was
-   *not* "a model may be a research worker". It was: a model may run as a
-   bounded second attempt, after the deterministic one has already
-   failed, storing only claims that carry an openable source and the
-   supporting text from it. A registered `ScriptWorker` running arbitrary
-   model-backed scripts as a first-class source is a different and much
-   wider question, and it is still open.
+1. **Both scripts shell out to the Claude CLI.** Production Research already
+   has one reviewed bounded Claude boundary. A registered `ScriptWorker`
+   running arbitrary model-backed scripts would create a second execution and
+   validation route whose permissions, evidence rules and provenance could
+   diverge. That wider question remains open.
 2. **`docs/GOAL.md` lists paid LLM API integration as out of scope.**
-   Whether a CLI on Sahil's subscription counts is a scope decision, not
-   an implementation detail.
+   The approved primary Research CLI uses Sahil's existing subscription;
+   arbitrary additional CLI integrations remain a separate scope decision.
 3. **A subprocess boundary is an execution boundary.** Timeouts, output
    size limits, and refusing to inherit the application environment all
    need to be settled before arbitrary scripts run inside a worker.

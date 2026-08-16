@@ -1,34 +1,26 @@
-"""The Claude CLI web-research fallback behind the deterministic website worker.
+"""The bounded Claude CLI web-research source used by production Research.
 
-The deterministic worker reads one company's own website and records what it
-explicitly says. That is the right first attempt and stays the first attempt. It
-also fails, routinely and for reasons that have nothing to do with the company:
-a site that is JavaScript-only, a certificate that expired, a redirect chain that
-leaves the host, a marketing page with four words on it, a domain that answers
-nothing at all. In every one of those cases the company is perfectly researchable
-by a person with a browser — the deterministic path simply cannot see it.
-
-This module is that person. One bounded Claude CLI call, with web search and
-webpage reading and nothing else, run **only after** the deterministic attempt
-has already produced something unusable.
+One bounded Claude CLI call, with web search and webpage reading and nothing
+else, is the required primary source for every authorized production execution.
+The module retains legacy ``Fallback*`` type names to avoid unrelated churn from
+the RES-002 implementation it evolved from; persisted output uses primary-source
+terminology.
 
 Four rules bound it, and they are the reason it is allowed to exist at all:
 
-1. **It never runs first.** The trigger is the deterministic outcome, not an
-   operator's judgement about a domain. See ``app.services.research.agent``.
-2. **A claim without a citation is not evidence.** Every accepted claim carries
+1. **A claim without a citation is not evidence.** Every accepted claim carries
    an absolute source URL *and* the supporting text the page contained. Anything
    else is dropped and counted — never softened into a weaker fact, never stored
    as an unknown that looks like a finding. This is the same asymmetry the
    Insights Agent enforces: this stage may return less than the model offered,
    never more.
-3. **Its evidence stays labelled.** Accepted facts carry an
+2. **Its evidence stays labelled.** Accepted facts carry an
    ``extraction_method`` naming this producer, and land under a worker name of
    their own, so a Claude-assisted read is distinguishable from a deterministic
    one everywhere it is later displayed, cited or gated on. Nothing here writes a
    canonical Company field; turning sourced facts into canonical values remains
    the separate, reviewable decision it already was.
-4. **Page content is evidence, not instruction.** Everything the model reads is
+3. **Page content is evidence, not instruction.** Everything the model reads is
    third-party text. The schema below is enforced by this module, not negotiated
    with the answer: an unexpected key is ignored, an unknown field name is
    rejected, and no wording inside a page can widen what is stored or what this
@@ -71,23 +63,20 @@ from app.services.thinking.contracts import (
 )
 from app.services.workbench_agents.sanitize import sanitize_text
 
-#: The worker name every fallback fact, source and dossier entry is filed under.
-#: Deliberately not ``website``: the whole point is that the two remain telling
-#: apart after the fact, in the dossier sections, in the submission payload and
-#: in the operator report.
+#: The worker name every Claude fact, source and dossier entry is filed under.
 FALLBACK_WORKER_NAME = "claude_web"
 
 #: Stored on every piece of evidence this producer creates. An operator reading
 #: one evidence row must be able to see it was model-mediated without having to
 #: join back to the job that produced it.
-EXTRACTION_METHOD = "claude_cli_web_fallback:model_cited"
+EXTRACTION_METHOD = "claude_cli_web_research:model_cited"
 
-PURPOSE = "company_research_fallback"
+PURPOSE = "company_research_primary"
 
 #: The retrieval method recorded for each cited page, so the existing Research
 #: report's "successful reads" table labels these rows honestly rather than
 #: implying this process fetched them itself.
-RETRIEVAL_METHOD = "claude_cli_web_fallback"
+RETRIEVAL_METHOD = "claude_cli_web_research"
 PAGE_TYPE = "model_cited_source"
 
 #: A model-mediated read is never as strong as a deterministic extraction from a
@@ -137,11 +126,9 @@ RESEARCH_FIELDS: dict[str, str] = {
 
 
 class FallbackStatus(enum.StrEnum):
-    """What one fallback attempt amounted to."""
+    """Legacy type name for what one Claude web-research attempt amounted to."""
 
-    #: The fallback was not reached — disabled, or the deterministic attempt was
-    #: usable. Recorded so "we did not ask" never reads as "we asked and got
-    #: nothing".
+    #: The required source was unavailable before invocation.
     NOT_ATTEMPTED = "not_attempted"
     #: Ran and produced at least one properly cited claim.
     SUCCEEDED = "succeeded"
@@ -194,10 +181,9 @@ class FallbackOutcome:
     rejected: tuple[dict[str, Any], ...] = ()
     source_urls: tuple[str, ...] = ()
     duration_seconds: float | None = None
-    #: Why the deterministic attempt was considered unusable, carried through so
-    #: the fallback record answers "why was this run?" on its own.
-    trigger_reason_code: str | None = None
-    trigger_reason: str | None = None
+    #: Why the source was invoked, carried into durable execution lineage.
+    invocation_reason_code: str | None = None
+    invocation_reason: str | None = None
     #: The Claude CLI permissions this call actually ran under. Recorded because
     #: "which tools was the model given?" is the first question anyone reviewing
     #: a model-sourced claim should be able to answer from the record.
@@ -272,11 +258,10 @@ def _confidence(value: object) -> float:
 def _usable_source_url(value: object) -> str | None:
     """An absolute http(s) URL short enough to store, or nothing.
 
-    No host policy: the fallback exists precisely because the company's own site
-    could not be read, so a trade directory, a news item or a regulator's
-    register is a legitimate source here. What is not negotiable is that the URL
-    is real, absolute and storable — a claim whose citation cannot be opened is
-    not a cited claim.
+    No host policy: primary web research may use a trade directory, news item or
+    regulator's register as well as the company's own site. What is not
+    negotiable is that the URL is real, absolute and storable — a claim whose
+    citation cannot be opened is not a cited claim.
     """
 
     if not isinstance(value, str):
@@ -321,8 +306,8 @@ def build_prompt(subject: FallbackSubject, *, limits: FallbackLimits) -> str:
     fields = "\n".join(f'  "{name}" — {meaning}' for name, meaning in RESEARCH_FIELDS.items())
 
     return f"""You are gathering verifiable, cited facts about ONE specific company so a
-B2B seller can understand what it does. An automated attempt to read this company's own
-website has already failed or returned too little, which is why you are being asked.
+B2B seller can understand what it does. You are the required primary research source for
+this execution. No earlier crawler result exists and no crawler will replace your answer.
 
 THE COMPANY (this exact organisation, not a same-named one elsewhere)
 {chr(10).join(identity)}
@@ -422,13 +407,13 @@ class ClaudeResearchFallback:
         except ThinkingError as exc:
             return FallbackOutcome(
                 status=FallbackStatus.FAILED,
-                error=_safe(exc.message) or "The Claude CLI research fallback failed.",
+                error=_safe(exc.message) or "The Claude CLI web-research source failed.",
                 error_code=exc.code,
                 retryable=exc.retryable,
                 producer_version=limits.producer_version,
                 duration_seconds=round(time.monotonic() - started, 3),
-                trigger_reason_code=reason_code,
-                trigger_reason=_safe(reason, limit=600),
+                invocation_reason_code=reason_code,
+                invocation_reason=_safe(reason, limit=600),
                 tools=limits.allowed_tools,
             )
         duration = round(time.monotonic() - started, 3)
@@ -478,8 +463,8 @@ class ClaudeResearchFallback:
                 rejected=tuple(rejected),
                 source_urls=tuple(item["url"] for item in sources),
                 duration_seconds=duration,
-                trigger_reason_code=reason_code,
-                trigger_reason=_safe(reason, limit=600),
+                invocation_reason_code=reason_code,
+                invocation_reason=_safe(reason, limit=600),
                 tools=limits.allowed_tools,
             )
 
@@ -499,8 +484,8 @@ class ClaudeResearchFallback:
             rejected=tuple(rejected),
             source_urls=tuple(item["url"] for item in sources),
             duration_seconds=duration,
-            trigger_reason_code=reason_code,
-            trigger_reason=_safe(reason, limit=600),
+            invocation_reason_code=reason_code,
+            invocation_reason=_safe(reason, limit=600),
             tools=limits.allowed_tools,
         )
 
@@ -678,7 +663,7 @@ def _raw_payload(
     return {
         "worker": FALLBACK_WORKER_NAME,
         "worker_version": limits.producer_version,
-        "fallback": True,
+        "research_role": "primary",
         "producer": answer_producer,
         "producer_version": answer_version,
         "subject": {
@@ -688,8 +673,8 @@ def _raw_payload(
             "industry": subject.industry,
             "linkedin_company_url": subject.linkedin_company_url,
         },
-        "trigger_reason_code": reason_code,
-        "trigger_reason": reason,
+        "invocation_reason_code": reason_code,
+        "invocation_reason": reason,
         "retrieved_at": retrieved_at.isoformat(),
         "duration_seconds": duration_seconds,
         "limits": {
@@ -738,7 +723,9 @@ def result_from_raw(entry: Mapping[str, Any]) -> WorkerResult | None:
     if entry.get("worker") != FALLBACK_WORKER_NAME:
         return None
     raw = entry.get("raw")
-    if not isinstance(raw, Mapping) or raw.get("fallback") is not True:
+    if not isinstance(raw, Mapping) or not (
+        raw.get("research_role") == "primary" or raw.get("fallback") is True
+    ):
         return None
     stored = raw.get("claims")
     if not isinstance(stored, Sequence) or isinstance(stored, str):
@@ -794,8 +781,8 @@ class FallbackRecord:
 
     attempted: bool
     status: str
-    trigger_reason_code: str | None = None
-    trigger_reason: str | None = None
+    invocation_reason_code: str | None = None
+    invocation_reason: str | None = None
     producer: str | None = None
     producer_version: str | None = None
     evidence_accepted: int = 0
@@ -813,8 +800,8 @@ class FallbackRecord:
         return {
             "attempted": self.attempted,
             "status": self.status,
-            "trigger_reason_code": self.trigger_reason_code,
-            "trigger_reason": self.trigger_reason,
+            "invocation_reason_code": self.invocation_reason_code,
+            "invocation_reason": self.invocation_reason,
             "producer": self.producer,
             "producer_version": self.producer_version,
             "evidence_accepted": self.evidence_accepted,
@@ -843,8 +830,8 @@ def record_for(
     return FallbackRecord(
         attempted=outcome.attempted,
         status=outcome.status.value,
-        trigger_reason_code=outcome.trigger_reason_code,
-        trigger_reason=outcome.trigger_reason,
+        invocation_reason_code=outcome.invocation_reason_code,
+        invocation_reason=outcome.invocation_reason,
         producer=outcome.producer,
         producer_version=outcome.producer_version,
         evidence_accepted=outcome.accepted,
@@ -888,8 +875,14 @@ def record_from_result(result: WorkerResult) -> FallbackRecord:
         status=(
             FallbackStatus.SUCCEEDED.value if result.facts else FallbackStatus.INSUFFICIENT.value
         ),
-        trigger_reason_code=_text(raw.get("trigger_reason_code"), limit=128),
-        trigger_reason=_text(raw.get("trigger_reason"), limit=600),
+        invocation_reason_code=(
+            _text(raw.get("invocation_reason_code"), limit=128)
+            or _text(raw.get("trigger_reason_code"), limit=128)
+        ),
+        invocation_reason=(
+            _text(raw.get("invocation_reason"), limit=600)
+            or _text(raw.get("trigger_reason"), limit=600)
+        ),
         producer=_text(raw.get("producer"), limit=128),
         producer_version=result.worker_version,
         evidence_accepted=len(result.facts),
@@ -920,6 +913,6 @@ def not_attempted(reason_code: str, reason: str) -> FallbackRecord:
     return FallbackRecord(
         attempted=False,
         status=FallbackStatus.NOT_ATTEMPTED.value,
-        trigger_reason_code=reason_code,
-        trigger_reason=reason,
+        invocation_reason_code=reason_code,
+        invocation_reason=reason,
     )

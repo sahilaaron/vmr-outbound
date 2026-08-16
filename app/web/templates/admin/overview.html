@@ -118,10 +118,10 @@
   </div>
 
   <div class="card">
-    <div class="card-head"><h2>Recent Research fallback use</h2><span class="hint">Claude web fallback worker</span></div>
+    <div class="card-head"><h2>Recent primary Claude Research</h2><span class="hint">Claude web research</span></div>
     <div class="card-body tight">
       {% if not view.fallback_available and not view.fallback_runs %}
-      <div class="card-body">{{ wb.unavailable("Research fallback is off", "The research_claude_fallback feature switch is not enabled; deterministic Research runs alone.") }}</div>
+      <div class="card-body">{{ wb.unavailable("Claude Research is unavailable", "The legacy research_claude_fallback availability control is off; Research blocks rather than downgrading to the deterministic crawler.") }}</div>
       {% elif view.fallback_runs %}
       <div class="table-wrap">
       <table class="data">
@@ -145,7 +145,7 @@
       </table>
       </div>
       {% else %}
-      <div class="card-body">{{ wb.empty("No fallback executions recorded", "Recent Research runs completed without invoking the Claude web fallback.") }}</div>
+      <div class="card-body">{{ wb.empty("No Claude executions recorded", "No recent Research run invoked the required Claude web-research source.") }}</div>
       {% endif %}
     </div>
   </div>

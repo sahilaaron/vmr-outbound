@@ -137,7 +137,9 @@ Versioned research output. Raw submissions and sourced evidence remain separate 
 
 ## Research boundary
 
-Research uses registered deterministic workers, not a language model.
+Production Research uses bounded Claude CLI web research as its required primary
+source. Registered deterministic workers remain outside the normal production
+path for tests, diagnostics and future explicitly approved alternate modes.
 
 It preserves:
 

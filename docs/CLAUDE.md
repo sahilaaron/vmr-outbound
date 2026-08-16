@@ -47,7 +47,10 @@ rule.
 
 - Use deterministic code for facts and repeatable rules; use Claude for judgment
   where language or ambiguous evidence matters.
-- Do not replace working Python logic with an LLM step.
+- Do not replace working Python logic with an LLM step unless Sahil has made that
+  explicit product decision. Company Research is one such decision: its required
+  source is bounded Claude CLI web research, while evidence validation,
+  persistence, authorization and downstream policy remain deterministic Python.
 - Do not add a paid Claude API dependency. Design for Claude Desktop/Claude Code
   under the user's subscription and its usage limits.
 - Process only eligible records and pass compact evidence packets to conserve

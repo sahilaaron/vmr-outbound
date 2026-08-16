@@ -315,20 +315,19 @@ PRODUCT_CONTROLS: tuple[ControlSpec, ...] = (
         key="company_research",
         label="Company research",
         summary=(
-            "Lets the Research Agent read a company's own website through the registered "
-            'workers. A campaign must still opt in with the Agent config {"live": true}; '
-            "this does not start a crawl by itself and authorises no AI synthesis."
+            "Lets the Research Agent gather cited company facts through bounded Claude CLI "
+            'web research. A campaign must still opt in with {"live": true}; every accepted '
+            "claim requires a source URL and supporting page text."
         ),
         group="Research",
         gates_agents=(AgentIdentifier.RESEARCH,),
     ),
     ControlSpec(
         key="research_claude_fallback",
-        label="Research web fallback (Claude CLI)",
+        label="Claude Research availability (legacy key)",
         summary=(
-            "A second attempt inside the Research Agent, run only after the deterministic "
-            "worker has already produced too little. Every claim it returns must carry a "
-            "source URL and the supporting text or it is discarded."
+            "Required availability control for the primary Claude web-research source. "
+            "Turning it off blocks Research; it never restores deterministic crawling."
         ),
         group="Research",
         capability=lambda settings, stored: (

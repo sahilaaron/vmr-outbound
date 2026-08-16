@@ -74,7 +74,7 @@ be left unclassified.
 | Control | Capability required |
 | --- | --- |
 | Company research | — |
-| Research web fallback (Claude CLI) | Claude CLI command; Company research |
+| Claude Research availability (legacy `research_claude_fallback` key) | Claude CLI command; Company research. Off blocks Research and never restores deterministic crawling. |
 | Company intelligence | Claude CLI command |
 | Insights | Claude CLI command |
 | Automatic company-domain resolution | — |

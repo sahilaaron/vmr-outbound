@@ -103,7 +103,7 @@
 </div>
 
 <div class="card">
-  <div class="card-head"><h2>Research executions</h2><span class="hint">deterministic vs Claude fallback lineage per Agent Job</span></div>
+  <div class="card-head"><h2>Research executions</h2><span class="hint">primary Claude and historical source lineage per Agent Job</span></div>
   <div class="card-body tight">
     {% if view.research_jobs %}
     <div class="table-wrap">
@@ -117,7 +117,7 @@
           <td class="dim">{{ (job.campaign_name or "—") | neutralize }}</td>
           <td>
             {% if job.fallback_attempted is none %}<span class="badge muted plain">lineage unavailable</span>
-            {% elif job.fallback_attempted %}<span class="badge {{ 'ok' if job.fallback_status == 'succeeded' else 'warn' }} plain">fallback {{ job.fallback_status or "attempted" }}</span>
+            {% elif job.fallback_attempted %}<span class="badge {{ 'ok' if job.fallback_status == 'succeeded' else 'warn' }} plain">{{ 'primary Claude' if job.dossier_basis == 'claude_cli_web_research' else 'legacy fallback' }} {{ job.fallback_status or "attempted" }}</span>
             {% else %}<span class="badge muted plain">deterministic only</span>{% endif %}
           </td>
           <td class="dim mono">{{ job.dossier_basis or "—" }}</td>
