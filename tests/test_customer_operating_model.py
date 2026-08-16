@@ -599,12 +599,16 @@ def test_a_genuine_setup_condition_is_kept_separate_from_a_machine_failure(
     db_session.flush()
 
     body = client.get(_campaign_url(scenario)).text
-    # The customer-owned condition is said in the customer's words: paused and
-    # resumable, or held by an administrator setting when an Agent is off.
-    assert (
-        "Paused. Resume the Campaign" in body
-        or "Preparation is being held by an administrator setting." in body
-    )
+    # The customer-owned condition is said in the customer's words, and it is
+    # said deterministically. This Campaign is paused *and* has a failed Research
+    # Agent, so both an administrator cause and a customer cause are live at
+    # once; the customer's own pause is the one that must be reported, because
+    # it is the one they can act on. Accepting either sentence here would let the
+    # page tell a customer their own pause was an administrator hold — which is
+    # false, and hides the Resume they own.
+    assert "Paused. Resume the Campaign" in body
+    assert "Resume Campaign" in body
+    assert "Preparation is being held by an administrator setting." not in body
     assert "Research Agent" not in body
     # And the machine outcome is reported separately, as status.
     assert "Where people stand" in body

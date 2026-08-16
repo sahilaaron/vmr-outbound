@@ -90,10 +90,44 @@ def _setup_answer(
     setting is told so here, in the customer's words, rather than being offered
     a Start that would be refused. Which Agents are off is Admin's to see, on
     the diagnostics page.
+
+    **Order is the semantics, not a detail**, and the ordering below is not the
+    obvious one, so it is written down.
+
+    A Campaign the customer paused reports the pause, and offers Resume, even
+    when an Agent is switched off and would independently hold preparation. The
+    pause is the customer's own act on their own Campaign; answering it with
+    "held by an administrator setting" tells them something false about a state
+    they created, and withholds the one control that is theirs. So
+    ``is_paused`` is checked *before* execution readiness — the defect this
+    ordering fixes.
+
+    A draft is not the same case and is deliberately not treated the same. It
+    is the absence of a customer act rather than one, and there the
+    administrator sentence is the whole point: ``set_campaign_execution``
+    refuses the first enable of an opted-in Campaign whose Agents are not
+    ready, so a Start offered here would be refused on click. Saying so on the
+    page the customer decides from, rather than after they have decided, is a
+    property with its own coverage in
+    ``tests/test_campaign_execution_readiness.py`` and is not this repair's to
+    drop. Readiness therefore sits between paused and draft.
+
+    The asymmetry is real and worth naming: Resume is refused by the same
+    preflight that refuses Start, so a paused, held Campaign now offers a
+    Resume that comes back as an error rather than a warning. That is the
+    accepted trade — a customer who paused is told the truth about their own
+    Campaign first — and the refusal message the route surfaces is explicit
+    about the administrator cause when they press it.
     """
 
     if header.is_archived:
         return {"ready": False, "text": "Archived. Nothing more will be prepared."}
+    if header.is_paused:
+        return {
+            "ready": False,
+            "text": "Paused. Resume the Campaign to carry on preparing people.",
+            "action": "resume",
+        }
     if campaign_opted_in(campaign):
         readiness = agent_readiness.execution_readiness(db, campaign=campaign)
         if not readiness.runnable:
@@ -107,12 +141,6 @@ def _setup_answer(
             "ready": False,
             "text": "Not started. Start the Campaign and VMR prepares everyone in it.",
             "action": "start",
-        }
-    if header.is_paused:
-        return {
-            "ready": False,
-            "text": "Paused. Resume the Campaign to carry on preparing people.",
-            "action": "resume",
         }
     return {"ready": True, "text": "Ready to prepare people."}
 
