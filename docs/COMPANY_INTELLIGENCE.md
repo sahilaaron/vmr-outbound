@@ -351,9 +351,15 @@ truthful reason code on every skip. It enqueues; it never produces inline.
   them together. Aliases are the extension point and are curated by hand.
 * **Classifications are not verified** unless an operator has confirmed them
   under the review semantics above. Model confidence is an opinion.
-* **Freshness is not automatic.** Re-running Research does not re-classify a
-  Company until something enqueues a job. This follows from the placement
-  decision (ADR-CI-001) and is the main thing to revisit.
+* **Freshness follows Research, and nothing else.** Since 2026-08-06 a committed
+  usable dossier enqueues classification automatically (see *Operating model:
+  automatic handoff* above), so the original CI-001 limitation — that a Company
+  waited for an operator or a backfill — no longer holds. What remains is
+  narrower and still worth knowing: a Company is re-classified **only** when
+  Research runs again and changes the input digest. There is no independent
+  refresh schedule, so intelligence produced from a dossier that has since gone
+  stale in the world stays current in the system until Research re-runs.
+  Companies whose research predates the handoff need a backfill once.
 * **Subindustries are not listed in the prompt.** All 245 would crowd out the
   evidence, so the producer writes its own wording and normalization either maps
   it or flags it.

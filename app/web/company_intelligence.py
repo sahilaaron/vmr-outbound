@@ -1,15 +1,19 @@
 """Admin Workbench pages for Company Intelligence (CI-001).
 
-A router of its own, mounted only when ``features.company_intelligence`` is on,
+A router of its own, gated on the effective ``company_intelligence`` control,
 rather than more routes bolted onto ``app.web.routes``. Three reasons, in order:
 
 * **Isolation.** This area must be able to arrive, change and leave without
   touching the Agent monitor, the Campaign screens or anything Personalization
   will later grow into. A separate module and a separate mount make that
   structural instead of a promise about discipline.
-* **Gating.** The switch is default-off (FND-007). With a separate router, off
-  means the paths do not exist — a 404, not a page explaining that a feature is
-  disabled — and there is no code path from a disabled feature into a template.
+* **Gating.** The switch is default-off (FND-007). Off means the paths do not
+  exist — a 404, not a page explaining that a feature is disabled — and there is
+  no code path from a disabled feature into a template. The router is *mounted*
+  unconditionally and refuses per request in
+  :func:`require_intelligence_enabled`; mounting it on the raw environment flag
+  instead meant an administrator could switch the control on and still get a 404
+  from every page here until somebody restarted the process.
 * **Namespacing.** Everything lives under ``/admin/company-intelligence`` and
   ``/admin/companies/{id}/intelligence``, so no pattern here can shadow an
   existing workbench route and no future workbench route can shadow one of these.
@@ -32,7 +36,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
@@ -65,12 +69,49 @@ from app.services.company_intelligence.runner import PRODUCER, PRODUCER_VERSION
 from app.services.imports import display
 from app.services.operations import settings as operational
 
-# Every state-changing route on this router is refused unless the request
-# carries the CSRF token bound to the caller's session. The check is declared
-# once, here, rather than on ~100 individual handlers: a route added later is
-# covered the moment it is registered. It is inert for safe methods and inert
-# entirely when hosted authentication is disabled (local development).
-router = APIRouter(prefix="/admin", include_in_schema=False, dependencies=[Depends(require_csrf)])
+
+def require_intelligence_enabled(
+    db: Session = Depends(get_db),
+) -> None:
+    """404 the whole area unless Company Intelligence is *effectively* on.
+
+    This router used to be mounted conditionally in ``create_app`` on the raw
+    ``FEATURES__COMPANY_INTELLIGENCE`` value, which made the switch a deployment
+    decision wearing a product control's clothes: an administrator could turn
+    Company Intelligence on in Admin → Configuration, see it reported as
+    effective, and still get a 404 from every page in this area until somebody
+    edited an environment file and restarted the process.
+
+    Mounting unconditionally and refusing per request keeps the original,
+    deliberate behaviour — while the control is off these paths do not exist,
+    a 404 rather than a page explaining a disabled feature — and moves the
+    decision to the layer that can actually answer it. Same contract, and the
+    same reasoning, as ``api/integrations_sheets._require_enabled``.
+    """
+
+    if not operational.enabled(db, "company_intelligence"):
+        raise HTTPException(status_code=404, detail="not found")
+
+
+# Both router-level checks are declared once, here, rather than on ~100
+# individual handlers, so a route added later is covered the moment it is
+# registered:
+#
+# * `require_intelligence_enabled` — the product control.
+# * `require_csrf` — every state-changing route is refused unless the request
+#   carries the CSRF token bound to the caller's session. Inert for safe methods,
+#   and inert entirely when hosted authentication is disabled (local development).
+#
+# The control gate comes *first* so that a deployment with Company Intelligence
+# off answers 404 without ever evaluating a token. Rejecting a bad token first
+# would make a disabled deployment distinguishable from an enabled one by the
+# shape of the refusal — the same reasoning that puts the enablement check ahead
+# of credential reads in `api/integrations_sheets`.
+router = APIRouter(
+    prefix="/admin",
+    include_in_schema=False,
+    dependencies=[Depends(require_intelligence_enabled), Depends(require_csrf)],
+)
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 # The shared spreadsheet-neutralization boundary, so every environment that
