@@ -23,6 +23,8 @@ from sqlalchemy.orm import Session
 from app.models.campaign import Campaign, CampaignContact
 from app.models.contact import Contact
 from app.models.enums import (
+    AgentControlStatus,
+    AgentIdentifier,
     CampaignContactEligibility,
     CampaignMembershipStatus,
     CampaignStatus,
@@ -32,9 +34,14 @@ from app.models.enums import (
 from app.models.import_batch import ImportBatch
 from app.models.seller_knowledge import CampaignOffering
 from app.services.agents.readiness import execution_readiness
+from app.services.agents.registry import PREPARATION_AGENTS, get_agent_spec
 from app.services.audit import record_audit_event
 from app.services.campaign_access import CampaignActor, scope_campaign_statement
-from app.services.personalization.cadence import CADENCE_KEY, campaign_opted_in
+from app.services.personalization.cadence import (
+    CADENCE_KEY,
+    campaign_opted_in,
+    default_campaign_cadence_config,
+)
 
 MAX_NAME_LEN = 255
 MAX_DESCRIPTION_LEN = 4_000
@@ -136,6 +143,76 @@ def _opts_into_sequence(config: dict[str, Any] | None) -> bool:
     return isinstance(block, dict) and block.get("enabled") is True
 
 
+#: The reason recorded on every Agent override a new Campaign is created with.
+NEW_CAMPAIGN_DEFAULT_REASON: Final = (
+    "new campaign default: preparation runs autonomously until Ready for Sending"
+)
+
+
+def apply_new_campaign_agent_defaults(
+    session: Session,
+    *,
+    campaign: Campaign,
+    actor: str = "operator",
+) -> tuple[AgentIdentifier, ...]:
+    """Switch on every preparation Agent a new Campaign needs to reach Ready.
+
+    The registry's ``default_status`` is what an Agent is worth *before anybody
+    has decided anything* — Research, Email, Verification, Insights and
+    Personalization all default off there, because turning a stage on globally is
+    a platform decision with a cost attached. That default was also, until now,
+    what every new Campaign inherited, which made the product's own contract
+    unreachable: a Campaign created through any surface produced a Contact that
+    stopped at Research and waited for an administrator to enable five Agents by
+    hand, one Campaign at a time.
+
+    So the decision is made per Campaign, at creation, as a real
+    ``CampaignAgentOverride`` row. Three properties follow from writing it that
+    way rather than changing the registry:
+
+    * **Nothing already stored changes.** Existing Campaigns keep whatever they
+      inherit; this only ever runs for a Campaign being created.
+    * **It stays an operator's to undo.** These are ordinary overrides written
+      through the ordinary service, with the ordinary version and audit event, so
+      Admin can disable any of them afterwards exactly as before.
+    * **Sending is untouched.** It is not a preparation Agent, it has no
+      executable adapter, and enabling it is refused by the control service. The
+      package being ready is not permission to send it.
+
+    The ``live`` opt-in is written for the Agents whose adapters demand it. Those
+    adapters still refuse unless the deployment's own operational switches are
+    on, so this authorizes the *Campaign*, never the spend: an administrator
+    still decides whether research, verification and model work run at all.
+    """
+
+    # Local import: `controls` reads the Campaign this module writes, and the
+    # module-level cycle that would create is the same one `_reconcile_campaign_controls`
+    # already avoids this way.
+    from app.services.agents.controls import LIVE_CONFIG_KEY, set_campaign_override
+
+    applied: list[AgentIdentifier] = []
+    for agent_id in PREPARATION_AGENTS:
+        # Capture is enabled permanently by the control service itself — it
+        # refuses any other status — so an override would record a decision
+        # nobody can make and nobody can reverse.
+        if agent_id is AgentIdentifier.CAPTURE:
+            continue
+        spec = get_agent_spec(agent_id)
+        if not spec.implemented:  # pragma: no cover - every preparation Agent has an adapter
+            continue
+        set_campaign_override(
+            session,
+            campaign_id=campaign.id,
+            agent_id=agent_id,
+            status=AgentControlStatus.ENABLED,
+            config={LIVE_CONFIG_KEY: True} if spec.requires_live_opt_in else {},
+            actor=actor,
+            reason=NEW_CAMPAIGN_DEFAULT_REASON,
+        )
+        applied.append(agent_id)
+    return tuple(applied)
+
+
 def _has_enrolled_contacts(session: Session, campaign_id: uuid.UUID) -> bool:
     return (
         session.scalars(
@@ -185,6 +262,18 @@ def create_campaign(
     ``None`` — a worker, a local development session, a test — creates a campaign
     nobody owns, which administrators can still reach and a normal user reaches
     only through an explicit assignment.
+
+    **What a new Campaign is created able to do.** Every surface that creates a
+    Campaign comes through here, so the product's defaults live here rather than
+    in each of them. A new Campaign is opted in to the seven-message sequence on
+    the canonical ladder — see ``cadence.default_campaign_cadence_config`` — and
+    has every preparation Agent switched on
+    (:func:`apply_new_campaign_agent_defaults`). Neither default touches an
+    existing Campaign, and an administrator may reverse either afterwards.
+
+    ``execution_enabled`` stays ``False``: preparation being configured is not
+    the same statement as "start now", and the master switch is the operator's
+    deliberate go. What changed is that pressing it is now sufficient.
     """
 
     campaign = Campaign(
@@ -203,7 +292,9 @@ def create_campaign(
         ),
         primary_cta=_optional_text(primary_cta, field_name="primary_cta", limit=MAX_CTA_LEN),
         template_config=_json_object(template_config, field_name="template_config"),
-        cadence_config=_json_object(cadence_config, field_name="cadence_config"),
+        cadence_config=_json_object(
+            default_campaign_cadence_config(cadence_config), field_name="cadence_config"
+        ),
         sending_settings=_json_object(sending_settings, field_name="sending_settings"),
         allow_provisional_domains=bool(allow_provisional_domains),
         execution_enabled=False,
@@ -215,6 +306,7 @@ def create_campaign(
             session.flush()
     except IntegrityError as exc:
         raise CampaignError(f"a campaign named {campaign.name!r} already exists") from exc
+    enabled_agents = apply_new_campaign_agent_defaults(session, campaign=campaign, actor=actor)
     record_audit_event(
         session,
         actor=actor,
@@ -228,6 +320,8 @@ def create_campaign(
                 name for name in _SETTING_FIELDS if getattr(campaign, name) is not None
             ],
             "execution_enabled": False,
+            "sequence_opted_in": campaign_opted_in(campaign),
+            "preparation_agents_enabled": [agent.value for agent in enabled_agents],
         },
     )
     return campaign

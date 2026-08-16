@@ -38,8 +38,9 @@ from app.models.suppression import Suppression
 from app.models.verification_job import AgentJob
 from app.services.agents import controls as agent_controls
 from app.services.agents import jobs as agent_jobs
+from app.services.agents.registry import PREPARATION_AGENTS
 from app.services.campaign_contacts import enrol_contact, refresh_eligibility
-from app.services.campaigns import create_campaign, set_campaign_execution
+from app.services.campaigns import create_campaign, set_campaign_execution, update_campaign
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -84,6 +85,39 @@ def _contact(
     return contact
 
 
+def clear_new_campaign_defaults(session: Session, campaign_id: uuid.UUID) -> None:
+    """Return a fixture Campaign to "this Campaign has decided nothing yet".
+
+    ``create_campaign`` now writes a ``CampaignAgentOverride`` for every
+    preparation Agent and opts the Campaign in to the seven-message sequence,
+    because the product is autonomous until Ready for Sending and a Campaign
+    created switched off could never satisfy that. That is the right default for
+    a Campaign somebody creates, and the wrong starting point for a fixture whose
+    subject is control *precedence* — a scenario that already carries a
+    campaign-level decision cannot demonstrate what a Campaign inherits when it
+    has not made one.
+
+    So the fixture states its premise instead of relying on an absence. Both
+    halves go through the services an operator would use — clearing an override,
+    and saving the Campaign's settings — so what the fixture reaches is a state
+    the product can actually be in: the shape of a Campaign created before this
+    default existed.
+    """
+
+    for agent_id in PREPARATION_AGENTS:
+        agent_controls.clear_campaign_override(
+            session, campaign_id=campaign_id, agent_id=agent_id, actor="fixture"
+        )
+    update_campaign(
+        session,
+        campaign_id,
+        cadence_config=None,
+        actor="fixture",
+        reason="fixture: campaign predates the sequence default",
+    )
+    session.flush()
+
+
 def build(session: Session) -> Scenario:
     """One Campaign mid-flight, one not started, and the awkward states.
 
@@ -106,6 +140,8 @@ def build(session: Session) -> Scenario:
         status=CampaignStatus.DRAFT,
     )
     session.flush()
+    clear_new_campaign_defaults(session, campaign.id)
+    clear_new_campaign_defaults(session, other.id)
     set_campaign_execution(session, campaign.id, enabled=True, actor="operator")
     session.flush()
 

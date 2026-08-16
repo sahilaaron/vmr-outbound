@@ -20,7 +20,7 @@ from app.models.enums import (
 )
 from app.models.pipeline import CampaignContactAgentState, PipelineEvent
 from app.models.verification_job import AgentJob
-from app.services.agents.registry import get_agent_spec, next_agent
+from app.services.agents.registry import get_agent_spec, next_preparation_agent
 
 
 class PipelineStateError(Exception):
@@ -264,7 +264,14 @@ def transition_stage(
     if target in {PipelineStageStatus.COMPLETED, PipelineStageStatus.SKIPPED}:
         if target is PipelineStageStatus.COMPLETED:
             membership.latest_completed_stage = agent_id
-        following = next_agent(agent_id)
+        # The *preparation* successor, not simply stage N+1. Preparation ends at
+        # the Ready-for-Sending boundary: a Contact whose package is written has
+        # nothing left for this pipeline to run, and advancing it into Sending —
+        # which is disabled, has no adapter and is not skippable — parked it
+        # there permanently with the finished package sitting beside it. Sending
+        # keeps its place in the registry and in stage history; it is simply no
+        # longer a stage the walk schedules.
+        following = next_preparation_agent(agent_id)
         if agent_id is membership.desired_stage or following is None:
             membership.next_stage = None
             membership.pipeline_status = PipelineStageStatus.COMPLETED

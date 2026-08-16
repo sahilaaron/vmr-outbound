@@ -266,6 +266,13 @@ def schedule_next(
     agent_id = membership.next_stage
     if agent_id is None:
         return None
+    if not get_agent_spec(agent_id).preparation:
+        # Nothing after the preparation boundary is queued work. `transition_stage`
+        # already ends the pipeline at the last preparation Agent, so this only
+        # meets a membership recorded before that boundary existed — and for those
+        # the honest answer is to schedule nothing rather than to project a
+        # disabled control onto a stage no worker will ever claim.
+        return None
     campaign = session.get(Campaign, membership.campaign_id)
     if campaign is None:  # pragma: no cover - protected by FK
         return None

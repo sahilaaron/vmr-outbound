@@ -238,6 +238,54 @@ def with_campaign_opt_in(campaign: Campaign, *, enabled: bool) -> dict[str, Any]
     return config
 
 
+def default_campaign_cadence_config(
+    proposed: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """The ``cadence_config`` a *newly created* Campaign is given.
+
+    The product is autonomous until Ready for Sending, and a Ready package is a
+    verified address plus a seven-message sequence. A Campaign created with no
+    cadence configuration at all could therefore never satisfy its own contract:
+    :func:`campaign_opted_in` reads ``is True`` of a key nobody had written, so
+    every new Campaign silently produced single drafts. New Campaigns are now
+    created opted in, with the canonical ladder written down rather than left to
+    be inferred.
+
+    Two things it deliberately does not do:
+
+    * **It does not overrule a caller.** A creation request that already carries
+      a readable ``sequence`` block has made the decision, and this returns it
+      untouched — including a block that says ``enabled: false``, because a
+      caller creating a deliberately single-draft Campaign must be able to.
+      Unrelated keys in the column survive for the same reason
+      :func:`with_campaign_opt_in` preserves them: the column belongs to the
+      Campaign, not to this module.
+    * **It does not touch an existing Campaign.** This is only ever called on the
+      way in to ``create_campaign``; nothing here rewrites what is already
+      stored, and an administrator may turn the sequence off afterwards through
+      the ordinary settings path.
+
+    A value this module cannot read is returned exactly as given, so the
+    validation in ``create_campaign`` still gets to refuse it rather than having
+    it quietly replaced here.
+    """
+
+    if proposed is not None and not isinstance(proposed, dict):
+        return proposed
+    config: dict[str, Any] = dict(proposed or {})
+    if isinstance(config.get(CADENCE_KEY), dict):
+        return config
+    if CADENCE_KEY in config:
+        # Unreadable rather than absent. Left alone so `create_campaign`'s own
+        # validation sees what the caller actually sent.
+        return config
+    config[CADENCE_KEY] = {
+        "enabled": True,
+        "elapsed_days": list(DEFAULT_ELAPSED_DAYS),
+    }
+    return config
+
+
 def resolve_cadence(campaign: Campaign) -> SequenceCadence:
     """The planned timing for this Campaign's sequences.
 
