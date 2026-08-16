@@ -38,38 +38,50 @@
       </div>
 
       <div class="v2-card clip" id="ready">
-        <div class="v2-card-head">
-          <h2>Ready for Sending <span class="v2-count m">{{ header.progress.ready_for_sending | thousands }}</span></h2>
-          <span class="v2-note push">Their seven emails are written. Sending is yours to do.</span>
+        <div class="v2-card-head v2-toolbar">
+          <h2>Ready for Sending <span class="v2-count m">{{ ready_total | thousands }}</span></h2>
+          <div class="v2-chips v2-ready-filters push">
+            {% for key, label in ready_filters %}
+            <a class="v2-chip sm {{ 'on' if key == section }}" href="{{ base_href }}{{ '' if key == 'due' else '?section=' ~ key }}#ready">{{ label }}</a>
+            {% endfor %}
+          </div>
         </div>
-        {% if ready %}
+        {% if ready_rows and not desk %}
         <div class="v2-table-wrap">
           <table class="v2-rowlinks">
             <thead>
               <tr>
                 <th>Person</th>
                 <th>Company</th>
-                <th>Email address</th>
-                <th class="num">Ready since</th>
-                <th></th>
+                <th>Next email</th>
+                <th>Due</th>
+                <th>Progress</th>
+                <th>Last action</th>
               </tr>
             </thead>
             <tbody>
-              {% for row in ready %}
+              {% for row in ready_rows %}
+              {% set open_url = base_href ~ '?' ~ ('section=' ~ section ~ '&' if section != 'due' else '') ~ 'person=' ~ row.person.membership_id ~ '#ready' %}
               <tr>
-                <td><a class="v2-rowlink" href="/app/people/{{ row.contact_id }}?campaign={{ campaign.id }}#emails">{{ row.name | neutralize }}</a></td>
-                <td>{{ (row.company | neutralize) or '—' }}</td>
-                <td class="m">{{ (row.email | neutralize) or '—' }}</td>
-                <td class="num v2-nowrap v2-muted">{{ row.ready_at | when }}</td>
-                <td class="num v2-nowrap"><a class="v2-btn small" href="/app/people/{{ row.contact_id }}?campaign={{ campaign.id }}#emails">Open emails</a></td>
+                <td><a class="v2-rowlink" href="{{ open_url }}">{{ row.person.name | neutralize }}</a></td>
+                <td>{{ (row.person.company | neutralize) or '—' }}</td>
+                <td class="v2-nowrap">{{ row.next_label }}</td>
+                <td class="v2-nowrap {{ 'v2-warn-text' if row.progress and row.progress.overdue }}">{{ row.due_label }}</td>
+                <td class="v2-nowrap v2-muted">{{ row.progress_label }}</td>
+                <td class="v2-nowrap v2-muted">{% if row.progress and row.progress.last_action %}Email {{ row.progress.last_action.position }} {{ row.progress.last_action.label | lower }} · {{ row.progress.last_action.acted_at | when }}{% else %}—{% endif %}</td>
               </tr>
               {% endfor %}
             </tbody>
           </table>
         </div>
-        {% if ready | length >= ready_limit %}
+        {% if ready_total >= ready_limit %}
         <div class="v2-card-foot"><a href="{{ base_href }}/people?outcome=ready_for_sending">See everyone who is ready →</a></div>
         {% endif %}
+        {% elif desk %}
+          {% include "_desk.html" %}
+        {% elif ready_total %}
+          {{ empty('Nobody is due right now', 'Everyone ready has been actioned for now, or their next follow-up is not due yet.') }}
+          <div class="v2-card-foot"><a href="{{ base_href }}?section=all#ready">Show all ready people →</a></div>
         {% elif header.people %}
           {{ empty('Nobody is ready yet', 'People appear here as soon as VMR has a confirmed address and seven written emails for them.') }}
         {% else %}
@@ -137,4 +149,8 @@
     </div>
   </div>
 </div>
+{% endblock %}
+{% block scripts %}
+{% if desk %}<script src="{{ url_for('static', path='sequence.js') }}?v={{ sequence_js_version }}" defer></script>
+<script src="{{ url_for('static', path='desk.js') }}?v={{ desk_js_version }}" defer></script>{% endif %}
 {% endblock %}

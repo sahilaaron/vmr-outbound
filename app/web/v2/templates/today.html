@@ -1,113 +1,129 @@
+{#
+  Today: what is due now, and where to continue. A return surface that brings
+  the user back to the relevant Campaign — grouped due cards, ready first
+  emails, Campaigns in motion, and the rare customer-owned setup item. No
+  notifications heading, no unread counts, no machine failures as tasks.
+#}
 {% extends "base.html" %}
-{% from "_ui.html" import stat, stat_unbuilt, tag, unbuilt, campaign_state, empty %}
+{% from "_ui.html" import lifecycle_pill, empty %}
 {% block content %}
 <div class="v2-page narrow">
-
-  {#
-    This page used to open with a count of "things that want you" and a card
-    headed "Decisions only you can make". Both are gone, and their absence is the
-    product: VMR Outbound is autonomous until Ready for Sending, so failed jobs,
-    blocked stages and unread messages are the system's work, not the customer's
-    backlog. What is left is an overview — where contacts stand, and nothing that
-    reads as arrears.
-  #}
   <div class="v2-head">
     <div>
-      <h1 class="v2-h1 big">{{ today.strftime('%A, %d %B') if today else 'Today' }}</h1>
+      <h1 class="v2-h1 big">{{ today.strftime('%A, %d %B') }}</h1>
       <p class="v2-lede">
-        {% if progress.has_contacts %}
-          VMR is preparing {{ plural(progress.processing, 'contact') }};
-          {{ progress.ready_for_sending }} ready for sending.
-        {% else %}
-          No contacts are enrolled yet. Create a campaign and add people; VMR takes it from there.
-        {% endif %}
-        The pipeline has {{ plural(contacts_total, 'person', 'people') }} and
-        {{ plural(companies_total, 'company', 'companies') }} on file.
+        {% if not has_campaigns %}Create a Campaign and add people; VMR prepares their emails and brings you back here when something is due.
+        {% elif view.due %}{{ view.due | map(attribute='due') | sum }} follow-up{{ '' if (view.due | map(attribute='due') | sum) == 1 else 's' }} due across {{ view.due | length }} Campaign{{ '' if view.due | length == 1 else 's' }}.
+        {% elif view.first %}{{ view.first | map(attribute='ready') | sum }} {{ 'person is' if (view.first | map(attribute='ready') | sum) == 1 else 'people are' }} ready for their first email.
+        {% elif view.total_processing %}Nothing is due. VMR is preparing {{ view.total_processing }} {{ 'person' if view.total_processing == 1 else 'people' }}.
+        {% else %}Nothing is due today.{% endif %}
       </p>
     </div>
-    <div class="v2-note">
-      <div>VMR works on its own until a contact is Ready for Sending.</div>
-      <div class="v2-hint">Sending is manual and happens outside this build.</div>
+    <div class="v2-btn-row">
+      <a class="v2-btn primary" href="/app/add-people">Add people</a>
+      <a class="v2-btn" href="/app/campaigns/new">New Campaign</a>
     </div>
   </div>
 
-  <h2 class="v2-section-title">Where your contacts stand</h2>
-  <div class="v2-card">
-    <div class="v2-stat-strip">
-      {{ stat(status_labels['processing'], progress.processing | thousands, 'VMR is working', '') }}
-      {{ stat(status_labels['ready_for_sending'], progress.ready_for_sending | thousands, 'seven messages written', 'ok') }}
-      {{ stat(status_labels['could_not_prepare'], progress.could_not_prepare | thousands, 'no messages will be produced', '') }}
-      {{ stat('People on file', contacts_total | thousands, 'captured permanently', 'find') }}
-      {{ stat('With an address', confirmed_addresses | thousands, 'built and stored', 'find') }}
-      {{ stat_unbuilt('Sent', 'sending is manual') }}
-      <div class="v2-strip-foot">counted now, from committed state</div>
+  {% if view.due %}
+  <h2 class="v2-section-title">Due follow-ups</h2>
+  <div class="v2-due-grid">
+    {% for card in view.due %}
+    <div class="v2-card v2-due-card">
+      <div class="v2-card-body">
+        <b class="v2-due-name">{{ card.campaign.name | neutralize }}</b>
+        <div class="v2-due-line">
+          <span class="m">{{ card.due }}</span> follow-up{{ '' if card.due == 1 else 's' }} due today{% if card.overdue %} · <span class="v2-warn-text">{{ card.overdue }} overdue</span>{% endif %}
+        </div>
+        <div class="v2-hint">Next: Email {{ card.next_position }} for most people</div>
+        <div class="v2-btn-row v2-mt-sm">
+          <a class="v2-btn primary small" href="{{ card.open_url }}">Open Campaign</a>
+          {% if can_dismiss %}
+          <form method="post" action="/app/today/dismiss">
+            <input type="hidden" name="campaign_id" value="{{ card.campaign.id }}">
+            <button class="v2-btn small" type="submit" title="Hides this card for you until tomorrow. Nothing about the emails changes.">Dismiss for today</button>
+          </form>
+          {% endif %}
+        </div>
+      </div>
     </div>
-    <div class="v2-card-foot plain">
-      {{ status_notes['could_not_prepare'] }} Nothing here is waiting on a decision from you.
-    </div>
+    {% endfor %}
   </div>
+  {% endif %}
 
-  <h2 class="v2-section-title">Your campaigns</h2>
+  {% if view.first %}
+  <h2 class="v2-section-title">Ready for first email</h2>
+  <div class="v2-due-grid">
+    {% for card in view.first %}
+    <div class="v2-card v2-due-card">
+      <div class="v2-card-body">
+        <b class="v2-due-name">{{ card.campaign.name | neutralize }}</b>
+        <div class="v2-due-line"><span class="m">{{ card.ready }}</span> {{ 'person' if card.ready == 1 else 'people' }} ready for Email 1</div>
+        <div class="v2-btn-row v2-mt-sm">
+          <a class="v2-btn primary small" href="{{ card.open_url }}">Open Campaign</a>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if view.dismissed %}
+  <p class="v2-hint">{{ view.dismissed }} Campaign card{{ '' if view.dismissed == 1 else 's' }} hidden for today.</p>
+  {% endif %}
+
+  {% if has_campaigns %}
+  <h2 class="v2-section-title">Campaigns in motion</h2>
   <div class="v2-card clip">
-    {% if campaign_rows %}
+    {% if view.motion %}
     <div class="v2-table-wrap">
-      <table>
+      <table class="v2-rowlinks">
         <thead>
           <tr>
             <th>Campaign</th>
             <th>State</th>
-            <th class="num">People</th>
             <th class="num">Processing</th>
             <th class="num">Ready for Sending</th>
             <th class="num">Could not prepare</th>
-            <th>Progress</th>
+            <th class="num">Last change</th>
           </tr>
         </thead>
         <tbody>
-          {% for row in campaign_rows %}
+          {% for row in view.motion %}
           <tr>
-            <td>
-              <a href="/app/campaigns/{{ row.campaign.id }}">{{ row.campaign.name }}</a>
-              <div class="v2-sub">
-                created {{ row.campaign.created_at | day }}
-                {%- if row.campaign.description %} · {{ row.campaign.description | truncate(60) }}{% endif %}
-              </div>
-            </td>
-            <td>{{ campaign_state(row.campaign.status, row.campaign.execution_enabled) }}</td>
-            <td class="num m">{{ row.contacts | thousands }}</td>
-            <td class="num m">{{ row.progress.processing }}</td>
-            <td class="num m">{{ row.progress.ready_for_sending }}</td>
-            <td class="num m">{{ row.progress.could_not_prepare }}</td>
-            <td class="v2-note">{{ row.state }}</td>
+            <td><a class="v2-rowlink" href="/app/campaigns/{{ row.campaign.id }}">{{ row.campaign.name | neutralize }}</a></td>
+            <td>{{ lifecycle_pill(row.lifecycle, row.lifecycle_label) }}</td>
+            <td class="num m">{{ row.progress.processing | thousands }}</td>
+            <td class="num m {{ 'v2-ok' if row.progress.ready_for_sending }}">{{ row.progress.ready_for_sending | thousands }}</td>
+            <td class="num m">{{ row.progress.could_not_prepare | thousands }}</td>
+            <td class="num v2-nowrap v2-muted">{{ row.last_change | when }}</td>
           </tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
-    <div class="v2-cardlist">
-      {% for row in campaign_rows %}
-      <div class="v2-item">
-        <div class="v2-item-top">
-          <a href="/app/campaigns/{{ row.campaign.id }}">{{ row.campaign.name }}</a>
-        </div>
-        <div class="v2-chipline">
-          {{ campaign_state(row.campaign.status, row.campaign.execution_enabled) }}
-          {{ tag(row.contacts ~ ' contacts') }}
-          {% if row.progress.ready_for_sending %}{{ tag(row.progress.ready_for_sending ~ ' ready for sending', 'ok') }}{% endif %}
-        </div>
-        <p class="v2-note">{{ row.state }}</p>
-      </div>
-      {% endfor %}
-    </div>
     {% else %}
-      {{ empty('No campaigns yet', 'A campaign is what enrols captured people into the pipeline. Create one, then enrol contacts into it.') }}
+      {{ empty('No active Campaigns', 'Every Campaign is archived.') }}
     {% endif %}
+    <div class="v2-card-foot plain"><a href="/app/campaigns">All Campaigns →</a></div>
   </div>
+  {% else %}
+  <div class="v2-card v2-mt">
+    {{ empty('No Campaigns yet', 'A Campaign is where you add people and where their emails appear once VMR has prepared them.') }}
+    <div class="v2-card-foot"><a class="v2-btn primary" href="/app/campaigns/new">Create your first Campaign</a></div>
+  </div>
+  {% endif %}
 
-  <div class="v2-btn-row v2-page-actions">
-    <a class="v2-btn primary" href="/app/campaigns/new">New Campaign</a>
-    <a class="v2-btn" href="/app/add-people">Add people</a>
-    <a class="v2-btn" href="/app/people">People</a>
+  {% if view.needs %}
+  <h2 class="v2-section-title">Needs your setup</h2>
+  <div class="v2-card">
+    {% for need in view.needs %}
+    <div class="v2-row tight v2-reason-row">
+      <span><b>{{ need.campaign.name | neutralize }}</b> — {{ need.text }}</span>
+      <a class="v2-btn small" href="{{ need.href }}">Open</a>
+    </div>
+    {% endfor %}
   </div>
+  {% endif %}
 </div>
 {% endblock %}

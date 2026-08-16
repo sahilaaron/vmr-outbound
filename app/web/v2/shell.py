@@ -60,6 +60,7 @@ V2_CSS_VERSION = _asset_version("v2.css")
 LIVE_JS_VERSION = _asset_version("live.js")
 SEQUENCE_JS_VERSION = _asset_version("sequence.js")
 CAMPAIGNS_JS_VERSION = _asset_version("campaigns.js")
+DESK_JS_VERSION = _asset_version("desk.js")
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +252,7 @@ def render(
         "live_js_version": LIVE_JS_VERSION,
         "sequence_js_version": SEQUENCE_JS_VERSION,
         "campaigns_js_version": CAMPAIGNS_JS_VERSION,
+        "desk_js_version": DESK_JS_VERSION,
         "flash_ok": request.query_params.get("ok"),
         "flash_err": request.query_params.get("err"),
     }
