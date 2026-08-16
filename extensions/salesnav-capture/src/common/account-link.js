@@ -58,6 +58,14 @@
  * or Chrome's own description of the *window*. None is derived from a code, a
  * token, a verifier or a response body, so no category can carry one.
  *
+ * `backend_unreachable` MEANS UNREACHABLE. Chrome reports a deployment that
+ * answered with a 4xx and a deployment that answered with nothing at all in the
+ * same seven words -- `Authorization page could not be loaded.` -- so this
+ * module used to call a live server unreachable and send the operator off to
+ * check their connection. It no longer decides that from the message: when the
+ * page fails to load, `probeDeployment` asks the deployment directly, and the
+ * answer separates "not there" from "there, and refusing this install".
+ *
  * Every browser edge (chrome.*, crypto, fetch, clock) is injected, so the whole
  * flow is exercisable in `test/account-linking.test.js` without a browser.
  *
@@ -91,6 +99,11 @@
   // INTERACTIVE sign-in — something the operator asked for — is never suppressed.
   const SILENT_RETRY_COOLDOWN_MS = 60000;
 
+  // The grant type the reachability probe presents. Deliberately not one the
+  // server implements: the point is to be refused, having offered no credential
+  // at all, so that the SHAPE of the refusal can be read. See `probeDeployment`.
+  const PROBE_GRANT_TYPE = "probe";
+
   const B64URL_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
   /**
@@ -117,27 +130,37 @@
   }
 
   /**
-   * Why an interactive sign-in ended without a link.
+   * Whether Chrome's message says the operator closed or refused the window.
    *
    * Everything here is derived from Chrome's own failure message for
    * `launchWebAuthFlow`, which describes the *window*, never the authorization:
    * it has never seen a code, a token or a verifier, so nothing it says can leak
    * one. The message is read for classification only and is never shown.
-   *
-   * Anything unrecognised falls through to the generic failure. A wrong-but-
-   * specific explanation sends an operator to fix something that was never
-   * broken, which is worse than saying plainly that it did not work.
    */
-  function classifyLaunchFailure(error) {
-    const message = String((error && error.message) || "").toLowerCase();
-    if (!message) return "sign_in_failed";
-    if (/did not approve|cancel|closed by the user|user rejected/.test(message)) {
-      return "sign_in_cancelled";
-    }
-    if (/could not be loaded|network|unreachable|failed to load/.test(message)) {
-      return "backend_unreachable";
-    }
-    return "sign_in_failed";
+  function looksCancelled(message) {
+    return /did not approve|cancel|closed by the user|user rejected/.test(message);
+  }
+
+  /**
+   * Whether Chrome's message says the authorization PAGE never loaded.
+   *
+   * This is the one Chrome message that does not identify a cause, and reading
+   * it as though it did is the defect this pair of functions exists to stop
+   * repeating. Chromium raises `Authorization page could not be loaded.` for
+   * BOTH of:
+   *
+   *   - the deployment could not be reached at all (DNS, TLS, no route), and
+   *   - the deployment answered perfectly well, with a status of 400 or above.
+   *
+   * `WebAuthFlow` treats any main-frame response >= 400 as a failed load and
+   * tears the window down before paint, so an application refusal -- a
+   * deployment that has not approved this install, account linking switched
+   * off, a malformed request -- arrives here wearing the same words as a dead
+   * network. It cannot be told apart from the message, and it must not be
+   * guessed at: see `probeDeployment`.
+   */
+  function looksLikeLoadFailure(message) {
+    return /could not be loaded|failed to load|network|unreachable/.test(message);
   }
 
   /** The session id half of `vmre1.<session id>.<secret>`. Never throws. */
@@ -413,6 +436,85 @@
       return persistTokens(data || {}, previous);
     }
 
+    // ---- why the authorization window did not open --------------------------
+
+    /**
+     * Ask the deployment whether it is there, and whether it knows this install.
+     *
+     * Called only when Chrome has said the authorization page could not be
+     * loaded -- a message that means either "no server" or "the server refused"
+     * and never says which. Rather than guess, this asks the one endpoint that
+     * can answer both questions at once and is already part of this flow.
+     *
+     * `POST /extension/token` with an unrecognised `grant_type` presents NO
+     * credential -- no code, no verifier, no refresh token, nothing to leak and
+     * nothing to burn. It is refused whatever happens. What differs is *how*,
+     * and the difference is the answer:
+     *
+     *   the request throws     nothing answered                -> unreachable
+     *   401 / 403              answered, and will not deal with
+     *                          this install: not an approved
+     *                          origin, or linking is switched
+     *                          off                             -> not authorized
+     *   5xx                    answered, and is unwell          -> server error
+     *   anything else (400)    answered, and DOES know this
+     *                          install, so the authorization
+     *                          page failed for some other
+     *                          reason                           -> generic
+     *
+     * `credentials: "omit"`, exactly like every other call this module makes:
+     * the operator's VMR session cookie is not this extension's to send, and a
+     * probe that could ride one would be reporting on something other than what
+     * the authorization window actually experienced. Only the status class is
+     * read -- never a body -- and nothing read here reaches the panel or a log.
+     */
+    async function probeDeployment(extensionId, installationId) {
+      const base = await hostedBase();
+      if (!base) return "account_link_not_hosted";
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), TOKEN_TIMEOUT_MS);
+      let resp;
+      try {
+        resp = await fetchImpl(base + ACCOUNT_LINK_PATHS.TOKEN, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            grant_type: PROBE_GRANT_TYPE,
+            extension_id: extensionId,
+            installation_id: installationId,
+          }),
+          credentials: "omit",
+          signal: controller.signal,
+        });
+      } catch (_e) {
+        clearTimeout(timer);
+        // The one thing that genuinely earns this name: nothing answered.
+        return "backend_unreachable";
+      }
+      clearTimeout(timer);
+      if (resp.status === 401 || resp.status === 403) return "extension_not_authorized";
+      if (resp.status >= 500) return "token_endpoint_error";
+      return "sign_in_failed";
+    }
+
+    /**
+     * Why an interactive sign-in ended without a link.
+     *
+     * Anything unrecognised falls through to the generic failure. A wrong-but-
+     * specific explanation sends an operator to fix something that was never
+     * broken, which is worse than saying plainly that it did not work -- and
+     * `backend_unreachable` was precisely that wrong-but-specific explanation:
+     * it sent an operator to check a connection while the deployment sat there
+     * answering every request it was given.
+     */
+    async function explainLaunchFailure(error, extensionId, installationId) {
+      const message = String((error && error.message) || "").toLowerCase();
+      if (!message) return "sign_in_failed";
+      if (looksCancelled(message)) return "sign_in_cancelled";
+      if (!looksLikeLoadFailure(message)) return "sign_in_failed";
+      return probeDeployment(extensionId, installationId);
+    }
+
     // ---- the public surface -------------------------------------------------
 
     /**
@@ -464,7 +566,10 @@
           silentFailedAt = now();
           return { ok: false, error: "account_link_required" };
         }
-        return { ok: false, error: classifyLaunchFailure(e) };
+        return {
+          ok: false,
+          error: await explainLaunchFailure(e, extensionId, installationId),
+        };
       }
 
       const parsed = parseRedirect(redirect);

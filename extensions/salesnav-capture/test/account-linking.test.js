@@ -1135,3 +1135,175 @@ test("an interactive failure the extension cannot classify stays generic", async
     "the generic message must stop asserting two specific causes it cannot know"
   );
 });
+
+// --- 9. The live UAT failure: an application refusal is not an outage --------
+//
+// Reproduced against the hosted deployment on 2026-08-16. The operator was
+// signed in to VMR Outbound in the same Chrome profile, clicked "Sign in to VMR
+// Outbound", and ~90ms later read "VMR Outbound could not be reached." The
+// deployment was up the whole time and answered every request put to it.
+//
+// The control flow, exactly:
+//
+//   connect({interactive:true})
+//     -> chrome.identity.launchWebAuthFlow(GET /extension/authorize?...)
+//     -> the app answers with a status of 400 or above
+//     -> Chromium's WebAuthFlow calls that a failed load, destroys the window
+//        before paint, and rejects with "Authorization page could not be
+//        loaded."
+//     -> the extension matched /could not be loaded/ and reported that THE
+//        DEPLOYMENT WAS UNREACHABLE
+//
+// Chrome uses those same seven words when the server really is unreachable, so
+// the message alone cannot decide it. These tests pin the two apart.
+
+/** A hosted deployment whose token endpoint answers with one chosen status. */
+function refusingServer(status, body) {
+  const calls = [];
+  function fetchImpl(url, init) {
+    calls.push({ url, init, body: init && init.body ? JSON.parse(init.body) : null });
+    if (url === TOKEN_URL) return Promise.resolve(jsonResponse(status, body || {}));
+    return Promise.resolve(jsonResponse(204, {}));
+  }
+  return { fetchImpl, calls };
+}
+
+/** A deployment that is genuinely not there: every request throws. */
+function deadServer() {
+  const calls = [];
+  function fetchImpl(url, init) {
+    calls.push({ url, init });
+    return Promise.reject(new TypeError("Failed to fetch"));
+  }
+  return { fetchImpl, calls };
+}
+
+/** Chrome's own words when the authorization page did not render. */
+function pageLoadFailure() {
+  throw new Error("Authorization page could not be loaded.");
+}
+
+test("an application refusal is NOT reported as an unreachable deployment", async () => {
+  // THE LIVE DEFECT. The deployment answers -- it just will not deal with this
+  // install, because the extension id is not one it approves (or account
+  // linking is switched off). Both arrive as a 4xx on the authorization page,
+  // and both used to be called a network outage.
+  for (const status of [401, 403]) {
+    const server = refusingServer(status, { error: "unauthorized" });
+    const error = await connectFailure({ server, onAuthFlow: pageLoadFailure });
+
+    assert.equal(
+      error,
+      "extension_not_authorized",
+      `HTTP ${status} on the authorization page is a refusal, not an outage`
+    );
+    assert.notEqual(error, "backend_unreachable");
+
+    const described = handoff.describeSendError({ error });
+    assert.ok(
+      !/could not be reached/i.test(described.headline),
+      "an operator must not be sent to check a connection that was never the problem"
+    );
+    assert.match(described.headline, /not approved/i);
+    // Retrying cannot help -- somebody has to approve the install first -- and
+    // saying so is the whole value of getting the category right.
+    assert.equal(described.canRetry, false);
+  }
+});
+
+test("a deployment that really is unreachable is still backend_unreachable", async () => {
+  // The other half. `backend_unreachable` did not become unreachable-in-name-
+  // only: when nothing answers, it is still exactly the right word.
+  const server = deadServer();
+  const error = await connectFailure({ server, onAuthFlow: pageLoadFailure });
+
+  assert.equal(error, "backend_unreachable");
+  assert.match(handoff.describeSendError({ error }).headline, /could not be reached/i);
+});
+
+test("a deployment that answers with a server error is named as one", async () => {
+  const server = refusingServer(503, {});
+  const error = await connectFailure({ server, onAuthFlow: pageLoadFailure });
+  assert.equal(error, "token_endpoint_error");
+  assert.notEqual(error, "backend_unreachable");
+});
+
+test("a deployment that DOES approve this install stays generic", async () => {
+  // It answered, and it knows this install -- so whatever stopped the
+  // authorization page is something this extension cannot name. The safe
+  // default, and deliberately not a guess.
+  const server = refusingServer(400, { error: "invalid_request" });
+  const error = await connectFailure({ server, onAuthFlow: pageLoadFailure });
+  assert.equal(error, "sign_in_failed");
+});
+
+test("the reachability probe presents no credential and omits cookies", async () => {
+  // It exists to be refused. If it ever carried a code, a verifier or a refresh
+  // token it would be burning one to ask a question, and if it ever carried the
+  // operator's VMR cookie it would be answering about a session the
+  // authorization window does not have.
+  const server = refusingServer(401, { error: "unauthorized" });
+  await connectFailure({ server, onAuthFlow: pageLoadFailure });
+
+  const probes = server.calls.filter((c) => c.url === TOKEN_URL);
+  assert.equal(probes.length, 1, "one probe, not a retry loop");
+  const probe = probes[0];
+  assert.equal(probe.init.credentials, "omit");
+  assert.equal(probe.init.method, "POST");
+  for (const forbidden of ["code", "code_verifier", "refresh_token"]) {
+    assert.ok(!(forbidden in probe.body), `the probe must not present ${forbidden}`);
+  }
+  assert.notEqual(probe.body.grant_type, "authorization_code");
+  assert.notEqual(probe.body.grant_type, "refresh_token");
+  // It still names itself, because that is the question being asked: does this
+  // deployment approve THIS install?
+  assert.ok(probe.body.extension_id);
+  assert.ok(probe.body.installation_id);
+  // And it never carries an Authorization header.
+  assert.equal(authHeader(probe), null);
+});
+
+test("a cancelled window is still cancelled and never probes", async () => {
+  // The operator closing the window is not a question about the deployment, so
+  // nothing is asked of it.
+  const server = refusingServer(401, { error: "unauthorized" });
+  const error = await connectFailure({
+    server,
+    onAuthFlow: () => {
+      throw new Error("The user did not approve access.");
+    },
+  });
+  assert.equal(error, "sign_in_cancelled");
+  assert.equal(server.calls.filter((c) => c.url === TOKEN_URL).length, 0);
+});
+
+test("no extension source reads an application session cookie", async () => {
+  // The extension is a public OAuth client. Its authority is a PKCE code, a
+  // rotating refresh token and an approved origin -- never the operator's VMR
+  // session. Nothing in the shipped source may read one, ask Chrome for one, or
+  // send one.
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const srcRoot = path.join(__dirname, "..", "src");
+
+  function sources(dir) {
+    const out = [];
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) out.push(...sources(full));
+      else if (entry.name.endsWith(".js")) out.push(full);
+    }
+    return out;
+  }
+
+  for (const file of sources(srcRoot)) {
+    const text = fs.readFileSync(file, "utf8");
+    const where = path.relative(srcRoot, file);
+    assert.ok(!/chrome\.cookies/.test(text), `${where} must not use chrome.cookies`);
+    assert.ok(!/document\.cookie/.test(text), `${where} must not read document.cookie`);
+    assert.ok(
+      !/credentials\s*:\s*["'](include|same-origin)["']/.test(text),
+      `${where} must not send ambient credentials`
+    );
+  }
+});

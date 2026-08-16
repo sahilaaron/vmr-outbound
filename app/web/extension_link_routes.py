@@ -47,6 +47,10 @@ against ``https://<extension_id>.chromiumapp.org/`` and the ``extension_id`` mus
 already be in the approved set, so there is exactly one destination a code can
 ever be delivered to.
 
+That page is served to a **browser navigation** with HTTP 200 and to everything
+else with its original 4xx -- see ``_refusal`` for why, and for the live UAT
+failure that made the difference matter. Nothing about what is refused changed.
+
 The token endpoint answers in one voice
 ---------------------------------------
 ``invalid_grant``, ``invalid_request``, ``unauthorized``. Nothing distinguishes
@@ -88,6 +92,7 @@ from app.core.auth.extension_link import (
     revoke_links_for_user,
     rotate_refresh_token,
 )
+from app.core.auth.middleware import is_browser_navigation
 from app.core.config import Settings, get_settings
 
 router = APIRouter(
@@ -136,13 +141,45 @@ def _refusal(request: Request, *, reason: str, detail: str, status_code: int = 4
     Never a redirect, and never an echo of the value that failed: a refusal page
     that reflected the submitted ``redirect_uri`` would be a way to put an
     attacker's text on a VMR-origin page.
+
+    Why a browser navigation gets this page with HTTP 200
+    -----------------------------------------------------
+    This page is the *only* thing that ever tells an operator why their sign-in
+    did not work, and until now it had never once been shown to one.
+
+    ``chrome.identity.launchWebAuthFlow`` does not render the authorization URL
+    the way a tab does. Chromium's ``WebAuthFlow`` watches the main-frame
+    navigation it started and treats **any** response with a status of 400 or
+    above as a failed load: it tears the window down before paint and rejects
+    the extension's call with ``Authorization page could not be loaded.`` So
+    every refusal here -- "this browser extension is not approved for this
+    deployment", the most useful sentence in the whole feature -- was rendered,
+    counted, logged and then thrown away unread. What reached the operator
+    instead was the extension's classification of Chrome's message, which is the
+    same message a genuinely unreachable server produces, so the panel said
+    "VMR Outbound could not be reached." about a deployment that had just
+    answered in under a hundred milliseconds.
+
+    The status code is therefore chosen by *who is reading*, and nothing else
+    changes:
+
+    * a **browser navigation** -- which is what the authorization window is, and
+      what the consent form posts -- gets the page at ``200``, because the page
+      IS the answer and a human is about to read it;
+    * everything else (``fetch``, XHR, a probe) keeps the original
+      ``400``/``401``, because a program checks the status.
+
+    This grants nothing. A refusal is still a refusal: no authorization code is
+    issued, no redirect to the extension happens, no session is created, and the
+    page echoes no parameter it was given. Only the envelope changed, so that the
+    sentence inside it can finally be read.
     """
 
     return templates.TemplateResponse(
         request=request,
         name="extension_link_refused.html",
         context={"reason": reason, "detail": detail},
-        status_code=status_code,
+        status_code=200 if is_browser_navigation(request.scope) else status_code,
     )
 
 

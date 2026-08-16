@@ -38,7 +38,7 @@ import uuid
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import pytest
 from app.core.auth.extension import EXTENSION_CAPTURE_CONTRACT, credential_digest
@@ -1218,3 +1218,211 @@ def test_no_response_on_this_boundary_echoes_a_secret(client: TestClient) -> Non
         haystack = response.text + json.dumps(dict(response.headers))
         assert access_secret not in haystack
         assert refresh_secret not in haystack
+
+
+# ---------------------------------------------------------------------------
+# K. The authorization window can actually read the refusal
+# ---------------------------------------------------------------------------
+#
+# Live Chrome UAT, 2026-08-16, against the hosted deployment. An operator signed
+# in to VMR Outbound in the same profile clicked "Sign in to VMR Outbound" and
+# was told, ~90ms later, "VMR Outbound could not be reached." The deployment was
+# up and answered every request put to it.
+#
+# `chrome.identity.launchWebAuthFlow` does not render the authorization URL the
+# way a tab does. Chromium's `WebAuthFlow` watches the main-frame navigation it
+# started and treats ANY response of 400 or above as a failed load: it destroys
+# the window before paint and rejects with "Authorization page could not be
+# loaded." Every refusal this router renders carried such a status, so the
+# refusal page -- which says, in plain words, that this install is not approved
+# for this deployment -- had never once been shown to an operator. What reached
+# them was the extension's reading of Chrome's message, and Chrome uses those
+# same words for a server that is not there at all.
+#
+# So the page a human is about to read is served with 200, and a program that
+# checks a status still gets the 4xx. Nothing about WHAT is refused changed, and
+# section D above still holds every one of those refusals closed.
+
+#: Exactly the shape Chrome puts on the authorization navigation.
+NAVIGATION_HEADERS = {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,*/*;q=0.8",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Site": "cross-site",
+}
+
+#: An extension id of the right shape that this deployment does not approve.
+UNAPPROVED_EXTENSION_ID = "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+
+#: Every refusal reachable from a well-formed-looking authorization request.
+REFUSAL_CASES = [
+    ("unknown_extension", {"extension_id": UNAPPROVED_EXTENSION_ID}),
+    ("bad_redirect", {"redirect_uri": "https://attacker.example/"}),
+    ("bad_challenge_method", {"method": "plain"}),
+    # Both values are deliberately long and distinctive rather than minimal:
+    # the echo assertion below searches the rendered page for them, and a
+    # two-character value would match ordinary page text ("noindex") and
+    # fail for a reason that has nothing to do with echoing.
+    ("bad_installation", {"installation_id": "installation~id~with~bad~characters"}),
+    ("bad_state", {"state": "state~with~characters~this~scheme~never~mints"}),
+]
+
+
+@pytest.mark.parametrize(("case", "kwargs"), REFUSAL_CASES)
+def test_a_refusal_reaches_the_authorization_window_instead_of_killing_it(
+    client: TestClient, case: str, kwargs: dict[str, str]
+) -> None:
+    """The live defect. A refusal must be readable, and must still refuse.
+
+    Two properties, and the second is why the first is safe: the operator gets a
+    page they can act on, and getting one grants nothing.
+    """
+
+    account = seed_account(email=f"window-{case}@vmr.example")
+    _attach_session(client, account.user_id, account.email)
+    _, challenge = _pkce()
+
+    refused = client.get(_authorize_url(challenge, **kwargs), headers=NAVIGATION_HEADERS)
+
+    # Chromium destroys the auth window for anything at or above 400, so this is
+    # the whole fix: below 400 the page renders and the operator reads it.
+    assert refused.status_code < 400, (
+        f"{case}: a status of {refused.status_code} is destroyed unread by "
+        "launchWebAuthFlow, and the operator is told the deployment is unreachable"
+    )
+    assert "text/html" in refused.headers["content-type"]
+    # It is still a refusal: no code, no redirect to the extension, no link.
+    assert "location" not in refused.headers
+    assert "code=" not in refused.text
+    assert ".chromiumapp.org" not in refused.text
+    assert _link_rows() == []
+    # And it does not echo the value that failed back onto a VMR-origin page.
+    for value in kwargs.values():
+        assert value not in refused.text, case
+
+
+@pytest.mark.parametrize(("case", "kwargs"), REFUSAL_CASES)
+def test_a_programmatic_caller_still_gets_the_error_status(
+    client: TestClient, case: str, kwargs: dict[str, str]
+) -> None:
+    """The status did not go away. It is chosen by who is reading.
+
+    A ``fetch``/XHR caller checks a status rather than reading a page, so it
+    keeps the one it always got. This is the half that proves the change above
+    is about rendering and not about relaxing a refusal.
+    """
+
+    account = seed_account(email=f"api-{case}@vmr.example")
+    _attach_session(client, account.user_id, account.email)
+    _, challenge = _pkce()
+
+    refused = client.get(
+        _authorize_url(challenge, **kwargs),
+        headers={"Accept": "*/*", "Sec-Fetch-Mode": "cors"},
+    )
+    assert refused.status_code == 400, case
+    assert _link_rows() == []
+
+
+def test_an_html_fetch_that_is_not_a_navigation_still_gets_the_error_status(
+    client: TestClient,
+) -> None:
+    """``fetch()`` can ask for HTML. Asking for it is not navigating to it.
+
+    The same distinction the sign-in redirect already makes, decided by the same
+    predicate, so the two cannot drift apart.
+    """
+
+    account = seed_account(email="htmlfetch@vmr.example")
+    _attach_session(client, account.user_id, account.email)
+    _, challenge = _pkce()
+
+    refused = client.get(
+        _authorize_url(challenge, method="plain"),
+        headers={"Accept": "text/html", "Sec-Fetch-Mode": "cors"},
+    )
+    assert refused.status_code == 400
+
+
+def test_a_signed_in_operator_with_a_valid_request_reaches_consent(
+    client: TestClient,
+) -> None:
+    """Experience A, driven with the real navigation headers.
+
+    Covered by section A through a bare client already; repeated here as a
+    navigation so the success path is pinned under the same conditions as the
+    refusals -- a consent page Chrome cannot render is as broken as a refusal it
+    cannot render.
+    """
+
+    account = seed_account(email="consent-nav@vmr.example")
+    _attach_session(client, account.user_id, account.email)
+    _, challenge = _pkce()
+
+    landing = client.get(_authorize_url(challenge), headers=NAVIGATION_HEADERS)
+    assert landing.status_code == 200
+    assert "text/html" in landing.headers["content-type"]
+    # The consent form, carrying the request forward -- not a code.
+    assert 'name="code_challenge"' in landing.text
+    assert "code=" not in landing.text
+
+
+def test_a_signed_out_operator_is_sent_through_sign_in_and_comes_back(
+    client: TestClient,
+) -> None:
+    """Experience B, end to end through the real middleware and the real route.
+
+    The pre-login entrypoint has to *start* a sign-in rather than refuse, and the
+    authorization request has to survive it byte for byte -- including the
+    percent-encoded ``redirect_uri`` that #286 stopped ``safe_next_path`` from
+    discarding. Both halves are asserted here because either one alone leaves the
+    authorization window with nowhere to go.
+    """
+
+    from app.core.auth.policy import safe_next_path
+
+    _, challenge = _pkce()
+    target = _authorize_url(challenge)
+
+    # 1. Signed out: a redirect INTO sign-in, never a bare 401 page.
+    started = client.get(target, headers=NAVIGATION_HEADERS)
+    assert started.status_code == 303
+    location = started.headers["location"]
+    assert location.startswith("/auth/login?next=")
+
+    # 2. The destination survives the round trip exactly.
+    handed_back = unquote(location.partition("next=")[2])
+    assert handed_back == target
+    assert safe_next_path(handed_back, fallback="/app") == target
+    assert "redirect_uri=https%3A%2F%2F" in handed_back
+
+    # 3. Sign in, then follow the preserved destination back to authorization.
+    account = seed_account(email="roundtrip@vmr.example")
+    _attach_session(client, account.user_id, account.email)
+    landed = client.get(safe_next_path(handed_back, fallback="/app"), headers=NAVIGATION_HEADERS)
+    assert landed.status_code == 200
+    assert 'name="code_challenge"' in landed.text
+
+
+@pytest.mark.parametrize(
+    "unsafe",
+    [
+        "//evil.example/app",
+        "/\\evil.example",
+        "https://evil.example/extension/authorize",
+        "/extension/authorize%2f%2fevil.example",
+        "/auth/login?next=/app",
+        "/healthz",
+    ],
+)
+def test_an_unsafe_destination_is_still_discarded(unsafe: str) -> None:
+    """#286's hardening is not relaxed by anything above.
+
+    The narrowing that let the encoded ``redirect_uri`` survive applies to the
+    query string only. Every rule still applies to the whole value, and an
+    encoded separator in the PATH is still refused.
+    """
+
+    from app.core.auth.policy import safe_next_path
+
+    assert safe_next_path(unsafe, fallback="/app") == "/app", unsafe
