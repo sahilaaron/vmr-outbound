@@ -1,0 +1,107 @@
+{#
+  People: the permanent records, independent of any Campaign. Preparation
+  belongs to Campaign membership, so the only Campaign column is an aggregate
+  clearly labelled as Campaign counts. Selecting rows offers "Add to Campaign",
+  which is the fourth Add people source.
+#}
+{% extends "base.html" %}
+{% from "_ui.html" import tag, empty, pager, email_state %}
+{% block content %}
+<div class="v2-page">
+  {% set people_view = 'people' %}{% include "_people_switch.html" %}
+  <div class="v2-head">
+    <div>
+      <h1 class="v2-h1">People</h1>
+      <p class="v2-lede">{{ total | thousands }} {{ 'person' if total == 1 else 'people' }} in this view. A person exists once, whatever Campaigns they are in.</p>
+    </div>
+    <a class="v2-btn primary" href="/app/add-people">Add people</a>
+  </div>
+
+  <div class="v2-card clip v2-mt">
+    <form class="v2-toolbar" method="get" action="/app/people">
+      <label class="v2-sr" for="people-q">Search</label>
+      <input class="v2-input sm" id="people-q" name="q" value="{{ filters.search or '' }}" placeholder="Search name, company or email">
+      <input type="hidden" name="view" value="{{ filters.view }}">
+      <input type="hidden" name="sort" value="{{ filters.sort }}">
+      <button class="v2-btn small" type="submit">Search</button>
+      {% if filters.search %}<a class="v2-btn small" href="/app/people?view={{ filters.view }}">Clear</a>{% endif %}
+      <div class="v2-chips push">
+        {% for key, label in views %}
+        <a class="v2-chip sm {{ 'on' if filters.view == key }}" href="/app/people?view={{ key }}{% if filters.search %}&q={{ filters.search }}{% endif %}">{{ label }}</a>
+        {% endfor %}
+      </div>
+      <details class="v2-menu">
+        <summary class="v2-chip sm">More ▾</summary>
+        <div class="v2-menu-panel">
+          <div class="v2-menu-head"><b>Sort</b></div>
+          {% for key, label in sorts %}
+          <a class="v2-menu-item" href="/app/people?view={{ filters.view }}&sort={{ key }}{% if filters.search %}&q={{ filters.search }}{% endif %}"><b>{{ label }}</b>{% if filters.sort == key %}<span>current</span>{% endif %}</a>
+          {% endfor %}
+          {% if labels %}
+          <div class="v2-menu-head"><b>Label</b></div>
+          {% for label in labels %}
+          <a class="v2-menu-item" href="/app/people?view={{ filters.view }}&label={{ label.slug }}"><b>{{ label.name }}</b></a>
+          {% endfor %}
+          {% endif %}
+          {% if filters.label_slug %}<a class="v2-menu-item last" href="/app/people?view={{ filters.view }}"><b>Clear label</b></a>{% endif %}
+        </div>
+      </details>
+    </form>
+
+    {% if rows %}
+    <form method="post" action="/app/people/add-to-campaign" id="people-select">
+      <input type="hidden" name="back" value="{{ filter_url }}">
+      <div class="v2-table-wrap">
+        <table class="v2-rowlinks">
+          <thead>
+            <tr>
+              <th class="v2-check-col"><span class="v2-sr">Select</span></th>
+              <th>Person</th>
+              <th>Company</th>
+              <th>Email address</th>
+              <th>Campaigns</th>
+              <th class="num">Latest change</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in rows %}
+            <tr>
+              <td class="v2-check-col">{% if row.contact_id %}<input type="checkbox" name="contact_ids" value="{{ row.contact_id }}" aria-label="Select {{ row.full_name }}">{% endif %}</td>
+              <td>
+                <a class="v2-rowlink" href="{{ '/app/people/' ~ row.contact_id if row.contact_id else row.detail_url }}">{{ row.full_name }}</a>
+                <div class="v2-sub">{{ row.title or '' }}{% if row.labels %} · {{ row.labels | join(', ') }}{% endif %}</div>
+                {% if row.states.suppressed %}<div class="v2-chipline">{{ tag('Never contacted', 'err', small=true) }}</div>{% endif %}
+              </td>
+              <td>{{ row.company_name or '—' }}</td>
+              <td>
+                <div class="m v2-break">{{ row.email or '—' }}</div>
+                {% if row.email %}<div class="v2-chipline">{{ email_state(row.states.email_status) }}</div>{% endif %}
+              </td>
+              <td class="v2-note">{{ campaign_summaries.get(row.contact_id, 'Not in a Campaign') }}</td>
+              <td class="num v2-nowrap v2-muted">{{ row.last_updated | when }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="v2-card-foot v2-selectbar">
+        {% if campaigns %}
+        <label class="v2-sr" for="add-to-campaign">Add selected people to</label>
+        <select class="v2-select sm" id="add-to-campaign" name="campaign_id" required>
+          <option value="">Add selected to Campaign…</option>
+          {% for campaign in campaigns %}
+          <option value="{{ campaign.id }}" {{ 'selected' if preselected_campaign == campaign.id }}>{{ campaign.name | neutralize }}</option>
+          {% endfor %}
+        </select>
+        <button class="v2-btn small primary" type="submit">Add to Campaign</button>
+        <span class="v2-hint">Tick people first. Adding never removes them from anywhere else.</span>
+        {% endif %}
+        <span class="push">{{ pager(page, pages, total, filter_url, 'people') }}</span>
+      </div>
+    </form>
+    {% else %}
+      {{ empty('Nobody here yet', 'People arrive from the Chrome extension, Google Sheets or a file, and stay permanently.') }}
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

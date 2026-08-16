@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.models.campaign import Campaign, CampaignContact
 from app.models.company import Company
+from app.models.company_domain_resolution import CompanyDomainResolution
 from app.models.contact import Contact
 from app.models.enums import CampaignStatus, CompanyFieldSource, DomainResolutionState
 from app.services import campaign_workspace, customer_status, email_progress
@@ -109,7 +110,8 @@ class MembershipRow:
     def next_line(self) -> str:
         if self.progress is None:
             return ""
-        return f"{self.progress.next_label} · {self.progress.due_label} · {self.progress.progress_label}"
+        p = self.progress
+        return f"{p.next_label} · {p.due_label} · {p.progress_label}"
 
 
 def memberships_for(session: Session, contact: Contact) -> list[MembershipRow]:
@@ -125,9 +127,9 @@ def memberships_for(session: Session, contact: Contact) -> list[MembershipRow]:
         return []
     membership_ids = [membership.id for membership, _campaign in rows]
     people_rows: dict[uuid.UUID, campaign_workspace.PersonRow] = {}
-    for membership, campaign in rows:
+    for campaign_id in {campaign.id for _membership, campaign in rows}:
         found, _total = campaign_workspace.people(
-            session, campaign_id=campaign.id, search=None, limit=1000
+            session, campaign_id=campaign_id, search=None, limit=1000
         )
         for row in found:
             if row.membership_id in membership_ids:
@@ -138,14 +140,14 @@ def memberships_for(session: Session, contact: Contact) -> list[MembershipRow]:
     )
     built: list[MembershipRow] = []
     for membership, campaign in rows:
-        row = people_rows.get(membership.id)
-        outcome = row.outcome if row else CustomerContactStatus.PROCESSING
+        person = people_rows.get(membership.id)
+        outcome = person.outcome if person else CustomerContactStatus.PROCESSING
         built.append(
             MembershipRow(
                 campaign=campaign,
                 membership=membership,
                 outcome=outcome,
-                detail=row.detail if row else "",
+                detail=person.detail if person else "",
                 lifecycle=campaign_workspace.lifecycle(campaign),
                 progress=progress.get(membership.id),
             )
@@ -174,6 +176,33 @@ def website_label(company: Company, decision_state: DomainResolutionState | None
     return WEBSITE_CONFIRMED
 
 
+_STATE_RANK: dict[DomainResolutionState, int] = {
+    DomainResolutionState.CONFIRMED: 3,
+    DomainResolutionState.PROVISIONAL: 2,
+    DomainResolutionState.UNRESOLVED: 1,
+}
+
+
+def website_labels(session: Session, companies: list[Company]) -> dict[uuid.UUID, str]:
+    """Confirmed / Best available / Missing per Company, in one query."""
+
+    if not companies:
+        return {}
+    ids = [company.id for company in companies]
+    rows = session.execute(
+        select(CompanyDomainResolution.resolved_company_id, CompanyDomainResolution.state).where(
+            CompanyDomainResolution.resolved_company_id.in_(ids),
+            CompanyDomainResolution.is_current.is_(True),
+        )
+    ).all()
+    strongest: dict[uuid.UUID, DomainResolutionState] = {}
+    for company_id, state in rows:
+        current = strongest.get(company_id)
+        if current is None or _STATE_RANK.get(state, 0) > _STATE_RANK.get(current, 0):
+            strongest[company_id] = state
+    return {company.id: website_label(company, strongest.get(company.id)) for company in companies}
+
+
 @dataclass(frozen=True)
 class Fact:
     """One thing we know about a Company, with where it came from."""
@@ -189,10 +218,6 @@ PROVENANCE_RESEARCH = "Researched evidence"
 PROVENANCE_CLASSIFICATION = "Classification"
 PROVENANCE_CAPTURED = "Captured profile"
 PROVENANCE_MANUAL = "Manual"
-
-_FIELD_SOURCE_LABELS: dict[CompanyFieldSource, str] = {
-    CompanyFieldSource.MANUAL: PROVENANCE_MANUAL,
-}
 
 
 def _source_label(kind: CompanyFieldSource | None) -> str:
@@ -230,8 +255,9 @@ def what_we_know(
                 updated_at=getattr(winner, "observed_at", None),
             )
         )
-    if intelligence is not None and getattr(intelligence, "classifications", ()):
-        for classification in intelligence.classifications:
+    classifications = getattr(intelligence, "classifications", None) or ()
+    if intelligence is not None:
+        for classification in classifications:
             if getattr(classification, "operator_only", False):
                 continue
             state = getattr(classification, "state", None)
@@ -252,22 +278,59 @@ def what_we_know(
     for section in dossier_sections:
         if not section.get("addressed"):
             continue
-        lines: list[str] = []
-        for _label, values in section.get("fields", []):
-            lines.extend(str(v) for v in values if v and v != "not recorded")
-        if not lines:
+        claims = _dossier_claims(section.get("raw"))
+        if not claims:
             continue
+        sources = {source for _text, source in claims if source}
         facts.append(
             Fact(
                 subject=str(section.get("name", "")).capitalize(),
-                text="; ".join(lines[:3]),
+                text=" ".join(text for text, _source in claims[:3]),
                 provenance=PROVENANCE_RESEARCH,
-                detail=f"{len(lines)} recorded fact{'s' if len(lines) != 1 else ''}"
-                if len(lines) > 3
-                else None,
+                detail=_claims_detail(len(claims), len(sources)),
             )
         )
     return facts
+
+
+def _dossier_claims(raw: Any) -> list[tuple[str, str | None]]:
+    """The human-readable claims in one dossier section, with their source URLs.
+
+    A dossier stores each observation as a small record (value, worker,
+    confidence, source, extraction method). The customer gets the value and,
+    on expansion, the source; the machinery stays in Admin.
+    """
+
+    claims: list[tuple[str, str | None]] = []
+
+    def visit(item: Any) -> None:
+        if isinstance(item, dict):
+            value = item.get("value") or item.get("text") or item.get("claim")
+            if isinstance(value, str) and value.strip():
+                claims.append((safe_text(value.strip()), item.get("source_url") or item.get("url")))
+                return
+            for nested in item.values():
+                if isinstance(nested, (dict, list)):
+                    visit(nested)
+        elif isinstance(item, list):
+            for nested in item:
+                visit(nested)
+        elif isinstance(item, str) and item.strip():
+            claims.append((safe_text(item.strip()), None))
+
+    visit(raw)
+    return claims
+
+
+def _claims_detail(count: int, sources: int) -> str | None:
+    if count <= 3 and sources <= 1:
+        return None
+    parts = []
+    if count > 3:
+        parts.append(f"{count} recorded facts")
+    if sources:
+        parts.append(f"{sources} source{'s' if sources != 1 else ''}")
+    return " · ".join(parts)
 
 
 @dataclass(frozen=True)
@@ -341,5 +404,6 @@ __all__ = [
     "campaign_summary",
     "memberships_for",
     "website_label",
+    "website_labels",
     "what_we_know",
 ]
