@@ -25,6 +25,7 @@ from app.services.agent_studio.insights_report import (
 from app.services.companies import dossiers
 from app.services.insights import employee_size
 from app.services.insights.evidence import EvidenceInput, create_insight
+from app.services.personalization import policy as personalization_policy
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -85,7 +86,9 @@ def _subject(db: Session) -> tuple[Campaign, Company, Contact, CampaignContact]:
     return campaign, company, contact, membership
 
 
-def _complete(db: Session) -> tuple[AgentJob, uuid.UUID, uuid.UUID]:
+def _complete(
+    db: Session, *, evidence_confidences: tuple[float, ...] = (0.9,)
+) -> tuple[AgentJob, uuid.UUID, uuid.UUID]:
     campaign, company, contact, membership = _subject(db)
     research = _job(
         agent=AgentIdentifier.RESEARCH,
@@ -135,12 +138,17 @@ def _complete(db: Session) -> tuple[AgentJob, uuid.UUID, uuid.UUID]:
         state=InsightState.SUPPORTED,
         evidence=[
             EvidenceInput(
-                source_url="https://kiln.example/about?token=secret",
+                source_url=(
+                    "https://kiln.example/about?token=secret"
+                    if index == 0
+                    else f"https://kiln.example/about/{index}?token=secret"
+                ),
                 retrieved_at=datetime.now(UTC),
                 evidence_summary="The company employs 430 people.",
-                confidence=0.9,
+                confidence=confidence,
                 extraction_method="insights-test/v1",
             )
+            for index, confidence in enumerate(evidence_confidences)
         ],
         company_id=company.id,
         idempotency_key=f"insights-agent:{insights.id}:0",
@@ -173,6 +181,20 @@ def test_complete_report_uses_exact_lineage_and_sanitized_evidence(db_session: S
     assert report.claims[0].downstream_eligible is True
     assert report.dropped_claims is not None
     assert "global claim ledger" in report.unavailable[2]
+
+
+def test_report_uses_strongest_complete_support_for_personalization_policy(
+    db_session: Session,
+) -> None:
+    personalization_policy.ensure_initial_policy(db_session, actor="test")
+    job, _, claim_id = _complete(db_session, evidence_confidences=(0.93, 0.55))
+
+    report = DurableInsightsReportReader(db_session).read_job(job.id)
+
+    assert report is not None
+    claim = next(item for item in report.claims if item.insight_id == claim_id)
+    assert claim.confidence == 0.93
+    assert claim.downstream_eligible is True
 
 
 def test_later_current_dossier_is_not_substituted(db_session: Session) -> None:

@@ -24,7 +24,9 @@ from app.services.personalization.policy import (
     PolicyConfig,
     Scale,
     WritingStrategy,
+    company_context_limit,
     minimum_confidence,
+    supporting_confidence,
     temperament_instructions,
 )
 from app.services.resolution import gates
@@ -135,10 +137,6 @@ _PERFORMATIVE_PREFIXES = (
     "company name:",
     "legal name:",
     "alternate name:",
-    "short description:",
-    "founded year:",
-    "company type:",
-    "headquarters:",
     "logo url:",
 )
 
@@ -284,8 +282,8 @@ def _company_candidates(
             )
             continue
         observations = _evidence_for(session, insight)
-        weakest = min(float(item.confidence or 0.0) for item in observations)
-        if weakest < threshold:
+        support_confidence = supporting_confidence(item.confidence for item in observations)
+        if support_confidence < threshold:
             candidates.append(
                 ContextCandidate(
                     ContextCategory.COMPANY,
@@ -294,10 +292,11 @@ def _company_candidates(
                     str(insight.id),
                     False,
                     (
-                        f"Weakest source confidence {weakest:.2f} is below policy threshold "
+                        f"Strongest supporting confidence {support_confidence:.2f} is below "
+                        "policy threshold "
                         f"{threshold:.2f}."
                     ),
-                    weakest,
+                    support_confidence,
                 )
             )
             continue
@@ -316,7 +315,7 @@ def _company_candidates(
                         "The evidence is older than the policy's "
                         f"{config.evidence.maximum_age_days}-day limit."
                     ),
-                    weakest,
+                    support_confidence,
                 )
             )
             continue
@@ -330,7 +329,7 @@ def _company_candidates(
                     str(insight.id),
                     False,
                     "No explicit connection to the Campaign or seller offering was found.",
-                    weakest,
+                    support_confidence,
                 )
             )
             continue
@@ -345,7 +344,7 @@ def _company_candidates(
                     "Supported, current and offering-relevant through: "
                     f"{', '.join(sorted(overlap)[:4])}."
                 ),
-                weakest,
+                support_confidence,
             )
         )
     return candidates
@@ -454,18 +453,16 @@ def decide_context(
     sector = _sector_candidate(contact, company, seller_keywords)
 
     accepted_company = [item for item in company_all if item.accepted]
-    accepted_company.sort(key=lambda item: item.confidence or 0.0, reverse=True)
-    chosen_company = accepted_company[:1]
+    accepted_company.sort(
+        key=lambda item: (-(item.confidence or 0.0), item.evidence_id or "", item.label)
+    )
+    chosen_company = accepted_company[: company_context_limit(config)]
     used: list[ContextCandidate] = []
     fallback_level = 5
     fallback_identifier = "offering_led"
     strategy_id = "earnest_offering_led"
 
-    if (
-        chosen_company
-        and role.accepted
-        and config.temperament.personalization_depth > Scale.MINIMUM
-    ):
+    if chosen_company and role.accepted:
         used = [role, *chosen_company]
         fallback_level = 1
         fallback_identifier = "contact_and_company"

@@ -398,7 +398,11 @@ class DurableInsightsReportReader:
         freshness: str
         current: bool | None
         confidence_values = [row.confidence for row in rows if row.confidence is not None]
-        confidence = min(confidence_values) if confidence_values else None
+        confidence = (
+            personalization_policy.supporting_confidence(confidence_values)
+            if confidence_values
+            else None
+        )
         dated: list[datetime] = []
         for row in rows:
             value = row.freshness_at or row.published_at or row.retrieved_at
@@ -447,7 +451,7 @@ class DurableInsightsReportReader:
         ):
             eligible = False
             eligibility_reason = (
-                f"Weakest source confidence {confidence:.2f} is below the active "
+                f"Strongest supporting confidence {confidence:.2f} is below the active "
                 f"Personalization threshold {minimum_confidence:.2f}."
             )
         return InsightClaimReport(

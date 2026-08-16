@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import enum
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -570,18 +571,18 @@ _TEMPERAMENT_INSTRUCTIONS: Final[dict[str, tuple[str, ...]]] = {
         "Lead with a direct commercial proposition while preserving honesty.",
     ),
     "personalization_depth": (
-        "Use no more than one brief contextual reference.",
-        "Use one contextual reference and no supporting detail.",
-        "Use at most two connected context points.",
-        "Use up to three connected context points only when each adds relevance.",
-        "Use the available context deeply, but never add a fact merely to display research.",
+        "Use at most one Company insight, combining it with a relevant role when useful.",
+        "Use at most two connected Company insights, and omit either unless it adds relevance.",
+        "Use at most two connected Company insights, combining role context only when useful.",
+        "Use up to three connected Company insights only when each adds distinct relevance.",
+        "Use up to three connected Company insights deeply, never to display research volume.",
     ),
     "evidence_confidence_tolerance": (
-        "Use only evidence whose weakest source confidence is at least 0.90.",
-        "Use only evidence whose weakest source confidence is at least 0.80.",
-        "Use only evidence whose weakest source confidence is at least 0.70.",
-        "Use only evidence whose weakest source confidence is at least 0.60.",
-        "Use only evidence whose weakest source confidence is at least 0.50.",
+        "Require at least one complete supporting source with confidence of 0.90 or higher.",
+        "Require at least one complete supporting source with confidence of 0.80 or higher.",
+        "Require at least one complete supporting source with confidence of 0.70 or higher.",
+        "Require at least one complete supporting source with confidence of 0.60 or higher.",
+        "Require at least one complete supporting source with confidence of 0.50 or higher.",
     ),
     "role_led_emphasis": (
         "Do not lead from the Contact's role.",
@@ -616,6 +617,23 @@ def temperament_instructions(config: PolicyConfig) -> tuple[str, ...]:
 
 def minimum_confidence(config: PolicyConfig) -> float:
     return (0.90, 0.80, 0.70, 0.60, 0.50)[int(config.temperament.evidence_confidence_tolerance)]
+
+
+def supporting_confidence(confidences: Iterable[float | None]) -> float:
+    """Confidence of the strongest complete citation supporting one eligible claim.
+
+    Insight eligibility separately requires every observation to be traceable and
+    complete.  Once that evidence-integrity boundary has passed, a weaker secondary
+    citation does not erase stronger support for the same non-conflicting claim.
+    """
+
+    return max((float(value or 0.0) for value in confidences), default=0.0)
+
+
+def company_context_limit(config: PolicyConfig) -> int:
+    """Deterministic Company-insight cap owned by personalization depth policy."""
+
+    return (1, 2, 2, 3, 3)[int(config.temperament.personalization_depth)]
 
 
 def create_policy_version(
