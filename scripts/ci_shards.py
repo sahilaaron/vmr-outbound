@@ -32,10 +32,8 @@ printed.
 
 Groupings follow subject matter rather than balance alone, so a red job names
 the area that broke: ``tests (campaign-import)`` is a lead, ``shard-3`` is not.
-Within that constraint the groups are balanced against measured runtimes. (An
-earlier version of this note pointed at ``handoff-ci-parallelization.md`` for
-those measurements; no such file has ever existed in this repository, so the
-pointer is removed rather than left to send the next reader looking.)
+Within that constraint the groups are balanced against measured runtimes — see
+``handoff-ci-parallelization.md`` for the measurements behind the current split.
 
 Usage
 -----
