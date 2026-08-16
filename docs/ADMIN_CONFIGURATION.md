@@ -92,6 +92,37 @@ be left unclassified.
 | Knowledge Base | operator interface mounted |
 | Agent monitor and controls | operator interface mounted |
 
+#### Every enforcement point reads the effective value
+
+A control on this list is only real if the code that *acts* on it resolves it
+through `operations.settings.enabled` / `effective_flags`. Reading
+`Settings.features.<key>` directly re-introduces the exact problem this layer
+exists to remove, and it does so invisibly: the Admin screen keeps reporting the
+control as effective because it reads the right thing.
+
+This is not hypothetical. Until 2026-08-16, three enforcement points for Company
+Intelligence still read the raw environment flag — the shared worker's drain gate
+(`scripts/run_agent_worker.py`), the standalone worker's refuse-to-start check,
+and the router mount in `app/main.py`. On the staging deployment
+`FEATURES__COMPANY_INTELLIGENCE` was false while an administrator had turned the
+control on, so the screen said effective, the Research handoff kept enqueueing,
+**24 jobs sat at `PENDING` with `attempts=0`**, and every page in the Company
+Intelligence area answered 404. Nothing logged an error; the system simply did
+less than it claimed.
+
+Two rules follow:
+
+* **Never gate behaviour on `Settings.features.<key>` for a key in this table.**
+  Use `operational.enabled(session, key)`, and prefer `operational.refusal(...)`
+  when the caller needs to explain itself.
+* **A router may not be mounted on a product control.** `create_app` runs once
+  and no database row can re-run it, so mounting on the flag makes the control
+  unreachable from the product. Mount unconditionally and refuse per request —
+  `app/web/company_intelligence.py::require_intelligence_enabled` and
+  `app/api/integrations_sheets.py::_require_enabled` are the two worked examples.
+  Controls that genuinely cannot be decided at request time belong in the
+  deployment-only set below, not here.
+
 ### Deployment and security settings — environment only, no write path
 
 `workbench`, `salesnav_intake`, `linkedin_profile_intake`,

@@ -1,10 +1,42 @@
 # ADR CI-001: Company Intelligence is a derived artifact, not a pipeline stage
 
-Status: Accepted for the CI-001 first release
+Status: **Accepted, and amended on 2026-08-16.** The placement decision below
+still stands — Company Intelligence remains a company-scoped artifact on its own
+queue, not an `AgentIdentifier` in `PIPELINE_ORDER`. One consequence recorded in
+the original text has since been **superseded and must not be quoted**: the claim
+that classification runs only after an operator action or a backfill. See
+*Amendment — automatic handoff (2026-08-06)* below.
 
 Date: 2026-07-31
 
+Amended: 2026-08-16
+
 Branch: `feat/company-intelligence` (base `fd017ea`)
+
+## Amendment — automatic handoff (2026-08-06)
+
+Commit `bd812040`, *"Make Company Intelligence automatic: Research handoff +
+shared-worker dispatch"*, connected normal autonomous processing to this queue
+six days after this ADR was written. This ADR was not updated at the time, and
+the stale paragraph went on to be read as current — during the 2026-08-16 Google
+Sheets UAT review it led to a proposal to build an orchestration link that had
+already existed for ten days. That is the cost of leaving a superseded
+consequence in an accepted ADR, and it is why the correction sits at the top of
+the file rather than only in the consequence list.
+
+What actually happens now:
+
+* `app/services/research/agent.py` calls
+  `company_intelligence.handoff.enqueue_after_research` in the same transaction
+  that commits a usable dossier. The job is idempotent, company-scoped, and
+  marked `requested_by=research_handoff`.
+* The shared Agent worker (`scripts/run_agent_worker.py`) drains that queue
+  whenever the Campaign Agent queue is idle.
+* Operator enqueue and backfill remain available, but they are recovery and
+  reprocessing paths — **not** the normal path.
+
+The placement rationale in the rest of this document is unaffected: none of it
+depended on the enqueue being manual. Only the freshness consequence changed.
 
 ## Context
 
@@ -111,10 +143,14 @@ after somebody stops it half way.
 
 * Company Intelligence can be produced, re-produced, corrected and backfilled
   without any Campaign existing at all — which matches what it is.
-* It is not automatically kept fresh by the pipeline. A Company whose research is
-  re-run does not get re-classified until something enqueues a job (an operator
-  from the Admin page, or a backfill run). This is a real limitation and is listed
-  as such in `docs/COMPANY_INTELLIGENCE.md`.
+* ~~It is not automatically kept fresh by the pipeline. A Company whose research
+  is re-run does not get re-classified until something enqueues a job (an
+  operator from the Admin page, or a backfill run).~~ **Superseded 2026-08-06 —
+  see the amendment at the top of this file.** Committing a usable dossier now
+  enqueues classification automatically through the Research handoff, and the
+  shared Agent worker drains the queue. The surviving limitation is only that
+  nothing re-classifies a Company *independently* of Research re-running; it is
+  stated in its current form in `docs/COMPANY_INTELLIGENCE.md`.
 * Two queues exist. They share nothing but PostgreSQL, and the second one is
   ~300 lines. The alternative was one queue that had learned two execution models.
 
@@ -124,8 +160,10 @@ Formal stage insertion becomes worth reconsidering when **all** of these hold:
 
 1. A downstream stage genuinely needs a classification to run — most likely
    Personalization or a scoring stage that filters on industry.
-2. The freshness gap above starts costing operator time rather than being a
-   convenience.
+2. The narrowed freshness gap — no refresh independent of Research re-running —
+   starts costing operator time rather than being a convenience. The *original*
+   gap this condition was written about (no automatic enqueue at all) was closed
+   on 2026-08-06 and is no longer a reason to revisit.
 3. There is an appetite for a migration that rebuilds the `agent_identifier`
    enum, or the deployment has reached a point where a forward-only migration is
    acceptable.
