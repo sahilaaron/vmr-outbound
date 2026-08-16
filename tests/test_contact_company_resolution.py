@@ -634,6 +634,41 @@ class TestTheCompanyAgentIsWhereItHappens:
         assert current(db_session, contact) is None
         assert contact.company_id is None
 
+    def test_an_unresolved_provider_decision_survives_the_company_block(
+        self, db_session: Session, resolution_on: None
+    ) -> None:
+        """The worker must not erase a truthful decision after paying for it.
+
+        The resolver completed normally and decided ``UNRESOLVED``; the Company
+        stage therefore pauses, but its savepoint must retain the decision,
+        provider outcome and reasons. This is the hosted UAT failure: before the
+        repair, ``AgentBlocked`` rolled all of that back and left only
+        ``company_domain_missing``.
+        """
+
+        campaign = campaign_for(db_session)
+        contact = sheet_contact(db_session, company="Borealis")
+        _enrol(db_session, campaign, contact)
+        transport = CountingTransport([])
+        adapters = _adapters(_company_adapter(transport))
+
+        run_next(db_session, worker_id="test", adapters=adapters)
+        blocked = run_next(db_session, worker_id="test", adapters=adapters)
+
+        assert blocked.public_status == "paused"
+        assert blocked.job is not None
+        assert blocked.job.error_class == "company_domain_missing"
+        decision = current(db_session, contact)
+        assert decision is not None
+        assert decision.state is DomainResolutionState.UNRESOLVED
+        assert decision.selected_domain is None
+        assert decision.provider_call_made is True
+        assert decision.provider == "logo.dev"
+        assert decision.reasons
+        assert contact.company_domain is None
+        assert contact.company_id is None
+        assert transport.calls == 1
+
     def test_it_says_which_switch_is_off_rather_than_only_that_evidence_is_missing(
         self, db_session: Session, monkeypatch: pytest.MonkeyPatch
     ) -> None:
