@@ -409,15 +409,47 @@ def _run_fallback(
     )
 
 
+#: Keys on a stored section entry that name the *producer* rather than the
+#: knowledge. Renaming a producer — as this repair renamed the Claude extraction
+#: method — is not a new reading of anything, so the comparison below ignores
+#: them. Nothing is rewritten: an existing version keeps the label it was
+#: committed with, and only the "is this the same reading?" question is answered
+#: without reference to it.
+_PRODUCER_LABEL_KEYS: frozenset[str] = frozenset({"extraction_method"})
+
+
+def _knowledge(value: Any) -> Any:
+    """One section's content with producer labels removed, for comparison only."""
+
+    if isinstance(value, list):
+        return [_knowledge(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _knowledge(item) for key, item in value.items() if key not in _PRODUCER_LABEL_KEYS
+        }
+    return value
+
+
 def _same_reading(
     version: CompanyDossierVersion, *, sections: dict[str, Any], warnings: list[str]
 ) -> bool:
-    """Would interpreting again produce exactly the version already stored?"""
+    """Would interpreting again produce exactly the version already stored?
+
+    "The same" means the same knowledge — the same fields, values, sources,
+    confidences and workers — not the same producer *spelling*. A job that
+    committed evidence before a deployment and is re-driven after it (a
+    recovered lease, an operator re-run, a worker restart mid-flight) rebuilds
+    the identical facts; if a renamed ``extraction_method`` were allowed to make
+    that look like new work, the version number would become an execution
+    counter for the company, which is exactly what :func:`_interpret_once`
+    exists to prevent.
+    """
 
     if list(version.warnings or []) != warnings:
         return False
     return all(
-        getattr(version, name, None) == sections.get(name) for name in dossiers.SECTION_COLUMNS
+        _knowledge(getattr(version, name, None)) == _knowledge(sections.get(name))
+        for name in dossiers.SECTION_COLUMNS
     )
 
 
@@ -769,7 +801,15 @@ def execute_step(
     )
     source_count = len(sections.get(DossierSection.SOURCES.value) or [])
     unknown_count = len(sections.get(DossierSection.UNKNOWNS.value) or [])
-    basis = BASIS_CLAUDE if primary_mode else _basis(results)
+    # Lineage describes what was *accepted*, never merely which producer was
+    # asked. A Claude execution that read four pages and could cite nothing
+    # commits an honest empty dossier, and calling that "cited public web
+    # research" would put a false answer in the one field whose whole job is to
+    # answer "where did this company description come from?".
+    if primary_mode:
+        basis = BASIS_CLAUDE if any(result.facts for result in results) else BASIS_NONE
+    else:
+        basis = _basis(results)
 
     # --- automatic Company Intelligence handoff ----------------------------
     # One idempotent, company-scoped job in the same transaction that commits
@@ -839,4 +879,10 @@ def _domain_outcome(basis: str) -> str:
         return "researched the company through cited public web sources"
     if basis == BASIS_BOTH:
         return "researched the company website and cited public web sources"
+    if basis == BASIS_NONE:
+        # The sentence an operator reads beside a dossier that holds nothing.
+        # "Researched the company website" would describe a read that either did
+        # not happen or established nothing, which is the same overstatement
+        # BASIS_NONE exists to prevent one field earlier.
+        return "found no citable public evidence about the company"
     return "researched the company website"

@@ -71,6 +71,17 @@ FALLBACK_WORKER_NAME = "claude_web"
 #: join back to the job that produced it.
 EXTRACTION_METHOD = "claude_cli_web_research:model_cited"
 
+#: What the same producer wrote before it became the required primary source.
+#: Evidence is immutable and is not backfilled, so both strings exist in the
+#: database permanently and any future code that selects Claude-sourced evidence
+#: by extraction method has to match both. It is named here rather than left as
+#: a literal in history so that :func:`result_from_raw` can rebuild a pre-rename
+#: attempt with the label it was actually committed under.
+LEGACY_EXTRACTION_METHOD = "claude_cli_web_fallback:model_cited"
+
+#: Every extraction method this producer has ever written.
+EXTRACTION_METHODS: tuple[str, ...] = (EXTRACTION_METHOD, LEGACY_EXTRACTION_METHOD)
+
 PURPOSE = "company_research_primary"
 
 #: The retrieval method recorded for each cited page, so the existing Research
@@ -604,6 +615,12 @@ def _read_claims(
                     "excerpt": excerpt,
                     "confidence": fact.confidence,
                     "retrieved_at": retrieved_at.isoformat(),
+                    # Recorded per claim so a rebuild is exact whatever this
+                    # module's constant is later renamed to. Without it, a
+                    # rebuild has to guess the producer label from the payload's
+                    # era, and a guess is what made a re-driven job look like new
+                    # work across the last rename.
+                    "extraction_method": fact.extraction_method,
                 },
             )
         )
@@ -718,6 +735,15 @@ def result_from_raw(entry: Mapping[str, Any]) -> WorkerResult | None:
     ``entry`` is one element of a raw submission payload's ``workers`` list, as
     written by the Research Agent. Returns ``None`` when it is not a rebuildable
     fallback record, in which case the caller runs the attempt normally.
+
+    **The rebuild is of the attempt that happened, not of the attempt this build
+    would make.** Stamping the *current* extraction method onto evidence
+    committed under the previous one is a small lie with a real consequence: the
+    rebuilt sections then differ from the stored dossier by a label alone, the
+    reading looks new, and a job that merely restarted across a deployment writes
+    a second immutable version of the same knowledge. So the committed label is
+    preserved where it was recorded, and inferred from the payload's own era
+    where it was not.
     """
 
     if entry.get("worker") != FALLBACK_WORKER_NAME:
@@ -730,6 +756,14 @@ def result_from_raw(entry: Mapping[str, Any]) -> WorkerResult | None:
     stored = raw.get("claims")
     if not isinstance(stored, Sequence) or isinstance(stored, str):
         return None
+
+    # A payload written before Claude became the required source is marked
+    # `fallback: True`; one written after carries `research_role: "primary"`.
+    # That is the era signal, and it is only consulted for payloads whose claims
+    # predate the per-claim record added above.
+    era_method = (
+        EXTRACTION_METHOD if raw.get("research_role") == "primary" else LEGACY_EXTRACTION_METHOD
+    )
 
     facts: list[SourcedFact] = []
     for item in stored:
@@ -754,7 +788,9 @@ def result_from_raw(entry: Mapping[str, Any]) -> WorkerResult | None:
                     source_url=source_url,
                     source_title=_text(item.get("source_title"), limit=MAX_SOURCE_TITLE_LENGTH),
                     retrieved_at=retrieved_at,
-                    extraction_method=EXTRACTION_METHOD,
+                    extraction_method=(
+                        _text(item.get("extraction_method"), limit=128) or era_method
+                    ),
                     confidence=_confidence(item.get("confidence")),
                     excerpt=_text(item.get("excerpt"), limit=MAX_EXCERPT_LENGTH),
                 )

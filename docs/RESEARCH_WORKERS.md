@@ -132,10 +132,26 @@ consulted first.
 ### What bounds it
 
 * `FEATURES__RESEARCH_CLAUDE_FALLBACK`, default off, remains as a backward-
-  compatible availability control on top of `FEATURES__COMPANY_RESEARCH`.
-  Its name is legacy. Off means Research is unavailable; it does not restore
-  deterministic production Research. A Campaign's legacy
-  `{"claude_fallback": false}` opt-out has the same blocking semantics.
+  compatible availability control. Its name is legacy. Off means Research is
+  unavailable; it does not restore deterministic production Research. A
+  Campaign's legacy `{"claude_fallback": false}` opt-out has the same blocking
+  semantics.
+
+  **It is the prerequisite, not the extra.** Because Research now has one
+  required source, `company_research` declares a capability dependency on it:
+  with availability off, Company research reports `effective = false` on the
+  Admin Configuration screen and cannot be switched on until availability is.
+  The dependency is declared in one direction only — availability resolves
+  without asking Company research anything — so there is no cycle. The order an
+  operator turns them on in is Claude Research availability, then Company
+  research.
+
+  **Both refusals are recoverable.** A job refused because the stage is off
+  pauses as `feature_disabled`; a job refused because the required source is
+  unavailable pauses as `claude_research_unavailable`. Both are in
+  `orchestrator.FEATURE_PAUSE_CODES`, so turning either control on returns the
+  paused work to the queue through `reclaim_feature_paused_jobs`. Reclaiming
+  re-queues; it never executes, never skips, and never creates a second job.
 * `allowed_tools=("WebSearch", "WebFetch")` — the narrowest permission
   set that still allows finding pages and reading them. Deliberately not
   the `allowed_tools=()` Insights and Personalization run under, because
@@ -164,6 +180,23 @@ method `claude_cli_web_research:model_cited`, durable research mode
 interpretation remains distinguishable from cited Research evidence. Neither
 stage writes a canonical Company field.
 
+**The basis names what was accepted, not what was asked.** A completed Claude
+execution that could cite nothing commits its dossier with
+`dossier_basis = no_sourced_evidence`, `sufficient = false` and no Company
+Intelligence handoff. Recording `claude_cli_web_research` there would put
+"researched the company through cited public web sources" beside an empty
+dossier on four operator screens.
+
+**Two extraction-method vocabularies exist permanently.** Evidence is immutable
+and is not backfilled, so rows written before this producer became the required
+source keep `claude_cli_web_fallback:model_cited`
+(`fallback.LEGACY_EXTRACTION_METHOD`) while new rows carry
+`claude_cli_web_research:model_cited`. `fallback.EXTRACTION_METHODS` holds both;
+any future code that selects Claude-sourced evidence by extraction method must
+match the tuple rather than the current constant. The same applies to
+`producer_version`, whose default moved from `research-claude-fallback/1` to
+`research-claude-primary/1`.
+
 ### Retries
 
 Safe to retry, and idempotent for the same job. Evidence rows are keyed
@@ -174,10 +207,42 @@ makes the resubmitted payload hash to the submission that already exists;
 an identical reading of an identical submission then reuses the dossier
 version instead of writing a second one.
 
+A job that committed its attempt **before** a deployment and is re-driven after
+one rebuilds that attempt with the extraction method it was actually committed
+under, and `_same_reading` compares knowledge rather than producer spelling. A
+rename of the producer label therefore cannot, on its own, make committed
+evidence look like a new reading and write a duplicate immutable version.
+Genuinely new evidence still does.
+
 A transient Claude CLI or web failure keeps the existing retryable semantics.
 A completed Claude execution that could cite nothing does not retry: that
 is a truthful finding about the company's public web presence, it is
 committed with warnings, and it does not retry forever.
+
+**Which CLI failures retry.** `app/services/thinking/claude_cli.py::classify`
+decides, from the CLI's own diagnostic text, on both the non-zero-exit path and
+the `is_error` envelope the CLI returns with status 0. A recognisably permanent
+cause — an unauthenticated session, a rejected flag or model, a permission
+denial, an explicit refusal — is `ThinkingRefused` and terminal. Everything else,
+including an unexplained non-zero exit, is `ThinkingTransient` and retryable.
+The default leans retryable on purpose: the errors are not symmetric. A wrongly
+retryable failure costs at most the job's remaining `max_attempts` (3 for
+Research, 60s base backoff) and then fails terminally anyway, while a wrongly
+terminal one costs the Contact and a manual re-queue. A subscription usage limit
+reached part-way through a batch is exactly this shape, and before this
+classification existed it terminally failed every remaining Contact in sequence.
+Retrying never falls through to the deterministic crawler — no attempt does.
+
+### Operational note for the pilot
+
+Every Research job now runs one Claude CLI subprocess, where before this became
+the required source only a fallback did. A 100-contact batch is therefore ~100
+sequential CLI calls against one subscription, each bounded by
+`research_claude_fallback_timeout_seconds` (default 240s).
+`scripts/run_agent_worker.py` defaults to `--workers 1` and deliberately
+serialises model stages, so there is no unbounded process fan-out unless an
+operator asks for one — but the subscription budget for a batch is now a
+capacity question to plan for rather than an incidental cost.
 
 Web pages and search results reaching this seam are untrusted evidence.
 The JSON shape is enforced by `fallback.py`, not negotiated with the

@@ -737,7 +737,23 @@ class ResearchAgentAdapter:
         # job sees it; the previous read went straight to `FEATURES__` and made
         # the switch a deploy. Jobs already paused here are returned to the queue
         # by `orchestrator.reclaim_feature_paused_jobs` when it is turned on.
-        if not operational.enabled(context.session, "company_research", settings):
+        #
+        # Two operator controls stand in front of this stage and they are not
+        # interchangeable. Since Claude became the required source,
+        # `company_research` resolves to off whenever `research_claude_fallback`
+        # is unavailable — so reading it alone would answer `feature_disabled`,
+        # "an administrator switched Research off", for a deployment whose
+        # administrator switched nothing and is simply missing the prerequisite.
+        # The prerequisite is therefore established first, and when it is absent
+        # the refusal is left to `_primary_research` below, which classifies it
+        # as `claude_research_unavailable` and writes the full operator record
+        # rather than a bare code.
+        claude_available = operational.enabled(
+            context.session, "research_claude_fallback", settings
+        )
+        if claude_available and not operational.enabled(
+            context.session, "company_research", settings
+        ):
             raise AgentBlocked(
                 "feature_disabled",
                 "Company research is switched off for this deployment.",
@@ -814,7 +830,18 @@ class ResearchAgentAdapter:
         from app.services.research.fallback import ClaudeResearchFallback, FallbackLimits
 
         if self._research_factory is not None:
-            return self._research_factory(settings), None
+            source = self._research_factory(settings)
+            if source is None:
+                # Fail closed, and say why. Returning ``(None, None)`` here would
+                # leave ``primary_mode`` false and the state machine would block
+                # with ``no_workers_enabled`` — advice that points the operator at
+                # the deterministic worker registry this repair exists to keep out
+                # of production.
+                return None, (
+                    "The required Claude web-research source could not be constructed "
+                    "for this execution."
+                )
+            return source, None
         return (
             ClaudeResearchFallback(
                 thinker=ClaudeCliThinker(settings=settings),

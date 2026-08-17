@@ -288,6 +288,31 @@ def _needs_model_lookup(settings: Settings, stored: Mapping[str, bool]) -> Capab
     return _requires("automatic_company_domain_resolution")(settings, stored)
 
 
+def _needs_claude_research(settings: Settings, stored: Mapping[str, bool]) -> Capability:
+    """Company research: the Claude source it now *requires* has to be available.
+
+    Research used to be able to run on the deterministic website crawler alone,
+    so Claude availability was an optional extra and the dependency was declared
+    in that direction — ``research_claude_fallback`` required ``company_research``.
+    Making Claude the required primary source inverted it, and leaving the old
+    declaration in place produced the one thing this module exists to prevent: a
+    screen reporting Company research as *in force* while every Research job
+    necessarily blocked, on the exact default combination
+    (``company_research`` on, ``research_claude_fallback`` off) every deployment
+    was already in.
+
+    The direction is inverted rather than doubled. Declaring both would be a
+    cycle — resolving either control would ask the other for its answer — so
+    availability is the prerequisite and the stage is the dependant, which is
+    also the order an operator has to turn them on in.
+    """
+
+    cli = _needs_claude_cli(settings, stored)
+    if not cli.available:
+        return cli
+    return _requires("research_claude_fallback")(settings, stored)
+
+
 # ---------------------------------------------------------------------------
 # The registry
 # ---------------------------------------------------------------------------
@@ -317,9 +342,12 @@ PRODUCT_CONTROLS: tuple[ControlSpec, ...] = (
         summary=(
             "Lets the Research Agent gather cited company facts through bounded Claude CLI "
             'web research. A campaign must still opt in with {"live": true}; every accepted '
-            "claim requires a source URL and supporting page text."
+            "claim requires a source URL and supporting page text. Claude Research "
+            "availability is a prerequisite: with that off, Research has no source and "
+            "every job blocks, so this cannot be in force without it."
         ),
         group="Research",
+        capability=_needs_claude_research,
         gates_agents=(AgentIdentifier.RESEARCH,),
     ),
     ControlSpec(
@@ -327,14 +355,11 @@ PRODUCT_CONTROLS: tuple[ControlSpec, ...] = (
         label="Claude Research availability (legacy key)",
         summary=(
             "Required availability control for the primary Claude web-research source. "
-            "Turning it off blocks Research; it never restores deterministic crawling."
+            "Turn this on first: Company research depends on it. Turning it off blocks "
+            "Research; it never restores deterministic crawling."
         ),
         group="Research",
-        capability=lambda settings, stored: (
-            _needs_claude_cli(settings, stored)
-            if not _needs_claude_cli(settings, stored).available
-            else _requires("company_research")(settings, stored)
-        ),
+        capability=_needs_claude_cli,
         gates_agents=(AgentIdentifier.RESEARCH,),
     ),
     ControlSpec(
