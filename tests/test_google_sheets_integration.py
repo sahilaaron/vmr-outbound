@@ -18,6 +18,7 @@ from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import httpx
 import pytest
 from app.api.deps import get_db
 from app.api.integrations_sheets import require_account
@@ -47,11 +48,17 @@ from app.models.enums import (
     UserRole,
     UserState,
 )
-from app.models.pipeline import CampaignContactAgentState
+from app.models.pipeline import (
+    CampaignContactAgentState,
+    CampaignContactSource,
+    PipelineEvent,
+)
 from app.models.suppression import Suppression
 from app.models.user import User
+from app.models.verification_job import AgentJob
 from app.services import campaign_contacts
 from app.services.enrichment import logodev
+from app.services.integrations.sheets import submit as sheet_submit
 from app.services.integrations.sheets.contract import (
     RowStatus,
     SheetLocation,
@@ -1106,6 +1113,306 @@ def test_a_duplicate_client_row_id_in_one_request_is_refused(
         headers={"Authorization": "Bearer tok"},
     )
     assert response.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# The shipped ceiling, proved at the number a deployment actually runs with
+#
+# Every test above pins the ceiling to five so a refusal is cheap to state. That
+# proves the *mechanism* and says nothing about the *number*, and the number is
+# what an operator meets: a sheet of five hundred prospects is one cohort of
+# work, and refusing it at fifty made the surface unusable for the campaign size
+# this product exists for. So the tests below deliberately unset the override and
+# run against the value the deployment ships, end to end, all the way to the
+# pipeline state each row lands in.
+# ---------------------------------------------------------------------------
+
+#: The supported maximum for one Google Sheets ingestion, stated here as the
+#: contract rather than read from configuration — a test that asks the code what
+#: its own limit is cannot notice the limit changing.
+SUPPORTED_COHORT = 500
+
+
+@pytest.fixture()
+def sheets_at_shipped_limits(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """The integration switched on with the ceilings a deployment actually gets."""
+
+    monkeypatch.setenv("FEATURES__GOOGLE_SHEETS_INTEGRATION", "true")
+    monkeypatch.setenv("FEATURES__EMAIL_SEQUENCES", "true")
+    monkeypatch.setenv(
+        "SHEETS__ALLOWED_AUDIENCES", '["add-on-client-id.apps.googleusercontent.com"]'
+    )
+    # Removed rather than set: the point of these tests is the default.
+    monkeypatch.delenv("SHEETS__MAX_BATCH_ROWS", raising=False)
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+#: Five established Companies, so a cohort spreads across companies the way a
+#: real sheet does — exercising the per-name cache, the domain link and the
+#: name-plus-domain natural key rather than a single repeated lookup.
+COHORT_COMPANIES = [
+    ("Kiln Systems", "kiln.example"),
+    ("Harbour Analytics", "harbour.example"),
+    ("Meridian Foods", "meridian.example"),
+    ("Northwind Optics", "northwind.example"),
+    ("Ardent Polymers", "ardent.example"),
+]
+
+
+def seed_cohort_companies(db: Session) -> None:
+    for name, domain in COHORT_COMPANIES:
+        seed_company(db, name=name, domain=domain)
+
+
+def cohort(count: int) -> list[dict[str, Any]]:
+    """``count`` distinct prospect rows, numbered from one as a sheet would be."""
+
+    rows: list[dict[str, Any]] = []
+    for number in range(1, count + 1):
+        name, _domain = COHORT_COMPANIES[(number - 1) % len(COHORT_COMPANIES)]
+        rows.append(
+            row(
+                f"r{number:04d}",
+                first=f"Person{number:04d}",
+                last="Prospect",
+                company=name,
+            )
+        )
+    return rows
+
+
+def submit_cohort(
+    client: TestClient, campaign: Campaign, rows: list[dict[str, Any]]
+) -> httpx.Response:
+    return client.post(
+        "/integrations/sheets/batches",
+        json=batch_payload(campaign, rows),
+        headers={"Authorization": "Bearer tok"},
+    )
+
+
+def test_the_shipped_ceiling_the_add_on_is_told_is_five_hundred_rows(
+    db_session: Session, sheets_at_shipped_limits: None
+) -> None:
+    """The add-on chunks against this number, so it is part of the contract."""
+
+    user = make_user(db_session, email="mine@vmr.example")
+    make_campaign(db_session, name="Mine", owner=user)
+
+    client = make_client(db_session, {"tok": assertion_for(user)})
+    body = client.get(
+        "/integrations/sheets/campaigns", headers={"Authorization": "Bearer tok"}
+    ).json()
+    assert body["limits"]["max_batch_rows"] == SUPPORTED_COHORT
+
+
+@pytest.mark.parametrize("size", [50, 51, 499, SUPPORTED_COHORT])
+def test_a_cohort_up_to_the_supported_maximum_is_accepted_whole(
+    db_session: Session, sheets_at_shipped_limits: None, size: int
+) -> None:
+    """Fifty was the old ceiling; fifty-one is the row that used to be refused.
+
+    Stated as one parametrized fact rather than four near-identical tests,
+    because the interesting property is that nothing changes across the old
+    boundary: the fifty-first row is accepted on exactly the terms the fiftieth
+    is, and so is the five-hundredth.
+    """
+
+    user = make_user(db_session, email="mine@vmr.example")
+    campaign = make_campaign(db_session, name="Mine", owner=user)
+    seed_cohort_companies(db_session)
+
+    client = make_client(db_session, {"tok": assertion_for(user)})
+    response = submit_cohort(client, campaign, cohort(size))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["counts"] == {"submitted": size, "accepted": size, "could_not_prepare": 0}
+    # Order preserved: the add-on writes by identifier, but an operator reads the
+    # response against their own sheet.
+    assert [entry["client_row_id"] for entry in body["rows"]] == [
+        f"r{number:04d}" for number in range(1, size + 1)
+    ]
+    assert db_session.query(CampaignContact).count() == size
+
+
+def test_the_whole_five_hundred_row_cohort_reaches_the_pipeline(
+    db_session: Session, sheets_at_shipped_limits: None
+) -> None:
+    """The proof that matters: not "accepted", but *arrived*.
+
+    A validator that stops refusing is not the repair. Every one of the five
+    hundred rows has to become a permanent Contact, a Campaign membership, a
+    provenance record naming its own sheet row, and a pipeline that starts where
+    every other enrolment path starts — and the four hundred and fifty rows past
+    the old ceiling have to be indistinguishable from the fifty that were always
+    allowed through.
+    """
+
+    user = make_user(db_session, email="mine@vmr.example")
+    campaign = make_campaign(db_session, name="Mine", owner=user)
+    seed_cohort_companies(db_session)
+
+    client = make_client(db_session, {"tok": assertion_for(user)})
+    body = submit_cohort(client, campaign, cohort(SUPPORTED_COHORT)).json()
+
+    assert body["counts"]["accepted"] == SUPPORTED_COHORT
+    entries = body["rows"]
+
+    # Nothing was processed twice and nothing was answered with somebody else's
+    # identifier — the failure a chunked or repeated pass would produce.
+    submission_ids = [entry["submission_id"] for entry in entries]
+    contact_ids = [entry["contact_id"] for entry in entries]
+    assert len(set(submission_ids)) == SUPPORTED_COHORT
+    assert len(set(contact_ids)) == SUPPORTED_COHORT
+
+    memberships = db_session.scalars(
+        select(CampaignContact).where(CampaignContact.campaign_id == campaign.id)
+    ).all()
+    assert len(memberships) == SUPPORTED_COHORT
+    assert db_session.query(Contact).count() == SUPPORTED_COHORT
+
+    # Every membership carries the sheet's own provenance, and every one of them
+    # starts at the canonical first stage with Capture already complete.
+    sources = db_session.scalars(
+        select(CampaignContactSource).where(
+            CampaignContactSource.campaign_contact_id.in_([m.id for m in memberships])
+        )
+    ).all()
+    assert len(sources) == SUPPORTED_COHORT
+    assert {source.source_type for source in sources} == {sheet_submit.SOURCE_TYPE}
+    assert {source.source_reference for source in sources} == {
+        f"r{number:04d}" for number in range(1, SUPPORTED_COHORT + 1)
+    }
+    assert len({source.idempotency_key for source in sources}) == SUPPORTED_COHORT
+
+    assert {membership.next_stage for membership in memberships} == {AgentIdentifier.IDENTITY}
+    completed_capture = db_session.scalars(
+        select(CampaignContactAgentState).where(
+            CampaignContactAgentState.campaign_contact_id.in_([m.id for m in memberships]),
+            CampaignContactAgentState.agent_id == AgentIdentifier.CAPTURE,
+            CampaignContactAgentState.status == PipelineStageStatus.COMPLETED,
+        )
+    ).all()
+    assert len(completed_capture) == SUPPORTED_COHORT
+
+    # The last row of the sheet, read the way an operator would a year later.
+    last = entries[-1]
+    assert last["client_row_id"] == f"r{SUPPORTED_COHORT:04d}"
+    last_source = next(
+        source for source in sources if source.source_reference == last["client_row_id"]
+    )
+    context = last_source.source_context
+    assert context["surface"] == "google_sheets_addon"
+    assert context["spreadsheet_id"] == SPREADSHEET
+    assert context["sheet_id"] == TAB
+    assert context["client_row_id"] == last["client_row_id"]
+    last_contact = db_session.get(Contact, uuid.UUID(last["contact_id"]))
+    assert last_contact is not None
+    assert last_contact.first_name == f"Person{SUPPORTED_COHORT:04d}"
+    expected_name, expected_domain = COHORT_COMPANIES[(SUPPORTED_COHORT - 1) % 5]
+    assert last_contact.company_name == expected_name
+    assert last_contact.company_domain == expected_domain
+    assert last_contact.company_id is not None
+
+    # And the rows past the old ceiling were handed to the pipeline on exactly
+    # the terms the first fifty were. Stated as a comparison rather than as a
+    # literal, because the point is not how many artefacts one enrolment
+    # produces — it is that the four hundred and fiftieth row past the ceiling
+    # produces the same ones as the first row before it.
+    below = [entry["submission_id"] for entry in entries[:50]]
+    above = [entry["submission_id"] for entry in entries[50:]]
+    assert len(below) == 50 and len(above) == 450
+
+    def per_membership(submission_ids: list[str]) -> set[tuple[int, int, int]]:
+        keys = [uuid.UUID(value) for value in submission_ids]
+        states = db_session.scalars(
+            select(CampaignContactAgentState).where(
+                CampaignContactAgentState.campaign_contact_id.in_(keys)
+            )
+        ).all()
+        events = db_session.scalars(
+            select(PipelineEvent).where(PipelineEvent.campaign_contact_id.in_(keys))
+        ).all()
+        jobs = db_session.scalars(
+            select(AgentJob).where(AgentJob.campaign_contact_id.in_(keys))
+        ).all()
+        return {
+            (
+                sum(1 for state in states if state.campaign_contact_id == key),
+                sum(1 for event in events if event.campaign_contact_id == key),
+                sum(1 for job in jobs if job.campaign_contact_id == key),
+            )
+            for key in keys
+        }
+
+    shape = per_membership(below)
+    # One shape, not a range: every row of the first fifty was treated alike...
+    assert len(shape) == 1
+    # ...it is a real amount of downstream work, not an empty set of nothing...
+    states_each, events_each, _jobs_each = next(iter(shape))
+    assert states_each > 0 and events_each > 0
+    # ...and rows 51-500 carry precisely the same shape.
+    assert per_membership(above) == shape
+
+
+def test_one_row_past_the_supported_maximum_is_refused_whole(
+    db_session: Session, sheets_at_shipped_limits: None
+) -> None:
+    """The cap is still a cap, and it still refuses rather than truncates.
+
+    Silently keeping the first five hundred would read as success in the sheet
+    and leave the operator to discover the missing rows themselves.
+    """
+
+    user = make_user(db_session, email="mine@vmr.example")
+    campaign = make_campaign(db_session, name="Mine", owner=user)
+    seed_cohort_companies(db_session)
+
+    client = make_client(db_session, {"tok": assertion_for(user)})
+    response = submit_cohort(client, campaign, cohort(SUPPORTED_COHORT + 1))
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert f"this request carries {SUPPORTED_COHORT + 1} rows" in detail
+    assert f"the maximum is {SUPPORTED_COHORT}" in detail
+    assert db_session.query(CampaignContact).count() == 0
+    assert db_session.query(Contact).count() == 0
+
+
+def test_a_bad_row_inside_a_full_cohort_still_costs_only_itself(
+    db_session: Session, sheets_at_shipped_limits: None
+) -> None:
+    """Row-level partial success is unchanged across the whole five hundred."""
+
+    user = make_user(db_session, email="mine@vmr.example")
+    campaign = make_campaign(db_session, name="Mine", owner=user)
+    seed_cohort_companies(db_session)
+
+    rows = cohort(SUPPORTED_COHORT)
+    broken = {"r0001", "r0250", f"r{SUPPORTED_COHORT:04d}"}
+    for item in rows:
+        if item["client_row_id"] in broken:
+            item["last_name"] = "   "
+
+    client = make_client(db_session, {"tok": assertion_for(user)})
+    body = submit_cohort(client, campaign, rows).json()
+
+    healthy = SUPPORTED_COHORT - len(broken)
+    assert body["counts"] == {
+        "submitted": SUPPORTED_COHORT,
+        "accepted": healthy,
+        "could_not_prepare": len(broken),
+    }
+    by_id = {entry["client_row_id"]: entry for entry in body["rows"]}
+    for client_row_id in broken:
+        assert by_id[client_row_id]["status"] == RowStatus.COULD_NOT_PREPARE.value
+        assert by_id[client_row_id]["failure_code"] == "missing_required_field"
+        assert by_id[client_row_id]["submission_id"] is None
+    assert db_session.query(CampaignContact).count() == healthy
+    assert db_session.query(Contact).count() == healthy
 
 
 # ---------------------------------------------------------------------------
