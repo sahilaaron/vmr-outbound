@@ -268,6 +268,8 @@ def build_sequence(
     without_email: bool = False,
     sequence_enabled: bool = True,
     owner_user_id: uuid.UUID | str | None = None,
+    company_domain: str = "kiln.example",
+    company_name: str = "Kiln Systems",
 ) -> SequenceFixture:
     """One Campaign Contact with a complete, live, seven-message sequence.
 
@@ -284,9 +286,15 @@ def build_sequence(
     fixture describe the situation these tests are actually about — an operator
     working on their own campaign. Left ``None``, the campaign is ownerless,
     which is what a pre-migration campaign looks like.
+
+    ``company_domain`` exists because ``companies.domain`` is unique when
+    present, so a test that needs *two* independent Campaigns — a cross-Campaign
+    authorization test, for instance — cannot call this twice with the default.
+    Naming the second company is cheaper and clearer than making the factory
+    invent a domain nobody asked for.
     """
 
-    company = Company(name="Kiln Systems", domain="kiln.example", industry="Industrial technology")
+    company = Company(name=company_name, domain=company_domain, industry="Industrial technology")
     campaign = Campaign(
         name=f"Gmail {uuid.uuid4()}",
         description="Sourced market intelligence reports",
