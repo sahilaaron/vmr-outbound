@@ -462,13 +462,24 @@ def _text(payload: dict[str, Any], key: str, *, limit: int = 256) -> str:
 
 
 @router.post("/token")
-async def token(request: Request, db: Session = Depends(get_db)) -> Response:
+def token(
+    request: Request,
+    db: Session = Depends(get_db),
+    payload: dict[str, Any] = Depends(_json_body),
+) -> Response:
     """Exchange a code, or rotate a refresh token. No cookie, ever.
 
     The approved ``Origin`` is mandatory here even though the endpoint is not
     cookie-authenticated: it is what binds a stolen code or refresh secret to the
     one browser extension that may use it, and the Fetch standard puts ``Origin``
     on every ``POST`` regardless of mode, so a real caller always has one.
+
+    A plain ``def``, like the authorize routes, so that FastAPI runs it on a
+    worker thread: everything below is synchronous SQLAlchemy, and a row lock
+    waited on from the event-loop thread stops the whole server answering. The
+    body is read by the ``_json_body`` dependency, which is the one ``await``
+    the route needs. Every exit path below completes the transaction itself —
+    see the commit below for why that is not left to ``get_db``.
     """
 
     settings = _extension_settings(request)
@@ -479,7 +490,6 @@ async def token(request: Request, db: Session = Depends(get_db)) -> Response:
     if not settings.is_allowed_origin(origin):
         return _json_error("unauthorized", 401)
 
-    payload = await _json_body(request)
     grant_type = _text(payload, "grant_type", limit=64)
     extension_id = _text(payload, "extension_id", limit=64)
     installation_id = _text(payload, "installation_id", limit=64)
@@ -494,29 +504,41 @@ async def token(request: Request, db: Session = Depends(get_db)) -> Response:
     if not is_valid_installation_id(installation_id):
         return _json_error("invalid_request", 400)
 
-    if grant_type == "authorization_code":
-        issued = exchange_authorization_code(
-            db,
-            code=_text(payload, "code", limit=128),
-            code_verifier=_text(payload, "code_verifier", limit=128),
-            extension_id=extension_id,
-            installation_id=installation_id,
-            label=_text(payload, "label", limit=120) or None,
-        )
-    elif grant_type == "refresh_token":
-        issued = rotate_refresh_token(
-            db,
-            refresh_token=_text(payload, "refresh_token", limit=256),
-            extension_id=extension_id,
-            installation_id=installation_id,
-        )
-    else:
+    if grant_type not in {"authorization_code", "refresh_token"}:
         return _json_error("invalid_request", 400)
+
+    try:
+        if grant_type == "authorization_code":
+            issued = exchange_authorization_code(
+                db,
+                code=_text(payload, "code", limit=128),
+                code_verifier=_text(payload, "code_verifier", limit=128),
+                extension_id=extension_id,
+                installation_id=installation_id,
+                label=_text(payload, "label", limit=120) or None,
+            )
+        else:
+            issued = rotate_refresh_token(
+                db,
+                refresh_token=_text(payload, "refresh_token", limit=256),
+                extension_id=extension_id,
+                installation_id=installation_id,
+            )
+        # Committed here, on both outcomes, before anything is answered. A
+        # refusal is not "nothing happened": a detected refresh-token reuse has
+        # already revoked the link, and a code exchange has consumed the code.
+        # Leaving that commit to ``get_db``'s teardown is what took staging down
+        # on 2026-08-17 — the teardown is scheduled after the response, and a
+        # second request blocked on this row's lock starved it forever. Nothing
+        # about a refusal may depend on code that runs after the answer.
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     if issued is None:
         return _json_error("invalid_grant", 400)
 
-    db.commit()
     return JSONResponse(
         status_code=200,
         content={
@@ -534,7 +556,11 @@ async def token(request: Request, db: Session = Depends(get_db)) -> Response:
 
 
 @router.post("/revoke")
-async def revoke(request: Request, db: Session = Depends(get_db)) -> Response:
+def revoke(
+    request: Request,
+    db: Session = Depends(get_db),
+    payload: dict[str, Any] = Depends(_json_body),
+) -> Response:
     """Disconnect, from either side of the link.
 
     Two callers, two credentials, one effect:
@@ -546,10 +572,12 @@ async def revoke(request: Request, db: Session = Depends(get_db)) -> Response:
     * a **signed-in operator**, disconnecting their own install from the VMR app.
       Only ever their own links: the account comes from the verified session and
       never from the request body.
+
+    A plain ``def`` for the same reason as ``token``: it writes the same rows, so
+    it can wait on the same locks, and that wait belongs on a worker thread.
     """
 
     settings = _extension_settings(request)
-    payload = await _json_body(request)
 
     presented = request.headers.get("authorization")
     parsed = parse_link_token(
@@ -561,8 +589,12 @@ async def revoke(request: Request, db: Session = Depends(get_db)) -> Response:
             return _json_error("unauthorized", 401)
         if not settings.is_allowed_origin(single_request_origin(request.scope)):
             return _json_error("unauthorized", 401)
-        revoke_link_for_session(db, access_token=(presented or "").partition(" ")[2].strip())
-        db.commit()
+        try:
+            revoke_link_for_session(db, access_token=(presented or "").partition(" ")[2].strip())
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
         return Response(status_code=204)
 
     user_id = _current_user_id()
@@ -571,11 +603,15 @@ async def revoke(request: Request, db: Session = Depends(get_db)) -> Response:
 
     extension_id = _text(payload, "extension_id", limit=64) or None
     installation_id = _text(payload, "installation_id", limit=64) or None
-    revoke_links_for_user(
-        db,
-        user_id=user_id,
-        extension_id=extension_id,
-        installation_id=installation_id,
-    )
-    db.commit()
+    try:
+        revoke_links_for_user(
+            db,
+            user_id=user_id,
+            extension_id=extension_id,
+            installation_id=installation_id,
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     return Response(status_code=204)
