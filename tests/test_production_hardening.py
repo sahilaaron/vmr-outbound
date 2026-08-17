@@ -960,24 +960,83 @@ def test_global_request_limit_cannot_break_the_existing_upload_limit() -> None:
 
 
 def test_campaign_archive_confirmation_is_csp_compatible() -> None:
-    template = Path("app/web/v2/templates/campaigns.html").read_text(encoding="utf-8")
-    script = Path("app/web/static/campaigns.js").read_text(encoding="utf-8")
+    """Archiving is confirmed, and confirmed without executing any inline script.
+
+    The security property has not changed: a destructive action must be a POST
+    the customer deliberately confirms, and the confirmation must not need
+    ``'unsafe-inline'`` in the script policy. What changed is the mechanism. The
+    Campaign list no longer carries an archive control at all — archiving lives
+    on Campaign Setup, under Lifecycle — and the confirmation there is a
+    ``required`` checkbox rather than a delegated ``window.confirm``. That is
+    strictly stronger against this policy: the browser enforces it with no
+    script involved, so there is nothing left for a CSP to have to permit.
+
+    This test therefore pins the new form, not the deleted one. Reintroducing
+    JavaScript here to satisfy an older assertion would be moving backwards.
+    """
+
+    template = Path("app/web/v2/templates/campaign_setup.html").read_text(encoding="utf-8")
+
+    archive_form = re.search(
+        r"<form\b[^>]*>(?:(?!</form>).)*?name=\"action\"\s+value=\"archive\".*?</form>",
+        template,
+        re.DOTALL,
+    )
+    assert archive_form is not None, (
+        "campaign_setup.html renders no form posting action=archive; either the archive "
+        "control moved again or this test is pointed at the wrong template"
+    )
+    form = archive_form.group(0)
+
+    # POST only. A destructive action reachable by GET is reachable by a link,
+    # a prefetch and a crawler.
+    assert re.search(r"<form\b[^>]*\bmethod=\"post\"", form), form
+    # The verb is fixed by the markup, not chosen by the browser.
+    assert '<input type="hidden" name="action" value="archive">' in form
+    # The lifecycle POST path is the only endpoint involved.
+    assert 'action="{{ base_href }}/lifecycle"' in form
+    # The confirmation the browser itself enforces, with no script to permit.
+    assert re.search(r"<input\b[^>]*\btype=\"checkbox\"[^>]*\brequired\b", form), (
+        "the archive confirmation checkbox is not `required`, so the form submits "
+        f"unconfirmed: {form}"
+    )
+
+    # No inline execution anywhere on the page that carries the control: no
+    # event-handler attributes, and no <script> block without a src.
+    inline_handlers = re.findall(r"\son[a-z]+=\"", template)
+    assert not inline_handlers, f"campaign_setup.html carries inline handlers {inline_handlers}"
+    assert not re.search(r"<script\b(?![^>]*\bsrc=)", template), (
+        "campaign_setup.html contains an inline <script> block, which `script-src 'self'` "
+        "will refuse to run"
+    )
+
     csp = _client().get("/healthz").headers["content-security-policy"]
-    assert "onsubmit=" not in template
-    assert "data-archive-confirm=" in template
-    assert "window.confirm" in script
     assert "script-src 'self'" in csp
     assert "script-src 'self' 'unsafe-inline'" not in csp
 
 
-def test_campaign_archive_script_url_is_content_versioned() -> None:
+def test_the_campaign_list_needs_no_script_for_an_action_it_no_longer_offers() -> None:
+    """The other half of the same change, asserted rather than assumed.
+
+    ``campaigns.js`` existed for exactly one thing: the delegated
+    ``window.confirm`` behind the archive button on the Campaign list. The new
+    information architecture removed that button, so the correct end state is a
+    list page that loads no script for it — not a versioned URL for a file with
+    nothing left to do. The assertion that the URL was content-versioned is
+    replaced by this, because the feature it protected is gone.
+    """
+
     settings = Settings(  # type: ignore[call-arg]
         _env_file=None,
         features=FeatureFlags(workbench=True),
     )
     response = _client(settings).get("/app/campaigns")
     assert response.status_code == 200
-    assert re.search(r"/static/campaigns\.js\?v=[0-9a-f]{12}", response.text)
+    assert "campaigns.js" not in response.text
+    assert "data-archive-confirm" not in response.text
+    assert not re.search(r"<script\b(?![^>]*\bsrc=)", response.text), (
+        "the Campaign list serves an inline <script>, which `script-src 'self'` refuses"
+    )
 
 
 def test_smoke_treats_readyz_503_as_database_not_ready(
