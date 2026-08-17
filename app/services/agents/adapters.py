@@ -672,18 +672,18 @@ class EmailAgentAdapter:
 
 
 class ResearchAgentAdapter:
-    """Gather sourced company facts through the enabled research workers.
+    """Gather sourced company facts through bounded Claude CLI web research.
 
     Thin on purpose: the state machine in ``app.services.research.agent``
-    owns the decision, and the worker registry owns which sources run. The
-    only logic here is the framework-level gates -- the feature switches
-    and the per-campaign ``live`` opt-in -- and translating the resulting
-    step into the shared error vocabulary.
+    owns the decision. The only logic here is the framework-level gates -- the
+    feature switches and the per-campaign ``live`` opt-in -- constructing the
+    required Claude source, and translating the resulting step into the shared
+    error vocabulary.
 
-    **This is the only Research implementation, and the deterministic worker is
-    always the first attempt.** A second, wholly model-based adapter used to live
-    further down this file and shadowed this one. Removing it was a decision, not
-    a cleanup, and the reasoning still holds:
+    **This is the only production Research implementation, and Claude web
+    research is its required primary source.** A wholly model-based adapter used
+    to live further down this file and shadowed the evidence-preserving path.
+    Removing that implementation remains the right decision:
 
     * Research's job is to *read pages and record what they said*, with a URL and a
       retrieval time on every fact. Every claim it stores has to be checkable
@@ -697,20 +697,18 @@ class ResearchAgentAdapter:
       dossier but no insights, so the Insights Agent downstream had nothing sourced
       to gate on.
 
-    RES-002 adds a *fallback*, and the distinction from that removed adapter is
-    the whole design. It is a second attempt, never the first. It runs only after
-    the deterministic worker has already produced something unusable. It returns
-    the same ``SourcedFact`` values through the same validation, so a claim
+    The existing RES-002 boundary is safe to use as the primary source because it
+    returns ``SourcedFact`` values through strict validation, so a claim
     without an openable source URL and the supporting text from that page is
     discarded rather than stored. And it writes all three artefacts, under its own
     worker name, so nothing downstream has to guess which source a fact came from.
 
-    The seam below is ``fallback_factory``, deliberately not ``thinker_factory``:
-    a thinker-shaped constructor here is what a *model-based Research
-    implementation* looks like, and ``tests/test_research_agent.py`` still asserts
-    against one. Insights and Personalization keep ``allowed_tools=()``; this
-    fallback is the one Research-side call that may reach the web, and it may
-    reach nothing else.
+    ``workers_factory`` remains only as a compatibility injection seam for tests
+    and diagnostics; production execution never calls it. ``fallback_factory``
+    remains as a temporary alias for ``research_factory`` so existing test and
+    deployment wiring does not need an unrelated flag-day rename. Insights and
+    Personalization keep ``allowed_tools=()``; this is the one Research-side call
+    that may reach the web, and it may reach nothing else.
     """
 
     agent_id = AgentIdentifier.RESEARCH
@@ -719,17 +717,19 @@ class ResearchAgentAdapter:
         self,
         *,
         workers_factory: Callable[..., Any] | None = None,
+        research_factory: Callable[[Settings], Any] | None = None,
         fallback_factory: Callable[[Settings], Any] | None = None,
     ) -> None:
         # Injection seams for tests, mirroring VerificationAgentAdapter: the
         # suite must be able to run the real loop with a fake source, and must
         # never shell out to a real Claude CLI.
         self._workers_factory = workers_factory
-        self._fallback_factory = fallback_factory
+        if research_factory is not None and fallback_factory is not None:
+            raise ValueError("pass research_factory or legacy fallback_factory, not both")
+        self._research_factory = research_factory or fallback_factory
 
     def execute(self, context: AgentExecutionContext) -> AgentExecutionResult:
         from app.services.research.agent import ResearchStepKind, execute_step
-        from app.services.research.workers import WorkerNotRegistered, build_workers
 
         settings = get_settings()
         # The *effective* setting, not the environment's. An administrator turns
@@ -737,7 +737,23 @@ class ResearchAgentAdapter:
         # job sees it; the previous read went straight to `FEATURES__` and made
         # the switch a deploy. Jobs already paused here are returned to the queue
         # by `orchestrator.reclaim_feature_paused_jobs` when it is turned on.
-        if not operational.enabled(context.session, "company_research", settings):
+        #
+        # Two operator controls stand in front of this stage and they are not
+        # interchangeable. Since Claude became the required source,
+        # `company_research` resolves to off whenever `research_claude_fallback`
+        # is unavailable — so reading it alone would answer `feature_disabled`,
+        # "an administrator switched Research off", for a deployment whose
+        # administrator switched nothing and is simply missing the prerequisite.
+        # The prerequisite is therefore established first, and when it is absent
+        # the refusal is left to `_primary_research` below, which classifies it
+        # as `claude_research_unavailable` and writes the full operator record
+        # rather than a bare code.
+        claude_available = operational.enabled(
+            context.session, "research_claude_fallback", settings
+        )
+        if claude_available and not operational.enabled(
+            context.session, "company_research", settings
+        ):
             raise AgentBlocked(
                 "feature_disabled",
                 "Company research is switched off for this deployment.",
@@ -751,23 +767,15 @@ class ResearchAgentAdapter:
                 "This campaign has not enabled live company research.",
             )
 
-        factory = self._workers_factory or build_workers
-        requested = context.config.get("workers")
-        try:
-            workers = factory(requested)
-        except WorkerNotRegistered as exc:
-            raise AgentTerminalError("worker_not_registered", str(exc)) from exc
-
-        fallback, fallback_unavailable_reason = self._fallback(settings, context)
+        research, research_unavailable_reason = self._primary_research(settings, context)
         step = execute_step(
             context.session,
             job=context.job,
             contact=context.contact,
-            workers=workers,
-            options=context.config.get("worker_options") or {},
+            workers=(),
             actor=context.worker_id,
-            fallback=fallback,
-            fallback_unavailable_reason=fallback_unavailable_reason,
+            primary_source=research,
+            primary_unavailable_reason=research_unavailable_reason,
         )
 
         if step.kind is ResearchStepKind.COMPLETE:
@@ -797,31 +805,43 @@ class ResearchAgentAdapter:
             preserve_outcome=step.committed,
         )
 
-    def _fallback(
+    def _primary_research(
         self, settings: Settings, context: AgentExecutionContext
     ) -> tuple[Any | None, str | None]:
-        """Build the Claude CLI fallback, or say plainly why there is none.
+        """Build the required Claude web-research source, or explain its absence.
 
-        Two switches, and neither can be inverted by the other. The deployment
-        feature flag is authoritative: a Campaign cannot turn the fallback on
-        where the deployment has not enabled it. The Campaign's Agent config can
-        only turn it *off* — the same direction of travel every other control in
-        this file allows, because switching a capability off is always safe and
-        switching one on is a deployment decision.
+        The legacy ``research_claude_fallback`` deployment control remains a
+        required availability switch for this transition. Turning it off no
+        longer restores deterministic Research: the execution is blocked. A
+        Campaign's legacy ``claude_fallback=false`` opt-out has the same meaning.
         """
 
         if not operational.enabled(context.session, "research_claude_fallback", settings):
             return None, (
-                "The Claude research fallback is switched off for this deployment "
-                "(FEATURES__RESEARCH_CLAUDE_FALLBACK)."
+                "Claude web research is required, but the legacy "
+                "research_claude_fallback availability control is switched off."
             )
         if context.config.get("claude_fallback") is False:
-            return None, "This Campaign's Research Agent config disabled the Claude fallback."
+            return None, (
+                "This Campaign's legacy claude_fallback=false setting disables the required "
+                "Claude research source; deterministic Research is not used instead."
+            )
 
         from app.services.research.fallback import ClaudeResearchFallback, FallbackLimits
 
-        if self._fallback_factory is not None:
-            return self._fallback_factory(settings), None
+        if self._research_factory is not None:
+            source = self._research_factory(settings)
+            if source is None:
+                # Fail closed, and say why. Returning ``(None, None)`` here would
+                # leave ``primary_mode`` false and the state machine would block
+                # with ``no_workers_enabled`` — advice that points the operator at
+                # the deterministic worker registry this repair exists to keep out
+                # of production.
+                return None, (
+                    "The required Claude web-research source could not be constructed "
+                    "for this execution."
+                )
+            return source, None
         return (
             ClaudeResearchFallback(
                 thinker=ClaudeCliThinker(settings=settings),

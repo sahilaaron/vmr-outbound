@@ -531,10 +531,22 @@ def schedule_next(
     return job
 
 
-#: The pause classification an Agent writes when a *deployment or operational*
-#: switch refused it, as opposed to an Agent control or a domain block. The
-#: Research adapter raises it as ``AgentBlocked("feature_disabled", ...)``.
-FEATURE_PAUSE_CODES: frozenset[str] = frozenset({"feature_disabled"})
+#: The pause classifications an Agent writes when a *deployment or operational*
+#: switch refused it, as opposed to an Agent control or a domain block.
+#:
+#: ``feature_disabled`` — the stage's own product control is off. The Research
+#: adapter raises it as ``AgentBlocked("feature_disabled", ...)``.
+#:
+#: ``claude_research_unavailable`` — the stage is on, but the source it now
+#: *requires* is not available: the Claude Research availability control is off,
+#: or the campaign's legacy opt-out disabled it. This is a switch refusal in
+#: exactly the same sense as the first, and it has to be in this set for the same
+#: reason: ``gates_agents`` promises that turning a control back on returns the
+#: work it had refused, and a promise that recovers one of the two Research
+#: refusals leaves an operator resetting the rest by hand precisely when this
+#: repair has just blocked their batch. It is a *pause*, never a terminal
+#: failure, so nothing here can resurrect work that genuinely failed.
+FEATURE_PAUSE_CODES: frozenset[str] = frozenset({"feature_disabled", "claude_research_unavailable"})
 
 
 def reclaim_feature_paused_jobs(
@@ -561,12 +573,23 @@ def reclaim_feature_paused_jobs(
     Agent control is off, or because the campaign's execution switch is off is
     **not** touched here — those pauses have their own causes and their own
     resolutions, and a feature coming back on says nothing about any of them.
-    Only ``feature_disabled`` is resumed.
+    Only the classifications in :data:`FEATURE_PAUSE_CODES` are resumed, and a
+    terminally failed job is not a paused one and is never reached at all.
 
     Nothing is skipped and nothing is terminally consumed: a resumed job goes
     back to ``PENDING`` with ``next_run_at`` now, and the stage it belongs to is
     scheduled again through the ordinary path, where every gate that refused it
-    the first time gets to refuse it again if it still applies.
+    the first time gets to refuse it again if it still applies. That is also what
+    makes it safe to resume both Research pause codes on either Research control:
+    a job whose *other* prerequisite is still off simply pauses again with the
+    accurate code, and is reclaimed by the gesture that fixes it. Running the
+    reclaim twice resumes nothing the second time — ``jobs.resume_paused``
+    returns a job that is no longer ``PAUSED`` untouched — and it creates no job
+    of its own, so no duplicate work is scheduled.
+
+    Nothing is executed here. Reclaiming makes work *claimable*; the Research
+    adapter still decides what runs when a worker next claims it, and it still
+    passes ``workers=()``.
     """
 
     wanted = tuple(agent_ids)

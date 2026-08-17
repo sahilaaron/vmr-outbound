@@ -23,7 +23,7 @@
   </div>
 
   <div class="card">
-    <div class="card-head"><h2>Research fallback</h2></div>
+    <div class="card-head"><h2>Primary Claude Research</h2></div>
     <div class="card-body">
       {% if view.fallback_config %}
       <div class="kv">
@@ -33,9 +33,9 @@
         <dt>Max evidence items</dt><dd>{{ view.fallback_config.max_evidence_items }}</dd>
         <dt>Producer version</dt><dd class="mono">{{ view.fallback_config.producer_version }}</dd>
       </div>
-      <div class="muted-note" style="margin-top: 8px;">Fallback evidence stays permanently labelled and is never written to a canonical Company field.</div>
+      <div class="muted-note" style="margin-top: 8px;">Claude evidence stays permanently labelled, requires citations and supporting text, and is never written to a canonical Company field.</div>
       {% else %}
-      {{ wb.unavailable("Research fallback is off", "research_claude_fallback is not enabled (it also requires company_research). Deterministic Research runs alone.") }}
+      {{ wb.unavailable("Claude Research is unavailable", "The legacy research_claude_fallback availability control is not enabled. Research blocks; deterministic crawling is not a production downgrade path.") }}
       {% endif %}
     </div>
   </div>

@@ -439,16 +439,15 @@ class Settings(BaseSettings):
         description="Maximum wall-clock seconds for one model company-domain lookup.",
     )
 
-    # --- Research Claude CLI web-research fallback (RES-002) -----------------
+    # --- Research Claude CLI web-research bounds (legacy setting names) -------
     #
-    # These bound the one Claude CLI call the Research Agent may make after its
-    # deterministic website worker produced nothing usable. The capability itself
-    # is gated by ``FEATURES__RESEARCH_CLAUDE_FALLBACK``, which defaults off;
-    # these values only decide how far the call may go once it is allowed.
+    # These bound the required primary Claude CLI call. The field names remain
+    # backward compatible with RES-002 deployment configuration; they no longer
+    # imply that deterministic Research runs first or is a downgrade path.
     research_claude_fallback_timeout_seconds: float = Field(
         default=240.0,
         gt=0,
-        description="Maximum wall-clock seconds for one Research Claude CLI fallback call.",
+        description="Maximum wall-clock seconds for one Research Claude CLI web-research call.",
     )
     # A ceiling on the *accepted* source URLs, stated to the model as its search
     # and fetch budget and enforced deterministically on the way back in. The
@@ -458,19 +457,19 @@ class Settings(BaseSettings):
     research_claude_fallback_max_sources: int = Field(
         default=8,
         gt=0,
-        description="Maximum distinct source URLs accepted from one Research fallback call.",
+        description="Maximum distinct source URLs accepted from one Claude Research call.",
     )
     research_claude_fallback_max_evidence_items: int = Field(
         default=20,
         gt=0,
-        description="Maximum sourced claims accepted from one Research fallback call.",
+        description="Maximum sourced claims accepted from one Claude Research call.",
     )
-    # Recorded verbatim on every fact, dossier and job result this fallback
+    # Recorded verbatim on every fact, dossier and job result this source
     # produces, so a stored claim can always answer "which producer wrote this,
     # under which contract?" without inferring it from the text.
     research_claude_fallback_producer_version: str = Field(
-        default="research-claude-fallback/1",
-        description="Producer version recorded on everything the Research fallback produces.",
+        default="research-claude-primary/1",
+        description="Producer version recorded on everything Claude Research produces.",
     )
     # The narrowest permission set that still allows the two capabilities this
     # fallback exists for: finding pages and reading them. Deliberately not the
@@ -478,7 +477,7 @@ class Settings(BaseSettings):
     # no shell, no file access, no editing.
     research_claude_fallback_allowed_tools: tuple[str, ...] = Field(
         default=("WebSearch", "WebFetch"),
-        description="Claude CLI tools the Research fallback may use. Web read-only.",
+        description="Claude CLI tools the Research source may use. Web read-only.",
     )
 
     features: FeatureFlags = Field(default_factory=FeatureFlags)

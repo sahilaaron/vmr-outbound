@@ -71,7 +71,6 @@ from app.services.company_intelligence.handoff import RESEARCH_HANDOFF_ACTOR
 from app.services.operations import settings as operational
 from app.services.personalization import policy as personalization_policy
 from app.services.research.fallback import FALLBACK_WORKER_NAME
-from app.services.research.workers.website import WORKER_NAME as WEBSITE_WORKER_NAME
 from app.services.sequences import read as sequence_read
 from app.services.sequences.lineage import bounded_lineage
 from app.services.verification import studio as verification_studio
@@ -135,16 +134,15 @@ PAGE_SIZE = 50
 FAILURES_CAP = 200
 
 #: Execution mechanisms known to perform each Agent/Stage. Worker identifiers
-#: come from the code that stamps them on durable results (``website`` and
-#: ``claude_web`` for Research, the provider registry for Verification); the
+#: come from the code that stamps them on durable results (``claude_web`` for
+#: production Research, the provider registry for Verification); the
 #: rest run as the single in-process adapter named after the Agent.
 STAGE_WORKERS: dict[AgentIdentifier, tuple[str, ...]] = {
     AgentIdentifier.CAPTURE: ("capture intake (extension / import)",),
     AgentIdentifier.IDENTITY: ("deterministic identity resolver",),
     AgentIdentifier.COMPANY: ("company promotion", "logo.dev domain resolution"),
     AgentIdentifier.RESEARCH: (
-        f"deterministic website worker ({WEBSITE_WORKER_NAME})",
-        f"Claude web fallback worker ({FALLBACK_WORKER_NAME})",
+        f"primary Claude web-research source ({FALLBACK_WORKER_NAME})",
         "dossier persistence",
     ),
     AgentIdentifier.EMAIL: ("pattern-based candidate generation",),
@@ -564,7 +562,7 @@ class AdminWorkbenchReader:
         )
 
     def _fallback_runs(self, *, limit: int) -> tuple[FallbackRunRow, ...]:
-        """Recent Research jobs whose durable result records a fallback attempt."""
+        """Recent Research jobs whose durable result records a Claude attempt."""
 
         jobs = self._session.scalars(
             select(AgentJob)
@@ -581,8 +579,10 @@ class AdminWorkbenchReader:
         rows: list[FallbackRunRow] = []
         for job in jobs:
             result = job.result if isinstance(job.result, dict) else {}
-            fallback = result.get("fallback")
-            if not isinstance(fallback, dict) or not fallback.get("attempted"):
+            claude = result.get("claude_research")
+            if not isinstance(claude, dict):
+                claude = result.get("fallback")  # historical RES-002 result
+            if not isinstance(claude, dict) or not claude.get("attempted"):
                 continue
             rows.append(
                 FallbackRunRow(
@@ -590,18 +590,18 @@ class AdminWorkbenchReader:
                     campaign_id=job.campaign_id,
                     campaign_contact_id=job.campaign_contact_id,
                     contact_label=(contact_labels.get(job.contact_id) if job.contact_id else None),
-                    status=str(fallback.get("status") or "unknown"),
+                    status=str(claude.get("status") or "unknown"),
                     dossier_basis=(
                         str(result["dossier_basis"]) if result.get("dossier_basis") else None
                     ),
                     evidence_accepted=(
-                        int(fallback["evidence_accepted"])
-                        if isinstance(fallback.get("evidence_accepted"), int)
+                        int(claude["evidence_accepted"])
+                        if isinstance(claude.get("evidence_accepted"), int)
                         else None
                     ),
                     claims_rejected=(
-                        int(fallback["claims_rejected"])
-                        if isinstance(fallback.get("claims_rejected"), int)
+                        int(claude["claims_rejected"])
+                        if isinstance(claude.get("claims_rejected"), int)
                         else None
                     ),
                     finished_at=job.finished_at,
@@ -1008,7 +1008,7 @@ class AdminWorkbenchReader:
         return tuple(out)
 
     def research_lineage(self, campaign_contact_id: uuid.UUID) -> Any:
-        """The durable Research report (deterministic + fallback lineage)."""
+        """The durable Research source and persistence lineage."""
 
         return DurableResearchReportReader(self._session).read(campaign_contact_id)
 
@@ -1923,8 +1923,10 @@ class AdminWorkbenchReader:
         rows: list[CompanyResearchJobRow] = []
         for job in jobs:
             result = job.result if isinstance(job.result, dict) else {}
-            fallback = result.get("fallback")
-            has_lineage = isinstance(fallback, dict) or "dossier_basis" in result
+            claude = result.get("claude_research")
+            if not isinstance(claude, dict):
+                claude = result.get("fallback")  # historical RES-002 result
+            has_lineage = isinstance(claude, dict) or "dossier_basis" in result
             rows.append(
                 CompanyResearchJobRow(
                     job_id=job.id,
@@ -1938,13 +1940,13 @@ class AdminWorkbenchReader:
                         str(result["dossier_basis"]) if result.get("dossier_basis") else None
                     ),
                     fallback_attempted=(
-                        bool(fallback.get("attempted"))
-                        if isinstance(fallback, dict)
+                        bool(claude.get("attempted"))
+                        if isinstance(claude, dict)
                         else (False if has_lineage else None)
                     ),
                     fallback_status=(
-                        str(fallback.get("status"))
-                        if isinstance(fallback, dict) and fallback.get("status")
+                        str(claude.get("status"))
+                        if isinstance(claude, dict) and claude.get("status")
                         else None
                     ),
                     finished_at=job.finished_at,
