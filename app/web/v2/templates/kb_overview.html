@@ -16,7 +16,7 @@
           <div class="v2-sidelist-top">
             <b>{{ item.label }}</b>
             {{ readiness_state(item.state) }}
-            {% if item.link %}<a class="v2-btn small push" href="{{ item.link }}">Open</a>{% endif %}
+            {% if report_links.get(item.key) %}<a class="v2-btn small push" href="{{ report_links.get(item.key) }}">Open</a>{% endif %}
           </div>
           <div class="v2-note">{{ item.reason }}</div>
         </div>
@@ -33,7 +33,7 @@
         <div class="v2-card-head">
           <h2>Who we are</h2>
           <span class="v2-note">One profile. Drafts paraphrase it and never quote it.</span>
-          <a class="v2-btn small push" href="/knowledge-base/company">Edit in admin</a>
+          <a class="v2-btn small push" href="/app/library/company">Business profile</a>
         </div>
         <div class="v2-card-body roomy">
           <div><div class="v2-eyebrow">Company name</div><div class="v2-kb-value">{{ profile.name }}</div></div>
@@ -48,8 +48,9 @@
       {% else %}
       <div class="v2-card">
         <div class="v2-card-head"><h2>Who we are</h2></div>
-        {{ empty('No company profile is stored',
-          'Without it a draft has no description of the seller to paraphrase. Enter it on the admin Knowledge Base, or generate a proposal from your own website pages there.') }}
+        {{ empty('No business profile yet',
+          'Without it the emails have no description of who we are to draw on.') }}
+        <div class="v2-card-foot"><a class="v2-btn primary small" href="/app/library/company">{{ 'Enter the business profile' if is_admin else 'Business profile' }}</a></div>
       </div>
       {% endif %}
     </div>

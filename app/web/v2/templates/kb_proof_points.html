@@ -1,18 +1,24 @@
 {% extends "base.html" %}
 {% from "_ui.html" import tag, empty %}
+{% from "_library_forms.html" import proof_form, state_form %}
 {% block content %}
 <div class="v2-page">
   {% include "_kb_head.html" %}
 
   <div class="v2-card clip v2-mt">
     <div class="v2-card-head">
-      <h2>Proof points</h2>
+      <h2>Proof</h2>
       <span class="v2-note">
-        First-party statements you are prepared to stand behind. A number that is not here cannot
-        appear in a draft.
+        Statements you are prepared to stand behind. A number that is not here cannot
+        appear in an email.
       </span>
-      <a class="v2-btn small push" href="/knowledge-base/proof-points">Edit in admin</a>
     </div>
+    {% if is_admin %}
+    <details class="v2-disclose v2-row">
+      <summary>Add a proof point</summary>
+      {{ proof_form(none, '/app/admin/library/proof-points') }}
+    </details>
+    {% endif %}
     {% if records %}
     <div class="v2-table-wrap">
       <table>
@@ -34,18 +40,26 @@
               {% if linked %}{{ linked | map(attribute='name') | join(', ') }}
               {% else %}<span class="v2-hint">not linked to an offering</span>{% endif %}
             </td>
-            <td class="num"><a class="v2-btn small" href="/knowledge-base/proof-points">Edit</a></td>
+            <td class="num v2-nowrap">
+              {% if is_admin %}
+              <details class="v2-disclose v2-inline-disclose">
+                <summary>Edit</summary>
+                {{ proof_form(record, '/app/admin/library/proof-points/' ~ record.id) }}
+                {{ state_form('/app/admin/library/proof-points/' ~ record.id, record.state.value == 'archived', 'proof point') }}
+              </details>
+              {% endif %}
+            </td>
           </tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
     <div class="v2-card-foot plain">
-      Proof points are global and referenced, not copied — editing one changes every offering and
-      every future draft that uses it. Drafts you already approved never change.
+      Proof points are shared, not copied — editing one changes every offering and every future
+      email that uses it. Emails already written do not change.
     </div>
     {% else %}
-      {{ empty('No proof point is stored', 'Until one is, a draft cannot state a single number: the Personalization Agent has nothing it is authorised to quote.') }}
+      {{ empty('No proof point yet', 'Until one exists, the emails cannot state a single number.') }}
     {% endif %}
   </div>
 </div>

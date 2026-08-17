@@ -1,0 +1,118 @@
+{#
+  Library edit forms. Rendered for administrators only; every action posts to
+  /app/admin/library/..., which the auth policy withholds from ordinary users.
+  Multi-value fields are one item per line.
+#}
+{% macro lines(values) %}{{ (values or []) | join('\n') }}{% endmacro %}
+
+{% macro profile_form(profile) %}
+<form method="post" action="/app/admin/library/company" class="v2-form-stack v2-lib-form">
+  <div class="v2-field"><label for="lib-name">Company name</label><input class="v2-input" id="lib-name" name="name" maxlength="255" required value="{{ profile.name if profile else '' }}"></div>
+  <div class="v2-field"><label for="lib-short">Short description</label><textarea class="v2-textarea" id="lib-short" name="short_description" rows="2">{{ profile.short_description if profile else '' }}</textarea></div>
+  <div class="v2-field"><label for="lib-desc">Standard description</label><textarea class="v2-textarea" id="lib-desc" name="description" rows="4">{{ profile.description if profile else '' }}</textarea></div>
+  <div class="v2-field"><label for="lib-pos">Positioning</label><textarea class="v2-textarea" id="lib-pos" name="positioning" rows="3">{{ profile.positioning if profile else '' }}</textarea></div>
+  <div class="v2-field-grid">
+    <div class="v2-field"><label for="lib-ind">Industries served <span class="v2-muted">one per line</span></label><textarea class="v2-textarea" id="lib-ind" name="industries_served" rows="4">{{ lines(profile.industries_served if profile else none) }}</textarea></div>
+    <div class="v2-field"><label for="lib-geo">Geographies served <span class="v2-muted">one per line</span></label><textarea class="v2-textarea" id="lib-geo" name="geographies_served" rows="4">{{ lines(profile.geographies_served if profile else none) }}</textarea></div>
+    <div class="v2-field"><label for="lib-cap">Capabilities <span class="v2-muted">one per line</span></label><textarea class="v2-textarea" id="lib-cap" name="capabilities" rows="4">{{ lines(profile.capabilities if profile else none) }}</textarea></div>
+    <div class="v2-field"><label for="lib-dif">Differentiators <span class="v2-muted">one per line</span></label><textarea class="v2-textarea" id="lib-dif" name="differentiators" rows="4">{{ lines(profile.differentiators if profile else none) }}</textarea></div>
+  </div>
+  <div class="v2-field"><label for="lib-voice">How we should sound</label><textarea class="v2-textarea" id="lib-voice" name="communication_guidance" rows="3">{{ profile.communication_guidance if profile else '' }}</textarea></div>
+  <div class="v2-field"><label for="lib-notes">Notes <span class="v2-muted">for you; no email reads this</span></label><textarea class="v2-textarea" id="lib-notes" name="notes" rows="2">{{ profile.notes if profile else '' }}</textarea></div>
+  <div class="v2-btn-row"><button class="v2-btn primary" type="submit">Save business profile</button></div>
+</form>
+{% endmacro %}
+
+{% macro offering_form(offering, types, action) %}
+<form method="post" action="{{ action }}" class="v2-form-stack v2-lib-form">
+  <div class="v2-field-grid">
+    <div class="v2-field"><label for="off-name-{{ offering.id if offering else 'new' }}">Name</label><input class="v2-input" id="off-name-{{ offering.id if offering else 'new' }}" name="name" maxlength="255" required value="{{ offering.name if offering else '' }}"></div>
+    <div class="v2-field"><label for="off-type-{{ offering.id if offering else 'new' }}">Type</label>
+      <select class="v2-select" id="off-type-{{ offering.id if offering else 'new' }}" name="offering_type">
+        {% for t in types %}<option value="{{ t.value }}" {{ 'selected' if offering and offering.offering_type == t }}>{{ t.value | nice }}</option>{% endfor %}
+      </select>
+    </div>
+  </div>
+  <div class="v2-field"><label>Short description</label><textarea class="v2-textarea" name="short_description" rows="2">{{ offering.short_description if offering else '' }}</textarea></div>
+  <div class="v2-field"><label>Description</label><textarea class="v2-textarea" name="description" rows="4">{{ offering.description if offering else '' }}</textarea></div>
+  <div class="v2-field-grid">
+    <div class="v2-field"><label>Problems addressed <span class="v2-muted">one per line</span></label><textarea class="v2-textarea" name="problems_addressed" rows="4">{{ lines(offering.problems_addressed if offering else none) }}</textarea></div>
+    <div class="v2-field"><label>Use cases <span class="v2-muted">one per line</span></label><textarea class="v2-textarea" name="use_cases" rows="4">{{ lines(offering.use_cases if offering else none) }}</textarea></div>
+    <div class="v2-field"><label>Differentiators <span class="v2-muted">one per line</span></label><textarea class="v2-textarea" name="differentiators" rows="4">{{ lines(offering.differentiators if offering else none) }}</textarea></div>
+  </div>
+  <div class="v2-field"><label>Notes</label><textarea class="v2-textarea" name="notes" rows="2">{{ offering.notes if offering else '' }}</textarea></div>
+  <div class="v2-btn-row"><button class="v2-btn primary" type="submit">{{ 'Save offering' if offering else 'Add offering' }}</button></div>
+</form>
+{% endmacro %}
+
+{% macro state_form(action_url, archived, what) %}
+<form method="post" action="{{ action_url }}" class="v2-inline">
+  <input type="hidden" name="action" value="{{ 'restore' if archived else 'archive' }}">
+  <button class="v2-btn small {{ '' if archived else 'danger' }}" type="submit">{{ 'Restore ' ~ what if archived else 'Archive ' ~ what }}</button>
+</form>
+{% endmacro %}
+
+{% macro link_form(offering, kind, candidates, label) %}
+{% if candidates %}
+<form method="post" action="/app/admin/library/offerings/{{ offering.id }}/links" class="v2-inline-form">
+  <input type="hidden" name="kind" value="{{ kind }}">
+  <label class="v2-sr" for="link-{{ kind }}">Add {{ label }}</label>
+  <select class="v2-select sm" id="link-{{ kind }}" name="related_id" required>
+    <option value="">Add {{ label }}…</option>
+    {% for record in candidates %}<option value="{{ record.id }}">{{ record.statement if kind == 'proof_point' else (record.title if kind == 'restricted_claim' else record.name) }}</option>{% endfor %}
+  </select>
+  <button class="v2-btn small" type="submit">Add</button>
+</form>
+{% endif %}
+{% endmacro %}
+
+{% macro unlink_button(offering, kind, related_id) %}
+<form method="post" action="/app/admin/library/offerings/{{ offering.id }}/links" class="v2-inline">
+  <input type="hidden" name="kind" value="{{ kind }}">
+  <input type="hidden" name="related_id" value="{{ related_id }}">
+  <input type="hidden" name="action" value="remove">
+  <button class="v2-linkbtn" type="submit" title="Remove from this offering">✕</button>
+</form>
+{% endmacro %}
+
+{% macro proof_form(record, action) %}
+<form method="post" action="{{ action }}" class="v2-form-stack v2-lib-form">
+  <div class="v2-field"><label>Statement <span class="v2-muted">the exact claim an email may make</span></label><input class="v2-input" name="statement" maxlength="500" required value="{{ record.statement if record else '' }}"></div>
+  <div class="v2-field"><label>Supporting detail</label><textarea class="v2-textarea" name="supporting_detail" rows="2">{{ record.supporting_detail if record else '' }}</textarea></div>
+  <div class="v2-field"><label>Source reference</label><input class="v2-input" name="source_reference" maxlength="500" value="{{ record.source_reference if record else '' }}"></div>
+  <div class="v2-btn-row"><button class="v2-btn primary small" type="submit">{{ 'Save' if record else 'Add proof point' }}</button></div>
+</form>
+{% endmacro %}
+
+{% macro claim_form(record, scopes, action) %}
+<form method="post" action="{{ action }}" class="v2-form-stack v2-lib-form">
+  <div class="v2-field-grid">
+    <div class="v2-field"><label>Rule <span class="v2-muted">what emails must not say</span></label><input class="v2-input" name="title" maxlength="255" required value="{{ record.title if record else '' }}"></div>
+    <div class="v2-field"><label>Applies to</label>
+      <select class="v2-select" name="scope">
+        {% for s in scopes %}<option value="{{ s.value }}" {{ 'selected' if record and record.scope == s }}>{{ 'Everything we write' if s.value == 'global' else 'Only the offerings it is linked to' }}</option>{% endfor %}
+      </select>
+    </div>
+  </div>
+  <div class="v2-field"><label>Why</label><textarea class="v2-textarea" name="explanation" rows="2">{{ record.explanation if record else '' }}</textarea></div>
+  <div class="v2-field"><label>Examples <span class="v2-muted">one per line</span></label><textarea class="v2-textarea" name="examples" rows="3">{{ lines(record.examples if record else none) }}</textarea></div>
+  <div class="v2-btn-row"><button class="v2-btn primary small" type="submit">{{ 'Save' if record else 'Add rule' }}</button></div>
+</form>
+{% endmacro %}
+
+{% macro persona_form(record, action) %}
+<form method="post" action="{{ action }}" class="v2-form-stack v2-lib-form">
+  <div class="v2-field-grid">
+    <div class="v2-field"><label>Persona</label><input class="v2-input" name="name" maxlength="255" required value="{{ record.name if record else '' }}"></div>
+    <div class="v2-field"><label>Role / function</label><input class="v2-input" name="role_function" maxlength="255" value="{{ record.role_function if record else '' }}"></div>
+    <div class="v2-field"><label>Seniority</label><input class="v2-input" name="seniority" maxlength="255" value="{{ record.seniority if record else '' }}"></div>
+  </div>
+  <div class="v2-field-grid">
+    <div class="v2-field"><label>Responsibilities <span class="v2-muted">one per line</span></label><textarea class="v2-textarea" name="responsibilities" rows="3">{{ lines(record.responsibilities if record else none) }}</textarea></div>
+    <div class="v2-field"><label>Challenges <span class="v2-muted">one per line</span></label><textarea class="v2-textarea" name="challenges" rows="3">{{ lines(record.challenges if record else none) }}</textarea></div>
+    <div class="v2-field"><label>Use cases <span class="v2-muted">one per line</span></label><textarea class="v2-textarea" name="use_cases" rows="3">{{ lines(record.use_cases if record else none) }}</textarea></div>
+  </div>
+  <div class="v2-field"><label>Messaging notes</label><textarea class="v2-textarea" name="messaging_notes" rows="2">{{ record.messaging_notes if record else '' }}</textarea></div>
+  <div class="v2-btn-row"><button class="v2-btn primary small" type="submit">{{ 'Save' if record else 'Add persona' }}</button></div>
+</form>
+{% endmacro %}

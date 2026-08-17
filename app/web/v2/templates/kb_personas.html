@@ -1,14 +1,20 @@
 {% extends "base.html" %}
 {% from "_ui.html" import tag, empty %}
+{% from "_library_forms.html" import persona_form, state_form %}
 {% block content %}
 <div class="v2-page">
   {% include "_kb_head.html" %}
 
   <div class="v2-callout v2-mt">
-    <strong>A persona is a role you sell to, not a person.</strong> Real people live under Contacts,
-    carry provenance and suppression state, and can be written to. Nobody is ever contacted because
-    of a persona, and nothing here creates or changes a contact.
+    <strong>A persona is a role you sell to, not a person.</strong> Real people live under People.
+    Nobody is ever contacted because of a persona, and nothing here creates or changes a person.
   </div>
+  {% if is_admin %}
+  <details class="v2-card v2-mt v2-disclose-card">
+    <summary>Add a persona</summary>
+    <div class="v2-card-body roomy">{{ persona_form(none, '/app/admin/library/personas') }}</div>
+  </details>
+  {% endif %}
 
   {% if records %}
     {% for record in records %}
@@ -19,10 +25,16 @@
           {{ record.role_function or 'no function entered' }} · {{ record.seniority or 'no seniority entered' }}
         </span>
         {% set linked = offerings_by_record.get(record.id, []) %}
-        {% if not linked %}{{ tag('not associated with any offering — never reaches a draft', 'warn') }}{% endif %}
+        {% if not linked %}{{ tag('not linked to any offering — never reaches an email', 'warn') }}{% endif %}
         {% if record.state.value == 'archived' %}{{ tag('archived', '') }}{% endif %}
-        <a class="v2-btn small push" href="/knowledge-base/personas">Edit in admin</a>
+        {% if is_admin %}<span class="push">{{ state_form('/app/admin/library/personas/' ~ record.id, record.state.value == 'archived', 'persona') }}</span>{% endif %}
       </div>
+      {% if is_admin %}
+      <details class="v2-disclose v2-row">
+        <summary>Edit this persona</summary>
+        {{ persona_form(record, '/app/admin/library/personas/' ~ record.id) }}
+      </details>
+      {% endif %}
       <div class="v2-persona-grid">
         {% for label, values in [
             ('Responsibilities', record.responsibilities),
@@ -56,7 +68,7 @@
     {% endfor %}
   {% else %}
   <div class="v2-card v2-mt">
-    {{ empty('No persona is stored', 'Personas shape how a draft is written for a role. Without any, the Personalization Agent writes from the offering and the sourced facts alone.') }}
+    {{ empty('No persona yet', 'Personas shape how an email is written for a role. Without any, VMR writes from the offering and the sourced facts alone.') }}
   </div>
   {% endif %}
 </div>

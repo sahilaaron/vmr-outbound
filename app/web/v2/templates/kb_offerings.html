@@ -1,13 +1,20 @@
 {% extends "base.html" %}
 {% from "_ui.html" import tag, empty %}
+{% from "_library_forms.html" import offering_form, state_form, link_form, unlink_button %}
 {% block content %}
 <div class="v2-page">
   {% include "_kb_head.html" %}
 
+  {% if is_admin %}
+  <details class="v2-card v2-mt v2-disclose-card">
+    <summary>Add an offering</summary>
+    <div class="v2-card-body roomy">{{ offering_form(none, offering_types, '/app/admin/library/offerings') }}</div>
+  </details>
+  {% endif %}
   {% if not offerings %}
   <div class="v2-card v2-mt">
-    {{ empty('No offering is stored',
-      'A draft may only offer something listed here, so with none stored the Personalization Agent has nothing it is authorised to propose. Add one on the admin Knowledge Base.') }}
+    {{ empty('No offering yet',
+      'The emails may only offer something listed here. Until one exists, VMR has nothing it is authorised to propose.') }}
   </div>
   {% else %}
   <div class="v2-split">
@@ -17,8 +24,14 @@
           <h2>{{ selected.name }}</h2>
           {% if selected.state.value == 'archived' %}{{ tag('archived', '') }}{% endif %}
           <span class="v2-note">{{ selected.offering_type.value | nice }}</span>
-          <a class="v2-btn small push" href="/knowledge-base/offerings/{{ selected.id }}">Edit in admin</a>
+          {% if is_admin %}<span class="push">{{ state_form('/app/admin/library/offerings/' ~ selected.id ~ '/state', selected.state.value == 'archived', 'offering') }}</span>{% endif %}
         </div>
+        {% if is_admin %}
+        <details class="v2-disclose v2-row">
+          <summary>Edit this offering</summary>
+          {{ offering_form(selected, offering_types, '/app/admin/library/offerings/' ~ selected.id) }}
+        </details>
+        {% endif %}
         <div class="v2-card-body roomy">
           <div><div class="v2-eyebrow">Short description</div><div class="v2-kb-prose">{{ selected.short_description or 'not entered' }}</div></div>
           <div><div class="v2-eyebrow">Full description</div><div class="v2-kb-prose">{{ selected.description or 'not entered' }}</div></div>
@@ -50,31 +63,34 @@
           <div class="v2-eyebrow">Proof points it may use</div>
           {% if proof_points %}
           <div class="v2-pillset v2-mt-sm">
-            {% for record in proof_points %}<span class="v2-entry">{{ record.statement }}</span>{% endfor %}
+            {% for record in proof_points %}<span class="v2-entry">{{ record.statement }}{% if is_admin %} {{ unlink_button(selected, 'proof_point', record.id) }}{% endif %}</span>{% endfor %}
           </div>
           {% else %}
-          <p class="v2-note">None associated — a draft for this offering can state no numbers.</p>
+          <p class="v2-note">None yet — emails for this offering can state no numbers.</p>
           {% endif %}
+          {% if is_admin %}<div class="v2-mt-sm">{{ link_form(selected, 'proof_point', available_proof_points, 'a proof point') }}</div>{% endif %}
         </div>
         <div class="v2-row">
-          <div class="v2-eyebrow">Restricted claims that apply</div>
+          <div class="v2-eyebrow">Message rules that apply</div>
           {% if claims %}
           <div class="v2-pillset v2-mt-sm">
-            {% for record in claims %}<span class="v2-entry">{{ record.title }}</span>{% endfor %}
+            {% for record in claims %}<span class="v2-entry">{{ record.title }}{% if is_admin %} {{ unlink_button(selected, 'restricted_claim', record.id) }}{% endif %}</span>{% endfor %}
           </div>
           {% else %}
-          <p class="v2-note">Only the global limits apply.</p>
+          <p class="v2-note">Only the rules that apply to everything.</p>
           {% endif %}
+          {% if is_admin %}<div class="v2-mt-sm">{{ link_form(selected, 'restricted_claim', available_claims, 'a rule') }}</div>{% endif %}
         </div>
         <div class="v2-row">
           <div class="v2-eyebrow">Personas it is written for</div>
           {% if personas %}
           <div class="v2-pillset v2-mt-sm">
-            {% for record in personas %}<span class="v2-entry">{{ record.name }}</span>{% endfor %}
+            {% for record in personas %}<span class="v2-entry">{{ record.name }}{% if is_admin %} {{ unlink_button(selected, 'persona', record.id) }}{% endif %}</span>{% endfor %}
           </div>
           {% else %}
-          <p class="v2-note">None associated.</p>
+          <p class="v2-note">None yet.</p>
           {% endif %}
+          {% if is_admin %}<div class="v2-mt-sm">{{ link_form(selected, 'persona', available_personas, 'a persona') }}</div>{% endif %}
         </div>
       </div>
     </div>
