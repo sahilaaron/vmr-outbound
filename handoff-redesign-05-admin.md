@@ -1,6 +1,6 @@
 # Handoff — Redesign slice 5: Admin in the shell, legacy customer pages retired
 
-**Branch:** `redesign/05-admin-legacy` · contains main-reconciled Slice 4 via merges `8f27a72c`, `0f4c5b86`, `817e9555` · merge after PR 4
+**Branch:** `redesign/05-admin-legacy` · contains main-reconciled Slice 4 via merges `8f27a72c`, `0f4c5b86`, `817e9555`, `201088d4` · merge after PR 4
 **Spec:** VMR_OUTBOUND_UX_IA_PASS2.md sections D.8, E, Phase 6. Locked with Sahil: Admin hidden first, consolidated last, in the same shell.
 
 ## What changed
@@ -29,7 +29,8 @@
 - Local runs on the reconciled head, one pytest at a time: 34 web/auth/admin/import/capture files green after repairs; final batch of 13 files (migrations 17/17 upgrade→check→downgrade→re-upgrade, route authorization, copy contract, seller knowledge, beta1 UI, customer UI, operating model, sending desk, library, Gmail, sequence web/defects, import-to-sequence) **629 passed, 0 failed**. `scripts/ci_shards.py verify` exit 0.
 - On the main-reconciled head (`817e9555` + this docs commit): batch E (migrations 17/17, route authorization, PROVIDER_SPEND, copy contract, seller knowledge, beta1, customer UI, operating model, sending desk, library, Gmail, sequence web/defects, import-to-sequence, extension account linking, extension capture auth, hosted auth, CI effective control) **1044 tests, 0 failures**; batch F (workbench, verification, pipeline, enrolment, hosted-auth templates, agents, resolution, review, capture intake, autonomous-ready, admin workbench, capture agreement/feedback/promotion, imports, import web, production hardening, user accounts, Gmail) **671 tests, 3 failures** — the `/readyz` trio. `ci_shards.py verify` PASSED (4104 = 4104).
 - The three `/readyz` tests and the one over-long-parametrize-id error in `test_extension_account_linking.py` reproduce identically on a detached worktree at pristine `79467032` with the same interpreter/runner: environmental (Windows), not slice-caused. CI is Linux.
-- vs `origin/main`: 99 files (+2,752 / −8,002); no migration changes; `app/core/http.py`, extension link routes, `app/main.py` and the extension-linking tests are byte-identical to main.
+- Reconciled again to `origin/main` `e7e8c76a` (PR #295 Claude-primary Research): no conflicts in any merge; the only file both PR #295 and these slices touch is `app/web/templates/admin/company_detail.html` (auto-merged, both edits present); `admin_workbench/reader.py`, `views.py`, `web/admin_workbench.py`, research/thinking modules, `core/http.py` and extension routes are byte-identical to main. On `201088d4`: batch G (admin workbench, operational configuration, agent studio report/web, import admin workbench/pipeline, CI handoff, research agent, Claude fallback, thinking seam, customer UI, route auth, workbench web/agents, extension linking, migrations 17/17, library, desk, resolution, review) **719 tests, 0 failures**; batch H (provider spend, copy contract, seller knowledge, beta1, operating model, Gmail, sequence web/defects, import-to-sequence, extension capture auth, hosted auth/templates, verification, pipeline, enrolment, capture intake, autonomous-ready, imports, import web, user accounts, CI effective control) **982 tests, 0 failures**; `ci_shards.py verify` PASSED (4138 = 4138).
+- vs `origin/main` (79467032 basis): 99 files (+2,752 / −8,002); no migration changes; `app/core/http.py`, extension link routes, `app/main.py` and the extension-linking tests are byte-identical to main.
 
 ## Proposed tracker payload
 | Field | Value |

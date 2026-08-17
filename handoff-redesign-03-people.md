@@ -1,6 +1,6 @@
 # Handoff — Redesign slice 3: People and Companies as records
 
-**Branch:** `redesign/03-people-companies` · based on current `origin/main` `79467032` (merged Slices 1–2 + PR #294) via history-preserving merges `973fc690` (repaired Slice 2) and `be73a9eb` (current main) · merge after PR 2
+**Branch:** `redesign/03-people-companies` · based on current `origin/main` `e7e8c76a` (merged Slices 1–2, PR #294 extension CSP, PR #295 Claude-primary Research) via history-preserving merges `973fc690` (repaired Slice 2), `be73a9eb` (main 79467032) and `b376c60e` (main e7e8c76a) · merge after PR 2
 **Spec:** VMR_OUTBOUND_UX_IA_PASS2.md sections D.5–D.6, F.3, Phase 5. Locked with Sahil: the person page is a record, not an email surface; emails are read and acted on in the Campaign.
 
 ## What changed

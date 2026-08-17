@@ -1,6 +1,6 @@
 # Handoff — Redesign slice 4: Library, read by everyone, edited by administrators
 
-**Branch:** `redesign/04-library` · contains main-reconciled Slice 3 via merges `dec86686`, `c1c4408a`, `f9656cd1` · merge after PR 3
+**Branch:** `redesign/04-library` · contains main-reconciled Slice 3 via merges `dec86686`, `c1c4408a`, `f9656cd1`, `47b30044` · merge after PR 3
 **Spec:** VMR_OUTBOUND_UX_IA_PASS2.md section D.7, Phase 5. Locked with Sahil (16 Aug): the Library is only editable by an Admin.
 
 ## What changed
