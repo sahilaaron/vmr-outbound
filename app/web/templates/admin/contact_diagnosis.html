@@ -193,11 +193,24 @@
               <dd>{% if stage.downstream_eligible %}<span class="badge ok plain">next stage may proceed</span>{% else %}<span class="badge muted plain">not yet eligible</span>{% endif %}</dd>
             </div>
 
-            {# --- Research lineage: deterministic vs Claude fallback ---------- #}
+            {# --- Research source lineage ------------------------------------ #}
             {% if stage.agent_id.value == "research" and research_report %}
-              {% if research_report.deterministic or research_report.fallback or research_report.dossier_basis %}
+              {% if research_report.claude_research or research_report.deterministic or research_report.fallback or research_report.dossier_basis %}
               <hr class="soft">
               <div class="kv">
+                {% if research_report.claude_research %}
+                  <dt>Primary Claude web research</dt>
+                  <dd>
+                    {% if research_report.claude_research.attempted %}
+                      <span class="badge {{ 'ok' if research_report.claude_research.status == 'succeeded' else ('warn' if research_report.claude_research.status == 'insufficient' else 'err') }} plain">{{ research_report.claude_research.status }}</span>
+                      {% if research_report.claude_research.producer %}<span class="dim">· {{ research_report.claude_research.producer }} {{ research_report.claude_research.producer_version or "" }}</span>{% endif %}
+                      {% if research_report.claude_research.tools %}<span class="dim">· tools: {{ research_report.claude_research.tools | join(", ") }}</span>{% endif %}
+                      {% if research_report.claude_research.evidence_accepted is not none %}<span class="dim">· {{ research_report.claude_research.evidence_accepted }} claims accepted, {{ research_report.claude_research.claims_rejected or 0 }} discarded</span>{% endif %}
+                      {% if research_report.claude_research.reused_committed_attempt %}<span class="badge info plain">reused committed research</span>{% endif %}
+                    {% else %}<span class="badge muted plain">unavailable</span>{% endif %}
+                    {% if research_report.claude_research.error %}<div class="dim">Error{% if research_report.claude_research.error_code %} ({{ research_report.claude_research.error_code }}){% endif %}: {{ research_report.claude_research.error }}</div>{% endif %}
+                  </dd>
+                {% endif %}
                 {% if research_report.deterministic %}
                   <dt>Deterministic worker</dt>
                   <dd>
@@ -208,7 +221,7 @@
                   </dd>
                 {% endif %}
                 {% if research_report.fallback %}
-                  <dt>Claude web fallback</dt>
+                  <dt>Legacy Claude web fallback</dt>
                   <dd>
                     {% if research_report.fallback.attempted %}
                       <span class="badge {{ 'ok' if research_report.fallback.status == 'succeeded' else ('warn' if research_report.fallback.status == 'insufficient' else 'err') }} plain">{{ research_report.fallback.status }}</span>
@@ -228,6 +241,11 @@
                   <dt>Final dossier basis</dt><dd class="mono">{{ research_report.dossier_basis }}</dd>
                 {% endif %}
               </div>
+              {% if research_report.claude_research and research_report.claude_research.rejection_reasons %}
+              <details class="tech"><summary>Discard reasons ({{ research_report.claude_research.rejection_reasons | length }})</summary>
+                <div class="tech-body"><ul>{% for reason in research_report.claude_research.rejection_reasons %}<li class="muted-note">{{ (reason) | neutralize }}</li>{% endfor %}</ul></div>
+              </details>
+              {% endif %}
               {% if research_report.fallback and research_report.fallback.rejection_reasons %}
               <details class="tech"><summary>Discard reasons ({{ research_report.fallback.rejection_reasons | length }})</summary>
                 <div class="tech-body"><ul>{% for reason in research_report.fallback.rejection_reasons %}<li class="muted-note">{{ (reason) | neutralize }}</li>{% endfor %}</ul></div>

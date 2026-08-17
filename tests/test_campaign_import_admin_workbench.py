@@ -49,7 +49,6 @@ from app.models.import_batch import ImportBatch, ImportRowValidation
 from app.models.imported_email import ImportedContactEmail, ImportSourceIdentifier
 from app.services.admin_workbench import import_lineage
 from app.services.agents import controls
-from app.services.agents.adapters import DEFAULT_ADAPTERS, ResearchAgentAdapter
 from app.services.agents.orchestrator import run_next
 from app.services.companies import provenance as company_provenance
 from app.services.imports import campaign_import
@@ -59,7 +58,16 @@ from sqlalchemy import event, func, select
 from sqlalchemy.orm import Session
 
 from tests import apollo_factory as af
-from tests.test_research_agent import FakeWorker, _fact
+from tests.test_research_claude_fallback import (
+    FakeWorker,
+    _claim,
+)
+from tests.test_research_claude_fallback import (
+    ScriptedThinker as ResearchThinker,
+)
+from tests.test_research_claude_fallback import (
+    _adapters as research_adapters,
+)
 
 pytestmark = pytest.mark.usefixtures("enable_csv_import")
 
@@ -107,6 +115,10 @@ def no_workbench_client(
 @pytest.fixture(autouse=True)
 def _enable_research(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("FEATURES__COMPANY_RESEARCH", "true")
+    # Claude web research is the required primary source, and Company research
+    # is not effectively on without it. Both, or the stage blocks — which is the
+    # contract, not a test convenience.
+    monkeypatch.setenv("FEATURES__RESEARCH_CLAUDE_FALLBACK", "true")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
@@ -632,6 +644,15 @@ def test_an_imported_contact_reaches_research_and_hands_off_company_intelligence
 
     An imported Contact must arrive at it the same way any other Contact does:
     the import bypasses discovery and verification, and nothing else.
+
+    Research is Claude-primary, so "the same way as any other Contact" now means
+    the imported Contact's Research is answered by the bounded Claude source and
+    by nothing else. The integration under test is unchanged — a real import, the
+    real adapters, the real worker loop drained end to end, and the real handoff
+    read back off the Admin page — only the source the Research stage is allowed
+    to use has. The deterministic crawler is still constructed and still handed
+    to the adapter, precisely so that its call count can be asserted at zero
+    rather than assumed.
     """
 
     campaign = af.make_campaign(db_session, execution=True)
@@ -639,11 +660,11 @@ def test_an_imported_contact_reaches_research_and_hands_off_company_intelligence
     company = db_session.scalars(select(Company)).one()
     _size_evidence(db_session, company)
 
-    worker = FakeWorker(facts=(_fact("overview", "They build analytical engines."),))
-    adapters = dict(DEFAULT_ADAPTERS)
-    adapters[AgentIdentifier.RESEARCH] = ResearchAgentAdapter(
-        workers_factory=lambda _names=None: (worker,)
+    worker = FakeWorker()
+    thinker = ResearchThinker(
+        payload={"claims": [_claim("short_description", "They build analytical engines.")]}
     )
+    adapters = research_adapters(worker, thinker)
     _enable(
         db_session,
         AgentIdentifier.RESEARCH,
@@ -661,7 +682,9 @@ def test_an_imported_contact_reaches_research_and_hands_off_company_intelligence
     )
     assert research is not None
     assert research.status is PipelineStageStatus.COMPLETED
-    assert worker.calls, "the deterministic Research worker never ran"
+    assert len(thinker.calls) == 1, "the primary Claude research source was not run"
+    assert worker.calls == [], "the deterministic research worker ran in production"
+    assert company.domain in thinker.calls[0].prompt
 
     body = _diagnosis(client, membership)
     # Both lineages are on the page at once: the post-PR-241 Company

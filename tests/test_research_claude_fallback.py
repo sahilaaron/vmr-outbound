@@ -1,7 +1,7 @@
-"""The Claude CLI web-research fallback inside the Research Agent (RES-002).
+"""The Claude CLI primary web-research source inside the Research Agent.
 
 Every case drives the real Phase 2 worker (``run_next``) through the real
-Research state machine, so a passing test also proves the fallback obeys the
+Research state machine, so a passing test also proves Claude Research obeys the
 job lifecycle, the feature gates and the evidence model rather than running
 beside them.
 
@@ -12,12 +12,11 @@ that passes or fails on someone's subscription.
 
 The properties these cases exist to hold, in the order they matter:
 
-* the deterministic worker is always tried first, and a usable result ends the
-  run there — the fallback costs a model call and must never be spent on a
-  company the crawler already described;
+* every eligible live execution invokes Claude and never invokes the
+  deterministic website worker;
 * nothing uncited is ever stored, whatever the answer looked like;
-* deterministic and Claude-assisted evidence stay tellable apart afterwards;
-* the fallback cannot reach any state outside the Research result;
+* Claude-assisted evidence stays explicitly labelled afterwards;
+* Claude Research cannot reach any state outside the Research result;
 * website text is evidence, never instruction.
 """
 
@@ -49,8 +48,10 @@ from app.models.pipeline import CampaignContactAgentState
 from app.models.verification_job import AgentJob
 from app.services import campaign_contacts, pipeline
 from app.services.agents import controls
+from app.services.agents import jobs as agent_jobs
 from app.services.agents.adapters import DEFAULT_ADAPTERS, ResearchAgentAdapter
 from app.services.agents.orchestrator import run_next
+from app.services.companies import dossiers
 from app.services.research import agent as research_agent
 from app.services.research import fallback as research_fallback
 from app.services.research.contracts import (
@@ -64,12 +65,16 @@ from app.services.research.fallback import (
     FALLBACK_WORKER_NAME,
     ClaudeResearchFallback,
     FallbackLimits,
+    FallbackOutcome,
+    FallbackStatus,
 )
 from app.services.thinking.contracts import (
     ThinkingMalformed,
+    ThinkingRefused,
     ThinkingRequest,
     ThinkingResult,
     ThinkingTimeout,
+    ThinkingTransient,
     ThinkingUnavailable,
 )
 from sqlalchemy import select
@@ -83,7 +88,7 @@ LIMITS = FallbackLimits(
     max_sources=3,
     max_evidence_items=5,
     allowed_tools=("WebSearch", "WebFetch"),
-    producer_version="research-claude-fallback/test",
+    producer_version="research-claude-primary/test",
 )
 
 
@@ -114,7 +119,7 @@ class ScriptedThinker:
 
 
 class FakeWorker:
-    """The deterministic first attempt, under full test control."""
+    """A deterministic crawler spy that production Research must never call."""
 
     name = "website"
     version = "test-1"
@@ -188,14 +193,55 @@ def _dead_worker() -> FakeWorker:
     )
 
 
+class FakeWorkerResearchSource:
+    """Compatibility adapter for adjacent persistence/handoff tests."""
+
+    name = FALLBACK_WORKER_NAME
+    version = LIMITS.producer_version
+
+    def __init__(self, worker: FakeWorker) -> None:
+        self.worker = worker
+
+    def run(
+        self,
+        subject: object,
+        *,
+        reason_code: str,
+        reason: str,
+        now: datetime | None = None,
+    ) -> FallbackOutcome:
+        request = ResearchRequest(
+            domain=str(getattr(subject, "domain", "") or ""),
+            company_name=str(getattr(subject, "company_name", "") or ""),
+        )
+        try:
+            result = self.worker.run(request)
+        except ResearchWorkerError as exc:
+            return FallbackOutcome(
+                status=FallbackStatus.FAILED,
+                error=str(exc),
+                error_code=exc.code,
+                retryable=exc.retryable,
+                invocation_reason_code=reason_code,
+                invocation_reason=reason,
+            )
+        return FallbackOutcome(
+            status=FallbackStatus.SUCCEEDED if result.facts else FallbackStatus.INSUFFICIENT,
+            result=result,
+            accepted=len(result.facts),
+            invocation_reason_code=reason_code,
+            invocation_reason=reason,
+        )
+
+
 def _adapters(
     worker: FakeWorker, thinker: ScriptedThinker | None = None
 ) -> dict[AgentIdentifier, Any]:
     merged = dict(DEFAULT_ADAPTERS)
     merged[AgentIdentifier.RESEARCH] = ResearchAgentAdapter(
         workers_factory=lambda _names=None: (worker,),
-        fallback_factory=(
-            None
+        research_factory=(
+            (lambda _settings: FakeWorkerResearchSource(worker))
             if thinker is None
             else (lambda _settings: ClaudeResearchFallback(thinker=thinker, limits=LIMITS))
         ),
@@ -289,11 +335,11 @@ def _stage(db: Session, membership: CampaignContact) -> CampaignContactAgentStat
     return state
 
 
-# --- 1. the deterministic worker stays the first attempt ----------------------
+# --- 1. Claude is primary and deterministic Research is absent ----------------
 
 
-def test_a_usable_deterministic_result_never_reaches_the_model(db_session: Session) -> None:
-    """The fallback costs a model call. It is not spent on a company already read."""
+def test_a_usable_deterministic_result_cannot_suppress_claude(db_session: Session) -> None:
+    """The injected crawler would succeed, but production never calls it."""
 
     worker = FakeWorker(facts=(_fact("short_description", "Kiln controllers"),))
     thinker = ScriptedThinker(payload={"claims": [_claim()]})
@@ -303,29 +349,30 @@ def test_a_usable_deterministic_result_never_reaches_the_model(db_session: Sessi
 
     db_session.refresh(job)
     assert job.status is AgentJobStatus.SUCCEEDED
-    assert thinker.calls == [], "a usable deterministic dossier must end the run"
-    assert job.result["fallback"]["attempted"] is False
-    assert job.result["fallback"]["trigger_reason_code"] == "deterministic_result_usable"
-    assert job.result["dossier_basis"] == research_agent.BASIS_DETERMINISTIC
+    assert len(thinker.calls) == 1
+    assert worker.calls == [], "the deterministic worker must not run on the production path"
+    assert job.result["claude_research"]["attempted"] is True
+    assert job.result["claude_research"]["invocation_reason_code"] == ("required_primary_source")
+    assert job.result["dossier_basis"] == research_agent.BASIS_CLAUDE
+    assert "deterministic" not in job.result
+    assert "fallback" not in job.result
 
 
-# --- 2/3. every unusable deterministic shape falls back ------------------------
+# --- 2/3. crawler outcomes cannot influence primary routing --------------------
 
 
 @pytest.mark.parametrize(
-    ("worker", "expected_code"),
+    "worker",
     [
         pytest.param(
             FakeWorker(facts=(_fact("short_description", "x"),), sufficient=False),
-            "insufficient_evidence",
             id="thin_site",
         ),
-        pytest.param(FakeWorker(facts=()), "empty_extraction", id="empty_extraction"),
+        pytest.param(FakeWorker(facts=()), id="empty_extraction"),
         pytest.param(
             FakeWorker(
                 error=ResearchWorkerError("read timeout", code="collection_failed", retryable=True)
             ),
-            "deterministic_worker_failed",
             id="retryable_read_failure",
         ),
         pytest.param(
@@ -334,7 +381,6 @@ def test_a_usable_deterministic_result_never_reaches_the_model(db_session: Sessi
                     "homepage unreachable", code="site_unreachable", retryable=False
                 )
             ),
-            "deterministic_worker_failed",
             id="unreachable_site",
         ),
         pytest.param(
@@ -343,15 +389,14 @@ def test_a_usable_deterministic_result_never_reaches_the_model(db_session: Sessi
                     "certificate verify failed", code="collection_failed", retryable=True
                 )
             ),
-            "deterministic_worker_failed",
             id="ssl_failure",
         ),
     ],
 )
-def test_every_unusable_deterministic_outcome_falls_back(
-    db_session: Session, worker: FakeWorker, expected_code: str
+def test_every_injected_deterministic_outcome_is_ignored(
+    db_session: Session, worker: FakeWorker
 ) -> None:
-    """No operator classifies the failure first — the trigger is "not usable"."""
+    """Neither crawler success nor any crawler failure decides whether Claude runs."""
 
     thinker = ScriptedThinker(payload={"claims": [_claim()]})
     membership, job = _setup(db_session)
@@ -359,16 +404,16 @@ def test_every_unusable_deterministic_outcome_falls_back(
     run_next(db_session, worker_id=WORKER, adapters=_adapters(worker, thinker))
 
     db_session.refresh(job)
-    assert len(thinker.calls) == 1, "the fallback must have been asked exactly once"
+    assert len(thinker.calls) == 1
+    assert worker.calls == []
     assert job.status is AgentJobStatus.SUCCEEDED
     assert _stage(db_session, membership).status is PipelineStageStatus.COMPLETED
-    assert job.result["fallback"]["attempted"] is True
-    assert job.result["fallback"]["status"] == "succeeded"
-    assert job.result["deterministic"]["reason_code"] == expected_code
-    assert job.result["deterministic"]["usable"] is False
+    assert job.result["claude_research"]["attempted"] is True
+    assert job.result["claude_research"]["status"] == "succeeded"
+    assert "deterministic" not in job.result
 
 
-# --- 4. a cited fallback commits a dossier the pipeline can continue from ------
+# --- 4. cited Claude Research commits the normal output chain ------------------
 
 
 def test_cited_fallback_evidence_commits_a_dossier_and_advances(db_session: Session) -> None:
@@ -399,7 +444,7 @@ def test_cited_fallback_evidence_commits_a_dossier_and_advances(db_session: Sess
     db_session.refresh(job)
     assert job.status is AgentJobStatus.SUCCEEDED
     assert _stage(db_session, membership).status is PipelineStageStatus.COMPLETED
-    assert job.result["dossier_basis"] == research_agent.BASIS_FALLBACK
+    assert job.result["dossier_basis"] == research_agent.BASIS_CLAUDE
     assert job.result["sufficient"] is True
     assert job.result["facts_stored"] == 3
 
@@ -407,13 +452,11 @@ def test_cited_fallback_evidence_commits_a_dossier_and_advances(db_session: Sess
     assert version.is_current
     assert version.overview is not None, "short_description maps into overview"
     assert version.geography is not None
-    # Every dossier entry names the worker that produced it. The deterministic
-    # worker did read a page here — it just extracted nothing from it — so both
-    # appear, and the point is that they appear distinguishably.
+    # Every dossier entry names the Claude source that produced it.
     assert {entry["worker"] for entry in version.overview or []} == {FALLBACK_WORKER_NAME}
     sources = {entry["url"]: entry["worker"] for entry in version.sources or []}
     assert sources["https://trade.example/kiln-systems"] == FALLBACK_WORKER_NAME
-    assert sources[f"https://{DOMAIN}/"] == "website"
+    assert set(sources.values()) == {FALLBACK_WORKER_NAME}
 
     evidence = db_session.scalars(select(InsightEvidence)).all()
     assert len(evidence) == 3
@@ -451,9 +494,12 @@ def test_uncited_and_unsupported_claims_are_dropped_not_stored(db_session: Sessi
 
     db_session.refresh(job)
     assert job.result["facts_stored"] == 1
-    assert job.result["fallback"]["evidence_accepted"] == 1
-    assert job.result["fallback"]["claims_rejected"] == 4
-    assert set(job.result["fallback"]["rejection_reasons"]) == {"uncited", "missing_excerpt"}
+    assert job.result["claude_research"]["evidence_accepted"] == 1
+    assert job.result["claude_research"]["claims_rejected"] == 4
+    assert set(job.result["claude_research"]["rejection_reasons"]) == {
+        "uncited",
+        "missing_excerpt",
+    }
 
     claims = [row.claim for row in db_session.scalars(select(Insight)).all()]
     assert claims == ["headquarters: Cited and supported"]
@@ -472,16 +518,16 @@ def test_an_invented_field_name_cannot_create_a_section(db_session: Session) -> 
     run_next(db_session, worker_id=WORKER, adapters=_adapters(FakeWorker(), thinker))
 
     db_session.refresh(job)
-    assert job.result["fallback"]["status"] == "insufficient"
-    assert set(job.result["fallback"]["rejection_reasons"]) == {"unknown_field"}
+    assert job.result["claude_research"]["status"] == "insufficient"
+    assert set(job.result["claude_research"]["rejection_reasons"]) == {"unknown_field"}
     assert db_session.scalars(select(Insight)).all() == []
 
 
-def test_the_fallback_field_vocabulary_stays_inside_the_dossier_sections() -> None:
+def test_the_claude_field_vocabulary_stays_inside_the_dossier_sections() -> None:
     """A field with no section would be a stored claim nothing could ever show."""
 
     unmapped = set(research_fallback.RESEARCH_FIELDS) - set(research_agent._FIELD_SECTIONS)
-    assert unmapped == set(), f"fallback fields with no dossier section: {sorted(unmapped)}"
+    assert unmapped == set(), f"Claude fields with no dossier section: {sorted(unmapped)}"
 
 
 # --- 6. malformed output fails safely -----------------------------------------
@@ -502,8 +548,12 @@ def test_a_malformed_answer_stores_nothing_and_stays_truthful(db_session: Sessio
     db_session.refresh(job)
     assert job.result["facts_stored"] == 0
     assert job.result["sufficient"] is False
+    # Nothing was accepted, so nothing is claimed as the basis. Recording
+    # "claude_cli_web_research" here would name the producer that was *asked*
+    # rather than the evidence that was *kept*, in the one field whose entire
+    # purpose is provenance.
     assert job.result["dossier_basis"] == research_agent.BASIS_NONE
-    assert job.result["fallback"]["status"] == "insufficient"
+    assert job.result["claude_research"]["status"] == "insufficient"
     assert db_session.scalars(select(Insight)).all() == []
     # Truthful, not failed: the stage did run, and what it found is recorded.
     assert _stage(db_session, membership).status is PipelineStageStatus.COMPLETED
@@ -524,10 +574,10 @@ def test_unparseable_cli_output_is_retried_not_committed(db_session: Session) ->
     assert db_session.scalars(select(Insight)).all() == []
 
 
-# --- 7. the fallback's own failures are classified honestly --------------------
+# --- 7. Claude Research failures are classified honestly ----------------------
 
 
-def test_a_fallback_timeout_is_retryable(db_session: Session) -> None:
+def test_a_claude_research_timeout_is_retryable(db_session: Session) -> None:
     thinker = ScriptedThinker(error=ThinkingTimeout("The Claude CLI did not answer within 30s."))
     membership, job = _setup(db_session)
 
@@ -537,9 +587,9 @@ def test_a_fallback_timeout_is_retryable(db_session: Session) -> None:
     assert job.status is AgentJobStatus.RETRY_SCHEDULED
     assert _stage(db_session, membership).status is PipelineStageStatus.RETRYING
     detail = (job.error or {}).get("detail", {})
-    assert detail["fallback"]["status"] == "failed"
-    assert detail["fallback"]["retryable"] is True
-    assert detail["fallback"]["error_code"] == "thinking_timeout"
+    assert detail["claude_research"]["status"] == "failed"
+    assert detail["claude_research"]["retryable"] is True
+    assert detail["claude_research"]["error_code"] == "thinking_timeout"
 
 
 def test_a_missing_cli_is_terminal_rather_than_retried(db_session: Session) -> None:
@@ -554,13 +604,13 @@ def test_a_missing_cli_is_terminal_rather_than_retried(db_session: Session) -> N
     assert job.status is AgentJobStatus.FAILED
     assert _stage(db_session, membership).status is PipelineStageStatus.FAILED
     detail = (job.error or {}).get("detail", {})
-    assert detail["fallback"]["retryable"] is False
+    assert detail["claude_research"]["retryable"] is False
 
 
-def test_a_failed_fallback_still_commits_a_usable_deterministic_thin_result(
+def test_a_failed_claude_source_does_not_silently_downgrade_to_deterministic(
     db_session: Session,
 ) -> None:
-    """One attempt failing must not discard what the other one genuinely read."""
+    """A crawler result is irrelevant when the required primary source fails."""
 
     worker = FakeWorker(facts=(_fact("short_description", "Kiln controllers"),), sufficient=False)
     thinker = ScriptedThinker(error=ThinkingUnavailable("The Claude CLI was not found on PATH."))
@@ -569,20 +619,17 @@ def test_a_failed_fallback_still_commits_a_usable_deterministic_thin_result(
     run_next(db_session, worker_id=WORKER, adapters=_adapters(worker, thinker))
 
     db_session.refresh(job)
-    assert job.status is AgentJobStatus.SUCCEEDED
-    assert _stage(db_session, membership).status is PipelineStageStatus.COMPLETED
-    assert job.result["dossier_basis"] == research_agent.BASIS_DETERMINISTIC
-    assert job.result["fallback"]["status"] == "failed"
-    version = db_session.scalars(select(CompanyDossierVersion)).one()
-    assert any(FALLBACK_WORKER_NAME in str(item) for item in version.warnings or []), (
-        "the operator must see that the second attempt was made and failed"
-    )
+    assert job.status is AgentJobStatus.FAILED
+    assert _stage(db_session, membership).status is PipelineStageStatus.FAILED
+    assert worker.calls == []
+    assert db_session.scalars(select(CompanyResearchSubmission)).all() == []
+    assert db_session.scalars(select(CompanyDossierVersion)).all() == []
 
 
 # --- 8. retry does not duplicate anything -------------------------------------
 
 
-def test_re_driving_the_same_job_reuses_the_committed_fallback_attempt(
+def test_re_driving_the_same_job_reuses_the_committed_claude_attempt(
     db_session: Session,
 ) -> None:
     """No second model call, no second dossier, no second evidence row."""
@@ -603,24 +650,65 @@ def test_re_driving_the_same_job_reuses_the_committed_fallback_attempt(
         db_session,
         job=job,
         contact=contact,
-        workers=(FakeWorker(),),
-        fallback=ClaudeResearchFallback(thinker=thinker, limits=LIMITS),
+        workers=(),
+        primary_source=ClaudeResearchFallback(thinker=thinker, limits=LIMITS),
     )
     db_session.flush()
 
     assert step.kind is research_agent.ResearchStepKind.COMPLETE
     assert len(thinker.calls) == 1, "the committed attempt must be reused, not repurchased"
-    assert step.result["fallback"]["reused_committed_attempt"] is True
+    assert step.result["claude_research"]["reused_committed_attempt"] is True
     assert len(db_session.scalars(select(Insight)).all()) == insights
     assert len(db_session.scalars(select(InsightEvidence)).all()) == evidence
     assert len(db_session.scalars(select(CompanyResearchSubmission)).all()) == submissions
     assert len(db_session.scalars(select(CompanyDossierVersion)).all()) == versions
 
 
-# --- 9. the two sources stay tellable apart -----------------------------------
+def test_a_genuinely_new_research_job_may_buy_fresh_claude_research(
+    db_session: Session,
+) -> None:
+    thinker = ScriptedThinker(payload={"claims": [_claim()]})
+    membership, first_job = _setup(db_session)
+    adapters = _adapters(FakeWorker(), thinker)
+
+    run_next(db_session, worker_id=WORKER, adapters=adapters)
+
+    contact = db_session.get(Contact, membership.contact_id)
+    assert contact is not None and contact.company_id is not None
+    second_job, created = agent_jobs.enqueue_job(
+        db_session,
+        agent_id=AgentIdentifier.RESEARCH,
+        idempotency_key=f"research-primary-fresh:{uuid.uuid4()}",
+        task_kind="pipeline_stage",
+        max_attempts=3,
+        campaign_id=membership.campaign_id,
+        campaign_contact_id=membership.id,
+        contact_id=contact.id,
+        company_id=contact.company_id,
+        actor="test",
+    )
+    assert created and second_job.id != first_job.id
+    second = research_agent.execute_step(
+        db_session,
+        job=second_job,
+        contact=contact,
+        workers=(),
+        primary_source=ClaudeResearchFallback(thinker=thinker, limits=LIMITS),
+        now=datetime.now(UTC),
+    )
+    db_session.flush()
+
+    assert second.kind is research_agent.ResearchStepKind.COMPLETE
+    assert len(thinker.calls) == 2
+    assert len(db_session.scalars(select(CompanyResearchSubmission)).all()) == 2
+    assert len(db_session.scalars(select(CompanyDossierVersion)).all()) == 2
+    assert len(db_session.scalars(select(Insight)).all()) == 2
 
 
-def test_deterministic_and_assisted_evidence_remain_distinguishable(db_session: Session) -> None:
+# --- 9. source lineage is explicit and primary --------------------------------
+
+
+def test_claude_primary_lineage_survives_every_persistence_layer(db_session: Session) -> None:
     """Provenance survives at every level a later reader might look at."""
 
     worker = FakeWorker(facts=(_fact("short_description", "Kiln controllers"),), sufficient=False)
@@ -630,31 +718,31 @@ def test_deterministic_and_assisted_evidence_remain_distinguishable(db_session: 
     run_next(db_session, worker_id=WORKER, adapters=_adapters(worker, thinker))
 
     db_session.refresh(job)
-    assert job.result["dossier_basis"] == research_agent.BASIS_BOTH
+    assert job.result["dossier_basis"] == research_agent.BASIS_CLAUDE
+    assert worker.calls == []
 
     methods = {row.extraction_method for row in db_session.scalars(select(InsightEvidence)).all()}
-    assert methods == {"explicit_statement:explicit", EXTRACTION_METHOD}
+    assert methods == {EXTRACTION_METHOD}
 
-    # The idempotency key names the worker, so the two never collide on retry.
+    # The idempotency key names the Claude source and remains stable on retry.
     keys = {row.idempotency_key for row in db_session.scalars(select(Insight)).all()}
-    assert any(key and ":website:" in key for key in keys)
-    assert any(key and f":{FALLBACK_WORKER_NAME}:" in key for key in keys)
+    assert keys and all(key and f":{FALLBACK_WORKER_NAME}:" in key for key in keys)
 
     submission = db_session.scalars(select(CompanyResearchSubmission)).one()
     workers = {entry["worker"]: entry for entry in submission.payload["workers"]}
-    assert set(workers) == {"website", FALLBACK_WORKER_NAME}
-    assert workers[FALLBACK_WORKER_NAME]["raw"]["fallback"] is True
-    assert workers["website"]["raw"].get("fallback") is None
+    assert set(workers) == {FALLBACK_WORKER_NAME}
+    assert workers[FALLBACK_WORKER_NAME]["raw"]["research_role"] == "primary"
+    assert "fallback" not in workers[FALLBACK_WORKER_NAME]["raw"]
 
     version = db_session.scalars(select(CompanyDossierVersion)).one()
     assert {entry["worker"] for entry in version.geography or []} == {FALLBACK_WORKER_NAME}
-    assert {entry["worker"] for entry in version.overview or []} == {"website"}
+    assert version.overview is None
 
 
-# --- 10. the fallback cannot reach anything outside the Research result --------
+# --- 10. Claude Research cannot reach anything outside the Research result -----
 
 
-def test_the_fallback_changes_no_state_outside_research(db_session: Session) -> None:
+def test_claude_research_changes_no_state_outside_research(db_session: Session) -> None:
     """Canonical Company, Campaign, drafting, email and verification are untouched.
 
     The answer below asks for all of them, in the shape a compromised or simply
@@ -791,14 +879,14 @@ def test_website_text_asking_to_change_the_rules_is_stored_as_evidence(
     assert evidence.source_url.startswith("https://")
     # The invented field it asked for was refused, and no draft or approval
     # exists anywhere.
-    assert set(job.result["fallback"]["rejection_reasons"]) == {"unknown_field"}
+    assert set(job.result["claude_research"]["rejection_reasons"]) == {"unknown_field"}
     assert db_session.scalars(select(DraftVersion)).all() == []
 
 
-# --- 12. disabled preserves the previous behaviour exactly ---------------------
+# --- 12. disabled means unavailable, never deterministic downgrade -------------
 
 
-def test_the_feature_flag_off_preserves_the_previous_behaviour(
+def test_the_legacy_feature_flag_off_blocks_without_running_the_crawler(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("FEATURES__RESEARCH_CLAUDE_FALLBACK", "false")
@@ -812,17 +900,18 @@ def test_the_feature_flag_off_preserves_the_previous_behaviour(
 
     db_session.refresh(job)
     assert thinker.calls == [], "nothing may reach the model while the feature is off"
-    assert job.status is AgentJobStatus.SUCCEEDED
-    assert _stage(db_session, membership).status is PipelineStageStatus.COMPLETED
-    assert job.result["sufficient"] is False
-    assert job.result["dossier_basis"] == research_agent.BASIS_DETERMINISTIC
-    record = job.result["fallback"]
+    assert worker.calls == []
+    assert job.status is AgentJobStatus.PAUSED
+    assert _stage(db_session, membership).status is PipelineStageStatus.BLOCKED
+    detail = (job.error or {}).get("detail", {})
+    record = detail["claude_research"]
     assert record["attempted"] is False
-    assert record["trigger_reason_code"] == "fallback_unavailable"
-    assert "FEATURES__RESEARCH_CLAUDE_FALLBACK" in record["trigger_reason"]
+    assert record["invocation_reason_code"] == "claude_research_unavailable"
+    assert "availability control" in record["invocation_reason"]
+    assert db_session.scalars(select(CompanyResearchSubmission)).all() == []
 
 
-def test_an_unreachable_site_stays_terminal_while_the_feature_is_off(
+def test_the_disabled_primary_source_never_probes_an_unreachable_site(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The exact pre-RES-002 outcome, asserted so it cannot drift."""
@@ -838,13 +927,15 @@ def test_an_unreachable_site_stays_terminal_while_the_feature_is_off(
     run_next(db_session, worker_id=WORKER, adapters=_adapters(worker, ScriptedThinker()))
 
     db_session.refresh(job)
-    assert job.status is AgentJobStatus.FAILED
-    assert _stage(db_session, membership).status is PipelineStageStatus.FAILED
+    assert job.status is AgentJobStatus.PAUSED
+    assert _stage(db_session, membership).status is PipelineStageStatus.BLOCKED
+    assert worker.calls == []
     assert db_session.scalars(select(CompanyResearchSubmission)).all() == []
 
 
-def test_a_campaign_may_switch_the_fallback_off_but_never_on(db_session: Session) -> None:
-    """Direction of travel: a Campaign may narrow a capability, never widen it."""
+def test_legacy_campaign_opt_out_makes_research_unavailable_without_downgrade(
+    db_session: Session,
+) -> None:
 
     thinker = ScriptedThinker(payload={"claims": [_claim()]})
     worker = FakeWorker(facts=(_fact("short_description", "x"),), sufficient=False)
@@ -854,14 +945,17 @@ def test_a_campaign_may_switch_the_fallback_off_but_never_on(db_session: Session
 
     db_session.refresh(job)
     assert thinker.calls == []
-    assert job.result["fallback"]["trigger_reason_code"] == "fallback_unavailable"
-    assert "Campaign" in job.result["fallback"]["trigger_reason"]
+    assert worker.calls == []
+    assert job.status is AgentJobStatus.PAUSED
+    detail = (job.error or {}).get("detail", {})
+    assert detail["claude_research"]["invocation_reason_code"] == ("claude_research_unavailable")
+    assert "claude_fallback=false" in detail["claude_research"]["invocation_reason"]
 
 
 # --- the bounded invocation itself --------------------------------------------
 
 
-def test_the_fallback_asks_for_web_access_and_nothing_else() -> None:
+def test_claude_research_asks_for_web_access_and_nothing_else() -> None:
     """The narrowest permissions that still allow finding and reading pages.
 
     Asserted on the request rather than on the settings default, because the
@@ -879,7 +973,7 @@ def test_the_fallback_asks_for_web_access_and_nothing_else() -> None:
 
     request = thinker.calls[0]
     assert request.allowed_tools == ("WebSearch", "WebFetch")
-    assert request.purpose == "company_research_fallback"
+    assert request.purpose == "company_research_primary"
     assert request.timeout_seconds == LIMITS.timeout_seconds
     # Insights and Personalization keep `allowed_tools=()`; this call is the one
     # Research-side exception and must not have acquired anything further.
@@ -964,13 +1058,11 @@ def test_model_supplied_confidence_is_clamped() -> None:
     ]
 
 
-def test_the_fallback_is_not_a_registered_research_worker() -> None:
+def test_claude_primary_is_not_selectable_through_the_legacy_worker_registry() -> None:
     """It must be unreachable from ``config["workers"]``.
 
-    Registering it would make it selectable as a *first* attempt, which is the
-    one thing this design refuses: a model asked to research a company answers
-    equally plausibly whether or not it read anything, and the deterministic
-    worker is the only source that can be checked against the page it read.
+    Production constructs the bounded source directly. Registering it would add
+    a second configuration route whose semantics could diverge.
     """
 
     from app.services.research.workers import available_workers
@@ -978,12 +1070,349 @@ def test_the_fallback_is_not_a_registered_research_worker() -> None:
     assert FALLBACK_WORKER_NAME not in available_workers()
 
 
-def test_the_research_adapter_takes_a_fallback_seam_and_not_a_thinker() -> None:
+def test_the_research_adapter_takes_a_primary_source_seam_and_not_a_thinker() -> None:
     """The shape of the seam is the guard against reintroducing the old adapter."""
 
     adapter = DEFAULT_ADAPTERS[AgentIdentifier.RESEARCH]
     parameters = inspect.signature(type(adapter).__init__).parameters
     assert isinstance(adapter, ResearchAgentAdapter)
-    assert "workers_factory" in parameters, "the deterministic path stays the first attempt"
-    assert "fallback_factory" in parameters
+    assert "workers_factory" in parameters, "legacy diagnostics remain injectable"
+    assert "research_factory" in parameters
+    assert "fallback_factory" in parameters, "legacy injection wiring remains compatible"
     assert "thinker_factory" not in parameters
+
+
+# --- 14. the repair pass: retry reach, honest lineage, cross-deploy identity ---
+#
+# Four properties the first Claude-primary pass got wrong, each one now pinned by
+# the case that reproduced it. They share a theme: making Claude required raised
+# the cost of every inaccuracy that used to be absorbed by the crawler standing
+# behind it.
+
+
+def test_a_transient_cli_failure_spends_its_retries_before_failing(
+    db_session: Session,
+) -> None:
+    """A usage limit must pause the batch, not consume it.
+
+    Before this repair every non-zero Claude CLI exit was terminal on attempt 1,
+    with the job carrying two unused attempts. Since the pilot runs a hundred
+    Contacts through one subscription, hitting the limit part-way through did not
+    stop the run -- it terminally failed every remaining Contact in sequence,
+    each needing a manual re-queue.
+    """
+
+    thinker = ScriptedThinker(
+        error=ThinkingTransient("The Claude CLI exited with status 1."),
+    )
+    worker = FakeWorker()
+    membership, job = _setup(db_session)
+
+    run_next(db_session, worker_id=WORKER, adapters=_adapters(worker, thinker))
+
+    db_session.refresh(job)
+    assert job.status is AgentJobStatus.RETRY_SCHEDULED
+    assert job.attempts == 1
+    assert job.attempts < job.max_attempts, "the configured retries must still be reachable"
+    assert _stage(db_session, membership).status is PipelineStageStatus.RETRYING
+    detail = (job.error or {}).get("detail", {})
+    assert detail["claude_research"]["status"] == "failed"
+    assert detail["claude_research"]["retryable"] is True
+    assert detail["claude_research"]["error_code"] == "thinking_transient"
+
+    # The safety half is unchanged: a retryable Claude failure is not an
+    # invitation to crawl, and nothing is committed on the way past.
+    assert worker.calls == [], "the deterministic crawler ran during a Claude retry"
+    assert db_session.scalars(select(CompanyResearchSubmission)).all() == []
+    assert db_session.scalars(select(CompanyDossierVersion)).all() == []
+    assert db_session.scalars(select(Insight)).all() == []
+
+
+def test_a_transient_failure_still_ends_terminally_once_the_retries_are_spent(
+    db_session: Session,
+) -> None:
+    """Retryable is not endless. The bound is what makes it the safe default."""
+
+    thinker = ScriptedThinker(error=ThinkingTransient("The Claude CLI exited with status 1."))
+    worker = FakeWorker()
+    membership, job = _setup(db_session)
+    adapters = _adapters(worker, thinker)
+
+    for _ in range(job.max_attempts + 2):
+        db_session.refresh(job)
+        if job.status in {AgentJobStatus.FAILED, AgentJobStatus.SUCCEEDED}:
+            break
+        # A scheduled retry is due in the future; the test is about the attempt
+        # ceiling, not about the backoff clock.
+        job.next_run_at = datetime.now(UTC)
+        db_session.flush()
+        run_next(db_session, worker_id=WORKER, adapters=adapters)
+
+    db_session.refresh(job)
+    assert job.status is AgentJobStatus.FAILED
+    assert job.attempts == job.max_attempts
+    assert _stage(db_session, membership).status is PipelineStageStatus.FAILED
+    assert worker.calls == [], "no attempt may fall through to the deterministic crawler"
+    assert db_session.scalars(select(CompanyResearchSubmission)).all() == []
+
+
+def test_a_permanent_cli_refusal_is_still_terminal_on_the_first_attempt(
+    db_session: Session,
+) -> None:
+    """Classification, not blanket retrying: a broken configuration stops at once."""
+
+    thinker = ScriptedThinker(error=ThinkingRefused("The Claude CLI exited with status 1."))
+    worker = FakeWorker()
+    membership, job = _setup(db_session)
+
+    run_next(db_session, worker_id=WORKER, adapters=_adapters(worker, thinker))
+
+    db_session.refresh(job)
+    assert job.status is AgentJobStatus.FAILED
+    assert job.attempts == 1
+    assert _stage(db_session, membership).status is PipelineStageStatus.FAILED
+    assert worker.calls == []
+    assert db_session.scalars(select(CompanyResearchSubmission)).all() == []
+
+
+def test_a_zero_citation_dossier_does_not_claim_cited_web_research(
+    db_session: Session,
+) -> None:
+    """Lineage describes what was accepted, never what was attempted.
+
+    ``dossier_basis`` exists so that "where did this company description come
+    from?" is answered by a stored value rather than inferred. For a dossier with
+    no accepted evidence the honest answer already existed -- ``BASIS_NONE`` --
+    and recording the producer that was merely asked made it unreachable and put
+    "researched the company through cited public web sources" on four operator
+    screens beside an empty dossier.
+    """
+
+    thinker = ScriptedThinker(
+        payload={
+            # Every claim uncited, so every one is dropped: the run happened and
+            # established nothing.
+            "claims": [_claim(url=None), _claim("headquarters", "Sheffield", url=None)],
+            "sources": [{"url": "https://trade.example/kiln-systems", "title": "Trade"}],
+        }
+    )
+    worker = FakeWorker()
+    membership, job = _setup(db_session)
+
+    run_next(db_session, worker_id=WORKER, adapters=_adapters(worker, thinker))
+
+    db_session.refresh(job)
+    assert job.result["facts_stored"] == 0
+    assert job.result["source_count"] >= 0
+    assert job.result["sufficient"] is False
+    assert job.result["claude_research"]["evidence_accepted"] == 0
+    assert job.result["claude_research"]["status"] == "insufficient"
+
+    assert job.result["dossier_basis"] == research_agent.BASIS_NONE
+    assert job.result["domain_outcome"] == "found no citable public evidence about the company"
+    assert research_agent.BASIS_CLAUDE not in str(job.result["dossier_basis"])
+
+    # And the rest of the honest-empty contract still holds: the dossier is
+    # committed as a record, Insights are not created, and Company Intelligence
+    # is not queued as though sufficient Research existed.
+    assert db_session.scalars(select(CompanyDossierVersion)).all() != []
+    assert db_session.scalars(select(Insight)).all() == []
+    assert job.result["company_intelligence"]["outcome"] == "dossier_not_usable"
+    assert _stage(db_session, membership).status is PipelineStageStatus.COMPLETED
+    assert worker.calls == []
+
+
+def test_a_cited_dossier_still_records_claude_as_its_basis(db_session: Session) -> None:
+    """The counterpart, so the fix above cannot be satisfied by always saying none."""
+
+    thinker = ScriptedThinker(payload={"claims": [_claim()]})
+    _membership, job = _setup(db_session)
+
+    run_next(db_session, worker_id=WORKER, adapters=_adapters(FakeWorker(), thinker))
+
+    db_session.refresh(job)
+    assert job.result["facts_stored"] == 1
+    assert job.result["dossier_basis"] == research_agent.BASIS_CLAUDE
+    assert job.result["domain_outcome"] == (
+        "researched the company through cited public web sources"
+    )
+
+
+def test_a_pre_deploy_attempt_re_driven_after_deploy_writes_no_second_version(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rollout case: a restart across a deployment is not new knowledge.
+
+    A job that committed a Claude attempt before this deployment and is re-driven
+    after it -- a recovered lease, an operator re-run, a worker restart
+    mid-flight -- rebuilds the identical facts from the identical stored payload.
+    Renaming the producer label made those rebuilt facts compare unequal to the
+    dossier already stored, so the same evidence was written as a second
+    immutable version and ``is_current`` moved to it. The version number became
+    an execution counter for the company, which is exactly what
+    ``_interpret_once`` exists to prevent.
+    """
+
+    # 1. The pre-deploy commit: the previous producer label, and the previous
+    #    payload marker that goes with it.
+    monkeypatch.setattr(
+        research_fallback, "EXTRACTION_METHOD", research_fallback.LEGACY_EXTRACTION_METHOD
+    )
+    thinker = ScriptedThinker(payload={"claims": [_claim(), _claim("headquarters", "Sheffield")]})
+    membership, job = _setup(db_session)
+    run_next(db_session, worker_id=WORKER, adapters=_adapters(FakeWorker(), thinker))
+    db_session.flush()
+
+    submission = db_session.scalars(select(CompanyResearchSubmission)).one()
+    entry = submission.payload["workers"][0]
+    stored_raw = dict(entry["raw"])
+    # Age the stored payload into the shape the previous build actually wrote:
+    # the `fallback: True` marker, and claims with no per-claim method recorded.
+    stored_raw.pop("research_role", None)
+    stored_raw["fallback"] = True
+    stored_raw["claims"] = [
+        {key: value for key, value in claim.items() if key != "extraction_method"}
+        for claim in stored_raw["claims"]
+    ]
+    aged_payload = {
+        **submission.payload,
+        "workers": [{**entry, "raw": stored_raw}],
+    }
+    submission.payload = aged_payload
+    # The content hash is what makes a resubmission idempotent, so ageing the
+    # payload without ageing its hash would fabricate a different defect than
+    # the one under test.
+    submission.content_hash = dossiers.content_hash(aged_payload)
+    db_session.flush()
+
+    original = db_session.scalars(select(CompanyDossierVersion)).one()
+    original_id = original.id
+    original_number = original.version_number
+    original_overview = list(original.overview or [])
+    assert original_overview, "the pre-deploy dossier must actually hold evidence"
+    assert all(
+        item["extraction_method"] == research_fallback.LEGACY_EXTRACTION_METHOD
+        for item in original_overview
+    )
+
+    # 2. The deploy: this build's producer label is back in force.
+    monkeypatch.undo()
+    assert research_fallback.EXTRACTION_METHOD != research_fallback.LEGACY_EXTRACTION_METHOD
+
+    # 3. The retry of the same logical Research work.
+    contact = db_session.get(Contact, membership.contact_id)
+    assert contact is not None
+    step = research_agent.execute_step(
+        db_session,
+        job=job,
+        contact=contact,
+        workers=(),
+        primary_source=ClaudeResearchFallback(thinker=thinker, limits=LIMITS),
+    )
+    db_session.flush()
+
+    # 4. One version, still. The committed evidence was reused rather than
+    #    re-read, so there is no new reading to record.
+    assert step.kind is research_agent.ResearchStepKind.COMPLETE
+    assert step.result["claude_research"]["reused_committed_attempt"] is True
+    assert len(thinker.calls) == 1, "no duplicate Claude spend across the deploy boundary"
+    assert len(db_session.scalars(select(CompanyResearchSubmission)).all()) == 1
+    versions = db_session.scalars(select(CompanyDossierVersion)).all()
+    assert len(versions) == 1, "a producer rename is not a new reading"
+
+    # And the immutable row is untouched: same id, same number, same provenance,
+    # still current. Nothing was rewritten to make the comparison succeed.
+    surviving = versions[0]
+    assert surviving.id == original_id
+    assert surviving.version_number == original_number
+    assert surviving.is_current is True
+    assert list(surviving.overview or []) == original_overview
+    assert all(
+        item["extraction_method"] == research_fallback.LEGACY_EXTRACTION_METHOD
+        for item in surviving.overview or []
+    )
+
+    # Existing evidence keeps the label it was created with, and no second row
+    # was written beside it.
+    evidence = db_session.scalars(select(InsightEvidence)).all()
+    assert len(evidence) == 2
+    assert {row.extraction_method for row in evidence} == {
+        research_fallback.LEGACY_EXTRACTION_METHOD
+    }
+
+
+def test_genuinely_new_evidence_still_creates_a_new_immutable_version(
+    db_session: Session,
+) -> None:
+    """The other side of the idempotency fix: real change is still recorded."""
+
+    thinker = ScriptedThinker(payload={"claims": [_claim()]})
+    membership, _job = _setup(db_session)
+    run_next(db_session, worker_id=WORKER, adapters=_adapters(FakeWorker(), thinker))
+    db_session.flush()
+    first = db_session.scalars(select(CompanyDossierVersion)).one()
+
+    contact = db_session.get(Contact, membership.contact_id)
+    assert contact is not None and contact.company_id is not None
+    fresh_thinker = ScriptedThinker(
+        payload={"claims": [_claim("headquarters", "Sheffield, United Kingdom")]}
+    )
+    new_job, created = agent_jobs.enqueue_job(
+        db_session,
+        agent_id=AgentIdentifier.RESEARCH,
+        idempotency_key=f"research-primary-newevidence:{uuid.uuid4()}",
+        task_kind="pipeline_stage",
+        max_attempts=3,
+        campaign_id=membership.campaign_id,
+        campaign_contact_id=membership.id,
+        contact_id=contact.id,
+        company_id=contact.company_id,
+        actor="test",
+    )
+    assert created
+    research_agent.execute_step(
+        db_session,
+        job=new_job,
+        contact=contact,
+        workers=(),
+        primary_source=ClaudeResearchFallback(thinker=fresh_thinker, limits=LIMITS),
+        now=datetime.now(UTC),
+    )
+    db_session.flush()
+
+    versions = db_session.scalars(select(CompanyDossierVersion)).all()
+    assert len(versions) == 2
+    db_session.refresh(first)
+    assert first.is_current is False, "the older reading keeps its number and steps aside"
+
+
+def test_an_unconstructable_primary_source_blocks_by_its_own_name(
+    db_session: Session,
+) -> None:
+    """Fail closed, and say the true thing about why.
+
+    A ``research_factory`` that yields nothing used to fall through to the state
+    machine's first guard and block with ``no_workers_enabled`` -- "set
+    config['workers'] to at least one registered worker" -- which is advice
+    pointing at the deterministic registry this repair keeps out of production.
+    """
+
+    worker = FakeWorker()
+    merged = dict(DEFAULT_ADAPTERS)
+    merged[AgentIdentifier.RESEARCH] = ResearchAgentAdapter(
+        workers_factory=lambda _names=None: (worker,),
+        research_factory=lambda _settings: None,
+    )
+    membership, job = _setup(db_session)
+
+    run_next(db_session, worker_id=WORKER, adapters=merged)
+
+    db_session.refresh(job)
+    assert job.status is AgentJobStatus.PAUSED
+    assert job.error_class == "claude_research_unavailable"
+    assert _stage(db_session, membership).status is PipelineStageStatus.BLOCKED
+    assert worker.calls == []
+    detail = (job.error or {}).get("detail", {})
+    assert detail["claude_research"]["invocation_reason_code"] == "claude_research_unavailable"
+    assert "no_workers_enabled" not in str(job.error)
+    assert db_session.scalars(select(CompanyResearchSubmission)).all() == []

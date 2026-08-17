@@ -49,7 +49,7 @@ Readiness is a projection over the artifact — current, non-superseded message 
 | Capture | Existing intake/promotion paths plus durable exact-execution reporting | Operational; live report acceptance pending |
 | Identity | Shared Agent adapter over authoritative identity services | Operational |
 | Company | Exact permanent-Company linking, canonical-domain gates and durable execution lineage | Operational; live acceptance pending |
-| Research | Registered deterministic research workers | Operational; live acceptance pending |
+| Research | Required bounded Claude CLI web research with cited-fact validation | Operational; live acceptance pending |
 | Email | Deterministic candidate policy | Operational |
 | Verification | Durable exact-address verification using the existing MillionVerifier boundary | Operational; live authority required |
 | Insights | One bounded no-tools thinking call plus deterministic evidence validation and Employee Size normalization | Operational; live acceptance pending |

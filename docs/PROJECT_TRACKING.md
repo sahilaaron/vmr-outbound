@@ -128,8 +128,11 @@ promoted into current UAT blockers merely because they exist.
 ## Current product truth
 
 - The Campaign pipeline is merged through PR #232.
-- The worker-based Research adapter is authoritative.
-- Research gathers evidence; Claude is used by Insights and Personalization.
+- The evidence-preserving Research adapter is authoritative.
+- Production Research gathers cited evidence through bounded Claude CLI web
+  research; the deterministic crawler is retained only for tests, diagnostics
+  and a future explicitly approved alternate mode. Insights and Personalization
+  continue to use Claude without web tools over persisted evidence.
 - Email candidate order is `firstname.lastname`, `firstname`, `finitiallastname`.
 - Live Verification requires the feature switch, credentials and Agent live authority.
 - The v2 interface is the customer front door; the Workbench remains at `/admin`.

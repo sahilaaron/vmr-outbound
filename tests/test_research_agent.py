@@ -45,6 +45,7 @@ from app.services.research.contracts import (
     SourcedFact,
     WorkerResult,
 )
+from app.services.research.fallback import FallbackOutcome, FallbackStatus
 from app.services.workbench_agents import PhaseTwoWorkbenchReader
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -102,10 +103,50 @@ class FakeWorker:
         )
 
 
+class FakePrimaryResearch:
+    """Adapt the old persistence fake to the required primary-source protocol."""
+
+    name = "claude_web"
+    version = "test-1"
+
+    def __init__(self, worker: FakeWorker) -> None:
+        self.worker = worker
+
+    def run(
+        self,
+        subject: object,
+        *,
+        reason_code: str,
+        reason: str,
+        now: datetime | None = None,
+    ) -> FallbackOutcome:
+        domain = str(getattr(subject, "domain", "") or "")
+        company_name = str(getattr(subject, "company_name", "") or "")
+        try:
+            result = self.worker.run(ResearchRequest(domain=domain, company_name=company_name))
+        except ResearchWorkerError as exc:
+            return FallbackOutcome(
+                status=FallbackStatus.FAILED,
+                error=str(exc),
+                error_code=exc.code,
+                retryable=exc.retryable,
+                invocation_reason_code=reason_code,
+                invocation_reason=reason,
+            )
+        return FallbackOutcome(
+            status=FallbackStatus.SUCCEEDED if result.facts else FallbackStatus.INSUFFICIENT,
+            result=result,
+            accepted=len(result.facts),
+            invocation_reason_code=reason_code,
+            invocation_reason=reason,
+        )
+
+
 def _adapters(worker: object) -> dict[AgentIdentifier, object]:
     merged = dict(DEFAULT_ADAPTERS)
     merged[AgentIdentifier.RESEARCH] = ResearchAgentAdapter(
-        workers_factory=lambda _names=None: (worker,)
+        workers_factory=lambda _names=None: (worker,),
+        research_factory=lambda _settings: FakePrimaryResearch(worker),  # type: ignore[arg-type]
     )
     return merged
 
@@ -113,6 +154,7 @@ def _adapters(worker: object) -> dict[AgentIdentifier, object]:
 @pytest.fixture(autouse=True)
 def _enable_feature(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("FEATURES__COMPANY_RESEARCH", "true")
+    monkeypatch.setenv("FEATURES__RESEARCH_CLAUDE_FALLBACK", "true")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
@@ -213,25 +255,25 @@ def _setup(db: Session, worker: FakeWorker, **kw: object) -> tuple[CampaignConta
 # --- the registered adapter --------------------------------------------------
 
 
-def test_the_registered_research_adapter_is_the_worker_based_one() -> None:
-    """The regression test for a duplicate class definition.
+def test_the_registered_research_adapter_is_the_evidence_preserving_one() -> None:
+    """The regression test for a duplicate unsafe class definition.
 
     This module once had two `ResearchAgentAdapter` classes 460 lines apart. Python
     rebinds the name silently, so `DEFAULT_ADAPTERS[RESEARCH]` pointed at whichever
     came last — a model-based adapter — and the worker-based one below became
     unreachable code with an entire red test file behind it.
 
-    Asserted on the constructor seam rather than on the class object, because that is
-    the thing that differs: only the worker-based adapter takes a worker registry.
+    The production source is injected through ``research_factory``; a raw thinker
+    seam would bypass the cited-fact validation and persistence chain.
     """
 
     adapter = DEFAULT_ADAPTERS[AgentIdentifier.RESEARCH]
     assert isinstance(adapter, ResearchAgentAdapter)
     parameters = inspect.signature(type(adapter).__init__).parameters
-    assert "workers_factory" in parameters
+    assert "research_factory" in parameters
     assert "thinker_factory" not in parameters, (
-        "Research must gather through the worker registry. A thinker_factory here "
-        "means a model-based Research implementation has been reintroduced."
+        "A thinker_factory here means the unsafe model-based Research implementation "
+        "has been reintroduced outside the cited-fact boundary."
     )
 
 

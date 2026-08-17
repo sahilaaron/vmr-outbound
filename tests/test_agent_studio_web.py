@@ -16,6 +16,7 @@ from app.models.enums import AgentIdentifier
 from app.models.verification_job import AgentJob
 from app.services.agent_studio.extensions import AGENT_STUDIO_MODULES
 from app.services.agent_studio.research_report import (
+    ResearchClaudeView,
     ResearchCollectionFailure,
     ResearchDeterministicView,
     ResearchFactView,
@@ -387,6 +388,42 @@ def test_research_report_renders_both_attempts_when_the_fallback_ran(
     assert "https://trade.example/kiln-systems" in response.text
     assert "3 discarded" in response.text
     assert "uncited, missing_excerpt" in response.text
+
+
+def test_research_report_renders_claude_as_the_primary_source(
+    studio_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = replace(
+        _report(complete=True),
+        dossier_basis="claude_cli_web_research",
+        claude_research=ResearchClaudeView(
+            attempted=True,
+            status="succeeded",
+            invocation_reason_code="required_primary_source",
+            invocation_reason=("Claude CLI web research is the required Research implementation."),
+            producer="claude-cli",
+            producer_version="research-claude-primary/1",
+            evidence_accepted=4,
+            claims_rejected=1,
+            rejection_reasons=("uncited",),
+            source_urls=("https://trade.example/kiln-systems",),
+            tools=("WebSearch", "WebFetch"),
+        ),
+    )
+    from app.web import routes
+
+    monkeypatch.setattr(routes, "_research_report_reader", lambda _db: _Reader(report))
+    response = studio_client.get(
+        f"/admin/agents/studio/research?campaign_contact={report.campaign_contact_id}"
+    )
+
+    assert response.status_code == 200
+    assert "Primary Research source" in response.text
+    assert "Claude CLI web research" in response.text
+    assert "claude_cli_web_research" in response.text
+    assert "research-claude-primary/1" in response.text
+    assert "Deterministic website worker" not in response.text
 
 
 def test_research_report_says_when_the_fallback_was_switched_off(

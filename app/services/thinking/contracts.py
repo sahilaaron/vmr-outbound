@@ -58,10 +58,33 @@ class ThinkingTimeout(ThinkingError):
 
 
 class ThinkingRefused(ThinkingError):
-    """The model ran and declined, or returned an empty answer."""
+    """The model ran and declined, or the tool failed permanently.
+
+    Reserved for causes a retry cannot change: an unauthenticated session, a
+    rejected model or flag, a permission denial, an explicit policy refusal.
+    A tool failure that is merely *unexplained* is :class:`ThinkingTransient`,
+    not this — see the classification note there.
+    """
 
     retryable = False
     code = "thinking_refused"
+
+
+class ThinkingTransient(ThinkingError):
+    """The call failed for a reason that repeating it could plausibly survive.
+
+    Provider capacity, a rate or usage limit, a network fault, a 5xx from the
+    service behind the CLI, or a non-zero exit with no recognisably permanent
+    cause. Retryable on purpose, and the default for an unclassifiable tool
+    failure, because the two errors are not symmetric: a wrongly-retryable
+    failure costs at most ``max_attempts`` bounded calls and then fails
+    terminally anyway, while a wrongly-terminal one costs the Contact and has
+    to be re-queued by hand. A usage limit reached part-way through a batch is
+    exactly this shape, and it must pause the batch rather than consume it.
+    """
+
+    retryable = True
+    code = "thinking_transient"
 
 
 class ThinkingMalformed(ThinkingError):
