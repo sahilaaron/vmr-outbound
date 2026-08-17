@@ -9,11 +9,14 @@ company record is worse than none — the missing half is invisible downstream.
 
 from __future__ import annotations
 
+import contextlib
 import subprocess
+from collections.abc import Iterator
 from unittest import mock
 
 import pytest
 from app.core.config import Settings
+from app.services.thinking import claude_cli
 from app.services.thinking.claude_cli import ClaudeCliThinker, classify, extract_json_object
 from app.services.thinking.contracts import (
     ThinkingMalformed,
@@ -159,6 +162,30 @@ def _completed(
     )
 
 
+@contextlib.contextmanager
+def _an_executable_that_resolves() -> Iterator[None]:
+    """Let a *named* CLI resolve on PATH so the classification below is reachable.
+
+    ``think()`` resolves the configured executable with ``shutil.which`` before it
+    spawns anything, and reports a miss as ``ThinkingUnavailable``. That is
+    production behaviour, asserted directly by
+    ``test_a_missing_executable_is_reported_as_unavailable_not_retried`` — but for
+    the tests that classify an *exit status* it is the step before the one under
+    test, and satisfying it by naming some executable that happens to exist makes
+    the test a statement about the host rather than about the seam. Naming ``cmd``
+    passed on a Windows development machine and failed on the Linux CI runner,
+    which has no ``cmd``, before the mocked ``subprocess.run`` was ever reached.
+
+    So the resolution is stubbed rather than satisfied, matching how
+    ``tests/test_provider_spend_authorization.py`` stubs the same seam. Nothing
+    real is executed: ``subprocess.run`` is mocked in every caller, so the path
+    handed back is never spawned.
+    """
+
+    with mock.patch.object(claude_cli.shutil, "which", lambda name: f"/usr/local/bin/{name}"):
+        yield
+
+
 def test_a_usage_limit_exit_is_retryable_all_the_way_through_the_seam() -> None:
     """The whole chain for the failure most likely to cost the pilot Contacts.
 
@@ -169,11 +196,11 @@ def test_a_usage_limit_exit_is_retryable_all_the_way_through_the_seam() -> None:
     text.
     """
 
-    settings = Settings(claude_cli_path="cmd", claude_cli_arguments=())
+    settings = Settings(claude_cli_path="claude", claude_cli_arguments=())
     thinker = ClaudeCliThinker(settings=settings)
     completed = _completed(1, stderr="Claude AI usage limit reached|1789000000")
 
-    with mock.patch("subprocess.run", return_value=completed):
+    with _an_executable_that_resolves(), mock.patch("subprocess.run", return_value=completed):
         with pytest.raises(ThinkingTransient) as caught:
             thinker.think(ThinkingRequest(prompt="hello", purpose="test"))
 
@@ -185,11 +212,11 @@ def test_a_usage_limit_exit_is_retryable_all_the_way_through_the_seam() -> None:
 def test_a_provider_message_on_stdout_is_classified_too() -> None:
     """The CLI writes its own diagnostics to stderr; a forwarded one arrives on stdout."""
 
-    settings = Settings(claude_cli_path="cmd", claude_cli_arguments=())
+    settings = Settings(claude_cli_path="claude", claude_cli_arguments=())
     thinker = ClaudeCliThinker(settings=settings)
     completed = _completed(1, stdout="API Error: 529 Overloaded")
 
-    with mock.patch("subprocess.run", return_value=completed):
+    with _an_executable_that_resolves(), mock.patch("subprocess.run", return_value=completed):
         with pytest.raises(ThinkingTransient):
             thinker.think(ThinkingRequest(prompt="hello", purpose="test"))
 
@@ -197,11 +224,11 @@ def test_a_provider_message_on_stdout_is_classified_too() -> None:
 def test_an_expired_login_exit_stays_terminal_through_the_seam() -> None:
     """The counterpart, so "retryable" is a classification and not a blanket."""
 
-    settings = Settings(claude_cli_path="cmd", claude_cli_arguments=())
+    settings = Settings(claude_cli_path="claude", claude_cli_arguments=())
     thinker = ClaudeCliThinker(settings=settings)
     completed = _completed(1, stderr="You are not logged in. Run `claude login` to continue.")
 
-    with mock.patch("subprocess.run", return_value=completed):
+    with _an_executable_that_resolves(), mock.patch("subprocess.run", return_value=completed):
         with pytest.raises(ThinkingRefused) as caught:
             thinker.think(ThinkingRequest(prompt="hello", purpose="test"))
 
