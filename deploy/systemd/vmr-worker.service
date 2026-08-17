@@ -46,6 +46,26 @@ Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=HOME=/srv/vmr/shared/runtime/home
 Environment=PYTHONUNBUFFERED=1
 
+# Database pool, sized for THIS process only. Deliberately set here and not in
+# /etc/vmr/vmr.env, because that file is read by vmr-web as well and web has no
+# use for a large pool: it is a single uvicorn process serving a handful of
+# operator sessions, and it holds ~2 connections in practice.
+#
+# The worker is different in kind. A worker thread holds one pooled connection
+# for the whole of a job's final transaction — the one the Agent adapter runs
+# inside — so a Research job occupies a connection for its entire model call,
+# and steady-state demand is one connection per busy thread plus one for the
+# main thread's capture backfill. 26 + 6 serves VMR_WORKER_CONCURRENCY up to 25
+# with margin; run_agent_worker.py refuses to start if the two ever disagree.
+#
+# ORDERING TRAP, verified on systemd 255: EnvironmentFile= overrides
+# Environment= no matter which appears first in this unit. So adding
+# DATABASE_POOL_SIZE to /etc/vmr/vmr.env does not merely duplicate these lines —
+# it silently overrides them AND inflates vmr-web by the same amount. Keep the
+# key out of that file and change it here.
+Environment=DATABASE_POOL_SIZE=26
+Environment=DATABASE_MAX_OVERFLOW=6
+
 ExecStart=/srv/vmr/app/.venv/bin/python scripts/run_agent_worker.py \
     --poll-seconds ${VMR_WORKER_POLL_SECONDS} \
     --workers ${VMR_WORKER_CONCURRENCY}

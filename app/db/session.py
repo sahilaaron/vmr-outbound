@@ -10,7 +10,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.runtime import validate_runtime_settings
 
 
@@ -48,6 +48,24 @@ def create_db_engine(
         future=True,
         connect_args={"connect_timeout": max(1, ceil(timeout))},
     )
+
+
+def configured_pool_capacity(settings: Settings | None = None) -> int:
+    """The most connections this process's pool will ever hand out at once.
+
+    ``pool_size`` is what the pool keeps open; ``max_overflow`` is what it may
+    open beyond that under load. The sum is the real concurrency ceiling for any
+    caller that holds a connection for the duration of its work, which is what
+    the Agent worker does for the whole of a job's model call.
+
+    Reported from settings rather than by reading the live pool, because
+    SQLAlchemy exposes ``max_overflow`` only privately and the module-level
+    :data:`engine` below is built with no explicit overrides — so these are
+    exactly the numbers it was given.
+    """
+
+    resolved = settings or get_settings()
+    return resolved.database_pool_size + resolved.database_max_overflow
 
 
 engine: Engine = create_db_engine()
