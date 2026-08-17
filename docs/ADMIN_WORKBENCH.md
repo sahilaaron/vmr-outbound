@@ -28,7 +28,7 @@ administrator sees here.
 | Term | Meaning |
 |---|---|
 | **Agent/Stage** | The business-level pipeline step (Capture … Sending) visible to Customers and Admins. |
-| **Worker** | An execution mechanism performing all or part of an Agent/Stage — e.g. Research has the deterministic `website` worker, the `claude_web` fallback worker, and dossier persistence. |
+| **Worker** | An execution mechanism performing all or part of an Agent/Stage — e.g. production Research has the primary `claude_web` source and dossier persistence. |
 | **Agent Job** | A durable execution request (`AgentJob`). |
 | **Attempt** | One worker claim and execution try of a Job. |
 
@@ -55,17 +55,17 @@ with a visible reason.
 
 | Area | Path | What it answers |
 |---|---|---|
-| Overview | `/admin` | What is running, blocked, failed, awaiting review; queue and lease health; recent Research fallback use; prioritised attention items that all link to a diagnosis. |
+| Overview | `/admin` | What is running, blocked, failed, awaiting review; queue and lease health; recent primary Claude Research use; prioritised attention items that all link to a diagnosis. |
 | Campaigns | `/admin/campaigns`, `/admin/campaigns/{id}` | Campaign list with health triage; Campaign detail with the Agent/Stage funnel, execution warnings, recent failures and the full Contact table (filter by stage, pipeline status, needs-attention). |
-| Contact diagnosis | `/admin/campaigns/{id}/contacts/{ccid}` | The heart of the redesign: the complete Agent/Stage timeline for one Campaign Contact — per stage the committed status, human-readable explanation, worker(s), latest Agent Job and attempts, committed outcomes (email / verification / research / insights / draft), Research deterministic-vs-fallback lineage, downstream eligibility, and the safe corrective action if one exists. Raw Job detail sits behind Technical details. |
+| Contact diagnosis | `/admin/campaigns/{id}/contacts/{ccid}` | The heart of the redesign: the complete Agent/Stage timeline for one Campaign Contact — per stage the committed status, human-readable explanation, worker(s), latest Agent Job and attempts, committed outcomes (email / verification / research / insights / draft), Research source lineage, downstream eligibility, and the safe corrective action if one exists. Raw Job detail sits behind Technical details. |
 | Contacts | `/admin/contacts`, `/admin/contacts/{id}` | Cross-Campaign lookup for the permanent Contact: memberships, suppressions, email addresses and verification state, promotion-linked capture history, recent Personalization output. |
-| Companies | `/admin/companies`, `/admin/companies/{id}` | Canonical identity and domain state, linked Contacts, Campaign participation, dossier versions, Research executions with fallback lineage, unresolved conflicts, Company Intelligence links. |
+| Companies | `/admin/companies`, `/admin/companies/{id}` | Canonical identity and domain state, linked Contacts, Campaign participation, dossier versions, Research executions with source lineage, unresolved conflicts, Company Intelligence links. |
 | Agent/Stages | `/admin/stages`, `/admin/stages/{agent}` | Operator layer over the Agent registry: control state and provenance, queue and stage counts, workers, Campaign overrides, recent completions/failures, average duration where reliably measurable. |
 | File imports | `/admin/imports/{batch_id}` | One campaign-bound contact file import (IMP-001): the batch and every row it produced — Contact and Company resolution with the evidence that decided each, the supplied Company name beside the resolved one, the imported address, and the Email/Verification bypasses. Read-only; importing and re-importing stay on the campaign import screens. Linked from the Campaign detail **File imports** panel. |
 | Failures | `/admin/failures` | The exceptions inbox: committed stage failures, blocked Contacts, failed Jobs not represented by a stage row, and stale leases — normalized, categorised from committed fields only, each row leading to its diagnosis. Plus file-import rows that were refused or held: those never became a Campaign Contact, so they carry no stage and no Job and appear nowhere else. |
 | Review | `/admin/review` | Read-only visibility into Personalization output and decisions. Approve/discard stays on the customer surface at `/app/review`, reached there as **Emails** — a reading surface where deciding is optional and gates nothing. The Workbench never decides. |
 | Providers & Usage | `/admin/providers` | Claude CLI, MillionVerifier, Logo.dev, DeBounce: configured or not, feature switches, ledger-recorded usage windows, last use and last failure. Secrets never render. |
-| Configuration | `/admin/configuration` | Read-only home for the effective configuration: dry-run, feature switches, global Agent controls with provenance, Campaign overrides, active immutable policy versions, Research fallback bounds. Each row links to its authoritative write surface. |
+| Configuration | `/admin/configuration` | Read-only home for the effective configuration: dry-run, feature switches, global Agent controls with provenance, Campaign overrides, active immutable policy versions, and primary Claude Research bounds. Each row links to its authoritative write surface. |
 | System | `/admin/system` | Job counts, stale leases, alembic revision, application version, audit tail, raw Job search by UUID. |
 | Advanced Diagnostics | `/admin/diagnostics` | The catalogue of the technical and legacy surfaces (below). |
 

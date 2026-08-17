@@ -400,6 +400,9 @@ def test_with_no_stored_row_every_control_resolves_to_its_deployment_default(
     settings = _settings(
         monkeypatch,
         FEATURES__COMPANY_RESEARCH="true",
+        # Company research depends on it, so a deployment that defaults Research
+        # on and this off is not "Research on" — it is Research with no source.
+        FEATURES__RESEARCH_CLAUDE_FALLBACK="true",
         FEATURES__CSV_IMPORT="true",
         FEATURES__EMAIL_GENERATION="true",
         FEATURES__AUTOMATIC_COMPANY_DOMAIN_RESOLUTION="true",
@@ -432,7 +435,7 @@ def test_a_stored_row_wins_over_the_environment_default(
     control is now on.
     """
 
-    settings = _settings(monkeypatch)
+    settings = _settings(monkeypatch, FEATURES__RESEARCH_CLAUDE_FALLBACK="true")
     monkeypatch.delenv("FEATURES__COMPANY_RESEARCH", raising=False)
     get_settings.cache_clear()
     settings = get_settings()
@@ -441,6 +444,9 @@ def test_a_stored_row_wins_over_the_environment_default(
     assert operational.enabled(db_session, "company_research", settings) is False
     before = operational.refusal(db_session, "company_research", settings)
     assert before is not None
+    # The refusal is "nobody has turned it on", not "it cannot be turned on":
+    # the required Claude source is available in this deployment, so the only
+    # thing missing is the administrator's decision.
     assert "Admin → Configuration" in before
 
     change = operational.set_control(
@@ -590,7 +596,7 @@ def test_a_stale_version_is_refused_and_an_unchanged_setting_writes_nothing(
     never happened.
     """
 
-    settings = _settings(monkeypatch)
+    settings = _settings(monkeypatch, FEATURES__RESEARCH_CLAUDE_FALLBACK="true")
     operational.set_control(
         db_session,
         key="company_research",
@@ -650,7 +656,7 @@ def test_every_change_writes_an_audit_event_naming_the_operator_and_the_reason(
     carry the operator, the key, both states and the stated reason.
     """
 
-    settings = _settings(monkeypatch)
+    settings = _settings(monkeypatch, FEATURES__RESEARCH_CLAUDE_FALLBACK="true")
     operational.set_control(
         db_session,
         key="company_research",
@@ -702,13 +708,29 @@ def test_an_administrator_turns_company_research_on_from_the_screen(
     """The UAT requirement, end to end over HTTP, with the environment untouched.
 
     The deployment's ``FEATURES__COMPANY_RESEARCH`` is absent — off — for the
-    whole of this test. The administrator posts once and the Configuration page
-    then reports the control as in force, which is the outcome that previously
+    whole of this test. The administrator posts and the Configuration page then
+    reports the control as in force, which is the outcome that previously
     required SSH and a restart.
+
+    It takes two posts now, and the first half of the test is the reason: Claude
+    web research is the required source, so the screen refuses Company research
+    while its prerequisite is off and names what to turn on instead of accepting
+    a switch that would leave every Research job blocked.
     """
 
     csrf = _admin_session(hosted_client)
     assert get_settings().features.company_research is False
+
+    refused = _post_control(hosted_client, "company_research", csrf, reason="UAT: unblock Research")
+    assert refused.status_code == 303, refused.text[:300]
+    refusal = _flash(refused)
+    assert refusal.startswith("/admin/configuration?err=")
+    assert "Claude Research availability" in refusal
+    assert "Turn that on first" in refusal
+
+    prerequisite = _post_control(hosted_client, "research_claude_fallback", csrf)
+    assert prerequisite.status_code == 303, prerequisite.text[:300]
+    assert "?ok=" in _flash(prerequisite)
 
     response = _post_control(
         hosted_client, "company_research", csrf, reason="UAT: unblock Research"
@@ -849,7 +871,11 @@ def test_turning_company_research_on_returns_the_jobs_it_had_paused(
     work would satisfy a naive status assertion and lose the contact's research.
     """
 
-    settings = _settings(monkeypatch)
+    # Claude Research availability is on, so `company_research` is the only
+    # thing switched off and `feature_disabled` is the accurate classification
+    # of the refusal. (The other half of that pair — availability itself off —
+    # is `test_a_claude_availability_pause_is_reclaimed_when_availability_returns`.)
+    settings = _settings(monkeypatch, FEATURES__RESEARCH_CLAUDE_FALLBACK="true")
     monkeypatch.delenv("FEATURES__COMPANY_RESEARCH", raising=False)
     get_settings.cache_clear()
     settings = get_settings()
@@ -963,7 +989,7 @@ def test_reclamation_touches_only_the_pauses_the_feature_caused(
     what makes the two untouched rows an assertion rather than a coincidence.
     """
 
-    settings = _settings(monkeypatch)
+    settings = _settings(monkeypatch, FEATURES__RESEARCH_CLAUDE_FALLBACK="true")
     monkeypatch.delenv("FEATURES__COMPANY_RESEARCH", raising=False)
     get_settings.cache_clear()
     settings = get_settings()
@@ -1053,3 +1079,273 @@ def test_a_control_reports_the_agents_whose_paused_work_it_gates(
     for spec in operational.PRODUCT_CONTROLS:
         for agent_id in spec.gates_agents:
             assert agent_id in AGENT_SPECS, f"{spec.key} gates an unregistered Agent"
+
+
+# ---------------------------------------------------------------------------
+# CLAUDE-PRIMARY RESEARCH: readiness that agrees with runtime, and a working undo
+# ---------------------------------------------------------------------------
+#
+# Research now has one required source. That turned an optional extra into a
+# prerequisite, and these cases pin the two operator-facing consequences the
+# change has to carry with it: the Configuration screen must not report Research
+# as in force while the source it requires is unavailable, and the switch that
+# makes the source available again must return the work it had refused.
+
+
+def _claude_blocked_research_job(
+    db_session: Session, campaign: Campaign, worker: _FakeWorker, *, label: str
+) -> tuple[CampaignContact, AgentJob]:
+    """One Research job driven to a real ``claude_research_unavailable`` pause.
+
+    Through the actual worker loop and the actual adapter, so the pause is the
+    product's own classification rather than a status written by the test.
+    """
+
+    membership, job = _queued_research_job(db_session, campaign, label=label)
+    outcome = orchestrator.run_next(
+        db_session, worker_id=WORKER, adapters=_research_adapters(worker)
+    )
+    db_session.flush()
+    assert outcome.job is not None
+    db_session.refresh(job)
+    assert job.status is AgentJobStatus.PAUSED
+    assert job.error_class == "claude_research_unavailable"
+    assert _research_stage_status(db_session, membership) is PipelineStageStatus.BLOCKED
+    return membership, job
+
+
+def test_company_research_is_not_effective_while_claude_research_is_unavailable(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The deployment-default trap, asserted from the screen and from a real job.
+
+    Every deployment that ran Research before this change is in exactly this
+    state -- ``company_research`` on from the environment, Claude availability
+    off -- and the previous model reported it as ``effective=True`` with no
+    mention of Claude while every Research job blocked. Readiness has to agree
+    with runtime, and the screen has to say what to do about it.
+    """
+
+    settings = _settings(monkeypatch, FEATURES__COMPANY_RESEARCH="true")
+    monkeypatch.delenv("FEATURES__RESEARCH_CLAUDE_FALLBACK", raising=False)
+    get_settings.cache_clear()
+    settings = get_settings()
+    assert settings.features.company_research is True
+    assert settings.features.research_claude_fallback is False
+
+    view = operational.configuration_view(db_session, settings)
+    research = next(row for row in view.controls if row.key == "company_research")
+
+    assert research.requested is True, "the deployment does ask for Research"
+    assert research.effective is False, "but it cannot execute, so it is not in force"
+    assert research.capability.available is False
+    assert research.capability.reason is not None
+    assert "Claude Research availability" in research.capability.reason
+    assert "Turn that on first" in research.capability.reason
+    assert operational.enabled(db_session, "company_research", settings) is False
+
+    # The same answer from the runtime read every service uses, and from a real
+    # job driven through the real worker: the screen and the pipeline agree.
+    worker = _FakeWorker()
+    campaign = _research_campaign(db_session)
+    _claude_blocked_research_job(db_session, campaign, worker, label="trap")
+    assert worker.calls == [], "the deterministic crawler must never stand in"
+
+    # Turning the prerequisite on is all it takes, and the dependency is not
+    # circular: availability resolves without asking Company research anything.
+    operational.set_control(
+        db_session,
+        key="research_claude_fallback",
+        enabled_value=True,
+        actor=ACTOR,
+        reason="Claude CLI is configured on this host",
+        settings=settings,
+    )
+    db_session.flush()
+
+    assert operational.enabled(db_session, "research_claude_fallback", settings) is True
+    assert operational.enabled(db_session, "company_research", settings) is True
+    after = operational.configuration_view(db_session, settings)
+    research_after = next(row for row in after.controls if row.key == "company_research")
+    assert research_after.effective is True
+    assert research_after.capability.available is True
+
+
+def test_company_research_cannot_be_switched_on_before_its_required_source(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The write path refuses the misleading state rather than only hiding it."""
+
+    settings = _settings(monkeypatch)
+    monkeypatch.delenv("FEATURES__RESEARCH_CLAUDE_FALLBACK", raising=False)
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    with pytest.raises(operational.OperationalSettingError) as refused:
+        operational.set_control(
+            db_session,
+            key="company_research",
+            enabled_value=True,
+            actor=ACTOR,
+            settings=settings,
+        )
+    assert "Claude Research availability" in str(refused.value)
+    assert db_session.get(OperationalSetting, "company_research") is None
+
+    # The order is enforced, not merely suggested: availability first, and then
+    # the same write succeeds.
+    operational.set_control(
+        db_session,
+        key="research_claude_fallback",
+        enabled_value=True,
+        actor=ACTOR,
+        settings=settings,
+    )
+    db_session.flush()
+    change = operational.set_control(
+        db_session,
+        key="company_research",
+        enabled_value=True,
+        actor=ACTOR,
+        settings=settings,
+    )
+    db_session.flush()
+    assert change.changed is True
+    assert operational.enabled(db_session, "company_research", settings) is True
+
+
+def test_a_claude_availability_pause_is_reclaimed_when_availability_returns(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The undo for the refusal this repair makes mandatory.
+
+    ``gates_agents`` promises that turning a control back on returns the work it
+    had refused. Research now refuses in two vocabularies -- the stage is off, or
+    the source it requires is unavailable -- and a promise that recovers only the
+    first leaves an operator resetting a hundred Contacts by hand at precisely
+    the moment this repair has just blocked their batch.
+
+    Four properties, because three of them are the ones a naive fix would break:
+    the pause is recovered, recovering it twice does nothing the second time, an
+    unrelated terminal failure is not resurrected, and no deterministic crawler
+    call happens at any point.
+    """
+
+    settings = _settings(monkeypatch, FEATURES__COMPANY_RESEARCH="true")
+    monkeypatch.delenv("FEATURES__RESEARCH_CLAUDE_FALLBACK", raising=False)
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    worker = _FakeWorker()
+    campaign = _research_campaign(db_session)
+    membership, job = _claude_blocked_research_job(db_session, campaign, worker, label="blocked")
+    job_id = job.id
+
+    # An unrelated Research job that genuinely failed. Terminal is not paused,
+    # and no switch may resurrect it.
+    _dead_membership, dead = _queued_research_job(db_session, campaign, label="dead")
+    agent_jobs.mark_failed(
+        db_session,
+        dead,
+        error_class="domain_not_authorized",
+        reason="the domain of this contact is not authorized for research",
+    )
+    db_session.flush()
+
+    change = operational.set_control(
+        db_session,
+        key="research_claude_fallback",
+        enabled_value=True,
+        actor=ACTOR,
+        reason="Claude CLI restored",
+        settings=settings,
+    )
+    db_session.flush()
+    assert AgentIdentifier.RESEARCH in change.reclaim_agents
+
+    resumed = orchestrator.reclaim_feature_paused_jobs(
+        db_session, agent_ids=(AgentIdentifier.RESEARCH,), actor=ACTOR
+    )
+    db_session.flush()
+
+    # 1. exactly one reclaim, and the same row rather than a replacement
+    assert resumed == 1
+    db_session.refresh(job)
+    assert job.id == job_id
+    assert job.status is AgentJobStatus.PENDING
+    assert job.error is None and job.error_class is None and job.last_error is None
+    assert job.next_run_at is not None
+    assert _research_stage_status(db_session, membership) is PipelineStageStatus.WAITING
+    assert (
+        db_session.scalar(
+            select(func.count(AgentJob.id)).where(
+                AgentJob.campaign_contact_id == membership.id,
+                AgentJob.agent_id == AgentIdentifier.RESEARCH,
+            )
+        )
+        == 1
+    ), "reclaiming must return the paused job, never queue a second one"
+
+    # 2. repeating the gesture resumes nothing and duplicates nothing
+    again = orchestrator.reclaim_feature_paused_jobs(
+        db_session, agent_ids=(AgentIdentifier.RESEARCH,), actor=ACTOR
+    )
+    db_session.flush()
+    assert again == 0
+    db_session.refresh(job)
+    assert job.status is AgentJobStatus.PENDING
+    assert (
+        db_session.scalar(
+            select(func.count(AgentJob.id)).where(AgentJob.agent_id == AgentIdentifier.RESEARCH)
+        )
+        == 2
+    ), "the two jobs this test created, and no others"
+
+    # 3. the unrelated terminal failure is untouched
+    db_session.refresh(dead)
+    assert dead.status is AgentJobStatus.FAILED
+    assert dead.error_class == "domain_not_authorized"
+    assert dead.finished_at is not None
+
+    # 4. nothing deterministic ran at any point, including during the reclaim
+    assert worker.calls == []
+
+
+def test_reclamation_does_not_resume_a_claude_pause_it_was_not_asked_about(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Owning the classification is the safety property, and it still holds.
+
+    Adding a second recoverable code must not widen the sweep to pauses that
+    have their own causes: an operator pause is still nobody's business but its
+    own, even when it landed on a job the new code had paused first.
+    """
+
+    _settings(monkeypatch, FEATURES__COMPANY_RESEARCH="true")
+    monkeypatch.delenv("FEATURES__RESEARCH_CLAUDE_FALLBACK", raising=False)
+    get_settings.cache_clear()
+
+    worker = _FakeWorker()
+    campaign = _research_campaign(db_session)
+    _claude_blocked_research_job(db_session, campaign, worker, label="claude")
+    _held_membership, held = _claude_blocked_research_job(
+        db_session, campaign, worker, label="held"
+    )
+    agent_jobs.mark_paused(
+        db_session,
+        held,
+        reason="an operator paused this Campaign Contact",
+        reason_code="membership_paused",
+    )
+    db_session.flush()
+
+    resumed = orchestrator.reclaim_feature_paused_jobs(
+        db_session, agent_ids=(AgentIdentifier.RESEARCH,), actor=ACTOR
+    )
+    db_session.flush()
+
+    assert resumed == 1
+    db_session.refresh(held)
+    assert held.status is AgentJobStatus.PAUSED
+    assert held.error_class == "membership_paused"
+    assert worker.calls == []

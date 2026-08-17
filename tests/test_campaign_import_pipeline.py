@@ -34,7 +34,16 @@ from sqlalchemy.orm import Session
 
 from tests import apollo_factory as af
 from tests.test_email_agent_integration import ScriptedLiveProvider
-from tests.test_research_agent import FakeWorker, _fact
+from tests.test_research_claude_fallback import (
+    FakeWorker,
+    _claim,
+)
+from tests.test_research_claude_fallback import (
+    ScriptedThinker as ResearchThinker,
+)
+from tests.test_research_claude_fallback import (
+    _adapters as research_adapters,
+)
 
 pytestmark = pytest.mark.usefixtures("enable_csv_import")
 
@@ -45,6 +54,7 @@ NOW = datetime(2026, 8, 1, 9, 0, tzinfo=UTC)
 @pytest.fixture(autouse=True)
 def _enable_research(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("FEATURES__COMPANY_RESEARCH", "true")
+    monkeypatch.setenv("FEATURES__RESEARCH_CLAUDE_FALLBACK", "true")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
@@ -204,13 +214,18 @@ def test_research_runs_normally_and_is_not_bypassed_by_the_import(
     _import(db_session, campaign)
     company = db_session.scalars(select(Company)).one()
 
-    worker = FakeWorker(facts=(_fact("overview", "They build analytical engines."),))
-    adapters = dict(DEFAULT_ADAPTERS)
-    from app.services.agents.adapters import ResearchAgentAdapter
-
-    adapters[AgentIdentifier.RESEARCH] = ResearchAgentAdapter(
-        workers_factory=lambda _names=None: (worker,)
+    worker = FakeWorker()
+    thinker = ResearchThinker(
+        payload={
+            "claims": [
+                _claim(
+                    "short_description",
+                    "They build analytical engines.",
+                )
+            ]
+        }
     )
+    adapters = research_adapters(worker, thinker)
     _enable(
         db_session,
         AgentIdentifier.RESEARCH,
@@ -228,8 +243,9 @@ def test_research_runs_normally_and_is_not_bypassed_by_the_import(
     )
     assert research is not None
     assert research.status is PipelineStageStatus.COMPLETED
-    assert worker.calls, "the real research worker was never asked to run"
-    assert worker.calls[0].domain == company.domain
+    assert len(thinker.calls) == 1, "the primary Claude research source was not run"
+    assert worker.calls == [], "the deterministic research worker ran in production"
+    assert company.domain in thinker.calls[0].prompt
 
     # Research completed BEFORE Email — the import did not reorder the pipeline.
     email = agent_state(

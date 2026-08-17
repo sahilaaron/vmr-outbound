@@ -16,6 +16,15 @@ should be an ``.env`` edit, not a patch.
 reported as a failure. There is no partial parse, no "best effort" salvage of
 half an answer — a half-read company is worse than an unread one, because the
 half that is missing is invisible downstream.
+
+**A failure is classified, not merely reported.** Since Research made this call
+required rather than optional, the difference between "ask again in a minute"
+and "this Contact is finished" is the difference between a paused batch and a
+consumed one. The CLI signals a usage limit, an overloaded provider and an
+expired login all through the same non-zero exit status, so :func:`classify`
+reads the diagnostic text for the causes that are recognisably permanent and
+treats everything else as transient. It never parses the *answer* — only the
+failure text — so nothing here can widen what is stored.
 """
 
 from __future__ import annotations
@@ -28,15 +37,100 @@ from typing import Any
 
 from app.core.config import Settings, get_settings
 from app.services.thinking.contracts import (
+    ThinkingError,
     ThinkingMalformed,
     ThinkingRefused,
     ThinkingRequest,
     ThinkingResult,
     ThinkingTimeout,
+    ThinkingTransient,
     ThinkingUnavailable,
 )
 
 PRODUCER = "claude-cli"
+
+#: Diagnostic text that names a cause a retry cannot change. Deliberately
+#: narrow: a phrase earns a place here only when repeating the identical call
+#: would certainly fail the identical way. Everything not matched is transient,
+#: which is the safe side of the asymmetry described in
+#: :class:`~app.services.thinking.contracts.ThinkingTransient`.
+PERMANENT_FAILURE_MARKERS: tuple[str, ...] = (
+    # No credential, or one that has to be re-established by a human.
+    "not logged in",
+    "please log in",
+    "please run /login",
+    "run `claude login`",
+    "invalid api key",
+    "authentication_error",
+    "authentication failed",
+    "unauthorized",
+    "invalid bearer token",
+    "oauth token has expired",
+    # The command itself is wrong for this CLI build — an .env fix, not a retry.
+    "unknown option",
+    "unknown argument",
+    "unknown command",
+    "unrecognized option",
+    "invalid model",
+    "model not found",
+    "does not support",
+    "usage: claude",
+    # The environment refuses, and will keep refusing.
+    "permission denied",
+    "eacces",
+    "enoent",
+    "no such file or directory",
+    "not a directory",
+    # An explicit, stated refusal to answer.
+    "i cannot assist",
+    "i can't assist",
+    "declined to respond",
+)
+
+#: Transient causes named explicitly, so the classification is a decision rather
+#: than a fall-through. Matching one of these wins over a permanent marker: a
+#: message that says both "rate limit" and "usage" is a capacity problem.
+TRANSIENT_FAILURE_MARKERS: tuple[str, ...] = (
+    "usage limit",
+    "rate limit",
+    "rate_limit",
+    "429",
+    "overloaded",
+    "capacity",
+    "quota",
+    "temporarily unavailable",
+    "service unavailable",
+    "try again",
+    "timed out",
+    "timeout",
+    "econnreset",
+    "econnrefused",
+    "etimedout",
+    "socket hang up",
+    "network error",
+    "connection error",
+    "internal server error",
+    "502",
+    "503",
+    "504",
+)
+
+
+def classify(text: str) -> type[ThinkingError]:
+    """Which failure class a CLI diagnostic describes.
+
+    Transient markers are checked first on purpose. "Claude AI usage limit
+    reached" contains no permanent marker, but a provider message can easily
+    carry both vocabularies at once, and capacity is the reading that keeps a
+    batch recoverable.
+    """
+
+    lowered = (text or "").lower()
+    if any(marker in lowered for marker in TRANSIENT_FAILURE_MARKERS):
+        return ThinkingTransient
+    if any(marker in lowered for marker in PERMANENT_FAILURE_MARKERS):
+        return ThinkingRefused
+    return ThinkingTransient
 
 
 def extract_json_object(text: str) -> dict[str, Any]:
@@ -67,9 +161,14 @@ def extract_json_object(text: str) -> dict[str, Any]:
                 if nested is not None:
                     return nested
         if direct.get("is_error") is True:
-            raise ThinkingRefused(
+            # A usage limit routinely arrives here rather than as a non-zero
+            # exit: the CLI ran, exited 0, and its envelope carries the refusal.
+            # Classifying both places from the same table is what keeps the two
+            # shapes of the same event from getting different job outcomes.
+            detail = str(direct.get("result"))
+            raise classify(detail)(
                 "The Claude CLI reported an error result.",
-                detail={"result": str(direct.get("result"))[:400]},
+                detail={"result": detail[:400]},
             )
         return direct
 
@@ -191,13 +290,19 @@ class ClaudeCliThinker:
 
         duration = time.monotonic() - started
         if completed.returncode != 0:
-            raise ThinkingRefused(
+            stderr = (completed.stderr or "").strip()
+            # Both streams, because the CLI writes its own diagnostics to stderr
+            # while a provider message forwarded from the service arrives on
+            # stdout. Reading only one of them classified half the failures by
+            # accident.
+            failure = classify(f"{stderr}\n{(completed.stdout or '').strip()}")
+            raise failure(
                 f"The Claude CLI exited with status {completed.returncode}.",
                 detail={
                     "returncode": completed.returncode,
                     # Truncated deliberately: this is surfaced to an operator and
                     # goes through the workbench sanitizer on the way.
-                    "stderr": (completed.stderr or "").strip()[:400],
+                    "stderr": stderr[:400],
                 },
             )
 

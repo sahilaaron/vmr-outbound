@@ -842,7 +842,7 @@ def admin_diagnostics_page(request: Request, db: Session = Depends(get_db)) -> H
                 _link(
                     "Research Agent report",
                     "/admin/agents/studio/research",
-                    "Raw durable Research execution reports, including fallback lineage.",
+                    "Raw durable Research execution reports, including source lineage.",
                     available=agent_on,
                 ),
                 _link(
