@@ -25,8 +25,9 @@ two pages that carried these controls. One of them, the Review queue, stopped
 being a destination and its template was deleted — at which point the contract
 failed on a missing path rather than on anything about copying, and the honest
 repair was to stop writing the names down. The surfaces are now read out of the
-templates themselves (:func:`_copy_surfaces`), with the Person detail page named
-as required coverage so that discovering nothing cannot pass for a green build.
+templates themselves (:func:`_copy_surfaces`), with the sending desk partial
+named as required coverage so that discovering nothing cannot pass for a green
+build.
 
 Both files are read with an explicit ``encoding="utf-8"``. The templates contain
 em dashes and this repository is developed on a machine whose default encoding is
@@ -48,7 +49,7 @@ SEQUENCE_JS = REPO_ROOT / "app" / "web" / "static" / "sequence.js"
 TEMPLATE_DIR = REPO_ROOT / "app" / "web" / "v2" / "templates"
 
 #: The partial that renders the three per-message copy buttons.
-SEQUENCE_PARTIAL = TEMPLATE_DIR / "_sequence.html"
+SEQUENCE_PARTIAL = TEMPLATE_DIR / "_desk.html"
 
 #: The surface this contract must never stop covering.
 #:
@@ -56,15 +57,17 @@ SEQUENCE_PARTIAL = TEMPLATE_DIR / "_sequence.html"
 #: which is what keeps this module honest as the interface moves. Discovery
 #: alone, though, is silently satisfiable by finding nothing: delete the copy
 #: buttons everywhere and every assertion here passes over an empty set. So one
-#: surface is named. The Person detail page is the right one to name because it
-#: is where a customer reads a prepared sequence end to end, and it has carried
-#: these controls since before the destination shell existed.
+#: surface is named. The sending desk partial is the right one to name because
+#: it is where a customer reads a prepared email and copies it — embedded in the
+#: Campaign Overview — and it is the one surface the operating model says must
+#: carry these controls.
 #:
-#: ``review.html`` used to be named alongside it. Review/Emails is no longer a
-#: destination and the template was removed with it; a contract that still
-#: pointed at the file would fail on a missing path rather than on a broken
-#: contract, which is why the name is gone rather than the assertion.
-REQUIRED_COPY_SURFACE = TEMPLATE_DIR / "contact.html"
+#: ``review.html`` and then ``contact.html`` used to be named here. Review/Emails
+#: stopped being a destination, and the person page became a record rather than
+#: an email surface; a contract that still pointed at either file would fail on
+#: a missing path rather than on a broken contract, which is why the names moved
+#: rather than the assertion.
+REQUIRED_COPY_SURFACE = TEMPLATE_DIR / "_desk.html"
 
 #: ``data-copy-label`` is the one attribute the script both writes and reads
 #: itself: ``flash()`` stashes a button's original label there before replacing
@@ -254,8 +257,8 @@ def test_the_copy_surfaces_are_the_ones_this_contract_thinks_they_are() -> None:
 
     Everything below quantifies over a computed set, and a computed set that
     came out empty makes every one of those assertions true. So the discovery
-    is asserted first: the buttons still live in the shared partial, the Person
-    detail page is still a surface, and something still renders a live region.
+    is asserted first: the buttons still live in the desk partial, which is
+    still a surface, and something still renders a live region.
     """
 
     markup = _copy_markup_templates()
@@ -268,9 +271,9 @@ def test_the_copy_surfaces_are_the_ones_this_contract_thinks_they_are() -> None:
     surfaces = _copy_surfaces()
     assert REQUIRED_COPY_SURFACE in surfaces, (
         f"{REQUIRED_COPY_SURFACE.name} no longer renders the sequence copy controls "
-        f"(surfaces found: {sorted(p.name for p in surfaces)}). The Person detail sequence "
-        "surface is required coverage; if it genuinely lost the controls, that is a product "
-        "decision to argue for, not a set to quietly shrink."
+        f"(surfaces found: {sorted(p.name for p in surfaces)}). The sending desk is "
+        "required coverage; if it genuinely lost the controls, that is a product decision "
+        "to argue for, not a set to quietly shrink."
     )
 
     with_regions = {path for path in surfaces if _live_region_ids(_read(path))}
@@ -400,10 +403,10 @@ def test_the_copy_kinds_the_script_branches_on_are_the_kinds_the_template_emits(
 
     assert branched, "no copy kinds parsed from sequence.js — the reader is broken"
     assert emitted, "no copy kinds parsed from the copy markup — the reader is broken"
-    # Union across surfaces, not per surface: a surface is allowed to offer only
-    # "Copy", the way the sending desk does, without that making the subject and
-    # body branches dead code. What must not exist is a kind nobody requests, or
-    # a request nobody handles.
+    # Union across surfaces, not per surface. Today the desk offers one "Copy"
+    # per email and the handler knows exactly that one kind; the subject and body
+    # branches left with the person page's per-part buttons. What must not exist
+    # is a kind nobody requests, or a request nobody handles.
     assert branched == emitted, (
         f"sequence.js handles {sorted(branched)} but {[t.name for t in templates]} request "
         f"{sorted(emitted)}; a button asking for a kind the handler does not know "
