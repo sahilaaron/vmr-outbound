@@ -98,7 +98,7 @@
             </td>
             <td>
               {% if view.contact %}
-              <a href="/app/contacts/{{ view.contact.id }}">
+              <a href="/app/people/{{ view.contact.id }}">
                 {{ view.contact.first_name | neutralize }} {{ view.contact.last_name | neutralize }}
               </a>
               {% else %}—{% endif %}

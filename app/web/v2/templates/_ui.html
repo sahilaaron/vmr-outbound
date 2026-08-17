@@ -102,6 +102,46 @@
   {%- endif -%}
 {% endmacro %}
 
+{#
+  Campaign lifecycle: Draft / Active / Paused / Archived. One macro, one
+  vocabulary, and only Active carries colour.
+#}
+{% macro lifecycle_pill(key, label) %}
+  {%- if key == 'active' -%}<span class="v2-state-pill ok"><span class="v2-dot live"></span>{{ label }}</span>
+  {%- elif key == 'paused' -%}<span class="v2-state-pill warn">{{ label }}</span>
+  {%- else -%}<span class="v2-state-pill">{{ label }}</span>
+  {%- endif -%}
+{% endmacro %}
+
+{# The three preparation outcomes as a tag. Ready is green; the rest are neutral. #}
+{% macro outcome_tag(outcome, label, small=false) %}
+  {%- set key = outcome.value if outcome is not string else outcome -%}
+  {%- if key == 'ready_for_sending' -%}{{ tag(label, 'ok', small=small) }}
+  {%- elif key == 'processing' -%}{{ tag(label, 'info', small=small) }}
+  {%- else -%}{{ tag(label, '', small=small) }}
+  {%- endif -%}
+{% endmacro %}
+
+{#
+  The compact proportion bar: Processing · Ready for Sending · Could not
+  prepare, drawn to scale. Not a funnel and not nine stages.
+#}
+{% macro outcome_bar(progress, labels, base_href='') %}
+{% set total = progress.total if progress.total else 1 %}
+<div class="v2-outcomes">
+  <div class="v2-outcome-bar" role="img" aria-label="{{ progress.processing }} processing, {{ progress.ready_for_sending }} ready for sending, {{ progress.could_not_prepare }} could not prepare">
+    <span class="seg processing" style="width: {{ (progress.processing * 100 / total) | round(2) }}%"></span>
+    <span class="seg ready" style="width: {{ (progress.ready_for_sending * 100 / total) | round(2) }}%"></span>
+    <span class="seg stopped" style="width: {{ (progress.could_not_prepare * 100 / total) | round(2) }}%"></span>
+  </div>
+  <div class="v2-outcome-legend">
+    <a href="{{ base_href }}/people?outcome=processing"><span class="swatch processing"></span><b class="m">{{ progress.processing | thousands }}</b> {{ labels['processing'] }}</a>
+    <a href="{{ base_href }}/people?outcome=ready_for_sending"><span class="swatch ready"></span><b class="m">{{ progress.ready_for_sending | thousands }}</b> {{ labels['ready_for_sending'] }}</a>
+    <a href="{{ base_href }}/people?outcome=could_not_prepare"><span class="swatch stopped"></span><b class="m">{{ progress.could_not_prepare | thousands }}</b> {{ labels['could_not_prepare'] }}</a>
+  </div>
+</div>
+{%- endmacro %}
+
 {% macro readiness_state(state) %}
   {%- set s = state.value if state is not string else state -%}
   {%- if s == 'configured' -%}{{ tag('entered', 'ok') }}

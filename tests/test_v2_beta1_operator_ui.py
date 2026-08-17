@@ -119,7 +119,7 @@ def import_client(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> Itera
 
 def _contact_url(scenario: tuple[Any, ...]) -> str:
     _campaign, _company, contact, membership, _policy, _evidence = scenario
-    return f"/app/contacts/{contact.id}?campaign={membership.campaign_id}"
+    return f"/app/people/{contact.id}?campaign={membership.campaign_id}"
 
 
 def _campaign_url(scenario: tuple[Any, ...]) -> str:
@@ -132,33 +132,40 @@ def _rows(db: Session, sequence: Any) -> tuple[sequence_read.MessageRow, ...]:
 
 
 # ===========================================================================
-# A. Campaign roster: sequence presence and navigation
+# A. Roster sequence presence (service projection) and Campaign <-> person links
 # ===========================================================================
+#
+# The Campaign page no longer renders a per-row sequence cell — the workspace
+# reports the three preparation outcomes instead — so the roster projection is
+# asserted at the service boundary, where the vocabulary is fixed.
 
 
-def test_the_roster_says_no_sequence_yet_before_one_is_written(
-    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
+def _roster(db: Session, scenario: tuple[Any, ...]) -> sequence_read.SequenceRosterState | None:
+    _campaign, _company, _contact, membership, _policy, _evidence = scenario
+    return sequence_read.roster_states(db, campaign_id=membership.campaign_id).get(membership.id)
+
+
+def test_the_roster_projection_has_no_entry_before_a_sequence_is_written(
+    db_session: Session, scenario: tuple[Any, ...]
 ) -> None:
-    body = client.get(_campaign_url(scenario)).text
-    assert sequence_read.ROSTER_NO_SEQUENCE in body
-    assert f"{SEQUENCE_LENGTH} of {SEQUENCE_LENGTH}" not in body
+    assert _roster(db_session, scenario) is None
+    assert sequence_read.ROSTER_NO_SEQUENCE == "No sequence yet"
 
 
-def test_the_roster_reports_a_complete_sequence_as_seven_of_seven(
-    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
+def test_the_roster_projection_reports_a_complete_sequence_as_seven_of_seven(
+    db_session: Session, scenario: tuple[Any, ...]
 ) -> None:
     build(db_session, scenario)
-    db_session.commit()
-    body = client.get(_campaign_url(scenario)).text
-    assert f"{SEQUENCE_LENGTH} of {SEQUENCE_LENGTH}" in body
-    # Presence, not pressure: the roster must not turn a written sequence into
-    # an instruction.
-    for pressure in ("Waiting for you", "Needs approval", "Approve before"):
-        assert pressure not in body
+    state = _roster(db_session, scenario)
+    assert state is not None and state.complete
+    assert state.label == f"{SEQUENCE_LENGTH} of {SEQUENCE_LENGTH}"
+    # Presence, not pressure: the label is a fact, never an instruction.
+    for pressure in ("Waiting", "Needs approval", "Approve"):
+        assert pressure not in state.label
 
 
-def test_the_roster_counts_edited_messages(
-    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
+def test_the_roster_projection_counts_edited_messages(
+    db_session: Session, scenario: tuple[Any, ...]
 ) -> None:
     sequence = build(db_session, scenario)
     rows = _rows(db_session, sequence)
@@ -168,13 +175,12 @@ def test_the_roster_counts_edited_messages(
         subject="I rewrote this subject",
         body="I rewrote this body entirely.",
     )
-    db_session.commit()
-    body = client.get(_campaign_url(scenario)).text
-    assert "1 edited" in body
+    state = _roster(db_session, scenario)
+    assert state is not None and state.edited == 1
 
 
-def test_the_roster_reports_a_partial_sequence_as_partial(
-    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
+def test_the_roster_projection_reports_a_partial_sequence_as_partial(
+    db_session: Session, scenario: tuple[Any, ...]
 ) -> None:
     """A sequence that lost a message must not read as complete.
 
@@ -188,26 +194,30 @@ def test_the_roster_reports_a_partial_sequence_as_partial(
     version = db_session.get(EmailSequenceMessageVersion, rows[6].version_id)
     assert version is not None
     version.superseded_at = sequence.created_at
-    db_session.commit()
+    db_session.flush()
 
-    body = client.get(_campaign_url(scenario)).text
-    assert f"Partial — 6 of {SEQUENCE_LENGTH}" in body
+    state = _roster(db_session, scenario)
+    assert state is not None and not state.complete
+    assert state.label == f"Partial — 6 of {SEQUENCE_LENGTH}"
 
 
-def test_every_roster_row_links_to_the_contact_and_back(
+def test_the_campaign_people_tab_links_to_the_person_and_back(
     db_session: Session, client: TestClient, scenario: tuple[Any, ...]
 ) -> None:
-    """Campaign -> Contact and Contact -> Campaign, both directions."""
+    """Campaign -> person and person -> Campaign, both directions."""
 
     _campaign, _company, contact, membership, _policy, _evidence = scenario
     build(db_session, scenario)
     db_session.commit()
 
-    roster = client.get(_campaign_url(scenario)).text
-    assert f'href="/app/contacts/{contact.id}?campaign={membership.campaign_id}"' in roster
+    roster = client.get(f"{_campaign_url(scenario)}/people").text
+    assert f'href="/app/people/{contact.id}?campaign={membership.campaign_id}"' in roster
 
     contact_page = client.get(_contact_url(scenario)).text
-    assert f'href="/app/campaigns/{membership.campaign_id}"' in contact_page
+    assert (
+        f'href="/app/campaigns/{membership.campaign_id}?section=all&person={membership.id}#ready"'
+        in contact_page
+    )
 
 
 # ===========================================================================
@@ -486,7 +496,7 @@ def test_sequence_pages_are_never_cached(
 ) -> None:
     build(db_session, scenario)
     db_session.commit()
-    for url in (_contact_url(scenario), _campaign_url(scenario), "/app/review"):
+    for url in (_contact_url(scenario), _campaign_url(scenario)):
         response = client.get(url)
         assert response.headers["cache-control"] == "no-store", url
         assert "script-src 'self'" in response.headers["content-security-policy"], url
@@ -719,10 +729,8 @@ def test_the_beta_surfaces_render_no_live_formula_from_imported_identity(
     state = hostile_import(prefix)
     needle = f"{prefix}cmd|"
     urls = {
-        "campaign_roster": f"/app/campaigns/{state['campaign'].id}",
-        "contact_sequence": (
-            f"/app/contacts/{state['contact'].id}?campaign={state['campaign'].id}"
-        ),
+        "campaign_roster": f"/app/campaigns/{state['campaign'].id}/people",
+        "contact_sequence": (f"/app/people/{state['contact'].id}?campaign={state['campaign'].id}"),
     }
     for surface, url in urls.items():
         body = import_client.get(url).text
@@ -746,10 +754,10 @@ def test_the_roster_sweep_would_fail_without_the_boundary(
     needle = f"{prefix}cmd|"
     unprotected = []
     for surface, url in (
-        ("campaign_roster", f"/app/campaigns/{state['campaign'].id}"),
+        ("campaign_roster", f"/app/campaigns/{state['campaign'].id}/people"),
         (
             "contact_sequence",
-            f"/app/contacts/{state['contact'].id}?campaign={state['campaign'].id}",
+            f"/app/people/{state['contact'].id}?campaign={state['campaign'].id}",
         ),
     ):
         if not _live_formulas(import_client.get(url).text, needle):
@@ -845,7 +853,7 @@ def test_a_contact_without_a_sequence_keeps_the_legacy_draft_view(
     _campaign, _company, contact, membership, _policy, _evidence = scenario
     db_session.commit()
     response = client_no_sequences.get(
-        f"/app/contacts/{contact.id}?campaign={membership.campaign_id}"
+        f"/app/people/{contact.id}?campaign={membership.campaign_id}"
     )
     assert response.status_code == 200
     body = response.text

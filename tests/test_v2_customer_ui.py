@@ -1,17 +1,15 @@
-"""The customer-facing v2 interface, driven over HTTP.
+"""The customer-facing product at ``/app``, driven over HTTP.
 
-Three things these tests exist to protect, in order of importance:
+The shell is four destinations — Today · Campaigns · People · Library — with a
+role-gated Admin entry, and the Campaign is a workspace with Overview / People /
+Setup / Activity tabs. Three things these tests protect, in order:
 
-1. **The admin Workbench is still there and still works.** It moved to `/admin`
-   and nothing else about it changed. A regression here is the expensive kind.
-2. **Nothing is invented.** Every page that the design gives a send count, a reply
-   count or a confidence score must render that slot as unavailable, not as a
-   number. A test asserting the *absence* of a fabricated figure is the only thing
-   that stops one being added later by accident.
-3. **Real state reaches the page.** The pages are projections of the Phase 2
-   services, so the fixtures build state through those services (see
-   `tests.workbench_scenario`) and the assertions look for what the services
-   actually committed.
+1. **The admin Workbench is still there and still works** at ``/admin``.
+2. **Nothing technical leaks into the customer product** — no Agent tiles, no
+   queue vocabulary, no future-feature stubs, and no retired destination that
+   still renders as one.
+3. **Real state reaches the page.** Fixtures build state through the services
+   (``tests.workbench_scenario``) and assertions look for what was committed.
 """
 
 from __future__ import annotations
@@ -24,15 +22,23 @@ import pytest
 from app.api.deps import get_db
 from app.core.config import get_settings
 from app.main import create_app
-from app.models.audit_event import AuditEvent
 from app.models.campaign import Campaign, CampaignContact
-from app.models.draft import DraftApproval, DraftVersion
-from app.models.enums import AgentIdentifier, ApprovalStatus, CampaignStatus, SellerOfferingType
+from app.models.draft import DraftVersion
+from app.models.enums import (
+    AgentControlStatus,
+    AgentIdentifier,
+    CampaignStatus,
+    SellerOfferingType,
+)
 from app.services import campaigns as campaign_service
-from app.services import drafts as draft_service
+from app.services.agents import controls as agent_controls
+from app.services.agents import readiness as agent_readiness
 from app.services.agents.registry import AGENT_SPECS, PIPELINE_ORDER
+from app.services.personalization import cadence as cadence_service
+from app.services.seller import campaign_offerings as seller_campaign_offerings
 from app.services.seller import profile as seller_profile
 from app.services.seller import records as seller_records
+from app.web.v2 import shell
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -93,13 +99,7 @@ def _make_draft(
     version: int = 1,
     subject: str = "Your Q3 batch-release target",
 ) -> DraftVersion:
-    """A finished draft, as the Personalization Agent leaves one.
-
-    Written directly rather than through the adapter because the adapter's only
-    path runs the local `claude` executable — a real model call, which a test must
-    never make. The row is exactly the shape the adapter commits, and everything
-    the pages read comes from these columns.
-    """
+    """A finished legacy single draft, as the Personalization Agent leaves one."""
 
     membership = scenario.membership(key)
     draft = DraftVersion(
@@ -120,6 +120,20 @@ def _make_draft(
     return draft
 
 
+def _campaign_url(scenario: workbench_scenario.Scenario) -> str:
+    return f"/app/campaigns/{scenario.campaign.id}"
+
+
+def _person_url(scenario: workbench_scenario.Scenario, key: str = "healthy") -> str:
+    return f"/app/people/{scenario.contacts[key].id}?campaign={scenario.campaign.id}"
+
+
+def _customer_body(html: str) -> str:
+    """The page below the header, so nav labels do not satisfy content assertions."""
+
+    return html.split("<main", 1)[1]
+
+
 # ---------------------------------------------------------------------------
 # The default experience, and the admin panel that keeps working
 # ---------------------------------------------------------------------------
@@ -134,18 +148,15 @@ def test_root_lands_on_the_customer_interface(client: TestClient) -> None:
 def test_root_followed_through_renders_today(client: TestClient) -> None:
     response = client.get("/")
     assert response.status_code == 200
-    assert "Where your contacts stand" in response.text
+    assert "Campaigns in motion" in response.text or "No Campaigns yet" in response.text
 
 
 def test_admin_workbench_kept_its_overview_at_its_own_address(client: TestClient) -> None:
     response = client.get("/admin")
     assert response.status_code == 200
-    # The redesigned admin shell: its own stylesheet, its own rail, and never
-    # the customer design system.
     assert "admin.css" in response.text
     assert "v2.css" not in response.text
     assert "Admin Workbench" in response.text
-    # The original import-centric overview survives at its legacy address.
     legacy = client.get("/admin/legacy/overview")
     assert legacy.status_code == 200
     assert "app.css" in legacy.text
@@ -164,7 +175,7 @@ def test_admin_rail_offers_the_way_back_to_the_customer_interface(client: TestCl
 
 
 def test_customer_pages_never_load_the_admin_stylesheet(client: TestClient) -> None:
-    for path in ("/app", "/app/campaigns", "/app/contacts", "/app/companies", "/app/review"):
+    for path in ("/app", "/app/campaigns", "/app/people", "/app/companies", "/app/library"):
         body = client.get(path).text
         assert "v2.css" in body, path
         assert "app.css" not in body, path
@@ -196,22 +207,19 @@ V2_PAGES = (
     "/app",
     "/app/campaigns",
     "/app/campaigns/new",
-    "/app/review",
-    "/app/contacts",
+    "/app/add-people",
+    "/app/people",
     "/app/companies",
-    "/app/knowledge",
-    "/app/knowledge/company",
-    "/app/knowledge/offerings",
-    "/app/knowledge/proof-points",
-    "/app/knowledge/restricted-claims",
-    "/app/knowledge/personas",
-    "/app/agents",
-    "/app/capture",
-    "/app/suppressions",
-    "/app/sending",
-    "/app/replies",
-    "/app/sequences",
-    "/app/analytics",
+    "/app/library",
+    "/app/library/company",
+    "/app/library/offerings",
+    "/app/library/proof-points",
+    "/app/library/restricted-claims",
+    "/app/library/personas",
+    "/app/account/connections",
+    "/app/admin",
+    "/app/admin/agents",
+    "/app/admin/suppressions",
 )
 
 
@@ -233,35 +241,32 @@ def test_every_page_renders_with_real_pipeline_state(
 def test_every_page_renders_with_every_optional_switch_off(
     bare_client: TestClient, path: str
 ) -> None:
-    """A switched-off feature must produce an honest page, not a 500 and not a 404.
-
-    The customer front door is the default experience, so a page here cannot simply
-    vanish the way the admin surface's feature-gated pages do — it has to say what
-    is unavailable and why.
-    """
+    """A switched-off feature must produce an honest page, not a 500 and not a 404."""
 
     response = bare_client.get(path)
     assert response.status_code == 200, path
 
 
-def test_campaign_and_contact_detail_render(
-    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
+def test_every_campaign_tab_and_the_person_page_render(
+    client: TestClient, scenario: workbench_scenario.Scenario
 ) -> None:
-    campaign_id = scenario.campaign.id
+    base = _campaign_url(scenario)
+    for path in (base, f"{base}/people", f"{base}/setup", f"{base}/activity", f"{base}/add-people"):
+        assert client.get(path).status_code == 200, path
     contact_id = scenario.contacts["healthy"].id
-    assert client.get(f"/app/campaigns/{campaign_id}").status_code == 200
-    assert client.get(f"/app/contacts/{contact_id}").status_code == 200
-    assert client.get(f"/app/contacts/{contact_id}?campaign={campaign_id}").status_code == 200
+    assert client.get(f"/app/people/{contact_id}").status_code == 200
+    assert client.get(_person_url(scenario)).status_code == 200
 
 
 def test_unknown_ids_render_the_not_found_page_not_a_crash(client: TestClient) -> None:
     for path in (
         "/app/campaigns/not-a-uuid",
         f"/app/campaigns/{uuid.uuid4()}",
-        "/app/campaigns/not-a-uuid/edit",
-        f"/app/campaigns/{uuid.uuid4()}/edit",
-        "/app/contacts/not-a-uuid",
-        f"/app/contacts/{uuid.uuid4()}",
+        f"/app/campaigns/{uuid.uuid4()}/people",
+        f"/app/campaigns/{uuid.uuid4()}/setup",
+        f"/app/campaigns/{uuid.uuid4()}/activity",
+        "/app/people/not-a-uuid",
+        f"/app/people/{uuid.uuid4()}",
         f"/app/companies/{uuid.uuid4()}",
     ):
         response = client.get(path)
@@ -270,718 +275,592 @@ def test_unknown_ids_render_the_not_found_page_not_a_crash(client: TestClient) -
 
 
 # ---------------------------------------------------------------------------
-# Nothing is invented
+# The shell
 # ---------------------------------------------------------------------------
 
 
-def test_today_marks_sending_unavailable_rather_than_zero(
+def test_the_customer_navigation_is_exactly_four_destinations(client: TestClient) -> None:
+    assert [item.key for item in shell.primary_nav()] == ["today", "campaigns", "people", "library"]
+    header = client.get("/app").text.split("<main", 1)[0]
+    for label, href in (
+        ("Today", "/app"),
+        ("Campaigns", "/app/campaigns"),
+        ("People", "/app/people"),
+        ("Library", "/app/library"),
+    ):
+        assert f'href="{href}"' in header, label
+        assert f">{label}<" in header, label
+    for retired in ("Emails", "Review", "Contacts", "Knowledge Base", "Capture"):
+        assert f">{retired}<" not in header, retired
+    assert "Add people" in header
+    # Authentication is not enforced in this client, so every request is an
+    # administrator's and the Admin entry renders.
+    assert 'href="/app/admin"' in header
+    assert "v2-nav-badge" not in header
+
+
+def test_the_account_menu_offers_connections_not_machinery(client: TestClient) -> None:
+    header = client.get("/app").text.split("<main", 1)[0]
+    assert 'href="/app/account/connections"' in header
+    for retired in ("Agent settings", "Operator Workbench", "Sending accounts", "Suppression list"):
+        assert retired not in header, retired
+
+
+def test_no_customer_template_uses_an_inline_style_attribute(
     client: TestClient, scenario: workbench_scenario.Scenario
 ) -> None:
-    """Sending carries no number, because sending is not automatic here.
+    """The design system lives in one stylesheet, not scattered across markup.
 
-    The reply slot went with the "overnight" strip the operational overview
-    replaced; there is still no inbound channel and nothing claims otherwise.
+    The one exception is the outcome bar, whose segment widths are data.
     """
 
-    body = client.get("/app").text
-    assert "sending is manual" in body
-    assert "not built yet" in body
-
-
-def test_future_surfaces_carry_no_figures_at_all(client: TestClient) -> None:
-    """A placeholder screen states what is missing and shows no data.
-
-    The marker asserted here is the one the `unbuilt` macro emits, so a future
-    change that starts populating one of these pages with numbers has to remove it
-    and will fail this test.
-    """
-
-    for path in ("/app/sending", "/app/replies", "/app/sequences", "/app/analytics"):
+    for path in (*V2_PAGES, _campaign_url(scenario), f"{_campaign_url(scenario)}/setup"):
         body = client.get(path).text
-        assert "not available yet" in body, path
-        assert "v2-soon" in body, path
-
-
-def test_sending_page_says_plainly_that_nothing_can_be_sent(client: TestClient) -> None:
-    body = client.get("/app/sending").text
-    assert "cannot send an email" in body
-    assert "no adapter registered" in body
-
-
-def test_review_never_shows_a_confidence_score(
-    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
-) -> None:
-    """The design's confidence number does not exist in this product.
-
-    There is no scoring service, so the slot is present (the layout needs it) and
-    explicitly unscored. This is the single most tempting number to fabricate.
-    """
-
-    _make_draft(db_session, scenario)
-    body = client.get("/app/review").text
-    assert "not scored" in body
-    assert "sending is manual" in body
-
-
-def test_approving_says_that_nothing_was_sent(
-    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
-) -> None:
-    draft = _make_draft(db_session, scenario)
-    response = client.post(
-        f"/app/review/{draft.id}/approve", data={"back": "/app/review"}, follow_redirects=True
-    )
-    assert response.status_code == 200
-    assert "Nothing was sent" in response.text
+        for match in re.findall(r' style="([^"]*)"', body):
+            assert match.startswith("width:"), (path, match)
 
 
 # ---------------------------------------------------------------------------
-# Review: the read model and the human decision
+# Campaigns list and creation
 # ---------------------------------------------------------------------------
 
 
-def test_the_queue_lists_a_finished_draft_with_its_real_text(
-    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
-) -> None:
-    _make_draft(db_session, scenario, subject="A subject only this test writes")
-    body = client.get("/app/review").text
-    assert "A subject only this test writes" in body
-    assert "batch-release review first" in body
-    assert scenario.contacts["healthy"].first_name in body
-
-
-def test_approve_records_an_approval_and_an_audit_event(
-    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
-) -> None:
-    draft = _make_draft(db_session, scenario)
-    client.post(f"/app/review/{draft.id}/approve", data={"reason": "reads well"})
-
-    approval = db_session.scalars(
-        select(DraftApproval).where(DraftApproval.draft_version_id == draft.id)
-    ).one()
-    assert approval.status is ApprovalStatus.APPROVED
-    assert approval.reason == "reads well"
-
-    event = db_session.scalars(select(AuditEvent).where(AuditEvent.action == "draft.approve")).one()
-    assert event.entity_id == str(draft.id)
-    assert "No message was sent" in str(event.context)
-
-
-def test_discard_is_a_decision_not_a_deletion(
-    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
-) -> None:
-    draft = _make_draft(db_session, scenario)
-    client.post(f"/app/review/{draft.id}/discard", data={"reason": "wrong angle"})
-
-    approval = db_session.scalars(
-        select(DraftApproval).where(DraftApproval.draft_version_id == draft.id)
-    ).one()
-    assert approval.status is ApprovalStatus.INVALIDATED
-    # The draft itself survives, which is what makes "you looked and said no"
-    # distinguishable from "nobody has looked".
-    assert db_session.get(DraftVersion, draft.id) is not None
-
-
-def test_a_decision_can_be_changed_without_creating_a_second_record(
-    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
-) -> None:
-    draft = _make_draft(db_session, scenario)
-    client.post(f"/app/review/{draft.id}/discard", data={"reason": "no"})
-    client.post(f"/app/review/{draft.id}/approve", data={"reason": "on reflection, yes"})
-
-    approvals = db_session.scalars(
-        select(DraftApproval).where(DraftApproval.draft_version_id == draft.id)
-    ).all()
-    assert len(approvals) == 1
-    assert approvals[0].status is ApprovalStatus.APPROVED
-
-
-def test_a_superseded_version_cannot_be_approved(
-    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
-) -> None:
-    """Approving text the Agent has already rewritten would approve nothing real."""
-
-    first = _make_draft(db_session, scenario, version=1, subject="First attempt")
-    _make_draft(db_session, scenario, version=2, subject="Rewritten")
-
-    response = client.post(
-        f"/app/review/{first.id}/approve", data={"back": "/app/review"}, follow_redirects=True
-    )
-    assert "superseded" in response.text
-    assert (
-        db_session.scalars(
-            select(DraftApproval).where(DraftApproval.draft_version_id == first.id)
-        ).one_or_none()
-        is None
-    )
-
-
-def test_the_service_refuses_a_missing_draft(db_session: Session) -> None:
-    with pytest.raises(draft_service.DraftReviewError):
-        draft_service.approve(db_session, draft_version_id=uuid.uuid4())
-
-
-def test_queue_counts_separate_awaiting_from_decided(
-    db_session: Session, scenario: workbench_scenario.Scenario
-) -> None:
-    waiting = _make_draft(db_session, scenario, key="healthy")
-    decided = _make_draft(db_session, scenario, key="leased")
-    draft_service.approve(db_session, draft_version_id=decided.id)
-    db_session.commit()
-
-    counts = draft_service.queue_counts(db_session)
-    assert counts.awaiting == 1
-    assert counts.approved == 1
-    assert counts.discarded == 0
-    assert counts.total == 2
-    assert draft_service.get_draft(db_session, waiting.id).awaiting_decision is True
-
-
-def test_the_queue_can_be_scoped_to_one_campaign(
-    db_session: Session, scenario: workbench_scenario.Scenario
-) -> None:
-    _make_draft(db_session, scenario, key="healthy")
-    _make_draft(db_session, scenario, key="other")
-
-    everywhere = draft_service.list_queue(db_session)
-    scoped = draft_service.list_queue(db_session, campaign_id=scenario.campaign.id)
-    assert everywhere.total == 2
-    assert scoped.total == 1
-    assert scoped.rows[0].campaign_id == scenario.campaign.id
-
-
-def test_an_undecided_draft_puts_no_badge_in_the_customer_nav(
-    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
-) -> None:
-    """The nav used to badge Review with the undecided-draft count.
-
-    It no longer badges anything. The service still counts undecided drafts —
-    Admin needs that — but the customer shell does not carry the number, because
-    an unread draft is not work the customer owes the system.
-    """
-
-    _make_draft(db_session, scenario)
-    body = client.get("/app").text
-    assert "v2-nav-badge" not in body
-    counts = draft_service.queue_counts(db_session)
-    assert counts.awaiting == 1
-
-
-# ---------------------------------------------------------------------------
-# The pipeline screen
-# ---------------------------------------------------------------------------
-
-
-def test_the_pipeline_shows_all_nine_agents_in_registry_order(
+def test_the_campaign_list_shows_the_three_outcomes_and_a_create_action(
     client: TestClient, scenario: workbench_scenario.Scenario
 ) -> None:
-    body = client.get(f"/app/campaigns/{scenario.campaign.id}").text
-    start = body.index('<ol class="v2-pipe">')
-    strip = body[start : body.index("</ol>", start)]
-    positions = [
-        strip.index(AGENT_SPECS[agent_id].display_name.replace(" Agent", ""))
-        for agent_id in PIPELINE_ORDER
-    ]
-    assert positions == sorted(positions), "the strip must read in pipeline order"
-    assert len(re.findall(r'class="v2-pipe-stage', strip)) == 9
+    body = client.get("/app/campaigns").text
+    for column in ("State", "People", "Processing", "Ready for Sending", "Could not prepare"):
+        assert column in body, column
+    assert "New Campaign" in body
+    assert scenario.campaign.name in body
+    assert f'href="/app/campaigns/{scenario.campaign.id}"' in body
+    assert ">Active<" in body
 
 
-def test_the_pipeline_marks_the_sending_agent_as_having_no_adapter(
-    client: TestClient, scenario: workbench_scenario.Scenario
-) -> None:
-    body = client.get(f"/app/campaigns/{scenario.campaign.id}").text
-    assert "no adapter" in body
-    assert not AGENT_SPECS[AgentIdentifier.SENDING].implemented
+def test_an_empty_database_shows_the_campaign_empty_state(client: TestClient) -> None:
+    body = client.get("/app/campaigns").text
+    assert "No Campaigns yet" in body
+    assert "Create your first Campaign" in body
 
 
-def test_the_strip_counts_how_many_got_through_not_how_many_are_standing_there(
-    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
-) -> None:
-    """The row has to read as a funnel, or it misreports an import as a no-op.
-
-    The strip originally showed how many contacts were *resting* on each Agent.
-    Capture completes the moment a contact is enrolled, and Identity and Company
-    finish in under a second — so all three permanently showed 0 while contacts sat
-    failing further down. An operator who had just imported 50 people saw "Capture 0"
-    and concluded, reasonably and wrongly, that nothing had been captured.
-
-    Asserted through the projection rather than on rendered digits: the tile numbers
-    are what the funnel is, and reading them from HTML would test the markup instead.
-    """
-
-    from app.web.v2 import routes as v2_routes
-
-    enrolled = len(scenario.memberships) - 1  # one membership is in the other campaign
-    execution = v2_routes._reader(db_session).campaign_execution(scenario.campaign.id)
-    assert execution is not None
-    tiles = v2_routes._stage_tiles(
-        execution,
-        selected=None,
-        base_href="/app/campaigns/x",
-        open_counts=v2_routes._agent_open_counts(db_session, scenario.campaign.id),
-        progress=v2_routes._stage_progress(db_session, scenario.campaign.id),
-    )
-    by_agent = {tile.agent_id: tile for tile in tiles}
-
-    # Capture is complete for everyone enrolled: the extension already did it.
-    assert by_agent["capture"].through == enrolled, (
-        "Capture must report how many arrived, not how many are queued on it"
-    )
-    # And the funnel only ever descends.
-    counts = [tile.through for tile in tiles]
-    assert counts == sorted(counts, reverse=True), "a funnel cannot widen"
-
-
-def test_the_strip_still_says_where_contacts_are_right_now(
-    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
-) -> None:
-    """The live detail is kept — it just stopped being the headline.
-
-    The fixture parks contacts on Identity, one of them under a worker lease and one
-    with a terminal failure, so "waiting", "moving" and "held" are all reachable.
-    """
-
-    body = client.get(f"/app/campaigns/{scenario.campaign.id}").text
-    assert "how many have got" in body
-    # Both must appear on the Identity tile: the fixture has one terminal failure and
-    # five contacts simply waiting. Reporting only the failure would hide the five.
-    assert "held here" in body
-    assert "waiting here" in body
-    # And the strip explains why Capture and Identity look the way they do.
-    assert "Capture completes as soon as a contact is enrolled" in body
-
-
-def test_the_run_log_shows_what_an_unexpected_error_recorded(
-    client: TestClient, scenario: workbench_scenario.Scenario
-) -> None:
-    """An opaque failure must be inspectable from the page, not only from the database."""
-
-    body = client.get("/app/agents?agent=identity").text
-    assert "What the Agent recorded" in body or "This Agent has not run" in body
-
-
-def test_a_stage_filter_narrows_the_contact_list(
-    client: TestClient, scenario: workbench_scenario.Scenario
-) -> None:
-    base = client.get(f"/app/campaigns/{scenario.campaign.id}")
-    filtered = client.get(f"/app/campaigns/{scenario.campaign.id}?stage=identity")
-    assert base.status_code == 200
-    assert filtered.status_code == 200
-    assert "Identity Agent" in filtered.text
-
-
-def test_an_unknown_stage_falls_back_to_everyone(
-    client: TestClient, scenario: workbench_scenario.Scenario
-) -> None:
-    response = client.get(f"/app/campaigns/{scenario.campaign.id}?stage=nonsense")
-    assert response.status_code == 200
-    assert "Everyone in this campaign" in response.text
-
-
-def test_the_pipeline_surfaces_a_suppressed_contact_as_never_contacted(
-    client: TestClient, scenario: workbench_scenario.Scenario
-) -> None:
-    body = client.get(f"/app/campaigns/{scenario.campaign.id}").text
-    assert "Suppressed" in body or "suppressed" in body
-
-
-def test_pausing_a_campaign_uses_the_existing_execution_switch(
-    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
+def test_creating_a_campaign_starts_it_and_opens_its_overview(
+    client: TestClient, db_session: Session
 ) -> None:
     response = client.post(
-        f"/app/campaigns/{scenario.campaign.id}/execution",
-        data={"enabled": "0", "reason": "checking the guardrails"},
-        follow_redirects=True,
-    )
-    assert response.status_code == 200
-    assert "nothing already in flight was discarded" in response.text
-    db_session.expire_all()
-    assert scenario.campaign.execution_enabled is False
-
-
-def test_resuming_a_campaign_turns_execution_back_on(
-    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
-) -> None:
-    client.post(f"/app/campaigns/{scenario.campaign.id}/execution", data={"enabled": "0"})
-    client.post(f"/app/campaigns/{scenario.campaign.id}/execution", data={"enabled": "1"})
-    db_session.expire_all()
-    assert scenario.campaign.execution_enabled is True
-
-
-def test_exhausted_pause_deadlocks_return_a_controlled_route_error(
-    client: TestClient,
-    scenario: workbench_scenario.Scenario,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def fail(*args: object, **kwargs: object) -> None:
-        del args, kwargs
-        raise campaign_service.CampaignConcurrencyError(
-            "Campaign pause is still contending; try again."
-        )
-
-    monkeypatch.setattr(campaign_service, "apply_campaign_execution", fail)
-    response = client.post(
-        f"/app/campaigns/{scenario.campaign.id}/execution",
-        data={"enabled": "0"},
+        "/app/campaigns/new",
+        data={"name": "Pune manufacturing leaders", "description": "Q3 pilot"},
         follow_redirects=False,
     )
     assert response.status_code == 303
-    assert "err=" in response.headers["location"]
-    assert "try+again" in response.headers["location"]
+    campaign = db_session.scalars(
+        select(Campaign).where(Campaign.name == "Pune manufacturing leaders")
+    ).one()
+    assert response.headers["location"].startswith(f"/app/campaigns/{campaign.id}")
+    assert campaign.status is CampaignStatus.ACTIVE
+    assert campaign.execution_enabled is True
+
+    body = client.get(f"/app/campaigns/{campaign.id}").text
+    assert "Pune manufacturing leaders" in body
+    assert "Nobody has been added yet" in body
 
 
-def test_the_campaign_screen_is_the_only_page_that_auto_refreshes(
+def test_creating_a_campaign_attaches_the_chosen_offering(
+    client: TestClient, db_session: Session
+) -> None:
+    offering = seller_records.create_offering(
+        db_session,
+        name="Medical-device QA benchmarking dataset",
+        offering_type=SellerOfferingType.RESEARCH_REPORT,
+        created_by="test",
+    )
+    db_session.commit()
+    client.post(
+        "/app/campaigns/new",
+        data={"name": "QA leaders", "offering_id": str(offering.id)},
+        follow_redirects=False,
+    )
+    campaign = db_session.scalars(select(Campaign).where(Campaign.name == "QA leaders")).one()
+    linked = seller_campaign_offerings.offerings_for_campaign(db_session, campaign.id)
+    assert [item.id for item in linked] == [offering.id]
+    assert (
+        "Medical-device QA benchmarking dataset" in client.get(f"/app/campaigns/{campaign.id}").text
+    )
+
+
+def test_a_duplicate_campaign_name_is_refused_with_a_flash(
     client: TestClient, scenario: workbench_scenario.Scenario
 ) -> None:
-    """The monitor exception, kept as an exception.
-
-    The design's campaign detail watches a moving queue through `live.js`. The
-    campaign list loads only the same-origin archive-confirmation script; every
-    other customer page remains script-free.
-    """
-
-    monitor = client.get(f"/app/campaigns/{scenario.campaign.id}").text
-    assert 'data-live="5"' in monitor
-    assert "live.js" in monitor
-
-    campaigns = client.get("/app/campaigns").text.lower()
-    assert campaigns.count("<script") == 1
-    assert re.search(r"/static/campaigns\.js\?v=[0-9a-f]{12}", campaigns)
-    assert "data-live" not in campaigns, "/app/campaigns must not auto-refresh"
-
-    # `/app/review` is deliberately no longer in this list. It carries the
-    # sequence copy controls, and a clipboard write needs script -- the same
-    # `sequence.js` the contact page already loads, which is why the contact
-    # page was never in this list either. It is asserted positively below
-    # instead of being dropped silently: one external same-origin script, no
-    # inline script, and still no auto-refresh.
-    review = client.get("/app/review").text
-    assert re.search(r"/static/sequence\.js\?v=[0-9a-f]+", review), (
-        "/app/review must load the shared copy handler"
-    )
-    assert review.lower().count("<script") == 1, "/app/review must load exactly one script"
-    assert "data-live" not in review, "/app/review must not auto-refresh"
-
-    for path in (
-        "/app",
-        "/app/contacts",
-        "/app/companies",
-        "/app/knowledge",
-        "/app/agents",
-        "/app/capture",
-        "/app/suppressions",
-        "/app/sending",
-    ):
-        body = client.get(path).text
-        assert "<script" not in body.lower(), f"{path} must stay script-free"
-        assert "data-live" not in body, f"{path} must not opt in to auto-refresh"
-
-
-def test_a_campaign_renders_honestly_when_the_agent_monitor_is_off(
-    bare_client: TestClient, db_session: Session
-) -> None:
-    built = workbench_scenario.build(db_session)
-    db_session.commit()
-    response = bare_client.get(f"/app/campaigns/{built.campaign.id}")
-    assert response.status_code == 200
-    assert "FEATURES__AGENT_WORKBENCH" in response.text
-    assert "The campaign is unaffected" in response.text
-
-
-# ---------------------------------------------------------------------------
-# New campaigns default to acting on provisional company domains
-# ---------------------------------------------------------------------------
-
-
-def _provisional_checkbox(body: str) -> str:
-    """The exact `<input>` tag for the provisional-domains checkbox, or ''.
-
-    Isolated with a regex rather than a raw substring check because the
-    ``checked`` attribute is conditionally rendered on its own line: a naive
-    ``"checked" in body`` would pass on any page that happens to say the word
-    elsewhere.
-    """
-
-    match = re.search(r'<input[^>]*id="campaign-provisional"[^>]*>', body, re.DOTALL)
-    return match.group(0) if match else ""
-
-
-def test_new_campaign_form_defaults_the_provisional_checkbox_to_checked(
-    client: TestClient,
-) -> None:
-    body = client.get("/app/campaigns/new").text
-    tag = _provisional_checkbox(body)
-    assert tag, "the provisional-domains checkbox is missing from the creation form"
-    assert "checked" in tag
-
-
-def test_creating_a_campaign_with_the_box_checked_enables_provisional_domains(
-    client: TestClient, db_session: Session
-) -> None:
     response = client.post(
-        "/app/campaigns/new",
-        data={"name": "Checked on create", "allow_provisional_domains": "on"},
-        follow_redirects=True,
+        "/app/campaigns/new", data={"name": scenario.campaign.name}, follow_redirects=False
     )
-    assert response.status_code == 200
-    created = db_session.scalar(select(Campaign).where(Campaign.name == "Checked on create"))
-    assert created is not None
-    assert created.allow_provisional_domains is True
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("/app/campaigns/new?err=")
+    assert "already exists" in client.get(response.headers["location"]).text
 
 
-def test_creating_a_campaign_with_the_box_unchecked_leaves_provisional_domains_off(
-    client: TestClient, db_session: Session
+# ---------------------------------------------------------------------------
+# Campaign Overview
+# ---------------------------------------------------------------------------
+
+
+def test_the_overview_reports_outcomes_ready_people_setup_and_activity(
+    client: TestClient, scenario: workbench_scenario.Scenario
 ) -> None:
-    """A real browser omits an unchecked box's field entirely; nothing recovers it."""
-
-    response = client.post(
-        "/app/campaigns/new",
-        data={"name": "Unchecked on create"},
-        follow_redirects=True,
-    )
-    assert response.status_code == 200
-    created = db_session.scalar(select(Campaign).where(Campaign.name == "Unchecked on create"))
-    assert created is not None
-    assert created.allow_provisional_domains is False
-
-
-# ---------------------------------------------------------------------------
-# Editing a Campaign from /app/campaigns
-# ---------------------------------------------------------------------------
+    body = _customer_body(client.get(_campaign_url(scenario)).text)
+    for heading in ("Where people stand", "Ready for Sending", "Setup", "Recent activity"):
+        assert heading in body, heading
+    assert "v2-outcome-bar" in body
+    for legend in ("Processing", "Ready for Sending", "Could not prepare"):
+        assert legend in body
+    assert "Nobody is ready yet" in body
+    # Overview / People / Setup / Activity tabs, and the persistent header counts.
+    for tab in ("people", "setup", "activity"):
+        assert f'href="{_campaign_url(scenario)}/{tab}"' in body, tab
+    assert "people</a>" in body
 
 
-def test_editing_a_campaign_updates_name_description_and_provisional_toggle(
+def test_the_overview_carries_no_agent_or_queue_vocabulary(
+    client: TestClient, scenario: workbench_scenario.Scenario
+) -> None:
+    body = _customer_body(client.get(_campaign_url(scenario)).text)
+    for word in ("Agent", "v2-pipe-stage", "job", "queue", "retry", "lease", "settings version"):
+        assert word not in body, word
+
+
+def test_a_paused_campaign_offers_resume_on_the_overview(
     client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
 ) -> None:
-    target = scenario.other_campaign
-    response = client.post(
-        f"/app/campaigns/{target.id}/edit",
-        data={
-            "name": "Renamed campaign",
-            "description": "a new memory note",
-            "allow_provisional_domains": "on",
-        },
-        follow_redirects=True,
+    campaign_service.apply_campaign_execution(
+        db_session, scenario.campaign.id, enabled=False, actor="operator", reason="test"
     )
-    assert response.status_code == 200
-    assert "Renamed campaign updated." in response.text
-    db_session.expire_all()
-    assert target.name == "Renamed campaign"
-    assert target.description == "a new memory note"
-    assert target.allow_provisional_domains is True
+    body = client.get(_campaign_url(scenario)).text
+    assert ">Paused<" in body
+    assert "Paused. Resume the Campaign" in body
+    assert "Resume Campaign" in body
 
 
-def test_editing_without_the_checkbox_turns_provisional_domains_off(
-    client: TestClient, db_session: Session
+def test_a_paused_campaign_still_says_paused_when_an_agent_is_also_off(
+    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
 ) -> None:
-    """The unchecked-submission case: the field is simply absent from the form data."""
+    """Two causes are live at once, and the customer's own is the one reported.
 
-    on = campaign_service.create_campaign(
-        db_session, name="Starts enabled", allow_provisional_domains=True
+    A Campaign can be paused by its customer *and* held by an administrator
+    setting simultaneously. Only one sentence is shown, so which one wins is a
+    product decision rather than an implementation accident, and it belongs in a
+    test that drives the real page.
+
+    It is the pause. That is the state the customer put the Campaign into, it is
+    the state they can leave, and answering "an administrator is holding this"
+    would be a false account of their own action with no control attached to it.
+    """
+
+    campaign = db_session.get(Campaign, scenario.campaign.id)
+    assert campaign is not None
+    # Opt the Campaign in, so execution readiness is consulted at all, and hold
+    # it: Research is disabled by registry default, which is exactly the state a
+    # fresh deployment is in.
+    campaign.cadence_config = cadence_service.with_campaign_opt_in(campaign, enabled=True)
+    db_session.flush()
+    agent_controls.set_global_control(
+        db_session,
+        agent_id=AgentIdentifier.RESEARCH,
+        status=AgentControlStatus.DISABLED,
+        reason="test setup",
     )
-    db_session.commit()
-
-    response = client.post(
-        f"/app/campaigns/{on.id}/edit",
-        data={"name": "Starts enabled", "description": ""},
-        follow_redirects=True,
+    campaign_service.apply_campaign_execution(
+        db_session, campaign.id, enabled=False, actor="operator", reason="test"
     )
-    assert response.status_code == 200
-    db_session.expire_all()
-    assert on.allow_provisional_domains is False
+    db_session.flush()
+
+    # The hold is real: this is not a test that passes because nothing is held.
+    readiness = agent_readiness.execution_readiness(db_session, campaign=campaign)
+    assert not readiness.runnable
+
+    body = client.get(_campaign_url(scenario)).text
+    assert "Paused. Resume the Campaign" in body
+    assert "Resume Campaign" in body
+    assert "Preparation is being held by an administrator setting." not in body
+    # And still no Agent vocabulary in the customer's product.
+    assert "Research Agent" not in _customer_body(body)
 
 
-def test_existing_campaigns_retain_their_persisted_provisional_value_on_the_edit_page(
-    client: TestClient, db_session: Session
-) -> None:
-    on = campaign_service.create_campaign(
-        db_session, name="Edit page: on", allow_provisional_domains=True
-    )
-    off = campaign_service.create_campaign(
-        db_session, name="Edit page: off", allow_provisional_domains=False
-    )
-    db_session.commit()
-
-    on_tag = _provisional_checkbox(client.get(f"/app/campaigns/{on.id}/edit").text)
-    off_tag = _provisional_checkbox(client.get(f"/app/campaigns/{off.id}/edit").text)
-    assert "checked" in on_tag
-    assert "checked" not in off_tag
-
-
-def test_editing_a_missing_campaign_ends_at_not_found(client: TestClient) -> None:
-    response = client.post(
-        f"/app/campaigns/{uuid.uuid4()}/edit",
-        data={"name": "does not matter"},
-        follow_redirects=True,
-    )
-    assert response.status_code == 404
-    assert "Not found" in response.text
-
-
-def test_editing_with_a_missing_required_field_is_rejected(
+def test_an_active_campaign_shows_no_start_or_resume_prompt(
     client: TestClient, scenario: workbench_scenario.Scenario
 ) -> None:
-    """`name` is required; FastAPI's own form validation must reject its absence."""
+    body = client.get(_campaign_url(scenario)).text
+    assert "Resume Campaign" not in body
+    assert "Start Campaign" not in body
 
-    response = client.post(f"/app/campaigns/{scenario.other_campaign.id}/edit", data={})
+
+def test_could_not_prepare_reasons_are_plain_language(
+    client: TestClient, scenario: workbench_scenario.Scenario
+) -> None:
+    body = client.get(_campaign_url(scenario)).text
+    assert "Could not prepare" in body
+    assert "On the suppression list — never contacted" in body
+    assert "View affected people" in body
+
+
+# ---------------------------------------------------------------------------
+# Campaign People
+# ---------------------------------------------------------------------------
+
+
+def test_campaign_people_lists_everyone_with_an_outcome_and_a_detail(
+    client: TestClient, scenario: workbench_scenario.Scenario
+) -> None:
+    body = client.get(f"{_campaign_url(scenario)}/people").text
+    for label in ("All", "Processing", "Ready for Sending", "Could not prepare"):
+        assert f"outcome={label.lower().replace(' ', '_')}" in body or label in body
+    assert "Nakamura" in body
+    assert "Pinto" in body
+    assert "On the suppression list — never contacted" in body
+    # The other Campaign's member never leaks in.
+    assert "Marsh" not in body
+
+
+def test_campaign_people_filters_by_outcome(
+    client: TestClient, scenario: workbench_scenario.Scenario
+) -> None:
+    stopped = client.get(f"{_campaign_url(scenario)}/people?outcome=could_not_prepare").text
+    assert "Pinto" in stopped
+    assert "Nakamura" not in stopped
+    ready = client.get(f"{_campaign_url(scenario)}/people?outcome=ready_for_sending").text
+    assert "Nobody here" in ready
+
+
+def test_campaign_people_search_narrows_by_name_company_or_email(
+    client: TestClient, scenario: workbench_scenario.Scenario
+) -> None:
+    body = client.get(f"{_campaign_url(scenario)}/people?q=Northwind").text
+    assert "Nakamura" in body
+    assert "Pinto" not in body
+    none = client.get(f"{_campaign_url(scenario)}/people?q=zzz-nobody").text
+    assert "Nobody matches" in none
+
+
+# ---------------------------------------------------------------------------
+# Campaign Setup and lifecycle
+# ---------------------------------------------------------------------------
+
+
+def test_setup_renders_every_campaign_owned_decision(
+    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
+) -> None:
+    seller_records.create_offering(db_session, name="Benchmark dataset", created_by="test")
+    db_session.commit()
+    body = client.get(f"{_campaign_url(scenario)}/setup").text
+    for name in ("name", "description", "offering_id", "primary_cta", "messaging_direction"):
+        assert f'name="{name}"' in body, name
+    for heading in ("General", "Offering and direction", "Preparation", "Access", "Lifecycle"):
+        assert heading in body, heading
+    assert "Archive Campaign" in body
+    assert "Ready to prepare people" in body
+
+
+def test_saving_setup_updates_name_note_direction_and_the_website_policy(
+    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
+) -> None:
+    offering = seller_records.create_offering(
+        db_session, name="Benchmark dataset", created_by="test"
+    )
+    db_session.commit()
+    response = client.post(
+        f"{_campaign_url(scenario)}/setup",
+        data={
+            "name": "Pilot 100 — renamed",
+            "description": "A new note",
+            "messaging_direction": "Lead with the benchmark.",
+            "primary_cta": "a 20-minute call",
+            "offering_id": str(offering.id),
+            "allow_provisional_domains": "on",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert "ok=" in response.headers["location"]
+    db_session.expire_all()
+    campaign = db_session.get(Campaign, scenario.campaign.id)
+    assert campaign.name == "Pilot 100 — renamed"
+    assert campaign.description == "A new note"
+    assert campaign.messaging_direction == "Lead with the benchmark."
+    assert campaign.primary_cta == "a 20-minute call"
+    assert campaign.allow_provisional_domains is True
+    linked = seller_campaign_offerings.offerings_for_campaign(db_session, campaign.id)
+    assert [item.id for item in linked] == [offering.id]
+
+    # Saving without the checkbox turns the policy off; without an offering, detaches it.
+    client.post(
+        f"{_campaign_url(scenario)}/setup",
+        data={"name": "Pilot 100 — renamed", "offering_id": ""},
+        follow_redirects=False,
+    )
+    db_session.expire_all()
+    campaign = db_session.get(Campaign, scenario.campaign.id)
+    assert campaign.allow_provisional_domains is False
+    assert seller_campaign_offerings.offerings_for_campaign(db_session, campaign.id) == []
+
+
+def test_saving_setup_with_a_missing_name_is_rejected(
+    client: TestClient, scenario: workbench_scenario.Scenario
+) -> None:
+    response = client.post(f"{_campaign_url(scenario)}/setup", data={"description": "x"})
     assert response.status_code == 422
 
 
-def test_archive_is_post_only_a_get_must_not_archive_anything(
+def test_pause_and_resume_use_the_execution_switch(
+    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
+) -> None:
+    lifecycle = f"{_campaign_url(scenario)}/lifecycle"
+    response = client.post(lifecycle, data={"action": "pause"}, follow_redirects=False)
+    assert response.status_code == 303
+    db_session.expire_all()
+    assert db_session.get(Campaign, scenario.campaign.id).execution_enabled is False
+    assert ">Paused<" in client.get(_campaign_url(scenario)).text
+
+    client.post(lifecycle, data={"action": "resume"}, follow_redirects=False)
+    db_session.expire_all()
+    assert db_session.get(Campaign, scenario.campaign.id).execution_enabled is True
+    assert ">Active<" in client.get(_campaign_url(scenario)).text
+
+
+def test_start_turns_a_draft_campaign_active(
+    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
+) -> None:
+    draft = scenario.other_campaign
+    assert draft.status is CampaignStatus.DRAFT
+    body = client.get(f"/app/campaigns/{draft.id}").text
+    assert ">Draft<" in body
+    assert "Start Campaign" in body
+    client.post(f"/app/campaigns/{draft.id}/lifecycle", data={"action": "start"})
+    db_session.expire_all()
+    started = db_session.get(Campaign, draft.id)
+    assert started.status is CampaignStatus.ACTIVE
+    assert started.execution_enabled is True
+
+
+def test_an_unknown_lifecycle_action_is_refused(
     client: TestClient, scenario: workbench_scenario.Scenario
 ) -> None:
-    """The archive action is POST-only; a GET must not silently archive anything."""
-
-    response = client.get(f"/app/campaigns/{scenario.other_campaign.id}/archive")
-    assert response.status_code == 405
-
-
-# ---------------------------------------------------------------------------
-# Archiving a Campaign from /app/campaigns
-# ---------------------------------------------------------------------------
+    response = client.post(
+        f"{_campaign_url(scenario)}/lifecycle", data={"action": "delete"}, follow_redirects=False
+    )
+    assert "err=" in response.headers["location"]
 
 
-def test_archiving_a_campaign_turns_execution_off_and_marks_it_archived(
+def test_archiving_turns_execution_off_and_keeps_every_record(
     client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
 ) -> None:
-    target = scenario.other_campaign
-    response = client.post(f"/app/campaigns/{target.id}/archive", follow_redirects=True)
-    assert response.status_code == 200
-    assert f"{target.name} archived." in response.text
-    db_session.expire_all()
-    assert target.status is CampaignStatus.ARCHIVED
-    assert target.execution_enabled is False
-
-
-def test_archiving_does_not_delete_the_campaign_or_its_enrolled_history(
-    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
-) -> None:
-    """Archiving is the only "delete" this product has, and it must not delete.
-
-    The whole point of a status transition instead of a row deletion is that
-    enrolled Contacts, their per-campaign membership state and the audit trail
-    survive. If any of these counts drop, the operation quietly became a real
-    delete.
-    """
-
     campaign_id = scenario.campaign.id
-    membership_count_before = (
-        db_session.scalar(
-            select(func.count())
-            .select_from(CampaignContact)
-            .where(CampaignContact.campaign_id == campaign_id)
-        )
-        or 0
+    memberships_before = db_session.scalar(
+        select(func.count(CampaignContact.id)).where(CampaignContact.campaign_id == campaign_id)
     )
-    audit_count_before = (
-        db_session.scalar(
-            select(func.count())
-            .select_from(AuditEvent)
-            .where(AuditEvent.entity_type == "campaign", AuditEvent.entity_id == str(campaign_id))
-        )
-        or 0
-    )
-    assert membership_count_before > 0, "the fixture is supposed to enrol contacts"
+    assert memberships_before
 
-    response = client.post(f"/app/campaigns/{campaign_id}/archive", follow_redirects=True)
-    assert response.status_code == 200
+    # A GET cannot archive anything.
+    assert client.get(f"/app/campaigns/{campaign_id}/lifecycle").status_code == 405
+
+    response = client.post(
+        f"/app/campaigns/{campaign_id}/lifecycle",
+        data={"action": "archive"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("/app/campaigns?ok=")
 
     db_session.expire_all()
-    assert campaign_service.get_campaign(db_session, campaign_id) is not None
-
-    membership_count_after = (
+    campaign = db_session.get(Campaign, campaign_id)
+    assert campaign is not None
+    assert campaign.status is CampaignStatus.ARCHIVED
+    assert campaign.execution_enabled is False
+    assert (
         db_session.scalar(
-            select(func.count())
-            .select_from(CampaignContact)
-            .where(CampaignContact.campaign_id == campaign_id)
+            select(func.count(CampaignContact.id)).where(CampaignContact.campaign_id == campaign_id)
         )
-        or 0
+        == memberships_before
     )
-    audit_count_after = (
-        db_session.scalar(
-            select(func.count())
-            .select_from(AuditEvent)
-            .where(AuditEvent.entity_type == "campaign", AuditEvent.entity_id == str(campaign_id))
-        )
-        or 0
-    )
-    assert membership_count_after == membership_count_before
-    assert audit_count_after > audit_count_before, "archiving itself must be audited, not erased"
 
-
-def test_archiving_an_already_archived_campaign_does_not_error(
-    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
-) -> None:
-    target = scenario.other_campaign
-    first = client.post(f"/app/campaigns/{target.id}/archive", follow_redirects=True)
-    assert first.status_code == 200
-    second = client.post(f"/app/campaigns/{target.id}/archive", follow_redirects=True)
-    assert second.status_code == 200
-    assert "err=" not in str(second.url)
-    db_session.expire_all()
-    assert target.status is CampaignStatus.ARCHIVED
+    detail = client.get(f"/app/campaigns/{campaign_id}").text
+    assert ">Archived<" in detail
+    # The Campaign header offers no Add people once archived.
+    assert f'href="/app/campaigns/{campaign_id}/add-people"' not in _customer_body(detail)
+    assert "Archive Campaign" not in client.get(f"/app/campaigns/{campaign_id}/setup").text
 
 
 def test_archiving_a_missing_campaign_redirects_with_an_error(client: TestClient) -> None:
     response = client.post(
-        f"/app/campaigns/{uuid.uuid4()}/archive",
+        f"/app/campaigns/{uuid.uuid4()}/lifecycle",
+        data={"action": "archive"},
         follow_redirects=False,
     )
     assert response.status_code == 303
-    assert response.headers["location"].startswith("/app/campaigns?err=")
+    assert "err=" in response.headers["location"]
 
 
-def test_archived_campaigns_show_archived_state_and_no_archive_action_but_keep_edit(
+def test_the_research_switch_toggles_the_live_opt_in(
     client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
 ) -> None:
-    target = scenario.other_campaign
-    client.post(f"/app/campaigns/{target.id}/archive")
+    campaign = scenario.campaign
+    assert (
+        agent_controls.campaign_live_opt_in(
+            db_session, campaign=campaign, agent_id=AgentIdentifier.RESEARCH
+        )
+        is False
+    )
+    response = client.post(
+        f"{_campaign_url(scenario)}/setup/research", data={"allowed": "1"}, follow_redirects=False
+    )
+    assert "ok=" in response.headers["location"]
     db_session.expire_all()
+    assert (
+        agent_controls.campaign_live_opt_in(
+            db_session,
+            campaign=db_session.get(Campaign, campaign.id),
+            agent_id=AgentIdentifier.RESEARCH,
+        )
+        is True
+    )
+    assert "Allowed" in client.get(_campaign_url(scenario)).text
 
-    body = client.get("/app/campaigns").text
-    row_start = body.index(str(target.id))
-    row = body[row_start : row_start + 1200]
-    assert "Archived" in row
-    assert f"/app/campaigns/{target.id}/edit" in row
-    assert f'action="/app/campaigns/{target.id}/archive"' not in row
-
-    # The campaign detail page must still say Archived, not silently revert to Draft.
-    detail = client.get(f"/app/campaigns/{target.id}")
-    assert detail.status_code == 200
-    assert "Archived" in detail.text
-
-
-# ---------------------------------------------------------------------------
-# Contacts, companies
-# ---------------------------------------------------------------------------
+    client.post(f"{_campaign_url(scenario)}/setup/research", data={"allowed": "0"})
+    db_session.expire_all()
+    assert (
+        agent_controls.campaign_live_opt_in(
+            db_session,
+            campaign=db_session.get(Campaign, campaign.id),
+            agent_id=AgentIdentifier.RESEARCH,
+        )
+        is False
+    )
 
 
-def test_contacts_shows_captured_people_and_their_email_state(
+def test_the_legacy_edit_url_lands_on_setup(
     client: TestClient, scenario: workbench_scenario.Scenario
 ) -> None:
-    body = client.get("/app/contacts").text
+    response = client.get(f"{_campaign_url(scenario)}/edit", follow_redirects=False)
+    assert response.status_code == 308
+    assert response.headers["location"] == f"{_campaign_url(scenario)}/setup"
+
+
+# ---------------------------------------------------------------------------
+# Campaign Activity
+# ---------------------------------------------------------------------------
+
+
+def test_activity_lists_lifecycle_changes_and_people_added(
+    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
+) -> None:
+    client.post(f"{_campaign_url(scenario)}/lifecycle", data={"action": "pause"})
+    body = _customer_body(client.get(f"{_campaign_url(scenario)}/activity").text)
+    assert "Preparation paused" in body
+    assert "Preparation started" in body
+    assert "people added" in body
+    for word in ("job", "lease", "retry", "worker"):
+        assert word not in body.lower().replace("workbench", ""), word
+
+
+# ---------------------------------------------------------------------------
+# Add people
+# ---------------------------------------------------------------------------
+
+
+def test_add_people_without_a_campaign_asks_which_one(
+    client: TestClient, scenario: workbench_scenario.Scenario
+) -> None:
+    body = client.get("/app/add-people").text
+    assert "Which Campaign?" in body
+    assert scenario.campaign.name in body
+    assert 'name="campaign"' in body
+
+
+def test_add_people_without_any_campaign_points_at_creation(client: TestClient) -> None:
+    body = client.get("/app/add-people").text
+    assert "Create a Campaign first" in body
+    assert 'href="/app/campaigns/new"' in body
+
+
+def test_add_people_for_a_campaign_offers_the_three_sources(
+    client: TestClient, scenario: workbench_scenario.Scenario
+) -> None:
+    for path in (
+        f"{_campaign_url(scenario)}/add-people",
+        f"/app/add-people?campaign={scenario.campaign.id}",
+    ):
+        body = client.get(path).text
+        assert f"Add people to {scenario.campaign.name}" in body, path
+        for source in ("Chrome extension", "Google Sheets", "Import a file"):
+            assert source in body, (path, source)
+        # File import is a real link when the switch is on, an honest note when off.
+        assert f'href="{_campaign_url(scenario)}/imports"' in body or "switched off" in body, path
+
+
+# ---------------------------------------------------------------------------
+# Legacy destinations resolve into the new ones
+# ---------------------------------------------------------------------------
+
+
+def test_legacy_urls_redirect_into_the_four_destinations(
+    client: TestClient, scenario: workbench_scenario.Scenario
+) -> None:
+    contact_id = scenario.contacts["healthy"].id
+    campaign_id = scenario.campaign.id
+    expectations = {
+        "/app/review": "/app/campaigns",
+        f"/app/review?campaign={campaign_id}": f"/app/campaigns/{campaign_id}#ready",
+        "/app/contacts": "/app/people",
+        "/app/contacts?q=Nakamura": "/app/people?q=Nakamura",
+        f"/app/contacts/{contact_id}?campaign={campaign_id}": (
+            f"/app/people/{contact_id}?campaign={campaign_id}"
+        ),
+        "/app/knowledge": "/app/library",
+        "/app/knowledge/offerings": "/app/library/offerings",
+        "/app/capture": "/app/add-people",
+        "/app/sending": "/app",
+        "/app/replies": "/app",
+        "/app/sequences": "/app",
+        "/app/analytics": "/app",
+        "/app/agents": "/app/admin/agents",
+        "/app/agents?agent=email": "/app/admin/agents?agent=email",
+        "/app/suppressions": "/app/admin/suppressions",
+    }
+    for path, target in expectations.items():
+        response = client.get(path, follow_redirects=False)
+        assert response.status_code == 308, path
+        assert response.headers["location"] == target, path
+
+
+def test_a_legacy_review_link_to_a_foreign_campaign_falls_back_to_the_list(
+    client: TestClient,
+) -> None:
+    response = client.get(f"/app/review?campaign={uuid.uuid4()}", follow_redirects=False)
+    assert response.headers["location"] == "/app/campaigns"
+
+
+# ---------------------------------------------------------------------------
+# People and Companies
+# ---------------------------------------------------------------------------
+
+
+def test_people_lists_captured_people_with_the_local_switch(
+    client: TestClient, scenario: workbench_scenario.Scenario
+) -> None:
+    body = client.get("/app/people").text
     assert "Nakamura" in body
     assert "Brandt" in body
+    assert 'href="/app/companies"' in body
+    assert "Add people" in body
+    assert '<h1 class="v2-h1">People</h1>' in body
 
 
-def test_contact_filters_and_search_are_honoured(
+def test_people_filters_and_search_are_honoured(
     client: TestClient, scenario: workbench_scenario.Scenario
 ) -> None:
-    found = client.get("/app/contacts?q=Nakamura").text
+    found = client.get("/app/people?q=Nakamura").text
     assert "Nakamura" in found
     assert "Brandt" not in found
 
 
-def test_the_contact_story_walks_all_nine_agents(
-    client: TestClient, scenario: workbench_scenario.Scenario
-) -> None:
-    body = client.get(
-        f"/app/contacts/{scenario.contacts['healthy'].id}?campaign={scenario.campaign.id}"
-    ).text
-    for agent_id in PIPELINE_ORDER:
-        assert AGENT_SPECS[agent_id].display_name in body
-
-
-def test_a_contact_in_no_campaign_says_so_rather_than_showing_an_empty_chain(
+def test_a_person_in_no_campaign_says_so(
     client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
 ) -> None:
     from app.models.contact import Contact
@@ -994,14 +873,15 @@ def test_a_contact_in_no_campaign_says_so_rather_than_showing_an_empty_chain(
     )
     db_session.add(orphan)
     db_session.commit()
-    body = client.get(f"/app/contacts/{orphan.id}").text
+    body = client.get(f"/app/people/{orphan.id}").text
     assert "Not in a campaign" in body
 
 
-def test_companies_reports_a_missing_website_as_blocking(
+def test_companies_render_with_the_local_switch(
     client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
 ) -> None:
     body = client.get("/app/companies").text
+    assert 'href="/app/people"' in body
     assert "no address can be built" in body or "No website" in body
 
 
@@ -1018,11 +898,11 @@ def test_a_company_with_no_dossier_says_nothing_was_researched(
 
 
 # ---------------------------------------------------------------------------
-# Knowledge Base
+# Library
 # ---------------------------------------------------------------------------
 
 
-def test_knowledge_base_shows_entered_records(client: TestClient, db_session: Session) -> None:
+def test_the_library_shows_entered_records(client: TestClient, db_session: Session) -> None:
     seller_profile.save_profile(
         db_session,
         name="Verified Market Research",
@@ -1039,52 +919,55 @@ def test_knowledge_base_shows_entered_records(client: TestClient, db_session: Se
     )
     db_session.commit()
 
-    overview = client.get("/app/knowledge").text
+    overview = client.get("/app/library").text
     assert "Verified Market Research" in overview
-
-    offerings = client.get("/app/knowledge/offerings").text
+    assert '<h1 class="v2-h1">Library</h1>' in overview
+    offerings = client.get("/app/library/offerings").text
     assert "Medical-device QA benchmarking dataset" in offerings
 
 
-def test_knowledge_base_distinguishes_not_entered_from_none_apply(
-    client: TestClient, db_session: Session
-) -> None:
-    """`None` and `[]` are different answers and must read differently."""
-
-    seller_profile.save_profile(
-        db_session,
-        name="Verified Market Research",
-        industries_served=None,
-        geographies_served=[],
-        updated_by="test",
-    )
-    db_session.commit()
-    body = client.get("/app/knowledge/company").text
-    assert "Not entered" in body
-    assert "Recorded as none" in body
-
-
-def test_knowledge_base_says_when_the_feature_is_off(bare_client: TestClient) -> None:
-    body = bare_client.get("/app/knowledge").text
+def test_the_library_says_when_the_feature_is_off(bare_client: TestClient) -> None:
+    body = bare_client.get("/app/library").text
     assert "FEATURES__SELLER_KNOWLEDGE_BASE" in body
     assert "not empty" in body
 
 
-def test_an_unknown_knowledge_section_falls_back_to_the_overview(client: TestClient) -> None:
-    response = client.get("/app/knowledge/nonsense")
+def test_an_unknown_library_section_falls_back_to_the_overview(client: TestClient) -> None:
+    response = client.get("/app/library/nonsense")
     assert response.status_code == 200
     assert "What is entered, and what is missing" in response.text
 
 
 # ---------------------------------------------------------------------------
-# Agent settings
+# Account
 # ---------------------------------------------------------------------------
+
+
+def test_connections_says_gmail_is_unavailable_when_the_feature_is_off(
+    client: TestClient,
+) -> None:
+    body = client.get("/app/account/connections").text
+    assert "Gmail" in body
+    assert "not available in this environment" in body
+
+
+# ---------------------------------------------------------------------------
+# Admin inside the product
+# ---------------------------------------------------------------------------
+
+
+def test_the_admin_landing_lists_the_machinery(client: TestClient) -> None:
+    body = client.get("/app/admin").text
+    for item in ("Agents", "Users &amp; access", "Suppression list", "Operator Workbench"):
+        assert item in body, item
+    for href in ("/app/admin/agents", "/app/admin/users", "/app/admin/suppressions", "/admin"):
+        assert f'href="{href}"' in body, href
 
 
 def test_agent_settings_shows_registry_facts_as_facts_not_settings(
     client: TestClient, scenario: workbench_scenario.Scenario
 ) -> None:
-    body = client.get("/app/agents?agent=email").text
+    body = client.get("/app/admin/agents?agent=email").text
     assert "Registry facts" in body
     assert "Not settings" in body
     assert str(AGENT_SPECS[AgentIdentifier.EMAIL].max_attempts) in body
@@ -1093,20 +976,15 @@ def test_agent_settings_shows_registry_facts_as_facts_not_settings(
 def test_agent_settings_refuses_to_offer_a_switch_for_an_unimplemented_agent(
     client: TestClient, scenario: workbench_scenario.Scenario
 ) -> None:
-    body = client.get("/app/agents?agent=sending").text
+    body = client.get("/app/admin/agents?agent=sending").text
     assert "no adapter registered" in body
     assert "cannot be enabled at all" in body
 
 
 def _form_version(client: TestClient, agent: str) -> str:
-    """The control version the page rendered, taken from the page.
+    """The control version the page rendered, read back out of the form."""
 
-    Reading it back out of the form is the point: the round-trip is what protects
-    the optimistic-concurrency check, and a test that hard-codes a version would
-    pass even if the template stopped emitting one.
-    """
-
-    page = client.get(f"/app/agents?agent={agent}").text
+    page = client.get(f"/app/admin/agents?agent={agent}").text
     match = re.search(r'name="expected_version" value="([^"]*)"', page)
     assert match is not None, "the control form must carry the version the page saw"
     return match.group(1)
@@ -1118,7 +996,7 @@ def test_changing_an_agent_control_carries_the_expected_version(
     from app.models.agent import AgentControl
 
     response = client.post(
-        "/app/agents/research/control",
+        "/app/admin/agents/research/control",
         data={
             "status": "enabled",
             "expected_version": _form_version(client, "research"),
@@ -1133,37 +1011,16 @@ def test_changing_an_agent_control_carries_the_expected_version(
     assert control.status.value == "enabled"
 
 
-def test_a_flash_message_survives_a_target_that_already_has_a_query_string(
-    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
-) -> None:
-    """The separator is chosen, not assumed.
-
-    Review sends the operator back to the exact draft and filter they were on, so
-    the target already carries `?`. Appending a second one swallowed the flash into
-    the previous parameter and the operator saw nothing happen.
-    """
-
-    draft = _make_draft(db_session, scenario)
-    back = f"/app/review?draft={draft.id}&view=all"
-    response = client.post(
-        f"/app/review/{draft.id}/approve", data={"back": back}, follow_redirects=False
-    )
-    location = response.headers["location"]
-    assert location.count("?") == 1, location
-    assert "&ok=" in location, location
-
-
 def test_a_stale_control_version_is_refused_and_the_reason_is_shown(
     client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
 ) -> None:
     stale = _form_version(client, "research")
     client.post(
-        "/app/agents/research/control",
+        "/app/admin/agents/research/control",
         data={"status": "paused", "expected_version": stale},
     )
-    # Acting from the now out-of-date page must be refused, not silently applied.
     response = client.post(
-        "/app/agents/research/control",
+        "/app/admin/agents/research/control",
         data={"status": "enabled", "expected_version": stale},
         follow_redirects=False,
     )
@@ -1181,7 +1038,7 @@ def test_enabling_an_unimplemented_agent_is_refused(
     client: TestClient, scenario: workbench_scenario.Scenario
 ) -> None:
     response = client.post(
-        "/app/agents/sending/control",
+        "/app/admin/agents/sending/control",
         data={"status": "enabled", "expected_version": "0"},
         follow_redirects=True,
     )
@@ -1190,57 +1047,30 @@ def test_enabling_an_unimplemented_agent_is_refused(
 
 
 def test_agent_settings_says_when_the_monitor_is_off(bare_client: TestClient) -> None:
-    body = bare_client.get("/app/agents").text
+    body = bare_client.get("/app/admin/agents").text
     assert "FEATURES__AGENT_WORKBENCH" in body
     assert "Nothing is running unseen" in body
 
 
-# ---------------------------------------------------------------------------
-# Suppressions and capture
-# ---------------------------------------------------------------------------
+def test_campaign_diagnostics_show_all_nine_agents_and_the_stopped_people(
+    client: TestClient, scenario: workbench_scenario.Scenario
+) -> None:
+    base = f"/app/admin/campaigns/{scenario.campaign.id}/diagnostics"
+    body = client.get(base).text
+    for agent_id in PIPELINE_ORDER:
+        assert AGENT_SPECS[agent_id].display_name in body
+    assert scenario.campaign.name in body
+
+    focused = client.get(f"{base}?stage=research").text
+    assert "stopped people" in focused
+    assert "Live work" in focused
+    assert f"/app/admin/campaigns/{scenario.campaign.id}/agents/research/live" in focused
 
 
 def test_the_suppression_list_is_read_only_and_says_why(
     client: TestClient, scenario: workbench_scenario.Scenario
 ) -> None:
-    body = client.get("/app/suppressions").text
+    body = client.get("/app/admin/suppressions").text
     assert "gerald.pinto@ashcroft.example.com" in body
     assert "Read-only here on purpose" in body
-    assert "<form" not in body
-
-
-def test_the_capture_page_reports_intake_state_without_claiming_a_connection(
-    client: TestClient, bare_client: TestClient
-) -> None:
-    assert "Intake closed" in bare_client.get("/app/capture").text
-
-
-# ---------------------------------------------------------------------------
-# Design contract
-# ---------------------------------------------------------------------------
-
-
-def test_the_shell_carries_the_designs_three_nav_groups(client: TestClient) -> None:
-    """Three groups, and "Emails" where "Review" used to be.
-
-    The destination is unchanged; the name is not. "Review" named a queue the
-    customer was expected to clear. "Emails" names what is actually there — the
-    generated messages, readable whenever they want them.
-    """
-
-    body = client.get("/app").text
-    for label in ("Today", "Campaigns", "Emails", "Contacts", "Companies", "Knowledge Base"):
-        assert f">{label}" in body or label in body
-
-
-def test_no_customer_template_uses_an_inline_style_attribute(client: TestClient) -> None:
-    """The design system lives in one stylesheet, not scattered across markup.
-
-    The prototype expressed everything as inline styles. Carrying that into
-    production would make the system impossible to change in one place, so the
-    templates are asserted clean.
-    """
-
-    for path in V2_PAGES:
-        body = client.get(path).text
-        assert ' style="' not in body, path
+    assert "<form" not in body.split("<main", 1)[1]

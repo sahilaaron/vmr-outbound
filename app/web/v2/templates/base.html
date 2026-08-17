@@ -1,28 +1,17 @@
 {#
-  The customer-facing application shell.
+  The one application shell.
 
-  Navigation is the design's default model: a sticky top bar with the three groups
-  the design names — Work (Today, Campaigns, Review), Records (Contacts,
-  Companies), Setup (Knowledge Base) — plus the account menu, which is where the
-  design puts Agent settings.
-
-  No script except the monitor auto-refresh the campaign screen opts into, which is
-  the existing `live.js` and swaps `.main-inner`. That class is on the content
-  wrapper here for exactly that reason; the file needed no change.
-
-  The admin Workbench keeps its own shell (`app/web/templates/base.html`) and its
-  own stylesheet. Nothing is shared, so a change here cannot reach it.
+  Four customer destinations — Today, Campaigns, People, Library — an Add people
+  action, and an account menu. Admin is a role-gated fifth entry that keeps this
+  same frame. Nothing here counts, badges or names machinery.
 #}
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}{{ page_title | neutralize | default("Outbound", true) }}{% endblock %} — VMR Outbound</title>
+  <title>{% block title %}{{ page_title | neutralize | default("VMR Outbound", true) }}{% endblock %} — VMR Outbound</title>
   <link rel="icon" href="{{ url_for('static', path='vmr-mark.svg') }}" type="image/svg+xml">
-  {# Content-hash token, not a cache-buster guess: `/static/*` is served with a
-     one-hour Cache-Control, so a deploy that changes this file must change the
-     URL or operators keep the old rules. #}
   <link rel="stylesheet" href="{{ url_for('static', path='v2.css') }}?v={{ v2_css_version }}">
 </head>
 <body class="v2"{% if live_seconds %} data-live="{{ live_seconds }}"{% endif %}>
@@ -36,28 +25,23 @@
       </a>
 
       <nav class="v2-topnav" aria-label="Primary">
-        {% for group in nav_groups %}
         <div class="v2-topnav-group">
-          {% if not loop.first %}<span class="v2-navsep" aria-hidden="true"></span>{% endif %}
-          {% for item in group.items %}
-          <a class="v2-navlink {{ 'active' if item.key == active_nav else '' }}" href="{{ item.href }}">
-            {# No badge. Customer navigation reports where to go, never how far
-               behind somebody is — internal machine work is not a customer
-               backlog. See docs/CUSTOMER_OPERATING_MODEL.md. #}
-            {{ item.label }}
-          </a>
+          {% for item in primary_nav %}
+          <a class="v2-navlink {{ 'active' if item.key == active_nav else '' }}" href="{{ item.href }}"{% if item.key == active_nav %} aria-current="page"{% endif %}>{{ item.label }}</a>
           {% endfor %}
         </div>
-        {% endfor %}
+        {% if is_admin %}
+        <div class="v2-topnav-group">
+          <span class="v2-navsep" aria-hidden="true"></span>
+          <a class="v2-navlink admin {{ 'active' if admin_nav.key == active_nav else '' }}" href="{{ admin_nav.href }}"{% if admin_nav.key == active_nav %} aria-current="page"{% endif %}>{{ admin_nav.label }}</a>
+        </div>
+        {% endif %}
       </nav>
 
       <div class="v2-top-right">
-        <a class="v2-pill-live" href="/app/capture" title="The capture extension is a browser extension; this page explains what it does and what it has captured.">
-          <span class="v2-dot {{ 'ok live' if capture_ready else 'warn' }}"></span>
-          <span class="label">Capture</span>
-        </a>
+        <a class="v2-btn primary sm" href="{% if add_people_href %}{{ add_people_href }}{% else %}/app/add-people{% endif %}">Add people</a>
         <details class="v2-menu">
-          <summary title="Account and setup">
+          <summary title="Account">
             <span class="v2-avatar">{{ operator_initials }}</span>
             <span class="v2-sr">Account menu</span>
           </summary>
@@ -66,57 +50,15 @@
               <b>{{ operator_name }}</b>
               <span class="m v2-hint">{{ operator_email }}</span>
             </div>
-            {# Administrators only, and refused server-side as well as hidden
-               here: this screen carries the *global* Agent controls and a job
-               list that spans every campaign, neither of which is scoped to one
-               person's campaigns. Per-campaign Agent work stays on the campaign
-               page, which every assigned operator can reach. #}
-            {% if is_admin %}
-            <a class="v2-menu-item" href="/app/agents">
-              <b>Agent settings &amp; logs</b>
-              <span>What each Agent may do, and what it did</span>
+            <a class="v2-menu-item" href="/app/account/connections">
+              <b>Connections</b>
+              <span>Gmail, for creating drafts</span>
             </a>
-            {% endif %}
-            <a class="v2-menu-item" href="/app/knowledge">
-              <b>Knowledge Base</b>
-              <span>What we sell and what we may say about it</span>
-            </a>
-            <a class="v2-menu-item" href="/app/suppressions">
-              <b>Suppression list</b>
-              <span>Addresses and domains never contacted</span>
-            </a>
-            <a class="v2-menu-item" href="/app/sending">
-              <b>Sending accounts</b>
-              <span>Not connected — sending is not built yet</span>
-            </a>
-            {# Shown to administrators only. This is a courtesy, not a control:
-               the routes refuse a non-administrator server-side (see
-               `app/core/auth/admin.py`), so typing the URL gets a 403 whether or
-               not this link is rendered. #}
-            {% if is_admin %}
-            <a class="v2-menu-item" href="/app/admin/users">
-              <b>People</b>
-              <span>Who may sign in, and how</span>
-            </a>
-            {% endif %}
-            {# Administrators only, for the same reason as the link above. It was
-               rendered to everybody, which both advertised a surface an ordinary
-               operator may not use and pointed at `/` -- which redirects
-               straight back to `/app`. #}
-            {% if is_admin %}
-            <a class="v2-menu-item{% if not signed_in_operator_email() %} last{% endif %}" href="/admin">
-              <b>Operator Workbench</b>
-              <span>The admin surface: imports, queues, raw records</span>
-            </a>
-            {% endif %}
-            {# Only rendered on a hosted deployment. Local development has no
-               session to end, so the control would do nothing. The CSRF field is
-               inserted into this form automatically at template-compile time. #}
-            {% if signed_in_operator_email() %}
+            {% if signed_in %}
             <form class="v2-menu-item last" method="post" action="/auth/logout">
               <button type="submit" class="v2-menu-signout">
                 <b>Sign out</b>
-                <span>{{ signed_in_operator_email() }}</span>
+                <span>{{ operator_email }}</span>
               </button>
             </form>
             {% endif %}

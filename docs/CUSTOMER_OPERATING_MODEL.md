@@ -182,9 +182,53 @@ the five were machine outcomes, one real contact could contribute to several
 categories at once, and one category was silently capped. The number was
 therefore both wrong and, more importantly, about the wrong thing.
 
-It has been removed rather than renamed. `app/web/v2/context.py` no longer has an
-`AttentionCounts` type or an `attention_counts` function, and `nav_groups()`
-takes no argument, so there is nothing a customer badge could be computed from.
+It has been removed rather than renamed. `app/web/v2/shell.py` has no attention
+counts of any kind and `primary_nav()` takes no argument, so there is nothing a
+customer badge could be computed from.
+
+## 11. Where things live in the product
+
+The customer navigation is exactly **Today · Campaigns · People · Library**, plus
+a role-gated **Admin** entry that keeps the same shell. One **Add people** action
+opens a source chooser (Chrome extension, Google Sheets, a file); the source is a
+delivery mechanism, not a destination.
+
+The **Campaign owns the operating journey.** Its workspace has four tabs —
+Overview, People, Setup, Activity — and every Campaign screen reads one
+projection (`app/services/campaign_workspace.py`) that speaks the three
+preparation outcomes and four lifecycle words (Draft, Active, Paused, Archived)
+and nothing else. Emails are Campaign output, never a place: there is no Emails
+or Review destination, and legacy `/app/review`, `/app/contacts`,
+`/app/knowledge`, `/app/capture` URLs redirect. Agent tiles, re-runs, live
+opt-ins, global Agent controls and the suppression list live under
+`/app/admin/...`.
+
+Routes are one module per destination in `app/web/v2/pages/`; the shell (nav,
+render, filters, feature switches) is `app/web/v2/shell.py`.
+
+## 12. The sending desk and Today
+
+Ready people are worked **inside the Campaign**. Selecting a person in the
+Ready for Sending table opens the workbook in place (`?person=…&email=n`):
+a roster of ready people, the seven-email rail, and one document card with
+**Copy**, **Create Gmail draft** (one email, one draft — nothing sent or
+scheduled) and **Mark actioned**. Edit, Why this email?, History, Skip
+follow-up and Undo sit underneath. Vertical movement is people (J/K, arrows),
+horizontal is emails (left/right), Escape closes.
+
+**Mark actioned** is the explicit human record that the manual sending-related
+step for that exact message version was completed. It is the only thing that
+advances the cycle: **Email 1 marked Actioned establishes Day 0**, and Emails
+2–7 are due on whole local days (`APP_TIMEZONE`) from that anchor — never
+relative to the previous action. Copying or drafting never marks anything.
+The ledger is `sequence_email_actions` (Actioned / Skipped / Undone,
+append-only); the projection is `app/services/email_progress.py`.
+
+**Today** is the return surface: due follow-ups grouped by Campaign, ready
+first emails, Campaigns in motion, and the rare customer-owned setup item.
+"Dismiss for today" hides one Campaign's card for one user until the next
+local day (`today_dismissals`) and changes no shared state; **Skip follow-up**
+is a deliberate shared act on one email. The two verbs are never interchangeable.
 
 ---
 

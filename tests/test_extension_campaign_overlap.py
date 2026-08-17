@@ -465,7 +465,7 @@ FORBIDDEN_SURFACE: tuple[tuple[str, str], ...] = (
     ("POST", "/gmail/connect"),
     ("GET", "/app/admin/users"),
     ("POST", "/app/admin/users/create"),
-    ("POST", f"/app/agents/{uuid.UUID(int=1)}/control"),
+    ("POST", f"/app/admin/agents/{uuid.UUID(int=1)}/control"),
     ("POST", "/workbench/agents/sending/stop"),
 )
 

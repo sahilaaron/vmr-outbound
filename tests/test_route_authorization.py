@@ -287,12 +287,20 @@ ADMIN_SURFACE: tuple[tuple[str, str], ...] = (
     ("GET", "/imports"),
     ("GET", "/local-tools"),
     ("POST", "/campaigns"),
-    # The campaign live opt-in. The one verb on the operator's own campaign page
-    # that authorises real outside work — website research, MillionVerifier
-    # credits, model budget — for a whole cohort at once. The page around it
-    # stays operator-readable, which is the point: an operator has to be able to
-    # see that an enabled Agent is refusing everything and say what is missing.
-    ("POST", f"/app/campaigns/{SAMPLE_ID}/agents/research/live"),
+    # The Campaign's website-research switch: the one verb on the operator's own
+    # Setup page that authorises real outside work — website fetches and model
+    # budget — for a whole cohort at once. The page around it stays
+    # operator-readable.
+    ("POST", f"/app/campaigns/{SAMPLE_ID}/setup/research"),
+    # The Admin section inside the product: Agent controls, per-Campaign
+    # diagnostics with re-runs and live opt-ins, and the suppression list.
+    ("GET", "/app/admin"),
+    ("GET", "/app/admin/agents"),
+    ("POST", "/app/admin/agents/research/control"),
+    ("GET", f"/app/admin/campaigns/{SAMPLE_ID}/diagnostics"),
+    ("POST", f"/app/admin/campaigns/{SAMPLE_ID}/agents/research/live"),
+    ("POST", f"/app/admin/campaigns/{SAMPLE_ID}/agents/research/rerun"),
+    ("GET", "/app/admin/suppressions"),
 )
 
 #: Every route that can reach a paid provider, or rotate the credential that
@@ -338,12 +346,11 @@ OPERATOR_PRODUCT_SURFACE: tuple[tuple[str, str], ...] = (
     ("GET", "/app"),
     ("GET", "/app/campaigns"),
     ("GET", "/app/campaigns/new"),
-    ("GET", "/app/review"),
-    ("GET", "/app/contacts"),
+    ("GET", "/app/people"),
     ("GET", "/app/companies"),
-    ("GET", "/app/capture"),
-    ("GET", "/app/knowledge"),
-    ("GET", "/app/suppressions"),
+    ("GET", "/app/add-people"),
+    ("GET", "/app/library"),
+    ("GET", "/app/account/connections"),
     ("POST", "/gmail/connect"),
     ("POST", "/gmail/disconnect"),
 )
@@ -464,7 +471,15 @@ def test_the_classification_counts_are_the_ones_deliberately_recorded() -> None:
     # without rewriting the reader the administrator surfaces share. See
     # `test_the_agent_monitor_inside_the_product_is_administrator_only`, and note
     # that per-campaign Agent work is untouched under `/app/campaigns/{id}/...`.
-    assert len(EXPECTED_USER_REACHABLE) == 88, len(EXPECTED_USER_REACHABLE)
+    # And a fourth time, 88 to 94, with the Pass 2 shell: the Campaign workspace
+    # tabs (people, setup, activity, add-people, lifecycle, setup POST), the
+    # People/Library destinations and the account Connections page joined; the
+    # legacy Emails/Contacts/Knowledge/Capture URLs stayed as redirects; and
+    # `POST .../setup/research`, the Admin section, the global Agent controls
+    # and the per-Campaign re-run / live routes are withheld under `/app/admin`.
+    # And 94 to 100 with the inline sending desk: five explicit manual acts on
+    # one email (actioned, edit, gmail-draft, skip, undo) and Today's dismiss.
+    assert len(EXPECTED_USER_REACHABLE) == 100, len(EXPECTED_USER_REACHABLE)
 
 
 def test_reading_the_verification_page_is_not_spending(client: TestClient) -> None:
@@ -580,10 +595,11 @@ def test_the_agent_monitor_inside_the_product_is_administrator_only(
     """
 
     csrf = _user_session(client)
-    read = client.get("/app/agents")
-    assert read.status_code == 403
-    assert read.json()["error"] == "admin_required"
-    refused = _call(client, "POST", f"/app/agents/{SAMPLE_ID}/control", csrf)
+    for path in ("/app/agents", "/app/admin/agents"):
+        read = client.get(path)
+        assert read.status_code == 403, path
+        assert read.json()["error"] == "admin_required"
+    refused = _call(client, "POST", f"/app/admin/agents/{SAMPLE_ID}/control", csrf)
     assert refused.status_code == 403
     assert refused.json()["error"] == "admin_required"
 
@@ -941,41 +957,60 @@ EXPECTED_USER_REACHABLE: frozenset[str] = frozenset(
     {
         # The landing redirect into the customer-facing product.
         "GET /",
-        # `/app` and everything under it, which is the product itself.
+        # `/app` and everything under it, which is the product itself:
+        # Today · Campaigns · People · Library, Add people, the account's own
+        # connections, and the legacy redirects that resolve old bookmarks.
+        # `/app/admin/**` and `POST .../setup/research` are deliberately absent.
         "GET /app",
         "GET /app/",
-        "GET /app/analytics",
+        "GET /app/account/connections",
+        "GET /app/add-people",
         "GET /app/campaigns",
         "GET /app/campaigns/new",
         "POST /app/campaigns/new",
         "GET /app/campaigns/{campaign_id}",
-        "POST /app/campaigns/{campaign_id}/agents/{agent_id}/rerun",
-        "POST /app/campaigns/{campaign_id}/archive",
+        "GET /app/campaigns/{campaign_id}/activity",
+        "GET /app/campaigns/{campaign_id}/add-people",
         "GET /app/campaigns/{campaign_id}/edit",
-        "POST /app/campaigns/{campaign_id}/edit",
-        "POST /app/campaigns/{campaign_id}/execution",
         "GET /app/campaigns/{campaign_id}/imports",
         "POST /app/campaigns/{campaign_id}/imports",
         "GET /app/campaigns/{campaign_id}/imports/staged/{staged_id}",
         "POST /app/campaigns/{campaign_id}/imports/staged/{staged_id}/confirm",
         "POST /app/campaigns/{campaign_id}/imports/staged/{staged_id}/discard",
         "GET /app/campaigns/{campaign_id}/imports/{batch_id}",
-        "GET /app/capture",
+        "POST /app/campaigns/{campaign_id}/lifecycle",
+        # The inline sending desk: explicit manual acts on one email of one
+        # ready person, all scoped by the Campaign path guard.
+        "POST /app/campaigns/{campaign_id}/desk/{membership_id}/{position}/actioned",
+        "POST /app/campaigns/{campaign_id}/desk/{membership_id}/{position}/edit",
+        "POST /app/campaigns/{campaign_id}/desk/{membership_id}/{position}/gmail-draft",
+        "POST /app/campaigns/{campaign_id}/desk/{membership_id}/{position}/skip",
+        "POST /app/campaigns/{campaign_id}/desk/{membership_id}/{position}/undo",
+        # Today's per-user "hide this card until tomorrow".
+        "POST /app/today/dismiss",
+        "GET /app/campaigns/{campaign_id}/people",
+        "GET /app/campaigns/{campaign_id}/setup",
+        "POST /app/campaigns/{campaign_id}/setup",
         "GET /app/companies",
         "GET /app/companies/{company_id}",
+        "GET /app/library",
+        "GET /app/library/{section}",
+        "GET /app/people",
+        "GET /app/people/{contact_id}",
+        "POST /app/review/sequence/messages/{version_id}/approve",
+        "POST /app/review/sequence/messages/{version_id}/discard",
+        "POST /app/review/sequence/messages/{version_id}/edit",
+        "POST /app/review/sequence/{sequence_id}/approve",
+        "POST /app/review/sequence/{sequence_id}/gmail-drafts",
+        # Legacy customer URLs, all redirects into the destinations above.
+        "GET /app/analytics",
+        "GET /app/capture",
         "GET /app/contacts",
         "GET /app/contacts/{contact_id}",
         "GET /app/knowledge",
         "GET /app/knowledge/{section}",
         "GET /app/replies",
         "GET /app/review",
-        "POST /app/review/sequence/messages/{version_id}/approve",
-        "POST /app/review/sequence/messages/{version_id}/discard",
-        "POST /app/review/sequence/messages/{version_id}/edit",
-        "POST /app/review/sequence/{sequence_id}/approve",
-        "POST /app/review/sequence/{sequence_id}/gmail-drafts",
-        "POST /app/review/{draft_id}/approve",
-        "POST /app/review/{draft_id}/discard",
         "GET /app/sending",
         "GET /app/sequences",
         "GET /app/suppressions",

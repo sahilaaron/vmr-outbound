@@ -238,6 +238,16 @@ def _status_expression() -> Case[str]:
     )
 
 
+def status_expression() -> Case[str]:
+    """The customer status of a ``CampaignContact`` row joined to its ``Contact``.
+
+    Public so a caller building its own roster query can select or filter by
+    the same rule rather than restating it. The statement must join ``Contact``.
+    """
+
+    return _status_expression()
+
+
 def _scoped(statement: Select[Any], campaign_id: uuid.UUID | None) -> Select[Any]:
     joined: Select[Any] = statement.join(Contact, Contact.id == CampaignContact.contact_id)
     if campaign_id is not None:

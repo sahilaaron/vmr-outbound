@@ -1412,6 +1412,21 @@ class SequenceMessageOrigin(enum.StrEnum):
     REGENERATED = "regenerated"
 
 
+class EmailActionKind(enum.StrEnum):
+    """What a person did about one email in a seven-email package.
+
+    ``ACTIONED`` records that the manual sending-related step for that exact
+    message version was completed. It never claims Gmail sent anything.
+    ``SKIPPED`` deliberately removes a follow-up (positions 2-7) from the manual
+    cycle. ``UNDONE`` reverses one earlier ACTIONED or SKIPPED row and names it;
+    nothing is deleted.
+    """
+
+    ACTIONED = "actioned"
+    SKIPPED = "skipped"
+    UNDONE = "undone"
+
+
 class SequenceReviewDecision(enum.StrEnum):
     """A human decision recorded against one exact immutable message version.
 

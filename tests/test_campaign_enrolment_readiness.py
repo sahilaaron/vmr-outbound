@@ -217,8 +217,8 @@ def test_enrolling_into_a_started_sequence_campaign_burns_nothing(
     db_session.commit()
 
     started = client.post(
-        f"/app/campaigns/{campaign.id}/execution",
-        data={"enabled": "1"},
+        f"/app/campaigns/{campaign.id}/lifecycle",
+        data={"action": "start"},
         follow_redirects=False,
     )
     assert started.status_code == 303
@@ -259,8 +259,8 @@ def test_the_permanent_contact_survives_a_refused_enrolment(
     db_session.commit()
 
     client.post(
-        f"/app/campaigns/{campaign.id}/execution",
-        data={"enabled": "1"},
+        f"/app/campaigns/{campaign.id}/lifecycle",
+        data={"action": "start"},
         follow_redirects=False,
     )
     client.post(
@@ -323,8 +323,8 @@ def test_a_fully_configured_running_campaign_still_accepts_contacts(
     db_session.commit()
 
     client.post(
-        f"/app/campaigns/{campaign.id}/execution",
-        data={"enabled": "1"},
+        f"/app/campaigns/{campaign.id}/lifecycle",
+        data={"action": "start"},
         follow_redirects=False,
     )
     response = client.post(
@@ -373,7 +373,7 @@ def test_the_three_click_opt_out_and_back_in_cannot_reach_a_running_sequence(
 
     # Click one: untick the sequence.
     client.post(
-        f"/app/campaigns/{campaign.id}/edit",
+        f"/app/campaigns/{campaign.id}/setup",
         data={"name": campaign.name},
         follow_redirects=False,
     )
@@ -386,8 +386,8 @@ def test_the_three_click_opt_out_and_back_in_cannot_reach_a_running_sequence(
     # bypass is refusing the way back in, not blocking a start that non-sequence
     # campaigns are entitled to.
     client.post(
-        f"/app/campaigns/{campaign.id}/execution",
-        data={"enabled": "1"},
+        f"/app/campaigns/{campaign.id}/lifecycle",
+        data={"action": "start"},
         follow_redirects=False,
     )
     db_session.expire_all()
@@ -396,7 +396,7 @@ def test_the_three_click_opt_out_and_back_in_cannot_reach_a_running_sequence(
     # Click three: tick the sequence again. This is the one that has to refuse.
     version_running = campaign.settings_version
     reticked = client.post(
-        f"/app/campaigns/{campaign.id}/edit",
+        f"/app/campaigns/{campaign.id}/setup",
         data={"name": campaign.name, "sequence_enabled": "on"},
         follow_redirects=False,
     )
@@ -434,7 +434,7 @@ def test_a_refused_opt_in_persists_no_part_of_the_save(
     db_session.commit()
 
     response = client.post(
-        f"/app/campaigns/{campaign.id}/edit",
+        f"/app/campaigns/{campaign.id}/setup",
         data={"name": "Renamed alongside the switch", "sequence_enabled": "on"},
         follow_redirects=False,
     )
@@ -461,7 +461,7 @@ def test_a_draft_campaign_with_nobody_in_it_may_still_be_opted_in(
     db_session.commit()
 
     client.post(
-        f"/app/campaigns/{campaign.id}/edit",
+        f"/app/campaigns/{campaign.id}/setup",
         data={"name": campaign.name, "sequence_enabled": "on"},
         follow_redirects=False,
     )

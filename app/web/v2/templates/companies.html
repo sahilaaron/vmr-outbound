@@ -3,6 +3,7 @@
 {% block content %}
 <div class="v2-page">
 
+  {% set people_view = 'companies' %}{% include "_people_switch.html" %}
   <div class="v2-head">
     <div>
       <h1 class="v2-h1">Companies</h1>
@@ -10,8 +11,6 @@
         {{ total | thousands }} compan{{ 'y' if total == 1 else 'ies' }} in this view. A website is
         resolved once and reused for everyone who works there, so research and address discovery
         are never paid for twice.
-        {%- if provisional %} {{ provisional }} currently run on a domain the policy accepted only
-        provisionally.{% endif %}
       </p>
     </div>
   </div>

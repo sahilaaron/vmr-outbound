@@ -644,7 +644,7 @@ def _live_now(campaign_id: uuid.UUID) -> bool:
 
 def _post_live(client: TestClient, campaign_id: uuid.UUID, csrf: str, value: str = "1"):
     return client.post(
-        f"/app/campaigns/{campaign_id}/agents/research/live",
+        f"/app/admin/campaigns/{campaign_id}/agents/research/live",
         data={"live": value, "expected_version": "", "reason": "UAT", "_csrf": csrf},
         headers={"Sec-Fetch-Site": "same-origin"},
     )
@@ -664,7 +664,7 @@ def test_an_administrator_can_enable_live_research_for_one_campaign(hosted: Test
     assert _live_now(other_id) is False
 
     withdrawn = hosted.post(
-        f"/app/campaigns/{campaign_id}/agents/research/live",
+        f"/app/admin/campaigns/{campaign_id}/agents/research/live",
         data={"live": "0", "expected_version": "1", "reason": "paused", "_csrf": csrf},
         headers={"Sec-Fetch-Site": "same-origin"},
     )
@@ -692,9 +692,18 @@ def test_an_ordinary_operator_cannot_authorise_live_work_for_any_campaign(
         refused = _post_live(hosted, campaign_id, csrf)
         assert refused.status_code == 403, f"{campaign_id} -> {refused.status_code}"
         assert refused.json()["error"] == "admin_required"
+        # The Setup page's own research switch is the same authority by another
+        # path, and is refused the same way.
+        via_setup = hosted.post(
+            f"/app/campaigns/{campaign_id}/setup/research",
+            data={"allowed": "1", "_csrf": csrf},
+            headers={"Sec-Fetch-Site": "same-origin"},
+        )
+        assert via_setup.status_code == 403, f"{campaign_id} -> {via_setup.status_code}"
         assert _live_now(campaign_id) is False
 
     assert hosted.get(f"/app/campaigns/{own_campaign}").status_code == 200
+    assert hosted.get(f"/app/campaigns/{own_campaign}/setup").status_code == 200
 
 
 def test_the_campaign_page_names_the_missing_opt_in(hosted: TestClient) -> None:
@@ -707,12 +716,19 @@ def test_the_campaign_page_names_the_missing_opt_in(hosted: TestClient) -> None:
     _, _csrf = _sign_in(hosted, role="admin", email=ADMIN_EMAIL)
     campaign_id = _committed_campaign("PE&VC MENA 200-1000")
 
-    page = hosted.get(f"/app/campaigns/{campaign_id}?stage=research")
+    page = hosted.get(f"/app/admin/campaigns/{campaign_id}/diagnostics?stage=research")
 
     assert page.status_code == 200
-    assert "Live Research work is not enabled for this campaign" in page.text
-    assert "Enable live Research work" in page.text
-    assert f"/app/campaigns/{campaign_id}/agents/research/live" in page.text
+    assert "not enabled" in page.text
+    assert "Enable live work" in page.text
+    assert f"/app/admin/campaigns/{campaign_id}/agents/research/live" in page.text
+
+    # And the customer's own Setup page says it in plain words, without an
+    # Agent name.
+    setup = hosted.get(f"/app/campaigns/{campaign_id}/setup")
+    assert setup.status_code == 200
+    assert "Website research" in setup.text
+    assert "Allow research" in setup.text
 
 
 def test_an_agent_with_no_live_gate_offers_no_switch(hosted: TestClient) -> None:
@@ -728,13 +744,13 @@ def test_an_agent_with_no_live_gate_offers_no_switch(hosted: TestClient) -> None
     _, csrf = _sign_in(hosted, role="admin", email=ADMIN_EMAIL)
     campaign_id = _committed_campaign("PE&VC MENA 200-1000")
 
-    page = hosted.get(f"/app/campaigns/{campaign_id}?stage=company")
+    page = hosted.get(f"/app/admin/campaigns/{campaign_id}/diagnostics?stage=company")
     assert page.status_code == 200
-    assert f"/app/campaigns/{campaign_id}/agents/company/live" not in page.text
-    assert "Enable live Company work" not in page.text
+    assert f"/app/admin/campaigns/{campaign_id}/agents/company/live" not in page.text
+    assert "Enable live work" not in page.text
 
     refused = hosted.post(
-        f"/app/campaigns/{campaign_id}/agents/company/live",
+        f"/app/admin/campaigns/{campaign_id}/agents/company/live",
         data={"live": "1", "expected_version": "", "_csrf": csrf},
         headers={"Sec-Fetch-Site": "same-origin"},
     )

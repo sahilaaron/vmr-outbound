@@ -540,7 +540,7 @@ def test_the_customer_contact_and_company_pages_render_no_live_formula(
     committed_session.commit()
     contact = committed_session.scalars(select(Contact)).first()
     assert contact is not None
-    _assert_inert(client.get(f"/app/contacts/{contact.id}").text, prefix)
+    _assert_inert(client.get(f"/app/people/{contact.id}").text, prefix)
     if contact.company_id is not None:
         _assert_inert(client.get(f"/app/companies/{contact.company_id}").text, prefix)
 

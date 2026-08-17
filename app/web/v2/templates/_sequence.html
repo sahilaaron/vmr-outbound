@@ -93,7 +93,7 @@
 
   <div class="v2-seq-actions">
     <a class="v2-btn sm" href="{{ href }}" aria-expanded="{{ 'true' if open else 'false' }}">{{ 'Hide sequence' if open else 'View sequence …' }}</a>
-    <a class="v2-btn sm ghost" href="/app/contacts/{{ row.contact_id }}?campaign={{ row.campaign_id }}">Open the contact</a>
+    <a class="v2-btn sm ghost" href="/app/people/{{ row.contact_id }}?campaign={{ row.campaign_id }}">Open the contact</a>
   </div>
 </article>
 {% endmacro %}
@@ -170,35 +170,10 @@
               data-copy-label-what="{{ row.step_label }}">Copy Full Email</button>
     </div>
     <div class="v2-mail-foot">
-      {% if read_only %}
-      <span class="v2-btn is-disabled" title="This sequence is read-only: the feature or the campaign opt-in is switched off.">Confirm this message</span>
-      <span class="v2-btn is-disabled" title="This sequence is read-only.">Discard</span>
       <span class="why">
-        This sequence is kept and fully readable, but no new decision can be recorded
-        against it while sequences are switched off for this campaign or environment.
-        Nothing already decided has changed.
+        Mark actioned, one-email Gmail drafts and Skip live on the Campaign's sending desk.
+        Nothing here sends: there is no sending path in this build.
       </span>
-      {% else %}
-      <form method="post" action="/app/review/sequence/messages/{{ row.version_id }}/approve">
-        <input type="hidden" name="back" value="{{ back }}">
-        <label class="v2-sr" for="seq-approve-{{ row.position }}">Note</label>
-        <input class="v2-sr" id="seq-approve-{{ row.position }}" name="reason" value="">
-        <button class="v2-btn primary" type="submit">{{ 'Approved by you' if row.human_reviewed and row.decision.value == 'approved' else 'Confirm this message' }}</button>
-      </form>
-      <form method="post" action="/app/review/sequence/messages/{{ row.version_id }}/discard">
-        <input type="hidden" name="back" value="{{ back }}">
-        <label class="v2-sr" for="seq-discard-{{ row.position }}">Reason</label>
-        <input class="v2-sr" id="seq-discard-{{ row.position }}" name="reason" value="">
-        <button class="v2-btn danger" type="submit">Discard</button>
-      </form>
-      <span class="why">
-        This message is already approved — generated messages are, and reviewing is
-        optional. Confirming records <em>your</em> judgement against this exact version, so
-        the record can tell your decision apart from the default. Discarding stops the
-        sequence at this message. Either way nothing is sent and no Gmail draft is
-        created — there is no sending path in this build.
-      </span>
-      {% endif %}
     </div>
   </div>
 
@@ -333,34 +308,10 @@
     </div>
 
     <div class="v2-mail-foot">
-      {% if read_only %}
-      <span class="v2-btn is-disabled" title="This sequence is read-only: the feature or the campaign opt-in is switched off.">Confirm this message</span>
-      <span class="v2-btn is-disabled" title="This sequence is read-only.">Discard</span>
       <span class="why">
-        This sequence is kept and fully readable, but no new decision can be recorded
-        against it while sequences are switched off for this campaign or environment.
-        Nothing already decided has changed.
+        Mark actioned, one-email Gmail drafts and Skip live on the Campaign's sending desk.
+        Nothing here sends: there is no sending path in this build.
       </span>
-      {% else %}
-      <form method="post" action="/app/review/sequence/messages/{{ row.version_id }}/approve">
-        <input type="hidden" name="back" value="{{ back }}">
-        <label class="v2-sr" for="seq-approve-{{ row.position }}">Note</label>
-        <input class="v2-sr" id="seq-approve-{{ row.position }}" name="reason" value="">
-        <button class="v2-btn primary" type="submit">{{ 'Approved by you' if row.human_reviewed and row.decision.value == 'approved' else 'Confirm this message' }}</button>
-      </form>
-      <form method="post" action="/app/review/sequence/messages/{{ row.version_id }}/discard">
-        <input type="hidden" name="back" value="{{ back }}">
-        <label class="v2-sr" for="seq-discard-{{ row.position }}">Reason</label>
-        <input class="v2-sr" id="seq-discard-{{ row.position }}" name="reason" value="">
-        <button class="v2-btn danger" type="submit">Discard</button>
-      </form>
-      <span class="why">
-        Confirming is optional. This message is already approved — generated messages
-        are — and confirming records <em>your</em> judgement against this exact version so
-        the record can tell your decision apart from the default. Either way nothing is
-        sent and no Gmail draft is created: there is no sending path in this build.
-      </span>
-      {% endif %}
     </div>
   </div>
 

@@ -101,7 +101,7 @@ def test_an_opted_out_campaign_keeps_its_sequence_but_says_it_is_read_only(
     campaign.cadence_config = {"sequence": {"enabled": False}}
     db_session.flush()
 
-    body = client.get(f"/app/contacts/{contact.id}?campaign={membership.campaign_id}").text
+    body = client.get(f"/app/people/{contact.id}?campaign={membership.campaign_id}").text
 
     # Still shown -- the work happened.
     assert "The seven-message sequence" in body
@@ -145,7 +145,7 @@ def test_a_campaign_that_never_opted_in_is_told_so(
     campaign.cadence_config = {"sequence": {"enabled": False}}
     db_session.flush()
 
-    body = client.get(f"/app/contacts/{contact.id}?campaign={membership.campaign_id}").text
+    body = client.get(f"/app/people/{contact.id}?campaign={membership.campaign_id}").text
     assert "not set up to generate sequences" in body
     assert "No sequence has been written yet" not in body
 
@@ -156,7 +156,7 @@ def test_an_opted_in_campaign_with_nothing_generated_is_told_to_wait(
     """D-2: pending keeps its own wording, and only where it is true."""
 
     _campaign, _company, contact, membership, _policy, _evidence = scenario
-    body = client.get(f"/app/contacts/{contact.id}?campaign={membership.campaign_id}").text
+    body = client.get(f"/app/people/{contact.id}?campaign={membership.campaign_id}").text
     assert "No sequence has been written yet" in body
     assert "This campaign is opted in" in body
 
@@ -171,7 +171,7 @@ def test_a_refused_generation_says_it_was_refused(
     sequence.generation_status = SequenceGenerationStatus.FAILED
     db_session.flush()
 
-    body = client.get(f"/app/contacts/{contact.id}?campaign={membership.campaign_id}").text
+    body = client.get(f"/app/people/{contact.id}?campaign={membership.campaign_id}").text
     assert "did not produce a usable sequence" in body
     assert "Nothing further will appear here on its own" in body
     assert "When it finishes" not in body
@@ -195,23 +195,13 @@ def test_flag_off_keeps_approved_work_visible_and_read_only(
     )
 
     contact_page = client_off.get(
-        f"/app/contacts/{contact.id}?campaign={membership.campaign_id}"
+        f"/app/people/{contact.id}?campaign={membership.campaign_id}"
     ).text
     assert "The seven-message sequence" in contact_page
     assert "switched off in this environment" in contact_page
     assert "7 approved" in contact_page
     assert "7 approved by you" in contact_page
     assert f"/app/review/sequence/messages/{rows[0].version_id}/approve" not in contact_page
-
-    # The section and its filters stay reachable, and recorded human work is
-    # still shown. The default filter is "all", which shows it directly --
-    # there is no filter an operator has to find first.
-    default_view = client_off.get("/app/review").text
-    assert "All sequences" in default_view and "You reviewed these" in default_view
-    assert "v2-seq-card" in default_view
-    reviewed_view = client_off.get("/app/review?sview=reviewed").text
-    assert "v2-seq-card" in reviewed_view
-    assert "switched off in this environment" in reviewed_view
 
 
 def test_flag_off_refuses_new_decisions_but_changes_nothing_recorded(
@@ -230,16 +220,6 @@ def test_flag_off_refuses_new_decisions_but_changes_nothing_recorded(
     assert "err=" in response.headers["location"]
     # The existing decision is untouched; the new one was not recorded.
     assert db_session.scalar(select(func.count(EmailSequenceMessageReview.id))) == 1
-
-
-def test_flag_off_with_nothing_generated_omits_the_section_entirely(
-    db_session: Session, client_off: TestClient
-) -> None:
-    """Nothing to disclose means no permanent 'switched off' banner."""
-
-    body = client_off.get("/app/review").text
-    assert "v2-seq-card" not in body
-    assert "Sequences are switched off" not in body
 
 
 # ===========================================================================
@@ -644,29 +624,6 @@ def test_an_oversized_lineage_cannot_produce_a_huge_admin_page(
 # ===========================================================================
 
 
-def test_the_sequence_filter_is_independent_of_the_draft_filter(
-    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
-) -> None:
-    """Choosing 'Discarded' for drafts used to silently reinterpret the sequence filter."""
-
-    sequence = build(db_session, scenario)
-    rows = sequence_read.message_rows(db_session, sequence=sequence)
-    sequence_review.approve_sequence(
-        db_session,
-        sequence_id=sequence.id,
-        expected_version_ids=tuple(row.version_id for row in rows),
-    )
-
-    # The draft view says "discarded"; the sequence section has its own filter
-    # and must not reinterpret it. The sequence here has no discarded message,
-    # so the sequence "discarded" filter is empty while "reviewed" is not.
-    discarded = client.get("/app/review?view=discarded&sview=discarded").text
-    assert "v2-seq-card" not in discarded
-
-    reviewed = client.get("/app/review?view=discarded&sview=reviewed").text
-    assert "v2-seq-card" in reviewed
-
-
 def test_a_cross_site_submission_is_refused(
     db_session: Session, client: TestClient, scenario: tuple[Any, ...]
 ) -> None:
@@ -919,7 +876,7 @@ def test_the_customer_stylesheet_carries_a_content_hash(client: TestClient) -> N
     expected = sha256(
         (Path(v2_routes.__file__).parent.parent / "static" / "v2.css").read_bytes()
     ).hexdigest()[:12]
-    body = client.get("/app/review").text
+    body = client.get("/app/campaigns").text
     assert f"v2.css?v={expected}" in body
     assert v2_routes.V2_CSS_VERSION == expected
 
@@ -937,11 +894,7 @@ def test_the_sequence_pages_run_no_script_under_the_deployed_csp(
     _campaign, _company, contact, membership, _policy, _evidence = scenario
     sequence = build(db_session, scenario)
     rows = sequence_read.message_rows(db_session, sequence=sequence)
-    urls = (
-        "/app/review",
-        f"/app/review?sequence={sequence.id}&step=1",
-        f"/app/contacts/{contact.id}?campaign={membership.campaign_id}&step=1",
-    )
+    urls = (f"/app/people/{contact.id}?campaign={membership.campaign_id}&step=1",)
     for url in urls:
         body = client.get(url).text
         assert "<script>" not in body, url

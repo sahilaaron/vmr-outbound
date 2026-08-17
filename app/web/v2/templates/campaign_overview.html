@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% from "_ui.html" import outcome_bar, empty, tag %}
+{% block content %}
+{% include "_campaign_header.html" %}
+
+<div class="v2-page">
+  {% if not answer.ready %}
+  <div class="v2-notice {{ 'info' if answer.action else '' }} v2-answer-notice" role="status">
+    <span>{{ answer.text }}</span>
+    {% if answer.action %}
+    <form method="post" action="{{ base_href }}/lifecycle">
+      <input type="hidden" name="action" value="{{ answer.action }}">
+      <input type="hidden" name="back" value="{{ base_href }}">
+      <button class="v2-btn primary small" type="submit">{{ 'Start Campaign' if answer.action == 'start' else 'Resume Campaign' }}</button>
+    </form>
+    {% elif answer.admin %}
+    <span class="v2-hint">{% if is_admin %}<a href="/app/admin/campaigns/{{ campaign.id }}/diagnostics">Open diagnostics</a>{% else %}An administrator is handling this.{% endif %}</span>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <div class="v2-split">
+    <div class="v2-stack">
+
+      <div class="v2-card">
+        <div class="v2-card-head tight">
+          <h2>Where people stand</h2>
+          <span class="v2-note push">{{ happening }}</span>
+        </div>
+        <div class="v2-card-body">
+          {% if header.people %}
+            {{ outcome_bar(header.progress, status_labels, base_href) }}
+          {% else %}
+            {{ empty('Nobody has been added yet', 'Add people from the Chrome extension, Google Sheets or a file. VMR starts preparing them the moment they arrive.') }}
+            <div class="v2-btn-row v2-mt-sm"><a class="v2-btn primary" href="{{ base_href }}/add-people">Add people</a></div>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="v2-card clip" id="ready">
+        <div class="v2-card-head v2-toolbar">
+          <h2>Ready for Sending <span class="v2-count m">{{ ready_total | thousands }}</span></h2>
+          <div class="v2-chips v2-ready-filters push">
+            {% for key, label in ready_filters %}
+            <a class="v2-chip sm {{ 'on' if key == section }}" href="{{ base_href }}{{ '' if key == 'due' else '?section=' ~ key }}#ready">{{ label }}</a>
+            {% endfor %}
+          </div>
+        </div>
+        {% if ready_rows and not desk %}
+        <div class="v2-table-wrap">
+          <table class="v2-rowlinks">
+            <thead>
+              <tr>
+                <th>Person</th>
+                <th>Company</th>
+                <th>Next email</th>
+                <th>Due</th>
+                <th>Progress</th>
+                <th>Last action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in ready_rows %}
+              {% set open_url = base_href ~ '?' ~ ('section=' ~ section ~ '&' if section != 'due' else '') ~ 'person=' ~ row.person.membership_id ~ '#ready' %}
+              <tr>
+                <td><a class="v2-rowlink" href="{{ open_url }}">{{ row.person.name | neutralize }}</a></td>
+                <td>{{ (row.person.company | neutralize) or '—' }}</td>
+                <td class="v2-nowrap">{{ row.next_label }}</td>
+                <td class="v2-nowrap {{ 'v2-warn-text' if row.progress and row.progress.overdue }}">{{ row.due_label }}</td>
+                <td class="v2-nowrap v2-muted">{{ row.progress_label }}</td>
+                <td class="v2-nowrap v2-muted">{% if row.progress and row.progress.last_action %}Email {{ row.progress.last_action.position }} {{ row.progress.last_action.label | lower }} · {{ row.progress.last_action.acted_at | when }}{% else %}—{% endif %}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% if ready_total >= ready_limit %}
+        <div class="v2-card-foot"><a href="{{ base_href }}/people?outcome=ready_for_sending">See everyone who is ready →</a></div>
+        {% endif %}
+        {% elif desk %}
+          {% include "_desk.html" %}
+        {% elif ready_total %}
+          {{ empty('Nobody is due right now', 'Everyone ready has been actioned for now, or their next follow-up is not due yet.') }}
+          <div class="v2-card-foot"><a href="{{ base_href }}?section=all#ready">Show all ready people →</a></div>
+        {% elif header.people %}
+          {{ empty('Nobody is ready yet', 'People appear here as soon as VMR has a confirmed address and seven written emails for them.') }}
+        {% else %}
+          {{ empty('Nobody is ready yet', 'Add people first. Ready people appear here with their emails.') }}
+        {% endif %}
+      </div>
+
+    </div>
+
+    <div class="v2-aside plain">
+
+      {% if header.progress.could_not_prepare %}
+      <div class="v2-card">
+        <div class="v2-card-head tight">
+          <h2>Could not prepare <span class="v2-count m">{{ header.progress.could_not_prepare | thousands }}</span></h2>
+        </div>
+        {% for reason in reasons %}
+        <div class="v2-row tight v2-reason-row">
+          <span>{{ reason.reason }}</span>
+          <b class="m">{{ reason.count }}</b>
+        </div>
+        {% endfor %}
+        <div class="v2-card-foot plain">
+          <a href="{{ base_href }}/people?outcome=could_not_prepare">View affected people →</a>
+          {% if is_admin %} · <a href="/app/admin/campaigns/{{ campaign.id }}/diagnostics">Diagnostics</a>{% endif %}
+        </div>
+      </div>
+      {% endif %}
+
+      <div class="v2-card">
+        <div class="v2-card-head tight">
+          <h2>Setup</h2>
+          <a class="v2-hint push" href="{{ base_href }}/setup">Change →</a>
+        </div>
+        <dl class="v2-facts">
+          <div class="v2-fact-row"><dt>Offering</dt><dd>{% if offerings %}{{ offerings | map(attribute='name') | join(', ') }}{% else %}<span class="v2-muted">None chosen</span>{% endif %}</dd></div>
+          <div class="v2-fact-row"><dt>Preparation</dt><dd>{% if header.lifecycle == 'active' %}Active{% elif header.lifecycle == 'paused' %}Paused{% elif header.lifecycle == 'draft' %}Not started{% else %}Archived{% endif %}</dd></div>
+          <div class="v2-fact-row"><dt>Website research</dt><dd>{{ 'Allowed' if research_allowed else 'Off' }}</dd></div>
+          <div class="v2-fact-row"><dt>Company website</dt><dd>{{ 'Best available accepted' if campaign.allow_provisional_domains else 'Confirmed only' }}</dd></div>
+          <div class="v2-fact-row"><dt>Emails</dt><dd>{% if sequence_on %}Seven, on days {{ cadence_text }}{% else %}One email per person{% endif %}</dd></div>
+          <div class="v2-fact-row"><dt>Access</dt><dd>{% if access_people %}{{ access_people | length }} {{ 'person' if access_people | length == 1 else 'people' }}{% else %}Administrators only{% endif %}</dd></div>
+        </dl>
+      </div>
+
+      <div class="v2-card">
+        <div class="v2-card-head tight">
+          <h2>Recent activity</h2>
+          <a class="v2-hint push" href="{{ base_href }}/activity">All →</a>
+        </div>
+        {% if activity %}
+          {% for line in activity %}
+          <div class="v2-activity-row">
+            <span class="v2-activity-time" title="{{ line.at | dt }}">{{ line.at | ago }}</span>
+            <div>
+              <div class="v2-activity-text">{{ line.text }}</div>
+              {% if line.meta %}<div class="v2-activity-meta">{{ line.meta }}</div>{% endif %}
+            </div>
+          </div>
+          {% endfor %}
+        {% else %}
+          <div class="v2-row tight v2-note">Nothing has happened yet.</div>
+        {% endif %}
+      </div>
+
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+{% if desk %}<script src="{{ url_for('static', path='sequence.js') }}?v={{ sequence_js_version }}" defer></script>
+<script src="{{ url_for('static', path='desk.js') }}?v={{ desk_js_version }}" defer></script>{% endif %}
+{% endblock %}

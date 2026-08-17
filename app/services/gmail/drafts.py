@@ -333,6 +333,82 @@ def create_drafts(
     return run
 
 
+def create_draft(
+    session: Session,
+    *,
+    message_version_id: uuid.UUID,
+    grant: GmailMailboxGrant,
+    settings: GmailSettings,
+    oauth_client: GmailOAuthClient,
+    provider: GmailProvider,
+    actor: str,
+    now: datetime | None = None,
+) -> DraftRun:
+    """Create one Gmail draft for one current message version. Nothing more.
+
+    The sending desk's contract: the user acts on one email at a time. The
+    version must be the message's *current* text — a stale id is refused rather
+    than drafted, because the operator would be looking at newer text than the
+    draft would carry. No review decision is required: creating a draft sends
+    nothing, and the human step that matters is recorded separately as
+    "actioned". Idempotency, lineage and audit are exactly those of
+    :func:`create_drafts` — the same per-version reservation row, the same
+    ``_draft_one``.
+    """
+
+    moment = now or datetime.now(UTC)
+    version = session.get(EmailSequenceMessageVersion, message_version_id)
+    if version is None:
+        raise GmailDraftError("That email version does not exist, so nothing was drafted.")
+    if version.superseded_at is not None:
+        raise GmailDraftError(
+            "This email has been edited since the page loaded, so nothing was drafted. "
+            "Reload and check the text before creating the draft."
+        )
+    sequence = session.get(EmailSequence, version.sequence_id)
+    if sequence is None:
+        raise GmailDraftError("That sequence does not exist.")
+    _guard_sequence(session, sequence=sequence)
+    if not gmail_mailbox.scopes_are_sufficient(grant):
+        raise GmailDraftError(
+            "The connected Google account did not grant permission to create drafts. "
+            "Disconnect and connect Gmail again."
+        )
+    recipient = _recipient_for(session, sequence=sequence)
+    item = _Draftable(
+        position=version.position,
+        message_id=version.message_id,
+        version_id=version.id,
+        subject=version.subject,
+        body=version.body,
+    )
+    try:
+        access_token = gmail_mailbox.access_token_for(
+            session, grant=grant, settings=settings, client=oauth_client, now=moment
+        )
+    except gmail_mailbox.GmailMailboxError:
+        session.commit()
+        raise
+    session.commit()
+
+    run = DraftRun(mailbox_address=grant.mailbox_address, skipped_discarded=0)
+    run.outcomes.append(
+        _draft_one(
+            session,
+            sequence=sequence,
+            item=item,
+            recipient=recipient,
+            grant=grant,
+            settings=settings,
+            provider=provider,
+            access_token=access_token,
+            actor=actor,
+            moment=moment,
+        )
+    )
+    return run
+
+
 def _existing_record(
     session: Session, *, grant: GmailMailboxGrant, version_id: uuid.UUID
 ) -> GmailDraftRecord | None:
