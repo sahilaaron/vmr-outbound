@@ -17,7 +17,7 @@
     </div>
   </div>
   <div class="page-actions">
-    <a class="btn" href="/companies/{{ view.company_id }}">Full workspace (legacy)</a>
+    <a class="btn" href="/app/companies/{{ view.company_id }}">Company page</a>
     {% if view.intelligence_href %}<a class="btn" href="{{ view.intelligence_href }}">Company Intelligence</a>{% endif %}
   </div>
 </div>
@@ -26,7 +26,7 @@
 <div class="notice warn"><div>The domain is <strong>provisional</strong>: it authorizes company Research and nothing else — never qualification, drafting, email discovery, campaign eligibility or sending.</div></div>
 {% endif %}
 {% if view.conflicts %}
-<div class="notice warn"><div><strong>Unresolved conflicts:</strong> {{ view.conflicts | map("replace", "_", " ") | join(", ") }} — resolve them in the legacy Company workspace.</div></div>
+<div class="notice warn"><div><strong>Unresolved conflicts:</strong> {{ view.conflicts | map("replace", "_", " ") | join(", ") }} — resolve them in the Company page.</div></div>
 {% endif %}
 
 <div class="grid cols-2">
@@ -64,7 +64,7 @@
         </tbody>
       </table>
       </div>
-      <div class="card-foot">Dossier content is on the <a href="/companies/{{ view.company_id }}">legacy Company workspace</a>.</div>
+      <div class="card-foot">Dossier content is on the <a href="/app/companies/{{ view.company_id }}">Company page</a>.</div>
       {% else %}
       {{ wb.empty("No dossiers", "Research has not produced a dossier for this Company.") }}
       {% endif %}

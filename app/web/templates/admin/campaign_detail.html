@@ -14,7 +14,7 @@
     <div class="sub">Created {{ view.created_at | dt }} · settings v{{ view.settings_version }}{% if view.allow_provisional_domains %} · provisional domains allowed for Research{% endif %}</div>
   </div>
   <div class="page-actions">
-    <a class="btn" href="/campaigns/{{ view.campaign_id }}">Campaign settings (legacy)</a>
+    <a class="btn" href="/app/campaigns/{{ view.campaign_id }}/setup">Campaign setup</a>
     {% if 'agent_workbench' in features_enabled %}
     <a class="btn" href="/workbench/campaigns/{{ view.campaign_id }}">Legacy monitor</a>
     {% endif %}

@@ -1415,7 +1415,7 @@ async def review_resolve(request: Request, row_id: str, db: Session = Depends(ge
     else:
         note = f"Resolved by {action.value.replace('_', ' ')}."
     if contact_id is not None:
-        return _redirect(f"/contacts/{contact_id}", ok=note)
+        return _redirect(f"/app/people/{contact_id}", ok=note)
     return _redirect("/review", ok=note)
 
 
@@ -1458,7 +1458,7 @@ def _annotation_subject(
 
     if contact_id is not None:
         parsed = _parse_uuid(contact_id)
-        back = f"/contacts/{contact_id}"
+        back = f"/app/people/{contact_id}"
         if parsed is None:
             return None, back
         try:

@@ -50,7 +50,7 @@
         <td class="wrap">{{ (c.profile_fields or {}).get("full_name") or "—" }}</td>
         <td><span class="badge">{{ c.outcome.value }}</span></td>
         <td class="wrap">{{ c.normalized_profile_url or "uncertain" }}</td>
-        <td class="wrap">{% if c.matched_contact_id %}<a href="/contacts/{{ c.matched_contact_id }}">contact</a>{% else %}—{% endif %}</td>
+        <td class="wrap">{% if c.matched_contact_id %}<a href="/app/people/{{ c.matched_contact_id }}">contact</a>{% else %}—{% endif %}</td>
         <td><a href="/contact-captures/{{ c.id }}">open</a></td>
       </tr>
       {% endfor %}

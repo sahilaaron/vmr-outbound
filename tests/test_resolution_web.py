@@ -306,18 +306,22 @@ def test_the_earlier_decision_stays_readable_on_the_page_after_a_correction(
 # --- The company and contact surfaces -----------------------------------------
 
 
-def test_the_company_workspace_shows_the_state_and_research_readiness(
+def test_the_company_page_calls_a_provisional_website_best_available(
     client: TestClient, committed_session: Session, capture: LinkedInProfileSnapshot
 ) -> None:
+    """The customer's three words for a website: Confirmed / Best available / Missing.
+
+    A provisional decision is "Best available" — never dressed up as confirmed —
+    and the decision's own plain-language line sits under Sources and changes.
+    """
+
     outcome = _resolve(committed_session, capture, "clean_single_match")
     assert outcome.company is not None
 
     body = client.get(f"/app/companies/{outcome.company.id}").text
 
-    assert "Domain resolution" in body
-    assert "domain provisional" in body
-    assert "research-ready · provisional" in body
-    assert "This company's domain is provisional." in body
+    assert "Best available" in body
+    assert "Domain provisional" in body
 
 
 def test_a_company_with_no_decision_is_not_reported_as_uncertain(
@@ -331,21 +335,22 @@ def test_a_company_with_no_decision_is_not_reported_as_uncertain(
 
     body = client.get(f"/app/companies/{company.id}").text
 
-    assert "not auto-resolved" in body
-    assert "No automatic resolution decision for this company." in body
-    assert "domain provisional" not in body
+    assert "Best available" not in body
+    assert "Domain provisional" not in body
+    assert "Recorded with the company." in body
 
 
-def test_the_contact_page_shows_the_decision_behind_its_company_link(
+def test_the_person_page_links_to_the_company_that_carries_the_decision(
     client: TestClient, committed_session: Session, capture: LinkedInProfileSnapshot
 ) -> None:
     _resolve(committed_session, capture, "clean_single_match")
     result = promo.promote(committed_session, snapshot=capture, actor="test")
     committed_session.commit()
     assert result.contact is not None
+    assert result.contact.company_id is not None
 
     body = client.get(f"/app/people/{result.contact.id}").text
 
-    assert "domain provisional" in body
-    assert "Why this domain — the resolution decision" in body
-    assert "Email discovery, qualification, drafting" in body
+    assert f"/app/companies/{result.contact.company_id}" in body
+    company_body = client.get(f"/app/companies/{result.contact.company_id}").text
+    assert "Best available" in company_body

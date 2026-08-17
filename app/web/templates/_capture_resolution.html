@@ -172,7 +172,7 @@
       </td></tr>
       <tr><td class="mono">promoted contact</td><td class="wrap">
         {% if promotion.promoted_contact_id %}
-          <a href="/contacts/{{ promotion.promoted_contact_id }}">{{ promotion.promoted_contact_id }}</a>
+          <a href="/app/people/{{ promotion.promoted_contact_id }}">{{ promotion.promoted_contact_id }}</a>
           <span class="muted-text">· {{ promotion.notes_linked }} note(s) linked ·
             labels {{ promotion.labels_applied | join(", ") if promotion.labels_applied else "none" }}</span>
         {% else %}not promoted{% endif %}

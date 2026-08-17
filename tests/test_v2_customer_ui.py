@@ -906,9 +906,21 @@ def test_connections_says_gmail_is_unavailable_when_the_feature_is_off(
 
 def test_the_admin_landing_lists_the_machinery(client: TestClient) -> None:
     body = client.get("/app/admin").text
-    for item in ("Agents", "Users &amp; access", "Suppression list", "Operator Workbench"):
+    for item in (
+        "Capabilities",
+        "Users &amp; Access",
+        "Data tools",
+        "Diagnostics",
+        "Operator Workbench",
+    ):
         assert item in body, item
-    for href in ("/app/admin/agents", "/app/admin/users", "/app/admin/suppressions", "/admin"):
+    for href in (
+        "/app/admin/agents",
+        "/app/admin/users",
+        "/app/admin/data-tools",
+        "/app/admin/diagnostics",
+        "/admin",
+    ):
         assert f'href="{href}"' in body, href
 
 
