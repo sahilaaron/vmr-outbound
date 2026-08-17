@@ -13,11 +13,15 @@ cursor, and can be paused and resumed.
 
 ## Before you start
 
-1. **The feature switch must be on for a live run.**
-   `FEATURES__COMPANY_INTELLIGENCE=true`. A live run with it off queues nothing
-   and records `feature_disabled` against every company — deliberately, because a
-   queue that silently fills with work no worker will execute is worse than a run
-   that stops and says so.
+1. **The control must be effectively on for a live run.** That means Company
+   Intelligence shows as *effective* in Admin → Configuration — either the
+   deployment default `FEATURES__COMPANY_INTELLIGENCE=true`, or an
+   administrator's stored setting turning it on, which overrides the default.
+   Since 2026-08-16 every enforcement point reads that effective value rather
+   than the environment variable, so the Admin screen is the authority. A live
+   run with the control off queues nothing and records `feature_disabled`
+   against every company — deliberately, because a queue that silently fills
+   with work no worker will execute is worse than a run that stops and says so.
 2. **Vocabularies must be seeded**, or every value will come back unmapped:
    ```python
    from app.services.company_intelligence.seed import seed_vocabularies
