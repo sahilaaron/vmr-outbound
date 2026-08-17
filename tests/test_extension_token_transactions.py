@@ -341,7 +341,9 @@ def test_a_token_request_blocked_on_a_row_lock_does_not_stall_the_server(
         ).all()
 
         refresher = threading.Thread(
-            target=lambda: token_result.append(_token(client, _refresh_payload(issued["refresh_token"]))),
+            target=lambda: token_result.append(
+                _token(client, _refresh_payload(issued["refresh_token"]))
+            ),
             daemon=True,
         )
         refresher.start()
