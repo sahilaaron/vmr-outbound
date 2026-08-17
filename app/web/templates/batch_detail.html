@@ -6,7 +6,7 @@
   <div class="head-row">
     <div>
       <h1>{{ batch.filename or "(unnamed upload)" }} {{ batch_badge(batch) }}</h1>
-      <div class="sub">Imported into <a href="/campaigns/{{ campaign.id }}">{{ campaign.name }}</a> · {{ batch.source_format.value | upper }} · {{ batch.created_at | dt }}</div>
+      <div class="sub">Imported into <a href="/app/campaigns/{{ campaign.id }}">{{ campaign.name }}</a> · {{ batch.source_format.value | upper }} · {{ batch.created_at | dt }}</div>
     </div>
   </div>
 </div>
@@ -134,7 +134,7 @@
         <td>{% if r.validation %}{{ outcome_badge(r.validation.outcome) }}{% else %}<span class="badge muted">unprocessed</span>{% endif %}</td>
         <td>
           {% if r.validation and r.validation.contact_id %}
-          <a href="/contacts/{{ r.validation.contact_id }}">{{ (r.validation.normalized_data or {}).get("first_name", "") }} {{ (r.validation.normalized_data or {}).get("last_name", "") }}</a>
+          <a href="/app/people/{{ r.validation.contact_id }}">{{ (r.validation.normalized_data or {}).get("first_name", "") }} {{ (r.validation.normalized_data or {}).get("last_name", "") }}</a>
           {% elif r.validation and r.validation.normalized_data %}
           {{ r.validation.normalized_data.get("first_name") or "" }} {{ r.validation.normalized_data.get("last_name") or "" }}
           {% else %}<span class="muted-text">—</span>{% endif %}

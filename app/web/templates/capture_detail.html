@@ -11,7 +11,7 @@
   the ability to classify and annotate them in the meantime.
 #}
 <div class="page-head">
-  <div class="crumbs"><a href="/contacts">Contacts</a><span>/</span>{{ detail.full_name }}</div>
+  <div class="crumbs"><a href="/app/people">People</a><span>/</span>{{ detail.full_name }}</div>
   <h1>{{ detail.full_name }} <span class="badge muted">capture</span> {{ suppression_badge(detail.states) }}</h1>
   <div class="sub">Saved from a capture. Not a canonical contact yet.</div>
 </div>
@@ -111,7 +111,7 @@
           <td>{{ candidate.first_name }} {{ candidate.last_name }}</td>
           <td>{{ candidate.company_name }} <span class="mono small muted-text">{{ candidate.company_domain }}</span></td>
           <td class="mono small">{{ candidate.email or "—" }}</td>
-          <td><a class="btn small secondary" href="/contacts/{{ candidate.id }}">Open</a></td>
+          <td><a class="btn small secondary" href="/app/people/{{ candidate.id }}">Open</a></td>
         </tr>
         {% endfor %}
       </tbody>

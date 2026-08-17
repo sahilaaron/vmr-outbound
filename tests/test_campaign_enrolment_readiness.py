@@ -226,7 +226,7 @@ def test_enrolling_into_a_started_sequence_campaign_burns_nothing(
     db_session.expire_all()
 
     response = client.post(
-        "/contacts/add-to-campaign",
+        "/app/people/add-to-campaign",
         data={"campaign_id": str(campaign.id), "contact_ids": [str(contact.id)]},
         follow_redirects=False,
     )
@@ -264,7 +264,7 @@ def test_the_permanent_contact_survives_a_refused_enrolment(
         follow_redirects=False,
     )
     client.post(
-        "/contacts/add-to-campaign",
+        "/app/people/add-to-campaign",
         data={"campaign_id": str(campaign.id), "contact_ids": [str(contact.id)]},
         follow_redirects=False,
     )
@@ -328,7 +328,7 @@ def test_a_fully_configured_running_campaign_still_accepts_contacts(
         follow_redirects=False,
     )
     response = client.post(
-        "/contacts/add-to-campaign",
+        "/app/people/add-to-campaign",
         data={"campaign_id": str(campaign.id), "contact_ids": [str(contact.id)]},
         follow_redirects=False,
     )

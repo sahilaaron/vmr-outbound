@@ -1,50 +1,75 @@
 {#
-  Admin: the machinery room, in the same shell. A list of where things live
-  today; the six-section Admin arrives in the consolidation slice.
+  Admin — Home / Health. The machinery room, in the same shell: service and
+  queue health, outcomes across Campaigns, what needs an administrator, and
+  the deployment identity. Technical vocabulary is allowed here.
 #}
 {% extends "base.html" %}
+{% from "_ui.html" import tag, lifecycle_pill, empty %}
 {% block content %}
 <div class="v2-page narrow">
   <h1 class="v2-h1 big">Admin</h1>
   <p class="v2-lede">The machinery behind the product. Nothing here is part of a normal day's work.</p>
+  {% set admin_section = 'home' %}{% include "_admin_nav.html" %}
 
-  <div class="v2-admin-grid v2-mt">
-    <a class="v2-admin-card" href="/app/admin/agents">
-      <b>Agents</b>
-      <span>What each Agent may do, and the log of what it did.</span>
-    </a>
-    <a class="v2-admin-card" href="/app/admin/users">
-      <b>Users &amp; access</b>
-      <span>Who may sign in, their role, and Campaign assignments.</span>
-    </a>
-    <a class="v2-admin-card" href="/app/admin/suppressions">
-      <b>Suppression list</b>
-      <span>Addresses and domains that are never contacted.</span>
-    </a>
-    <a class="v2-admin-card" href="/admin">
-      <b>Operator Workbench</b>
-      <span>Imports, queues, failures, providers, configuration and raw records.</span>
-    </a>
-    <a class="v2-admin-card" href="/admin/agents/studio">
-      <b>Agent Studio</b>
-      <span>Policies, previews and reports for the writing Agents.</span>
-    </a>
-    <a class="v2-admin-card" href="/admin/company-intelligence">
-      <b>Company Intelligence</b>
-      <span>Classification runs, taxonomy and backfills.</span>
-    </a>
+  <div class="v2-card">
+    <div class="v2-card-head tight"><h2>Health</h2><span class="v2-hint push">counted now</span></div>
+    <div class="v2-stat-strip">
+      <div class="v2-stat"><div class="v2-stat-label {{ 'ok' if database_ok else 'err' }}">Database</div><div class="v2-stat-figure"><span class="v2-stat-value">{{ 'OK' if database_ok else 'Down' }}</span></div></div>
+      <div class="v2-stat"><div class="v2-stat-label">Jobs running</div><div class="v2-stat-figure"><span class="v2-stat-value">{{ overview.queue.count('running') if overview else '—' }}</span></div></div>
+      <div class="v2-stat"><div class="v2-stat-label">Jobs queued</div><div class="v2-stat-figure"><span class="v2-stat-value">{{ overview.queue.count('queued') if overview else '—' }}</span></div></div>
+      <div class="v2-stat"><div class="v2-stat-label {{ 'err' if overview and overview.queue.terminal_failures }}">Terminal failures</div><div class="v2-stat-figure"><span class="v2-stat-value">{{ overview.queue.terminal_failures if overview else '—' }}</span></div></div>
+      <div class="v2-stat"><div class="v2-stat-label {{ 'warn' if overview and overview.stale_leases }}">Stale leases</div><div class="v2-stat-figure"><span class="v2-stat-value">{{ overview.stale_leases if overview else '—' }}</span></div></div>
+      <div class="v2-stat"><div class="v2-stat-label">Mode</div><div class="v2-stat-figure"><span class="v2-stat-value">{{ 'Dry run' if overview and overview.dry_run else 'Live' }}</span></div></div>
+    </div>
+    <div class="v2-card-foot plain">
+      {{ app_env | upper }} · release <span class="m">{{ release_id }}</span> · sending {{ 'stopped' if overview and overview.sending_control.status.value != 'enabled' else 'agent enabled' }} — no send adapter exists in this build.
+      <a href="/admin/system">System detail →</a>
+    </div>
   </div>
 
-  {% if campaigns %}
-  <h2 class="v2-section-title">Campaign diagnostics</h2>
+  {% if overview and overview.attention %}
+  <h2 class="v2-section-title">Needs an administrator</h2>
   <div class="v2-card">
-    {% for item in campaigns %}
+    {% for item in overview.attention[:12] %}
     <div class="v2-row tight v2-reason-row">
-      <a href="/app/admin/campaigns/{{ item.id }}/diagnostics">{{ item.name | neutralize }}</a>
-      <span class="v2-hint">stopped people, re-runs, live opt-ins</span>
+      <span>{{ tag(item.severity, 'err' if item.severity == 'critical' else ('warn' if item.severity == 'warning' else ''), small=true) }} <b>{{ item.title }}</b> <span class="v2-hint">{{ item.detail }}</span></span>
+      <a class="v2-btn small" href="{{ item.href }}">Open</a>
     </div>
     {% endfor %}
   </div>
   {% endif %}
+
+  <h2 class="v2-section-title">Campaigns</h2>
+  <div class="v2-card clip">
+    {% if campaign_rows %}
+    <div class="v2-table-wrap">
+      <table class="v2-rowlinks">
+        <thead><tr><th>Campaign</th><th>State</th><th class="num">People</th><th class="num">Processing</th><th class="num">Ready</th><th class="num">Could not prepare</th><th class="num">Failed jobs</th><th></th></tr></thead>
+        <tbody>
+          {% for row in campaign_rows %}
+          <tr>
+            <td><a class="v2-rowlink" href="/app/campaigns/{{ row.campaign.id }}">{{ row.campaign.name | neutralize }}</a></td>
+            <td>{{ lifecycle_pill(row.lifecycle, row.lifecycle_label) }}</td>
+            <td class="num m">{{ row.progress.total }}</td>
+            <td class="num m">{{ row.progress.processing }}</td>
+            <td class="num m">{{ row.progress.ready_for_sending }}</td>
+            <td class="num m">{{ row.progress.could_not_prepare }}</td>
+            <td class="num m {{ 'v2-err' if failed_jobs.get(row.campaign.id) }}">{{ failed_jobs.get(row.campaign.id, 0) }}</td>
+            <td class="num v2-nowrap"><a class="v2-btn small" href="/app/admin/campaigns/{{ row.campaign.id }}/diagnostics">Diagnostics</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+      {{ empty('No Campaigns yet', 'Nothing is being prepared.') }}
+    {% endif %}
+  </div>
+
+  <div class="v2-admin-grid v2-mt">
+    <a class="v2-admin-card" href="/admin"><b>Operator Workbench</b><span>Imports, queues, failures, raw records — the legacy shell.</span></a>
+    <a class="v2-admin-card" href="/admin/agents/studio"><b>Agent Studio</b><span>Policies, previews and reports for the writing Agents.</span></a>
+    <a class="v2-admin-card" href="/admin/company-intelligence"><b>Company Intelligence</b><span>Classification runs, taxonomy and backfills.</span></a>
+  </div>
 </div>
 {% endblock %}

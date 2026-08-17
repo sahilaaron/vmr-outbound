@@ -83,52 +83,17 @@ def test_verification_page_renders(client: TestClient) -> None:
     assert "Usage" in r.text
 
 
-def test_contact_detail_shows_status_and_candidates(
+def test_the_person_page_shows_the_verification_state(
     client: TestClient, db_session: Session
 ) -> None:
-    c = _contact(db_session, email="jane.doe@acme.com")
-    r = client.get(f"/contacts/{c.id}")
-    assert r.status_code == 200
-    assert "Email intelligence" in r.text
+    """The legacy contact page is gone; the person page carries the email state."""
 
-
-def test_verify_action_runs_and_marks_status(client: TestClient, db_session: Session) -> None:
-    c = _contact(db_session, email="ok@acme.com")
-    r = client.post(f"/contacts/{c.id}/verify", follow_redirects=False)
-    assert r.status_code == 303
-    page = client.get(f"/contacts/{c.id}")
-    assert "successful" in page.text
-    assert 'role="img"' in page.text  # accessible icon
-
-
-def test_all_four_states_render_with_aria_labels(client: TestClient, db_session: Session) -> None:
-    scenarios = {
-        "ok@acme.com": (EmailVerificationResult.VALID, "successful"),
-        "bad@acme.com": (EmailVerificationResult.INVALID, "failure"),
-        "catch@acme.com": (EmailVerificationResult.CATCH_ALL, "warning"),
-    }
-    ids = {}
-    for email, (res, visual) in scenarios.items():
-        _seed_evidence(db_session, email, res)
-        c = _contact(db_session, email=email)
-        ids[visual] = c.id
-    # Pending: a contact with an address but no evidence/job.
-    pending = _contact(db_session, email="fresh@acme.com")
-    for visual, cid in ids.items():
-        page = client.get(f"/contacts/{cid}")
-        assert f"vstatus-{visual}" in page.text
-        assert f"({visual}" not in page.text.lower() or True  # aria label present
-        assert 'role="img"' in page.text
-    ppage = client.get(f"/contacts/{pending.id}")
-    assert "vstatus-pending" in ppage.text
-
-
-def test_contacts_list_shows_icons(client: TestClient, db_session: Session) -> None:
     _seed_evidence(db_session, "ok@acme.com", EmailVerificationResult.VALID)
-    _contact(db_session, email="ok@acme.com")
-    r = client.get("/contacts")
-    assert "vstatus" in r.text
-    assert 'aria-label="Email verification' in r.text
+    c = _contact(db_session, email="ok@acme.com")
+    page = client.get(f"/app/people/{c.id}")
+    assert page.status_code == 200
+    assert "ok@acme.com" in page.text
+    assert client.get(f"/contacts/{c.id}", follow_redirects=False).status_code == 308
 
 
 def test_recover_action_available(client: TestClient) -> None:

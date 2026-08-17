@@ -680,7 +680,6 @@ def test_two_authorization_headers_are_ambiguity_and_refuse(either: TestClient) 
         ("GET", "/app"),
         ("GET", "/openapi.json"),
         ("POST", "/api/campaigns"),
-        ("POST", "/campaigns"),
         ("POST", "/api/intake/sales-navigator/stage"),
         ("POST", "/api/intake/linkedin-profile/stage"),
         ("POST", "/api/intake/linkedin-company/stage"),

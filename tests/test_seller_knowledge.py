@@ -766,34 +766,31 @@ def test_nothing_outside_the_knowledge_base_consults_readiness() -> None:
     # may render it. Anything else consulting it would make it a gate, which is the
     # thing this test exists to prevent.
     #
-    # Two presentation surfaces are named, one by one, and neither branches on the
-    # result:
+    # One presentation surface is named, and it does not branch on the result:
     #
-    # * ``web/routes.py`` — the admin Workbench, where the Knowledge Base is
-    #   edited;
-    # * ``web/v2/pages/library.py`` — the customer's Library. It is deliberately
-    #   customer-visible and read-only: normal users browse it, only an
-    #   administrator edits the records behind it, and Campaign Setup selects
-    #   approved offerings from it. It displays ``seller_report`` as information
+    # * ``web/v2/pages/library.py`` — the Library. It is deliberately
+    #   customer-visible: normal users browse it, only an administrator edits the
+    #   records behind it (in place, under ``/app/admin/library``), and Campaign
+    #   Setup selects approved offerings from it. It displays ``seller_report`` as information
     #   and nothing more — no route it serves refuses, redirects, or withholds on
     #   the strength of readiness, and nothing downstream of it consults the
     #   value. Removing readiness from the Library to satisfy this test would
     #   hide the one thing the page exists to show; making the Library
     #   administrator-only would answer a structural test with a product change.
     #
-    # This is a list of exactly two modules, not a pattern. ``web/v2/pages/`` as a
+    # This is a list of exactly one module, not a pattern. ``web/v2/pages/`` as a
     # whole is emphatically not exempt: those modules are where a readiness check
     # would most plausibly turn into an execution gate, so a third importer
     # appearing there must fail here and be argued for on its own terms.
     allowed = {
-        root / "web" / "routes.py",
         root / "web" / "v2" / "pages" / "library.py",
     }
     # An allowance that outlives the import it was written for is a hole: the
     # module could start consulting readiness again — or a new one could be added
     # under a stale name — and this test would say nothing. So every entry has to
     # earn its place on every run. This is what retired ``web/v2/routes.py`` from
-    # the set when the Slice-1 route split moved the Library out of it.
+    # the set when the Slice-1 route split moved the Library out of it, and
+    # ``web/routes.py`` when the legacy Knowledge Base pages were removed.
     for path in sorted(allowed):
         assert path.is_file(), f"{path.relative_to(root)} is allow-listed but does not exist"
         assert imports_readiness.search(path.read_text(encoding="utf-8")) is not None, (

@@ -1,7 +1,8 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="v2-page narrow">
-  <h1 class="v2-h1">Agent settings &amp; logs</h1>
+  <h1 class="v2-h1">Capabilities</h1>
+  {% set admin_section = 'capabilities' %}{% include "_admin_nav.html" %}
   <p class="v2-lede">
     The Agent monitor is switched off in this environment. Turn on
     <span class="m">FEATURES__AGENT_WORKBENCH</span> and reload to see each Agent's control state,

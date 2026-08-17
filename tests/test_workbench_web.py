@@ -88,16 +88,14 @@ def test_workbench_disabled_by_default(disabled_client: TestClient) -> None:
     # customer-facing interface, which is gated by the same switch.
     assert disabled_client.get("/admin").status_code == 404
     assert disabled_client.get("/", follow_redirects=False).status_code == 404
-    assert disabled_client.get("/contacts").status_code == 404
+    assert disabled_client.get("/imports").status_code == 404
 
 
 def test_functional_pages_render(client: TestClient) -> None:
     for path in (
         "/admin",
-        "/campaigns",
         "/imports",
         "/imports/new",
-        "/contacts",
         "/local-tools",
     ):
         response = client.get(path)
@@ -105,45 +103,39 @@ def test_functional_pages_render(client: TestClient) -> None:
         assert "VMR Outbound" in response.text
 
 
-def test_later_phase_sections_show_one_clean_unavailable_state(client: TestClient) -> None:
-    for path in (
-        "/verification",
-        "/scoring",
-        "/research",
-        "/drafts",
-        "/sequences",
-        "/activity",
-        "/settings",
-    ):
-        response = client.get(path)
-        assert response.status_code == 200, path
-        assert "isn't available yet" in response.text
-        # No fake tables/scores/drafts on later-phase pages.
-        assert "<table" not in response.text
+def test_later_phase_stubs_are_gone_and_verification_stays_honest(client: TestClient) -> None:
+    """The retired later-phase placeholders answer 404; verification renders its own state."""
+
+    for path in ("/scoring", "/research", "/drafts", "/sequences", "/activity", "/settings"):
+        assert client.get(path).status_code == 404, path
+    response = client.get("/verification")
+    assert response.status_code == 200
+    assert "isn't available yet" in response.text
+    assert "<table" not in response.text
 
 
 def test_unknown_records_render_not_found(client: TestClient) -> None:
-    assert client.get("/campaigns/not-a-uuid").status_code == 404
     assert client.get(f"/imports/{'0' * 32}").status_code == 404
-    assert client.get("/contacts/11111111-1111-1111-1111-111111111111").status_code == 404
 
 
-# --- Campaigns -------------------------------------------------------------------
+# --- Retired customer twins ------------------------------------------------------
 
 
-def test_campaign_create_and_detail(client: TestClient) -> None:
-    response = client.post(
-        "/campaigns/create",
-        data={"name": "Web Campaign", "description": "From the form", "status": "draft"},
-        follow_redirects=True,
-    )
-    assert response.status_code == 200
-    assert "Web Campaign" in response.text
-    # Duplicate names surface an actionable error, not a crash.
-    duplicate = client.post(
-        "/campaigns/create", data={"name": "Web Campaign"}, follow_redirects=True
-    )
-    assert "already exists" in duplicate.text
+def test_legacy_customer_pages_redirect_into_the_product(client: TestClient) -> None:
+    """Contacts, Companies, Campaigns and the Knowledge Base live in the product now."""
+
+    for path, target in (
+        ("/contacts", "/app/people"),
+        ("/contacts/11111111-1111-1111-1111-111111111111", "/app/people/1111"),
+        ("/companies", "/app/companies"),
+        ("/campaigns", "/app/campaigns"),
+        ("/campaigns/not-a-uuid", "/app/campaigns/not-a-uuid"),
+        ("/knowledge-base", "/app/library"),
+        ("/knowledge-base/offerings", "/app/library/offerings"),
+    ):
+        response = client.get(path, follow_redirects=False)
+        assert response.status_code == 308, path
+        assert response.headers["location"].startswith(target), (path, response.headers)
 
 
 # --- CSV: upload -> mapping -> preview -> confirm ---------------------------------
@@ -432,7 +424,7 @@ def test_the_old_exception_name_still_catches_the_refusal(
 def test_workbench_enabled_locally_mounts_ui(client: TestClient) -> None:
     # The `client` fixture is APP_ENV=local (default) + workbench enabled.
     assert client.get("/admin").status_code == 200
-    assert client.get("/contacts").status_code == 200
+    assert client.get("/imports").status_code == 200
     # And `/` is the front door onto the customer-facing interface.
     assert client.get("/", follow_redirects=False).status_code == 307
 

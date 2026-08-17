@@ -19,7 +19,7 @@
       <tr>
         <td>{{ n.get("first_name") or "" }} {{ n.get("last_name") or "" }}</td>
         <td class="small">{{ n.get("company_name") or "" }}<br><span class="muted-text">{{ n.get("company_domain") or "" }}</span></td>
-        <td><a href="/campaigns/{{ item.campaign.id }}">{{ item.campaign.name }}</a></td>
+        <td><a href="/app/campaigns/{{ item.campaign.id }}">{{ item.campaign.name }}</a></td>
         <td class="small"><a href="/imports/{{ item.batch.id }}">{{ item.batch.filename or item.batch.id }}</a> · row {{ item.row.row_number }}</td>
         <td class="num">{{ item.candidate_count }}</td>
         <td><a class="btn small" href="/review/rows/{{ item.row.id }}">Resolve</a></td>

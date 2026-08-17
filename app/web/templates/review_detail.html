@@ -60,7 +60,7 @@
         {% for c in review.candidates %}
         <tr>
           <td>
-            <a href="/contacts/{{ c.contact.id }}">{{ c.contact.first_name }} {{ c.contact.last_name }}</a>
+            <a href="/app/people/{{ c.contact.id }}">{{ c.contact.first_name }} {{ c.contact.last_name }}</a>
             <div class="small muted-text">{{ c.contact.email or "no email" }} · {{ c.contact.company_domain }}</div>
             {% if c.active_suppression %}<span class="badge muted">suppressed</span>{% endif %}
           </td>
