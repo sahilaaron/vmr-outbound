@@ -29,6 +29,7 @@ from app.services import campaign_workspace, email_progress
 from app.services.gmail import drafts as gmail_drafts
 from app.services.gmail import mailbox as gmail_mailbox
 from app.services.gmail import provider as gmail_provider
+from app.services.sequences import ownership as sequence_ownership
 from app.services.sequences import read as sequence_read
 from app.services.sequences import review as sequence_review
 from app.web.v2 import shell
@@ -314,6 +315,40 @@ def _position(value: str) -> int | None:
     return position if 1 <= position <= 7 else None
 
 
+def _selected_version(
+    db: Session,
+    *,
+    campaign_id: uuid.UUID,
+    membership: CampaignContact,
+    position: int,
+    version_id: str,
+) -> uuid.UUID | None:
+    """The posted version, proven to be this person's current email at ``position``.
+
+    ``None`` means refuse. Both side-effecting routes go through here before
+    they touch a service, so the two cannot drift: the path says which person
+    and which email, the body says which version, and this is the single place
+    the two are made to agree. See
+    :mod:`app.services.sequences.ownership` for what a hidden form field is
+    worth as an authorization claim, which is nothing.
+    """
+
+    identifier = shell.uuid_or_none(version_id)
+    if identifier is None:
+        return None
+    try:
+        version = sequence_ownership.current_version_for(
+            db,
+            campaign_id=campaign_id,
+            membership=membership,
+            position=position,
+            version_id=identifier,
+        )
+    except sequence_ownership.SequenceOwnershipError:
+        return None
+    return version.id
+
+
 @router.post("/campaigns/{campaign_id}/desk/{membership_id}/{position}/actioned")
 def desk_mark_actioned(
     campaign_id: str,
@@ -429,9 +464,15 @@ def desk_edit(
     if identifier is None or membership is None or pos is None:
         return shell.redirect(f"/app/campaigns/{campaign_id}", err="That email could not be found.")
     back = desk_url(identifier, membership.id, email=pos, section=section)
-    version = shell.uuid_or_none(version_id)
+    version = _selected_version(
+        db,
+        campaign_id=identifier,
+        membership=membership,
+        position=pos,
+        version_id=version_id,
+    )
     if version is None:
-        return shell.redirect(back, err="That email version could not be found.")
+        return shell.redirect(back, err=sequence_ownership.REFUSAL)
     try:
         sequence_review.edit_message(
             db,
@@ -469,9 +510,20 @@ def desk_gmail_draft(
     settings = get_settings()
     if not shell.gmail_drafts_on(db, settings):
         return shell.redirect(back, err="Gmail drafts are switched off in this environment.")
-    version = shell.uuid_or_none(version_id)
+    # Before the mailbox, before the OAuth client, before the provider is even
+    # constructed. `create_draft` resolves the recipient from the version's own
+    # sequence, so an unbound version here is not a misrouted write — it is a
+    # draft addressed to somebody else's contact, sitting in this operator's
+    # mailbox.
+    version = _selected_version(
+        db,
+        campaign_id=identifier,
+        membership=membership,
+        position=pos,
+        version_id=version_id,
+    )
     if version is None:
-        return shell.redirect(back, err="That email version could not be found.")
+        return shell.redirect(back, err=sequence_ownership.REFUSAL)
     operator = current_operator()
     owner = session_account_id(operator)
     if operator is None or owner is None:

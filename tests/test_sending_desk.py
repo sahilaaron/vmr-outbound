@@ -22,12 +22,15 @@ from app.api.deps import get_db
 from app.core.config import get_settings
 from app.main import create_app
 from app.models.email_action import SequenceEmailAction
+from app.models.email_sequence import EmailSequenceMessageVersion
 from app.services import email_progress, today
 from app.services.sequences import read as sequence_read
+from app.services.sequences import review as sequence_review
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from tests.gmail_factory import build_sequence
 from tests.test_customer_operating_model import _ready
 from tests.test_email_sequence import scenario as _scenario
 
@@ -306,6 +309,188 @@ def test_editing_on_the_desk_writes_a_new_version_and_keeps_history(
     after = sequence_read.message_rows(db_session, sequence=sequence)[0]
     assert after.version_id != before.version_id
     assert after.subject == "Edited on the desk"
+
+
+# ---------------------------------------------------------------------------
+# Edit is bound to the person in the path, not to the posted version
+# ---------------------------------------------------------------------------
+#
+# The desk addresses every action as
+# ``/app/campaigns/{campaign_id}/desk/{membership_id}/{position}/…`` and posts
+# ``version_id`` in the body. The path segments were validated; the body was
+# trusted. A form value is chosen by whoever submits it, so trusting it made the
+# hidden field the authorization boundary — and a hidden field is not one.
+#
+# These tests attack the route the way a form value can actually be attacked:
+# with a *legitimate, current* version id that simply belongs somewhere else.
+
+
+def _victim(db: Session) -> Any:
+    """A second Campaign, with its own contact and its own live sequence."""
+
+    fixture = build_sequence(db, company_domain="anvil.example", company_name="Anvil Works")
+    db.flush()
+    return fixture
+
+
+def _edit(client: TestClient, scenario: tuple[Any, ...], position: int, version_id: Any) -> Any:
+    return client.post(
+        _desk_url(scenario) + f"{position}/edit",
+        data={
+            "version_id": str(version_id),
+            "subject": "Rewritten by someone else",
+            "body": "Body text long enough to pass validation.",
+        },
+        follow_redirects=False,
+    )
+
+
+def _versions(db: Session) -> int:
+    return db.scalar(select(func.count(EmailSequenceMessageVersion.id))) or 0
+
+
+def test_editing_with_another_campaigns_version_is_refused_and_changes_nothing(
+    client: TestClient, db_session: Session, scenario: tuple[Any, ...]
+) -> None:
+    """The whole point: a real id, current, and not this caller's to touch.
+
+    Campaign B's message 1 is a perfectly valid version — it exists, it is not
+    superseded, and its own sequence is live — so every check
+    ``sequence_review.edit_message`` performs would have passed. What it cannot
+    know is that the caller asked for Campaign A. Without the binding, this post
+    supersedes B's text, invalidates any approval on it, and writes an edit
+    against a Campaign the caller never opened.
+    """
+
+    _ready(db_session, scenario)
+    victim = _victim(db_session)
+    target = victim.versions[0]
+    subject_before, body_before = target.subject, target.body
+    count_before = _versions(db_session)
+
+    response = _edit(client, scenario, 1, target.id)
+
+    assert response.status_code == 303
+    assert "err=" in response.headers["location"]
+    assert "ok=" not in response.headers["location"]
+    # Nothing was written: no new version anywhere, and B's text is untouched.
+    assert _versions(db_session) == count_before
+    db_session.refresh(target)
+    assert (target.subject, target.body) == (subject_before, body_before)
+    assert target.superseded_at is None
+
+
+def test_editing_with_another_persons_version_in_the_same_campaign_is_refused(
+    client: TestClient, db_session: Session, scenario: tuple[Any, ...]
+) -> None:
+    """Same Campaign is not the same person.
+
+    A membership check alone would pass this: both people are in Campaigns the
+    caller may open. The binding is to the ``CampaignContact`` named in the path,
+    which is the only thing that makes "this person's email" mean anything.
+    """
+
+    _ready(db_session, scenario)
+    membership = _membership(scenario)
+    neighbour = build_sequence(db_session, company_domain="forge.example", company_name="Forge Ltd")
+    # Move the neighbour's whole sequence into the caller's own Campaign, so the
+    # only thing separating the two is the person.
+    neighbour.membership.campaign_id = membership.campaign_id
+    neighbour.sequence.campaign_id = membership.campaign_id
+    db_session.flush()
+    target = neighbour.versions[0]
+    count_before = _versions(db_session)
+
+    response = _edit(client, scenario, 1, target.id)
+
+    assert "err=" in response.headers["location"]
+    assert _versions(db_session) == count_before
+    db_session.refresh(target)
+    assert target.superseded_at is None
+
+
+def test_editing_with_the_right_version_at_the_wrong_position_is_refused(
+    client: TestClient, db_session: Session, scenario: tuple[Any, ...]
+) -> None:
+    """The position in the path is part of the selection, so it is part of the check.
+
+    Message 3's version posted to the message-1 URL is the caller's own data, in
+    the caller's own Campaign — and still not what the page said they were
+    editing. Accepting it would let the redirect land them back on email 1 while
+    email 3 quietly changed underneath.
+    """
+
+    sequence = _ready(db_session, scenario)
+    rows = sequence_read.message_rows(db_session, sequence=sequence)
+    third = rows[2]
+    count_before = _versions(db_session)
+
+    response = _edit(client, scenario, 1, third.version_id)
+
+    assert "err=" in response.headers["location"]
+    assert _versions(db_session) == count_before
+    unchanged = sequence_read.message_rows(db_session, sequence=sequence)[2]
+    assert unchanged.version_id == third.version_id
+
+
+def test_editing_a_superseded_version_is_refused(
+    client: TestClient, db_session: Session, scenario: tuple[Any, ...]
+) -> None:
+    """A stale id from a page that was left open, replayed after a newer edit."""
+
+    sequence = _ready(db_session, scenario)
+    stale = sequence_read.message_rows(db_session, sequence=sequence)[0].version_id
+    sequence_review.edit_message(
+        db_session,
+        message_version_id=stale,
+        subject="The current text",
+        body="The current body, long enough.",
+        actor="someone@example.com",
+    )
+    current = sequence_read.message_rows(db_session, sequence=sequence)[0]
+    assert current.version_id != stale
+    count_before = _versions(db_session)
+
+    response = _edit(client, scenario, 1, stale)
+
+    assert "err=" in response.headers["location"]
+    assert _versions(db_session) == count_before
+    after = sequence_read.message_rows(db_session, sequence=sequence)[0]
+    assert after.version_id == current.version_id
+    assert after.subject == "The current text"
+
+
+def test_a_version_id_that_is_not_a_uuid_is_refused_without_reaching_the_service(
+    client: TestClient, db_session: Session, scenario: tuple[Any, ...]
+) -> None:
+    _ready(db_session, scenario)
+    count_before = _versions(db_session)
+
+    response = _edit(client, scenario, 1, "not-a-uuid")
+
+    assert "err=" in response.headers["location"]
+    assert _versions(db_session) == count_before
+
+
+def test_the_legitimate_edit_on_this_persons_own_current_version_still_works(
+    client: TestClient, db_session: Session, scenario: tuple[Any, ...]
+) -> None:
+    """Anti-over-correction: the binding must not refuse the ordinary case.
+
+    Built with a second Campaign present, because a check that accidentally
+    keyed on "the only sequence in the database" would pass without it.
+    """
+
+    sequence = _ready(db_session, scenario)
+    _victim(db_session)
+    before = sequence_read.message_rows(db_session, sequence=sequence)[0]
+
+    response = _edit(client, scenario, 1, before.version_id)
+
+    assert "ok=" in response.headers["location"]
+    after = sequence_read.message_rows(db_session, sequence=sequence)[0]
+    assert after.version_id != before.version_id
+    assert after.subject == "Rewritten by someone else"
 
 
 def test_a_legacy_review_link_lands_inside_the_campaign(

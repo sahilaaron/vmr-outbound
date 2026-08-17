@@ -24,10 +24,17 @@ from app.core.config import get_settings
 from app.main import create_app
 from app.models.campaign import Campaign, CampaignContact
 from app.models.draft import DraftVersion
-from app.models.enums import AgentIdentifier, CampaignStatus, SellerOfferingType
+from app.models.enums import (
+    AgentControlStatus,
+    AgentIdentifier,
+    CampaignStatus,
+    SellerOfferingType,
+)
 from app.services import campaigns as campaign_service
 from app.services.agents import controls as agent_controls
+from app.services.agents import readiness as agent_readiness
 from app.services.agents.registry import AGENT_SPECS, PIPELINE_ORDER
+from app.services.personalization import cadence as cadence_service
 from app.services.seller import campaign_offerings as seller_campaign_offerings
 from app.services.seller import profile as seller_profile
 from app.services.seller import records as seller_records
@@ -430,6 +437,51 @@ def test_a_paused_campaign_offers_resume_on_the_overview(
     assert ">Paused<" in body
     assert "Paused. Resume the Campaign" in body
     assert "Resume Campaign" in body
+
+
+def test_a_paused_campaign_still_says_paused_when_an_agent_is_also_off(
+    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
+) -> None:
+    """Two causes are live at once, and the customer's own is the one reported.
+
+    A Campaign can be paused by its customer *and* held by an administrator
+    setting simultaneously. Only one sentence is shown, so which one wins is a
+    product decision rather than an implementation accident, and it belongs in a
+    test that drives the real page.
+
+    It is the pause. That is the state the customer put the Campaign into, it is
+    the state they can leave, and answering "an administrator is holding this"
+    would be a false account of their own action with no control attached to it.
+    """
+
+    campaign = db_session.get(Campaign, scenario.campaign.id)
+    assert campaign is not None
+    # Opt the Campaign in, so execution readiness is consulted at all, and hold
+    # it: Research is disabled by registry default, which is exactly the state a
+    # fresh deployment is in.
+    campaign.cadence_config = cadence_service.with_campaign_opt_in(campaign, enabled=True)
+    db_session.flush()
+    agent_controls.set_global_control(
+        db_session,
+        agent_id=AgentIdentifier.RESEARCH,
+        status=AgentControlStatus.DISABLED,
+        reason="test setup",
+    )
+    campaign_service.apply_campaign_execution(
+        db_session, campaign.id, enabled=False, actor="operator", reason="test"
+    )
+    db_session.flush()
+
+    # The hold is real: this is not a test that passes because nothing is held.
+    readiness = agent_readiness.execution_readiness(db_session, campaign=campaign)
+    assert not readiness.runnable
+
+    body = client.get(_campaign_url(scenario)).text
+    assert "Paused. Resume the Campaign" in body
+    assert "Resume Campaign" in body
+    assert "Preparation is being held by an administrator setting." not in body
+    # And still no Agent vocabulary in the customer's product.
+    assert "Research Agent" not in _customer_body(body)
 
 
 def test_an_active_campaign_shows_no_start_or_resume_prompt(
