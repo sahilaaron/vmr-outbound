@@ -1,13 +1,14 @@
-"""Beta 1 operator UI: Campaign -> Contact -> seven messages, copy, and edit.
+"""Beta 1 operator UI: Campaign -> person -> the sending desk, copy, and edit.
 
 Three things these tests exist to protect, none of which the sequence suite
 already covers.
 
-**The Contact page is now the whole sequence, not one message at a time.** The
-Review queue deliberately renders one body per card because it lists forty
-contacts. This page is one contact, and an operator came to read, copy and edit
-all seven. If it ever regresses to paging, six of the seven messages become
-invisible without any test failing elsewhere.
+**Every one of the seven messages is readable, copyable and editable.** The
+person page carries no email bodies any more: each Campaign row points into the
+inline sending desk on Campaign Overview, which renders one email at a time
+(``?person=<membership>&email=<n>``). So where these tests once read seven
+bodies off one page they now open all seven emails, and each must be complete
+-- a desk that silently dropped one would fail here and nowhere else.
 
 **Copy must give back the exact email.** The imported-value boundary and the
 message text pull in opposite directions here, and both directions are asserted:
@@ -26,7 +27,6 @@ clipboard itself is verified by hand and recorded as such in the handoff.
 from __future__ import annotations
 
 import re
-import uuid
 from collections.abc import Iterator
 from hashlib import sha256
 from pathlib import Path
@@ -57,6 +57,7 @@ from sqlalchemy.orm import Session
 
 from tests import apollo_factory as af
 from tests.test_campaign_import_final_review import _live_formulas
+from tests.test_customer_operating_model import _ready, _walk_to_personalization
 from tests.test_email_sequence import BODIES, SUBJECTS, CountingThinker, build, sequence_payload
 from tests.test_email_sequence import scenario as _scenario
 
@@ -102,15 +103,6 @@ def client(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> Iterator[Tes
 
 
 @pytest.fixture()
-def client_no_sequences(
-    db_session: Session, monkeypatch: pytest.MonkeyPatch
-) -> Iterator[TestClient]:
-    with _client(db_session, monkeypatch, sequences=False) as app_client:
-        yield app_client
-    get_settings.cache_clear()
-
-
-@pytest.fixture()
 def import_client(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     with _client(db_session, monkeypatch, imports=True) as app_client:
         yield app_client
@@ -125,6 +117,29 @@ def _contact_url(scenario: tuple[Any, ...]) -> str:
 def _campaign_url(scenario: tuple[Any, ...]) -> str:
     _campaign, _company, _contact, membership, _policy, _evidence = scenario
     return f"/app/campaigns/{membership.campaign_id}"
+
+
+def _desk_url(scenario: tuple[Any, ...], email: int) -> str:
+    """Campaign Overview with the inline sending desk open on one email."""
+
+    _campaign, _company, _contact, membership, _policy, _evidence = scenario
+    return f"{_campaign_url(scenario)}?section=all&person={membership.id}&email={email}"
+
+
+def _ready_with(db: Session, scenario: tuple[Any, ...], **kwargs: Any) -> Any:
+    """Build a sequence from a custom payload and walk the person to Ready for Sending."""
+
+    sequence = build(db, scenario, **kwargs)
+    _walk_to_personalization(db, scenario[3])
+    return sequence
+
+
+def _doc(body: str) -> str:
+    """The one document card the desk renders for the selected email."""
+
+    start = body.index('<article class="v2-doc"')
+    end = body.index("</article>", start)
+    return body[start:end]
 
 
 def _rows(db: Session, sequence: Any) -> tuple[sequence_read.MessageRow, ...]:
@@ -204,89 +219,93 @@ def test_the_roster_projection_reports_a_partial_sequence_as_partial(
 def test_the_campaign_people_tab_links_to_the_person_and_back(
     db_session: Session, client: TestClient, scenario: tuple[Any, ...]
 ) -> None:
-    """Campaign -> person and person -> Campaign, both directions."""
+    """Campaign -> person and person -> the desk inside the Campaign, both directions."""
 
     _campaign, _company, contact, membership, _policy, _evidence = scenario
-    build(db_session, scenario)
+    _ready(db_session, scenario)
     db_session.commit()
 
     roster = client.get(f"{_campaign_url(scenario)}/people").text
     assert f'href="/app/people/{contact.id}?campaign={membership.campaign_id}"' in roster
 
     contact_page = client.get(_contact_url(scenario)).text
+    # "Open in Campaign" lands on the desk for this membership; the query
+    # ampersand is HTML-escaped inside the attribute, as it should be.
     assert (
-        f'href="/app/campaigns/{membership.campaign_id}?section=all&person={membership.id}#ready"'
-        in contact_page
-    )
+        f'href="/app/campaigns/{membership.campaign_id}'
+        f'?section=all&amp;person={membership.id}#ready"'
+    ) in contact_page
+    assert "Open in Campaign" in contact_page
 
 
 # ===========================================================================
-# B. The Contact page renders the whole sequence
+# B. The sending desk renders the whole sequence, one email per request
 # ===========================================================================
 
 
-def test_all_seven_messages_render_in_full_on_one_page(
+def test_all_seven_messages_render_in_full_on_the_desk(
     db_session: Session, client: TestClient, scenario: tuple[Any, ...]
 ) -> None:
-    """The core Beta 1 outcome, asserted as seven complete bodies."""
+    """The core Beta 1 outcome, asserted as seven complete bodies.
 
-    build(db_session, scenario)
+    The desk shows one email at a time, so this opens all seven and asserts
+    each one's own subject and complete body inside its document card.
+    """
+
+    _ready(db_session, scenario)
     db_session.commit()
-    body = client.get(_contact_url(scenario)).text
 
-    assert body.count("v2-seq-full") >= SEQUENCE_LENGTH
-    for index in range(SEQUENCE_LENGTH):
-        assert SUBJECTS[index] in body, f"subject {index + 1} missing"
+    for position in range(1, SEQUENCE_LENGTH + 1):
+        body = client.get(_desk_url(scenario, position)).text
+        assert 'class="v2-desk"' in body
+        doc = _doc(body)
+        assert f'id="desk-subject-{position}"' in doc
+        assert f'id="desk-body-{position}"' in doc
+        assert SUBJECTS[position - 1] in doc, f"subject {position} missing"
         # The *complete* body, not a truncated excerpt.
-        assert BODIES[index] in body, f"body {index + 1} missing or truncated"
+        assert BODIES[position - 1] in doc, f"body {position} missing or truncated"
 
 
-def test_the_page_renders_the_documented_cadence(
+def test_the_desk_renders_the_documented_cadence(
     db_session: Session, client: TestClient, scenario: tuple[Any, ...]
 ) -> None:
-    build(db_session, scenario)
+    """The seven-step rail carries the ratified ladder as day labels."""
+
+    _ready(db_session, scenario)
     db_session.commit()
-    body = client.get(_contact_url(scenario)).text
-    for day in ELAPSED_DAYS:
-        assert f"Day {day} —" in body, f"elapsed day {day} not rendered"
+    body = client.get(_desk_url(scenario, 1)).text
+    assert body.count('class="v2-rail-step') == SEQUENCE_LENGTH
+    for position, day in enumerate(ELAPSED_DAYS, start=1):
+        assert f"Email {position}" in body
+        assert f"Day {day}" in body, f"elapsed day {day} not rendered"
 
 
-def test_the_page_is_complete_with_zero_review_rows(
+def test_the_desk_is_complete_with_zero_review_rows(
     db_session: Session, client: TestClient, scenario: tuple[Any, ...]
 ) -> None:
-    """The state every generated sequence is in, and the one Option C governs."""
+    """The state every generated sequence is in: readable with nobody having clicked."""
 
-    build(db_session, scenario)
+    _ready(db_session, scenario)
     db_session.commit()
     assert db_session.scalar(select(func.count(EmailSequenceMessageReview.id))) == 0
 
-    body = client.get(_contact_url(scenario)).text
-    assert body.count("approved by default") >= SEQUENCE_LENGTH
-    assert "approved by you" not in body
-    for pressure in ("Waiting for you", "Needs approval", "Approve before proceeding"):
-        assert pressure not in body
-    # Every message is still fully readable.
-    for index in range(SEQUENCE_LENGTH):
-        assert BODIES[index] in body
+    for position in range(1, SEQUENCE_LENGTH + 1):
+        body = client.get(_desk_url(scenario, position)).text
+        for pressure in ("Waiting for you", "Needs approval", "Approve before proceeding"):
+            assert pressure not in body
+        # Every message is fully readable without any review having happened.
+        assert BODIES[position - 1] in _doc(body)
 
 
-def test_a_human_confirmation_is_distinct_from_the_default(
+def test_edited_and_regenerated_are_each_visible(
     db_session: Session, client: TestClient, scenario: tuple[Any, ...]
 ) -> None:
-    sequence = build(db_session, scenario)
-    rows = _rows(db_session, sequence)
-    sequence_review.approve_message(db_session, message_version_id=rows[0].version_id)
-    db_session.commit()
+    """An operator's edit and a regeneration each show as what they are.
 
-    body = client.get(_contact_url(scenario)).text
-    assert "approved by you" in body
-    # The other six are still defaults, and still say so.
-    assert body.count("approved by default") >= SEQUENCE_LENGTH - 1
+    The desk carries no review decisions, so a discarded message has no
+    customer-side rendering any more; the two origins that do are asserted.
+    """
 
-
-def test_edited_regenerated_and_discarded_are_each_visible(
-    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
-) -> None:
     sequence = build(db_session, scenario)
     rows = _rows(db_session, sequence)
     sequence_review.edit_message(
@@ -295,39 +314,43 @@ def test_edited_regenerated_and_discarded_are_each_visible(
         subject="Edited subject here",
         body="Edited body here, entirely different from what came before.",
     )
-    sequence_review.discard_message(db_session, message_version_id=rows[4].version_id)
+    _walk_to_personalization(db_session, scenario[3])
     db_session.commit()
 
-    body = client.get(_contact_url(scenario)).text
-    assert "human-edited" in body
-    assert "discarded" in body
-    assert 'data-origin="human_edited"' in body
+    doc = _doc(client.get(_desk_url(scenario, 2)).text)
+    assert "Edited by you" in doc
+    assert "Edited subject here" in doc
+    assert "Human edited" in doc  # the History disclosure names the origin
+    assert "Generated" in doc  # ... and keeps the replaced version underneath
 
-    # Regenerated is the third origin. A regeneration supersedes the sequence,
-    # so it is asserted on the successor's page.
+    # Regenerated is the other origin. A regeneration supersedes the sequence,
+    # so it is asserted on the successor's desk.
     regenerated = build(db_session, scenario)
     db_session.commit()
     assert regenerated.id != sequence.id
-    fresh = client.get(_contact_url(scenario)).text
-    assert 'data-origin="regenerated"' in fresh or "regenerated" in fresh
+    fresh = _doc(client.get(_desk_url(scenario, 1)).text)
+    assert "Regenerated" in fresh
 
 
-def test_the_page_never_says_approved_means_sent(
+def test_the_desk_never_says_anything_was_sent(
     db_session: Session, client: TestClient, scenario: tuple[Any, ...]
 ) -> None:
-    build(db_session, scenario)
+    """The desk offers Copy, Mark actioned and Edit; it never implies a send.
+
+    With the Gmail feature off (as it is here) no draft action is offered
+    either. "Ready to send" is the desk's own vocabulary for Email 1 before Day
+    0 and is a state, not a claim about the past, so it is not forbidden.
+    """
+
+    _ready(db_session, scenario)
     db_session.commit()
-    body = client.get(_contact_url(scenario)).text
-    assert "no sending path in this build" in body
-    # The From line still says no sending account is connected. The wording
-    # changed with #267 -- it used to say one *could not* be connected, which
-    # stopped being true once a Gmail mailbox could be -- but the claim the test
-    # exists to pin is unchanged: this page never implies anything was sent, and
-    # with the Gmail feature off (as it is here) no mailbox is connected either.
-    assert "no sending account is connected" in body
-    assert "Create Gmail drafts" not in body
-    for claim in ("has been sent", "will be sent", "ready to send", "scheduled to send"):
-        assert claim not in body
+    for position in range(1, SEQUENCE_LENGTH + 1):
+        body = client.get(_desk_url(scenario, position)).text
+        assert "Nothing here sends" in body
+        assert "Create Gmail draft" not in body
+        assert "gmail-draft" not in body
+        for claim in ("has been sent", "will be sent", "scheduled to send", "was sent"):
+            assert claim not in body
 
 
 # ===========================================================================
@@ -339,42 +362,29 @@ def test_the_page_never_says_approved_means_sent(
 # ===========================================================================
 
 
-def _article_for(body: str, version_id: uuid.UUID) -> str:
-    """The one message element carrying this exact version id."""
-
-    marker = f'data-version-id="{version_id}"'
-    start = body.index(marker)
-    opening = body.rindex("<article", 0, start)
-    end = body.index("</article>", start)
-    return body[opening:end]
-
-
-def test_each_message_carries_three_copy_buttons_targeting_its_own_text(
+def test_each_email_carries_one_copy_button_targeting_its_own_text(
     db_session: Session, client: TestClient, scenario: tuple[Any, ...]
 ) -> None:
-    sequence = build(db_session, scenario)
-    rows = _rows(db_session, sequence)
-    db_session.commit()
-    body = client.get(_contact_url(scenario)).text
+    """One Copy per email, naming the subject and body nodes of that email only."""
 
-    for row in rows:
-        article = _article_for(body, row.version_id)
-        subject_id = f"seq-subj-{row.version_id}"
-        body_id = f"seq-body-{row.version_id}"
+    _ready(db_session, scenario)
+    db_session.commit()
+
+    for position in range(1, SEQUENCE_LENGTH + 1):
+        doc = _doc(client.get(_desk_url(scenario, position)).text)
+        subject_id = f"desk-subject-{position}"
+        body_id = f"desk-body-{position}"
 
         # The nodes the script reads exist, and hold this message's own text.
-        assert f'id="{subject_id}"' in article
-        assert f'id="{body_id}"' in article
+        assert f'id="{subject_id}"' in doc
+        assert f'id="{body_id}"' in doc
+        assert SUBJECTS[position - 1] in doc
+        assert BODIES[position - 1] in doc
 
-        assert f'data-copy="subject" data-copy-subject="{subject_id}"' in article
-        assert f'data-copy="body" data-copy-body="{body_id}"' in article
         assert (
-            f'data-copy="full" data-copy-subject="{subject_id}" data-copy-body="{body_id}"'
-            in article
+            f'data-copy="full" data-copy-subject="{subject_id}" data-copy-body="{body_id}"' in doc
         )
-        assert "Copy Subject" in article
-        assert "Copy Body" in article
-        assert "Copy Full Email" in article
+        assert ">Copy<" in doc
 
 
 def test_every_copy_control_is_a_plain_button(
@@ -386,77 +396,76 @@ def test_every_copy_control_is_a_plain_button(
     posts the edit form. Both are worse than not copying.
     """
 
-    build(db_session, scenario)
+    _ready(db_session, scenario)
     db_session.commit()
-    body = client.get(_contact_url(scenario)).text
 
-    controls = re.findall(r"<(\w+)([^>]*\bdata-copy=[^>]*)>", body)
-    assert len(controls) == SEQUENCE_LENGTH * 3
-    for tag, attributes in controls:
-        assert tag == "button", f"copy control rendered as <{tag}>"
-        assert 'type="button"' in attributes
+    for position in range(1, SEQUENCE_LENGTH + 1):
+        body = client.get(_desk_url(scenario, position)).text
+        controls = re.findall(r"<(\w+)([^>]*\bdata-copy=[^>]*)>", body)
+        assert len(controls) == 1, f"email {position} rendered {len(controls)} copy controls"
+        for tag, attributes in controls:
+            assert tag == "button", f"copy control rendered as <{tag}>"
+            assert 'type="button"' in attributes
 
 
-def test_the_page_carries_exactly_one_polite_live_region(
+def test_the_desk_carries_exactly_one_polite_live_region(
     db_session: Session, client: TestClient, scenario: tuple[Any, ...]
 ) -> None:
-    """One region for the page, not one per button.
+    """One region for the page, not one per control."""
 
-    Seven messages times three buttons is twenty-one controls; a live region
-    each would queue twenty-one announcements at a screen reader.
+    _ready(db_session, scenario)
+    db_session.commit()
+    for position in range(1, SEQUENCE_LENGTH + 1):
+        body = client.get(_desk_url(scenario, position)).text
+        assert body.count('id="seq-copy-status"') == 1
+        assert body.count('aria-live="polite"') == 1
+
+
+def test_each_email_carries_the_identity_a_gmail_draft_would_need(
+    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
+) -> None:
+    """Every desk action names the Campaign, the membership, the position and the exact version.
+
+    A Gmail draft (when that feature is on) is created for one exact message
+    version, through the same shape of route. With Gmail off, as here, the edit
+    form is the action that carries that identity, and it must be exact.
     """
 
-    build(db_session, scenario)
-    db_session.commit()
-    body = client.get(_contact_url(scenario)).text
-    assert body.count('id="seq-copy-status"') == 1
-    assert body.count('aria-live="polite"') == 1
-
-
-def test_each_message_carries_the_identity_a_gmail_draft_would_need(
-    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
-) -> None:
-    """Gmail is not built. Naming one exact version later must not need a redesign."""
-
-    _campaign, _company, contact, membership, _policy, _evidence = scenario
-    sequence = build(db_session, scenario)
-    summary = sequence_read.summary(db_session, sequence=sequence)
+    _campaign, _company, _contact, membership, _policy, _evidence = scenario
+    sequence = _ready(db_session, scenario)
     rows = _rows(db_session, sequence)
     db_session.commit()
-    body = client.get(_contact_url(scenario)).text
 
     for row in rows:
-        article = _article_for(body, row.version_id)
-        for attribute, value in (
-            ("data-campaign-id", membership.campaign_id),
-            ("data-contact-id", contact.id),
-            ("data-campaign-contact-id", summary.campaign_contact_id),
-            ("data-sequence-id", summary.sequence_id),
-            ("data-sequence-key", summary.sequence_key),
-            ("data-message-id", row.message_id),
-            ("data-version-id", row.version_id),
-        ):
-            assert f'{attribute}="{value}"' in article, f"{attribute} missing from message"
+        doc = _doc(client.get(_desk_url(scenario, row.position)).text)
+        base = f"/app/campaigns/{membership.campaign_id}/desk/{membership.id}/{row.position}"
+        assert f'action="{base}/edit"' in doc
+        assert f'name="version_id" value="{row.version_id}"' in doc
+        # No other message's version leaks into this email's card.
+        for other in rows:
+            if other.position != row.position:
+                assert str(other.version_id) not in doc
 
 
-def test_the_contact_page_runs_no_inline_script(
+def test_the_desk_runs_no_inline_script(
     db_session: Session, client: TestClient, scenario: tuple[Any, ...]
 ) -> None:
     """`script-src 'self'` with no nonce: an inline handler would not run."""
 
-    build(db_session, scenario)
+    _ready(db_session, scenario)
     db_session.commit()
-    response = client.get(_contact_url(scenario))
+    response = client.get(_desk_url(scenario, 1))
     body = response.text
 
     assert "<script>" not in body
     for handler in ("onclick=", "onsubmit=", "onchange=", "onload=", "javascript:"):
         assert handler not in body
-    # The only script on the page is the external, versioned one.
+    # The only scripts on the page are the external, versioned ones.
     scripts = re.findall(r"<script\b[^>]*>", body)
-    assert len(scripts) == 1
-    assert "sequence.js" in scripts[0]
-    assert "src=" in scripts[0]
+    assert len(scripts) == 2
+    assert all("src=" in script for script in scripts)
+    assert any("sequence.js" in script for script in scripts)
+    assert any("desk.js" in script for script in scripts)
 
 
 # ===========================================================================
@@ -479,16 +488,18 @@ def test_every_versioned_asset_token_is_the_real_content_hash(asset: str) -> Non
     assert actual == expected
 
 
-def test_the_rendered_page_carries_the_real_hashes(
+def test_the_rendered_desk_carries_the_real_hashes(
     db_session: Session, client: TestClient, scenario: tuple[Any, ...]
 ) -> None:
-    from app.web.v2 import routes
+    from app.web.v2 import routes, shell
 
-    build(db_session, scenario)
+    _ready(db_session, scenario)
     db_session.commit()
-    body = client.get(_contact_url(scenario)).text
+    body = client.get(_desk_url(scenario, 1)).text
     assert f"v2.css?v={routes.V2_CSS_VERSION}" in body
     assert f"sequence.js?v={routes.SEQUENCE_JS_VERSION}" in body
+    assert f"desk.js?v={shell.DESK_JS_VERSION}" in body
+    assert shell.DESK_JS_VERSION == sha256((STATIC / "desk.js").read_bytes()).hexdigest()[:12]
 
 
 def test_sequence_pages_are_never_cached(
@@ -634,16 +645,14 @@ def test_the_edit_form_is_prefilled_with_the_exact_stored_text(
     # Long enough to clear the generator's own length validation, so what is
     # under test is the projection and not the word count.
     formula_body = "- " + BODIES[0]
-    sequence = build(
+    _ready_with(
         db_session,
         scenario,
         payload=sequence_payload(bodies=(formula_body,) + BODIES[1:]),
     )
-    rows = _rows(db_session, sequence)
     db_session.commit()
 
-    body = client.get(_contact_url(scenario)).text
-    article = _article_for(body, rows[0].version_id)
+    article = _doc(client.get(_desk_url(scenario, 1)).text)
 
     opening = formula_body[:24]
     assert opening in article, "the dashed opening must survive to the page"
@@ -803,7 +812,7 @@ def test_the_message_text_itself_is_never_neutralized(
     # Prefixed onto a body that already clears validation, so the assertion is
     # about the projection rather than about message length.
     body = "+1 on the approach you described. " + BODIES[0]
-    sequence = build(
+    sequence = _ready_with(
         db_session,
         scenario,
         payload=sequence_payload(subjects=(subject,) + SUBJECTS[1:], bodies=(body,) + BODIES[1:]),
@@ -811,8 +820,7 @@ def test_the_message_text_itself_is_never_neutralized(
     rows = _rows(db_session, sequence)
     db_session.commit()
 
-    page = client.get(_contact_url(scenario)).text
-    article = _article_for(page, rows[0].version_id)
+    article = _doc(client.get(_desk_url(scenario, 1)).text)
 
     # Present exactly, and not apostrophe-prefixed.
     assert "=SUM(A1:A2) is what the analyst asked about" in article
@@ -841,27 +849,8 @@ def test_imported_evidence_is_kept_verbatim_however_it_is_displayed(
 
 
 # ===========================================================================
-# G. Legacy draft coexistence
+# G. No legacy awaiting language
 # ===========================================================================
-
-
-def test_a_contact_without_a_sequence_keeps_the_legacy_draft_view(
-    db_session: Session, client_no_sequences: TestClient, scenario: tuple[Any, ...]
-) -> None:
-    """SEQ and DraftVersion coexist. No sequence must not mean no page."""
-
-    _campaign, _company, contact, membership, _policy, _evidence = scenario
-    db_session.commit()
-    response = client_no_sequences.get(
-        f"/app/people/{contact.id}?campaign={membership.campaign_id}"
-    )
-    assert response.status_code == 200
-    body = response.text
-    # No sequence, no sequence UI, and no invented one. The page is still the
-    # contact's page: the Agent ledger and the legacy draft card remain.
-    assert "v2-seq-full" not in body
-    assert "Every Agent that touched this contact" in body
-    assert "The seven-message sequence" not in body
 
 
 def test_a_sequence_never_borrows_the_legacy_awaiting_language(
@@ -870,12 +859,15 @@ def test_a_sequence_never_borrows_the_legacy_awaiting_language(
     """The legacy predicate means the opposite of Option C.
 
     `DraftApproval.awaiting_decision` is `decision is None` -- absence means
-    *waiting*. Under Option C the same absence means *approved*. A page that
-    read the sequence through the legacy predicate would be exactly backwards.
+    *waiting*. Under Option C the same absence means *ready*. A desk that read
+    the sequence through the legacy predicate would be exactly backwards: with
+    no review row anywhere, Email 1 is Ready and nothing is waiting on anyone.
     """
 
-    build(db_session, scenario)
+    _ready(db_session, scenario)
     db_session.commit()
-    body = client.get(_contact_url(scenario)).text
+    assert db_session.scalar(select(func.count(EmailSequenceMessageReview.id))) == 0
+    body = client.get(_desk_url(scenario, 1)).text
     assert "Nobody has approved this version." not in body
-    assert "approved by default" in body
+    assert "Awaiting" not in body
+    assert "Email 1 ready to send" in body

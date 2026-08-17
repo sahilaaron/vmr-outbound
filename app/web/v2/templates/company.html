@@ -1,26 +1,31 @@
+{#
+  Company detail: what we know about this Company, with provenance by source
+  type, and where that knowledge is used. Never a separate Research or Company
+  Intelligence product; no dossier versions or provider candidates.
+#}
 {% extends "base.html" %}
-{% from "_ui.html" import tag, dot, unbuilt, empty, research_state %}
+{% from "_ui.html" import tag, lifecycle_pill, empty %}
 {% block content %}
 <div class="v2-page detail">
-
-  <div class="v2-crumbs">
+  <nav class="v2-crumbs" aria-label="Breadcrumb">
     <a href="/app/companies">Companies</a><span class="sep">/</span>{{ detail.company.name | neutralize }}
-  </div>
+  </nav>
 
   <div class="v2-title-row v2-mt-sm">
     <div class="v2-avatar-lg accent">{{ detail.company.name | initials }}</div>
     <div class="v2-title-main">
-      <div class="v2-title-line">
-        <h1 class="v2-h1">{{ detail.company.name | neutralize }}</h1>
-        {% if detail.conflicts %}{{ tag(detail.conflicts | length ~ ' identity disagreement(s)', 'warn') }}{% endif %}
+      <h1 class="v2-h1">{{ detail.company.name | neutralize }}</h1>
+      <div class="v2-note">
+        {% if detail.company.domain %}<a href="https://{{ detail.company.domain }}" rel="noopener noreferrer" target="_blank" class="m">{{ detail.company.domain | neutralize }}</a>{% else %}No website{% endif %}
+        · {{ tag(website, 'ok' if website == 'Confirmed' else ('warn' if website == 'Best available' else ''), small=true) }}
+        {%- if detail.company.industry %} · {{ detail.company.industry | neutralize }}{% endif %}
+        {%- if detail.company.company_size %} · {{ detail.company.company_size | neutralize }}{% endif %}
+        {%- if detail.company.country %} · {{ detail.company.country | neutralize }}{% endif %}
+        {%- if detail.company.linkedin_company_url %} · <a href="{{ detail.company.linkedin_company_url }}" rel="noopener noreferrer" target="_blank">LinkedIn</a>{% endif %}
       </div>
-      <p class="v2-note">
-        The permanent company record. Every contact who works here shares it, and nothing on this
-        page belongs to a campaign.
-      </p>
     </div>
     <div class="v2-title-actions">
-      <a class="v2-btn" href="/companies/{{ detail.company.id }}">Open in admin Workbench</a>
+      {% if is_admin %}<a class="v2-btn" href="/companies/{{ detail.company.id }}">Open in admin Workbench</a>{% endif %}
     </div>
   </div>
 
@@ -28,347 +33,101 @@
     <div class="v2-stack">
 
       <div class="v2-card">
-        <div class="v2-card-head">
-          <h2>Identity</h2>
-          <span class="v2-note">A domain and a LinkedIn company page are two independent axes. Neither confirms the other.</span>
+        <div class="v2-card-head tight">
+          <h2>What we know</h2>
+          <span class="v2-hint push">Each fact says where it came from.</span>
         </div>
-        <dl class="v2-dl">
-          <div class="v2-kv"><dt>Name</dt><dd>{{ detail.company.name | neutralize }}</dd></div>
-          <div class="v2-kv"><dt>Domain</dt><dd class="m">
-            {% if detail.company.domain %}
-              {{ detail.company.domain }}
-              {% if detail.domain_resolution %}
-                {% if detail.domain_resolution.is_provisional %}{{ tag('provisional', 'warn', small=true) }}
-                {% else %}{{ tag('confirmed', 'ok', small=true) }}{% endif %}
-              {% endif %}
-            {% else %}
-              <span class="v2-muted">none — nothing can be emailed here until one is established</span>
-            {% endif %}
-          </dd></div>
-          <div class="v2-kv"><dt>LinkedIn page</dt><dd class="v2-break">
-            {% if detail.company.linkedin_company_url or detail.captured_linkedin_url %}
-              {{ detail.company.linkedin_company_url or detail.captured_linkedin_url }}
-              {% if not detail.company.linkedin_company_url %}
-              <div class="v2-hint">From a capture, not a canonical field.</div>
-              {% endif %}
-            {% else %}<span class="v2-muted">not on record</span>{% endif %}
-          </dd></div>
-          {% if detail.captured_salesnav_url %}
-          <div class="v2-kv"><dt>Sales Navigator</dt><dd class="v2-break">{{ detail.captured_salesnav_url }}</dd></div>
-          {% endif %}
-          <div class="v2-kv"><dt>LinkedIn identifier</dt><dd class="m">{{ detail.company.linkedin_company_id or '—' }}</dd></div>
-          <div class="v2-kv"><dt>Industry</dt><dd>{{ (detail.company.industry | neutralize) or 'unknown' }}</dd></div>
-          <div class="v2-kv"><dt>Country</dt><dd>{{ (detail.company.country | neutralize) or 'unknown' }}</dd></div>
-          <div class="v2-kv"><dt>Size</dt><dd>{{ detail.company.company_size or 'unknown' }}</dd></div>
-        </dl>
-      </div>
-
-      {% if detail.domain_resolution %}
-      <div class="v2-card accent">
-        <div class="v2-card-head">
-          <h2>How this domain was decided</h2>
-          <span class="v2-note">And what the decision permits.</span>
+        {% if facts %}
+        <div class="v2-table-wrap">
+          <table>
+            <thead><tr><th>Subject</th><th>What we know</th><th>From</th></tr></thead>
+            <tbody>
+              {% for fact in facts %}
+              <tr>
+                <td class="v2-nowrap">{{ fact.subject }}</td>
+                <td>{{ fact.text }}{% if fact.detail %}<div class="v2-sub">{{ fact.detail }}</div>{% endif %}</td>
+                <td class="v2-nowrap">{{ tag(fact.provenance, 'ok' if fact.provenance == 'Researched evidence' else ('brand' if fact.provenance == 'Manual' else ''), small=true) }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
         </div>
-        <div class="v2-card-body">{{ detail.domain_resolution.headline }}</div>
-        {% if detail.domain_resolution.reasons %}
-        <div class="v2-card-body">
-          <div class="v2-eyebrow">Why</div>
-          <div class="v2-blockquote-list">
-            {% for reason in detail.domain_resolution.reasons %}<div>{{ reason }}</div>{% endfor %}
-          </div>
-        </div>
-        {% endif %}
-        {% if detail.domain_resolution.candidates %}
-        <div class="v2-candidates">
-          {% for candidate in detail.domain_resolution.candidates %}
-          <div class="v2-candidate {{ 'chosen' if candidate.get('selected') }}">
-            <b>{{ candidate.get('domain') or 'no domain' }} — {{ 'chosen' if candidate.get('selected') else ('rejected' if candidate.get('rejected_reason') else 'considered') }}</b>
-            <p>{{ candidate.get('rejected_reason') or candidate.get('reason') or candidate.get('name') or 'No reason recorded.' }}</p>
-          </div>
-          {% endfor %}
-        </div>
-        {% endif %}
-        {% if detail.domain_resolution.warnings %}
-        <div class="v2-card-body">
-          <div class="v2-warnbox">{{ detail.domain_resolution.warnings | join(' ') }}</div>
-        </div>
-        {% endif %}
-        <div class="v2-card-foot plain">
-          Decision {{ detail.domain_resolution.decision.decision_number }} by
-          <span class="m">{{ detail.domain_resolution.decision.policy_version }}</span> on
-          {{ detail.domain_resolution.decision.decided_at | dt }}
-          {%- if detail.domain_resolution.decision.provider_call_made %} · a paid provider call was spent{% else %} · no paid provider call was spent{% endif %}.
-          {% if detail.research_readiness %}
-            {{ detail.research_readiness.reason }}
-          {% endif %}
-          Correcting it happens on the capture the decision came from, where the earlier decision
-          and its candidates are kept beside the correction.
-        </div>
-      </div>
-      {% endif %}
-
-      <div class="v2-card">
-        <div class="v2-card-head">
-          <h2>Research dossier</h2>
-          <span class="v2-note">Nine sections. A section that was not addressed is unknown, not empty.</span>
-          {% if detail.current_dossier %}
-          <span class="push">{{ tag('v' ~ detail.current_dossier.version.version_number ~ ' current · ' ~ (detail.current_dossier.sections_present | length) ~ ' of 9 · ' ~ detail.current_dossier.warning_count ~ ' warning(s)', 'ok') }}</span>
-          {% else %}
-          <span class="push">{{ tag('no dossier', '') }}</span>
-          {% endif %}
-        </div>
-        {% if detail.current_dossier %}
-          {% for section in sections %}
-          <details class="v2-disclose">
-            <summary>
-              <span class="v2-disclose-n">{{ section.n }}</span>
-              <span class="v2-disclose-name">{{ section.name }}</span>
-              {% if section.addressed %}{{ tag('addressed', 'ok', small=true) }}
-              {% else %}{{ tag('not addressed — unknown, not empty', '', small=true) }}{% endif %}
-              {% if section.addressed %}<span class="m v2-hint">{{ section.field_count }} field(s)</span>{% endif %}
-            </summary>
-            <div class="v2-disclose-body">
-              {% if section.addressed %}
-                {% for label, lines in section.fields %}
-                <div class="v2-dossier-row">
-                  <span class="k">{{ label }}</span>
-                  <div class="v">
-                    {% for line in lines %}<div>{{ line }}</div>{% endfor %}
-                  </div>
-                </div>
-                {% endfor %}
-                <details class="v2-sub-disclose">
-                  <summary>Show this section exactly as it is stored</summary>
-                  <pre class="v2-pre">{{ section.raw | tojson(indent=2) }}</pre>
-                </details>
-              {% else %}
-                <p class="v2-note">
-                  Nothing was recorded for this section. That is different from recording that
-                  there is nothing — the interpreter did not address it at all.
-                </p>
-              {% endif %}
-            </div>
-          </details>
-          {% endfor %}
-          <div class="v2-card-foot plain">
-            Dossier content is evidence gathered from outside this system. It is displayed and
-            cited, never treated as an instruction, and a dossier claiming a value does not set it —
-            the claim is recorded and the versioned field policy decides what wins.
-          </div>
         {% else %}
-          {{ empty('No research on file', detail.research_note) }}
+          {{ empty('Nothing researched yet', 'Facts appear here as VMR researches the company for people in your Campaigns.') }}
         {% endif %}
       </div>
 
-      {% if detail.current_dossier and detail.current_dossier.version.warnings %}
       <div class="v2-card">
-        <div class="v2-card-head">
-          <h2>Warnings the interpreter recorded</h2>
-          <span class="v2-note">Surfaced so a dossier is never silently trusted.</span>
-        </div>
-        <div class="v2-card-body">
-          <pre class="v2-pre">{{ detail.current_dossier.version.warnings | tojson(indent=2) }}</pre>
-        </div>
-      </div>
-      {% endif %}
-
-      {% if detail.field_provenance %}
-      <div class="v2-card">
-        <div class="v2-card-head">
-          <h2>Canonical fields</h2>
-          <span class="v2-note">What each value is, where it came from, and why it won.</span>
-        </div>
+        <div class="v2-card-head tight"><h2>People</h2></div>
+        {% if detail.linked_contacts %}
         <div class="v2-table-wrap">
           <table>
-            <thead><tr><th>Field</th><th>Current value</th><th>Source</th><th>Observed</th><th>Why this value</th></tr></thead>
+            <thead><tr><th>Person</th><th>Role</th><th>Email address</th></tr></thead>
             <tbody>
-              {% for field in detail.field_provenance %}
+              {% for link in detail.linked_contacts %}
               <tr>
-                <td class="m v2-nowrap">{{ field.field_name | nice }}</td>
-                <td>
-                  {% if field.current_value %}<b>{{ field.current_value | neutralize }}</b>
-                  {% else %}{{ tag('unknown') }}{% endif %}
-                </td>
-                <td class="v2-note">
-                  {% if field.winner %}{{ field.winner.source_kind.value | nice }}
-                    {%- if field.winner.is_manual_override %} · your override{% endif %}
-                  {% else %}no winning observation{% endif %}
-                </td>
-                <td class="m v2-nowrap">{{ field.winner.observed_at | dt if field.winner else '—' }}</td>
-                <td class="v2-note">
-                  {{ field.win_reason or 'No decision reason was recorded.' }}
-                  <div class="v2-sub mono">{{ field.policy_version }} · {{ field.observations | length }} observation(s)</div>
-                </td>
+                <td><a href="/app/people/{{ link.contact.id }}">{{ link.display_name | neutralize }}</a></td>
+                <td class="v2-note">{{ (link.contact.title | neutralize) or '—' }}</td>
+                <td class="m">{{ (link.contact.email | neutralize) or '—' }}</td>
               </tr>
               {% endfor %}
             </tbody>
           </table>
         </div>
-        <div class="v2-card-foot plain">
-          An unknown value is not the same as none. Where the policy refused every observation it
-          had, the field stays unknown rather than being filled with the best guess available.
-        </div>
-      </div>
-      {% endif %}
-
-      {% if detail.conflicts %}
-      <div class="v2-card">
-        <div class="v2-card-head">
-          <h2>Identity disagreements</h2>
-          <span class="v2-note">Derived from current records. A disagreement disappears when the records agree.</span>
-        </div>
-        {% for conflict in detail.conflicts %}
-        <div class="v2-row">
-          <div class="v2-sidelist-top">
-            <b>{{ conflict.title }}</b>
-            <span class="m v2-note">{{ conflict.count }} record(s)</span>
-          </div>
-          <div class="v2-note">{{ conflict.detail }}</div>
-          {% if conflict.references %}
-          <div class="m v2-hint v2-break">{{ conflict.references | join(', ') }}</div>
-          {% endif %}
-        </div>
-        {% endfor %}
-        <div class="v2-card-foot plain">
-          Nothing here blocks anything and nothing is merged automatically. Domains are confirmed on
-          the capture resolution screen, so that decision is made in one place.
-        </div>
-      </div>
-      {% endif %}
-
-      {% if detail.dossier_versions %}
-      <div class="v2-card">
-        <div class="v2-card-head">
-          <h2>Dossier versions</h2>
-          <span class="v2-note">Immutable readings of a raw submission. Older versions are never deleted.</span>
-        </div>
-        <div class="v2-table-wrap">
-          <table>
-            <thead><tr><th>Version</th><th>Interpreter</th><th>From submission</th><th>Sections</th><th class="num">Warnings</th><th>Created</th></tr></thead>
-            <tbody>
-              {% for summary in detail.dossier_versions %}
-              <tr>
-                <td>
-                  <span class="m">v{{ summary.version.version_number }}</span>
-                  {% if summary.version.is_current %}{{ tag('current', 'ok', small=true) }}
-                  {% else %}{{ tag('superseded, and kept', '', small=true) }}{% endif %}
-                </td>
-                <td>
-                  {{ summary.version.interpreter }}
-                  <div class="v2-sub mono">{{ summary.version.interpreter_version or '' }}</div>
-                </td>
-                <td class="m v2-note">{{ summary.submission.producer }} · {{ summary.submission.submitted_at | dt }}</td>
-                <td class="m">{{ summary.sections_present | length }} of 9</td>
-                <td class="num m">{{ summary.warning_count }}</td>
-                <td class="m v2-nowrap">
-                  {{ summary.version.created_at | dt }}
-                  {% if summary.version.note %}<div class="v2-sub">{{ summary.version.note }}</div>{% endif %}
-                </td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-        <div class="v2-card-foot plain">
-          The same submission can be read more than once — a better extractor, a fixed bug, a second
-          opinion — and each reading is its own version. Selecting a different one supersedes rather
-          than deletes, so the earlier reasoning stays inspectable.
-        </div>
+        {% else %}
+        <div class="v2-row tight v2-note">Nobody is linked to this company yet.</div>
+        {% endif %}
       </div>
 
-      {% if detail.current_dossier %}
-      <div class="v2-card">
-        <div class="v2-card-head">
-          <h2>The raw submission</h2>
-          <span class="v2-note">Stored verbatim, never edited, so an interpretation can always be checked against what it was interpreting.</span>
-        </div>
-        <dl class="v2-dl">
-          <div class="v2-kv"><dt>Producer</dt><dd class="m">{{ detail.current_dossier.submission.producer }} · {{ detail.current_dossier.submission.producer_version or '—' }}</dd></div>
-          <div class="v2-kv"><dt>Submitted by</dt><dd class="m">{{ detail.current_dossier.submission.submitted_by or '—' }}</dd></div>
-          <div class="v2-kv"><dt>Submitted at</dt><dd class="m">{{ detail.current_dossier.submission.submitted_at | dt }}</dd></div>
-          <div class="v2-kv"><dt>Content hash</dt><dd class="m v2-break">{{ detail.current_dossier.submission.content_hash }}</dd></div>
-        </dl>
-        <div class="v2-card-body">
-          {% if detail.current_dossier.submission.request_context %}
-          <details class="v2-sub-disclose">
-            <summary>What was asked for</summary>
-            <pre class="v2-pre">{{ detail.current_dossier.submission.request_context }}</pre>
-          </details>
-          {% endif %}
-          <details class="v2-sub-disclose v2-mt-sm">
-            <summary>The payload, exactly as the producer sent it</summary>
-            <pre class="v2-pre">{{ detail.current_dossier.submission.payload | tojson(indent=2) }}</pre>
-          </details>
-          <p class="v2-hint v2-mt-sm">
-            Recording what was requested is what lets a thin payload be told apart from a request
-            that was never made properly.
-          </p>
-        </div>
-      </div>
-      {% endif %}
-      {% endif %}
     </div>
 
     <div class="v2-aside plain">
-      <div class="v2-card">
-        <div class="v2-card-head tight"><h2>Research state</h2></div>
-        <dl class="v2-dl">
-          <div class="v2-kv tight"><dt>State</dt><dd>{{ research_state(detail.company.research_state) }}</dd></div>
-          <div class="v2-kv tight"><dt>Last researched</dt><dd class="m">{{ detail.company.last_researched_at | dt }}</dd></div>
-          <div class="v2-kv tight"><dt>Warnings</dt><dd class="m">
-            {{ detail.current_dossier.warning_count if detail.current_dossier else 0 }} on the current dossier
-          </dd></div>
-        </dl>
-        <div class="v2-card-foot plain">
-          Research is its own dimension and is never folded into an overall company status.
-        </div>
-      </div>
-
-      {% if detail.research_readiness %}
-      <div class="v2-card">
-        <div class="v2-card-head tight"><h2>What the domain permits</h2></div>
-        <div class="v2-row tight">
-          <div class="v2-sidelist-top">
-            {% if detail.research_readiness.ready %}{{ tag('research-ready', 'ok', small=true) }}
-            {% else %}{{ tag('not research-ready', 'err', small=true) }}{% endif %}
-            {% if detail.research_readiness.is_provisional %}{{ tag('provisional', 'warn', small=true) }}{% endif %}
-          </div>
-          <div class="v2-hint">{{ detail.research_readiness.reason }}</div>
-        </div>
-      </div>
-      {% endif %}
 
       <div class="v2-card">
-        <div class="v2-card-head tight">
-          <h2>Contacts linked here</h2>
-          <span class="v2-hint push">{{ detail.linked_contacts | length }} linked</span>
-        </div>
-        {% for link in detail.linked_contacts %}
+        <div class="v2-card-head tight"><h2>Campaigns</h2></div>
+        {% for impact in impacts %}
         <div class="v2-row tight">
-          <div class="v2-sidelist-top">
-            <a href="/app/people/{{ link.contact.id }}">{{ link.display_name | neutralize }}</a>
-            <span class="v2-hint">{{ (link.contact.title | neutralize) or 'no title' }}</span>
-          </div>
+          <div class="v2-sidelist-top"><a href="/app/campaigns/{{ impact.campaign.id }}">{{ impact.campaign.name | neutralize }}</a>{{ lifecycle_pill(impact.lifecycle, impact.lifecycle | capitalize) }}</div>
+          <div class="v2-hint">{{ impact.progress.total }} {{ 'person' if impact.progress.total == 1 else 'people' }} · {{ impact.progress.ready_for_sending }} ready · {{ impact.progress.processing }} processing · {{ impact.progress.could_not_prepare }} could not prepare</div>
         </div>
+        {% else %}
+        <div class="v2-row tight v2-note">No Campaign includes people from this company.</div>
         {% endfor %}
-        {% if not detail.linked_contacts %}
-        <div class="v2-row tight v2-note">Nobody is permanently linked to this company yet.</div>
-        {% endif %}
-        {% if detail.transitional_contacts %}
+      </div>
+
+      <div class="v2-card">
+        <div class="v2-card-head tight"><h2>Sources and changes</h2></div>
         <div class="v2-row tight">
-          <div class="v2-warnbox">
-            <strong>{{ detail.transitional_contacts | length }} contact(s) matched by domain string only.</strong>
-            They have no permanent link and are listed so unresolved people stay visible. This is
-            not evidence that they work here.
-          </div>
-          {% for link in detail.transitional_contacts %}
+          <div class="v2-sidelist-top"><b>Website</b>{{ tag(website, '', small=true) }}</div>
           <div class="v2-hint">
-            <a href="/app/people/{{ link.contact.id }}">{{ link.display_name | neutralize }}</a> — {{ (link.contact.title | neutralize) or 'no title' }}
+            {% if detail.domain_resolution %}{{ detail.domain_resolution.headline }}{% if detail.domain_resolution.reasons %} — {{ detail.domain_resolution.reasons[0] }}{% endif %}
+            {% elif detail.company.domain %}Recorded with the company.{% else %}No website could be resolved yet.{% endif %}
           </div>
-          {% endfor %}
         </div>
+        {% if detail.field_provenance %}
+        <details class="v2-disclose v2-row tight">
+          <summary>Field history</summary>
+          <div class="v2-table-wrap">
+            <table>
+              <thead><tr><th>Field</th><th>Value</th><th>From</th></tr></thead>
+              <tbody>
+                {% for field in detail.field_provenance %}
+                <tr>
+                  <td class="v2-nowrap">{{ field.field_name | nice }}</td>
+                  <td>{{ (field.current_value | neutralize) or '—' }}</td>
+                  <td class="v2-note">{% if field.winner %}{{ field.winner.source_kind.value | nice }}{% else %}—{% endif %}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </details>
+        {% endif %}
+        {% if detail.company.last_researched_at %}
+        <div class="v2-row tight v2-hint">Last researched {{ detail.company.last_researched_at | when }}.</div>
         {% endif %}
       </div>
+
     </div>
   </div>
 </div>

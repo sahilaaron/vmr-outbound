@@ -49,7 +49,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from tests.test_email_sequence import build
+from tests.test_email_sequence import BODIES, build
 from tests.test_email_sequence import scenario as _scenario
 
 scenario = _scenario
@@ -113,6 +113,13 @@ def _campaign_url(scenario: tuple[Any, ...]) -> str:
 def _contact_url(scenario: tuple[Any, ...]) -> str:
     membership = _membership(scenario)
     return f"/app/people/{scenario[2].id}?campaign={membership.campaign_id}"
+
+
+def _desk_url(scenario: tuple[Any, ...], email: int) -> str:
+    """The inline sending desk on Campaign Overview, open on one of the seven emails."""
+
+    membership = _membership(scenario)
+    return f"{_campaign_url(scenario)}?section=all&person={membership.id}&email={email}"
 
 
 def _walk_to_personalization(db: Session, membership: CampaignContact) -> None:
@@ -469,16 +476,30 @@ def test_the_absence_of_a_review_row_creates_no_customer_backlog(
 def test_optional_inspect_and_edit_remain_available(
     client: TestClient, db_session: Session, scenario: tuple[Any, ...]
 ) -> None:
-    """Requirement 9. Removing the obligation must not remove the capability."""
+    """Requirement 9. Removing the obligation must not remove the capability.
 
-    sequence = _ready(db_session, scenario)
+    The seven emails are read and edited on the inline sending desk of Campaign
+    Overview, which the person page points into; the desk shows one email at a
+    time, so every one of the seven is opened here.
+    """
+
+    _ready(db_session, scenario)
+    membership = _membership(scenario)
 
     contact = client.get(_contact_url(scenario))
     assert contact.status_code == 200
-    # All seven bodies are readable on the page an operator came to read them on.
-    assert contact.text.count("approved by default") >= SEQUENCE_LENGTH
-    # And the edit path is still offered.
-    assert f"/app/review/sequence/{sequence.id}" in contact.text or "messages/" in contact.text
+    assert "Open in Campaign" in contact.text
+    for position in range(1, SEQUENCE_LENGTH + 1):
+        desk = client.get(_desk_url(scenario, position))
+        assert desk.status_code == 200
+        # The body is readable in full ...
+        assert f'id="desk-body-{position}"' in desk.text
+        assert BODIES[position - 1] in desk.text
+        # ... and the edit path is still offered, for this exact email.
+        assert (
+            f"/app/campaigns/{membership.campaign_id}/desk/{membership.id}/{position}/edit"
+            in desk.text
+        )
 
 
 # ===========================================================================
@@ -545,10 +566,11 @@ def test_no_automatic_send_action_is_introduced(
     }
     assert not [path for path in routes if path.endswith("/send")]
 
-    body = client.get(_contact_url(scenario)).text
-    assert "no sending path in this build" in body
-    for claim in ("has been sent", "will be sent", "scheduled to send"):
-        assert claim not in body
+    for position in range(1, SEQUENCE_LENGTH + 1):
+        body = client.get(_desk_url(scenario, position)).text
+        assert "Nothing here sends" in body
+        for claim in ("has been sent", "will be sent", "scheduled to send"):
+            assert claim not in body
 
     today = client.get("/app").text
     for claim in ("has been sent", "will be sent", "scheduled to send"):

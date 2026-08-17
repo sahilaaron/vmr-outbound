@@ -3176,7 +3176,7 @@ form.v2-menu-item .v2-menu-button {
 /* ---------------- Add people ---------------- */
 .v2-source-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
 }
 .v2-source {
@@ -3567,4 +3567,18 @@ body.v2 tbody tr.is-selected td {
 .v2-due-line .m {
   font-weight: 600;
   color: var(--ink);
+}
+
+/* ---------------- People list selection ---------------- */
+.v2-check-col {
+  width: 34px;
+}
+.v2-selectbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.v2-selectbar .push {
+  margin-left: auto;
 }

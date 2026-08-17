@@ -874,7 +874,7 @@ def test_a_person_in_no_campaign_says_so(
     db_session.add(orphan)
     db_session.commit()
     body = client.get(f"/app/people/{orphan.id}").text
-    assert "Not in a campaign" in body
+    assert "Not in a Campaign" in body
 
 
 def test_companies_render_with_the_local_switch(
@@ -894,7 +894,7 @@ def test_a_company_with_no_dossier_says_nothing_was_researched(
     db_session.add(company)
     db_session.commit()
     body = client.get(f"/app/companies/{company.id}").text
-    assert "No research on file" in body
+    assert "Nothing researched yet" in body
 
 
 # ---------------------------------------------------------------------------

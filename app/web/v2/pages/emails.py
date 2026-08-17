@@ -37,7 +37,7 @@ router = shell.router
 
 
 #: Every way the sequence section can be in a state other than "here it is".
-#: Each one is rendered with its own wording; see ``_sequence.html::unavailable``.
+#: Each one used to be rendered with its own wording on the person page.
 SEQUENCE_STATE_FEATURE_OFF = "feature_off"
 SEQUENCE_STATE_CAMPAIGN_OFF = "campaign_off"
 SEQUENCE_STATE_PENDING = "pending"

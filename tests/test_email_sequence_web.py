@@ -1,4 +1,4 @@
-"""The seven-message sequence on the person page and in Admin diagnosis, over HTTP.
+"""The seven-message sequence on the sending desk and in Admin diagnosis, over HTTP.
 
 Two things these tests exist to protect.
 
@@ -6,13 +6,15 @@ Two things these tests exist to protect.
 name the immutable message version they act on, and a stale submission is
 refused rather than quietly applied to text nobody read.
 
-**Every empty state must say which empty it is.** "No sequence" covering
-feature-off, campaign-not-opted-in, not-generated-yet and generation-failed is
-how an operator ends up waiting for something that is switched off. Each state
-is asserted separately and by its own words.
+**The desk shows exactly this person's emails, escaped, in full.** The person
+page carries no email bodies: each Campaign row points into the inline sending
+desk on Campaign Overview (``?person=<membership>&email=<n>``), which renders
+one email at a time. A person who is not Ready for Sending has no desk at all,
+and never sees another person's messages.
 
-The global Emails/Review page no longer exists: emails are Campaign output and
-are read on the person's page, so the queue tests that lived here are gone.
+The global Emails/Review page no longer exists, and the person page no longer
+carries the per-state sequence notices, so the queue and notice tests that
+lived here are gone.
 """
 
 from __future__ import annotations
@@ -39,10 +41,28 @@ from sqlalchemy.orm import Session
 # `scenario` is a pytest fixture defined in the sibling module. Imported under a
 # private alias and re-exported once, so ruff sees one definition rather than a
 # redefinition on every test that takes the fixture by name.
+from tests.test_customer_operating_model import _ready
 from tests.test_email_sequence import BODIES, SUBJECTS, build
 from tests.test_email_sequence import scenario as _scenario
 
 scenario = _scenario
+
+
+def _desk_url(scenario: tuple[Any, ...], email: int) -> str:
+    """Campaign Overview with the inline sending desk open on one email."""
+
+    _campaign, _company, _contact, membership, _policy, _evidence = scenario
+    return (
+        f"/app/campaigns/{membership.campaign_id}?section=all&person={membership.id}&email={email}"
+    )
+
+
+def _doc(body: str) -> str:
+    """The one document card the desk renders for the selected email."""
+
+    start = body.index('<article class="v2-doc"')
+    end = body.index("</article>", start)
+    return body[start:end]
 
 
 def _client(
@@ -68,15 +88,6 @@ def _client(
 @pytest.fixture()
 def client(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     with _client(db_session, monkeypatch) as app_client:
-        yield app_client
-    get_settings.cache_clear()
-
-
-@pytest.fixture()
-def client_without_sequences(
-    db_session: Session, monkeypatch: pytest.MonkeyPatch
-) -> Iterator[TestClient]:
-    with _client(db_session, monkeypatch, sequences=False) as app_client:
         yield app_client
     get_settings.cache_clear()
 
@@ -109,15 +120,11 @@ def test_approving_one_message_over_http_records_that_exact_version(
 def test_bulk_approval_over_http_names_every_version(
     db_session: Session, client: TestClient, scenario: tuple[Any, ...]
 ) -> None:
-    """Test 66, via the form the page actually renders."""
+    """Test 66. No page renders this form any more; the route still names every version."""
 
     sequence = build(db_session, scenario)
     rows = sequence_read.message_rows(db_session, sequence=sequence)
     _campaign, _company, contact, membership, _policy, _evidence = scenario
-    page = client.get(f"/app/people/{contact.id}?campaign={membership.campaign_id}").text
-    # The hidden field carries every exact version id.
-    for row in rows:
-        assert str(row.version_id) in page
 
     response = client.post(
         f"/app/review/sequence/{sequence.id}/approve",
@@ -202,19 +209,29 @@ def test_an_off_site_redirect_target_is_discarded(
 def test_a_failed_generation_is_not_described_as_still_running(
     db_session: Session, client: TestClient, scenario: tuple[Any, ...]
 ) -> None:
-    """D-2: the failed state is reachable and does not say 'when it finishes'."""
+    """D-2: a sequence that failed validation is not a package anybody can act on.
+
+    The person page used to carry a per-state notice; now the only place emails
+    are read is the sending desk, and a failed sequence must not open one. The
+    person is not Ready for Sending, the person page offers no way into the
+    desk, and asking Campaign Overview for the desk renders none.
+    """
 
     from app.models.enums import SequenceValidationStatus
 
     _campaign, _company, contact, membership, _policy, _evidence = scenario
-    sequence = build(db_session, scenario)
+    sequence = _ready(db_session, scenario)
     sequence.validation_status = SequenceValidationStatus.FAILED
     db_session.flush()
 
-    body = client.get(f"/app/people/{contact.id}?campaign={membership.campaign_id}").text
-    assert "did not produce a usable sequence" in body
-    assert "When it finishes" not in body
-    assert "Nothing partial was kept" in body
+    person = client.get(f"/app/people/{contact.id}?campaign={membership.campaign_id}").text
+    assert "Open in Campaign" not in person
+    assert SUBJECTS[0] not in person
+
+    overview = client.get(_desk_url(scenario, 1)).text
+    assert 'class="v2-desk"' not in overview
+    assert SUBJECTS[0] not in overview
+    assert BODIES[0] not in overview
 
 
 # ---------------------------------------------------------------------------
@@ -222,13 +239,12 @@ def test_a_failed_generation_is_not_described_as_still_running(
 # ---------------------------------------------------------------------------
 
 
-def test_user_content_is_escaped_on_the_person_page(
+def test_user_content_is_escaped_on_the_desk(
     db_session: Session, client: TestClient, scenario: tuple[Any, ...]
 ) -> None:
-    """Test 86."""
+    """Test 86. Message text is rendered raw (never neutralized) but always escaped."""
 
-    _campaign, _company, contact, membership, _policy, _evidence = scenario
-    sequence = build(db_session, scenario)
+    sequence = _ready(db_session, scenario)
     rows = sequence_read.message_rows(db_session, sequence=sequence)
     sequence_review.edit_message(
         db_session,
@@ -236,11 +252,15 @@ def test_user_content_is_escaped_on_the_person_page(
         subject="<script>alert('subject')</script>",
         body="<img src=x onerror=alert('body')> and some ordinary words after it.",
     )
-    body = client.get(f"/app/people/{contact.id}?campaign={membership.campaign_id}").text
+    body = client.get(_desk_url(scenario, 1)).text
 
     assert "<script>alert('subject')</script>" not in body
     assert "&lt;script&gt;" in body
     assert "<img src=x onerror" not in body
+    # Escaped in the readable copy and in the edit prefill alike.
+    doc = _doc(body)
+    assert doc.count("&lt;script&gt;alert(&#39;subject&#39;)&lt;/script&gt;") >= 1
+    assert "&lt;img src=x onerror=alert(&#39;body&#39;)&gt;" in doc
 
 
 def test_a_legacy_emails_link_resolves_to_the_person_page(
@@ -257,103 +277,26 @@ def test_a_legacy_emails_link_resolves_to_the_person_page(
     )
 
 
-def test_the_contact_page_renders_a_summary_and_seven_rows(
+def test_the_desk_renders_every_body_one_email_at_a_time(
     db_session: Session, client: TestClient, scenario: tuple[Any, ...]
 ) -> None:
-    """Tests 88-90."""
+    """The desk contract: one email per request, and every one of the seven complete.
 
-    _campaign, _company, contact, membership, _policy, _evidence = scenario
-    build(db_session, scenario)
-    response = client.get(f"/app/people/{contact.id}?campaign={membership.campaign_id}")
-    assert response.status_code == 200
-    body = response.text
-
-    assert "The seven-message sequence" in body
-    assert "sequence v1" in body
-    assert f"of {SEQUENCE_LENGTH} written" in body or "of 7 written" in body
-    # Seven rows, each carrying position, purpose, timing, subject, state, version.
-    for subject in SUBJECTS:
-        assert subject in body
-    assert "Day 0 — first message" in body
-    assert "Day 35 — 10 days later" in body
-    # Every row says approved-by-default rather than the bare word, and the
-    # summary says in as many words that nobody has looked.
-    assert body.count("approved by default") >= SEQUENCE_LENGTH
-    assert "not by anyone" in body
-    assert "review is optional" in body
-    assert "planned timing, not a schedule" in body
-
-
-def test_the_contact_page_renders_every_body_without_paging(
-    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
-) -> None:
-    """The Beta 1 contract for this page, replacing the one-at-a-time rule."""
-
-    _campaign, _company, contact, membership, _policy, _evidence = scenario
-    build(db_session, scenario)
-    body = client.get(f"/app/people/{contact.id}?campaign={membership.campaign_id}").text
-    shown = [text for text in BODIES if text in body]
-    assert shown == list(BODIES), "every message must be readable without a second request"
-
-
-def test_row_expansion_shows_lineage_and_secondary_identifiers(
-    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
-) -> None:
-    """Tests 92-94, and section 19's rule about where exact ids belong."""
-
-    _campaign, _company, contact, membership, _policy, _evidence = scenario
-    sequence = build(db_session, scenario)
-    body = client.get(f"/app/people/{contact.id}?campaign={membership.campaign_id}&step=1").text
-
-    assert "What this message was written from" in body
-    assert "Research" in body and "Insights" in body and "Company Intelligence" in body
-    assert "never cited as proof" in body
-    # Exact ids exist, but inside a collapsed diagnostic block rather than as
-    # dominant labels.
-    assert "Exact identifiers" in body
-    assert str(sequence.sequence_key) in body
-    assert body.index("Exact identifiers") > body.index("Subject")
-
-
-def test_the_contact_page_keeps_an_existing_sequence_visible_when_the_feature_is_off(
-    db_session: Session, client_without_sequences: TestClient, scenario: tuple[Any, ...]
-) -> None:
-    """D-3: switching the feature off must not conceal recorded human work.
-
-    This replaces an earlier test that asserted the section *disappears* — which
-    is the defect, not the requirement.
+    Each request renders exactly one readable body and one edit prefill; the
+    other six bodies are not on that page, so a body that leaked from another
+    position would be caught here.
     """
 
-    _campaign, _company, contact, membership, _policy, _evidence = scenario
-    sequence = build(db_session, scenario)
-    rows = sequence_read.message_rows(db_session, sequence=sequence)
-    sequence_review.approve_sequence(
-        db_session,
-        sequence_id=sequence.id,
-        expected_version_ids=tuple(row.version_id for row in rows),
-    )
-
-    body = client_without_sequences.get(
-        f"/app/people/{contact.id}?campaign={membership.campaign_id}"
-    ).text
-
-    assert "The seven-message sequence" in body
-    assert "Read-only" in body
-    assert "switched off in this environment" in body
-    assert "7 approved" in body
-    # Read-only means read-only: no action form is offered.
-    assert f"/app/review/sequence/messages/{rows[0].version_id}/approve" not in body
-
-
-def test_the_contact_page_is_truthful_when_nothing_has_been_generated(
-    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
-) -> None:
-    """Tests 96-97: pending is named, and is not confused with failure."""
-
-    _campaign, _company, contact, membership, _policy, _evidence = scenario
-    body = client.get(f"/app/people/{contact.id}?campaign={membership.campaign_id}").text
-    assert "No sequence has been written yet" in body
-    assert "did not produce a usable sequence" not in body
+    _ready(db_session, scenario)
+    for position in range(1, SEQUENCE_LENGTH + 1):
+        body = client.get(_desk_url(scenario, position)).text
+        assert body.count('class="v2-doc-body"') == 1
+        doc = _doc(body)
+        assert BODIES[position - 1] in doc, f"message {position} is not readable in full"
+        assert SUBJECTS[position - 1] in doc
+        for other in range(SEQUENCE_LENGTH):
+            if other != position - 1:
+                assert BODIES[other] not in body, f"body {other + 1} leaked onto email {position}"
 
 
 def test_a_historical_single_draft_contact_page_still_reads(
@@ -388,10 +331,10 @@ def test_an_unknown_contact_still_404s(db_session: Session, client: TestClient) 
 def test_a_contact_in_a_campaign_without_a_sequence_sees_no_other_contacts_sequence(
     db_session: Session, client: TestClient, scenario: tuple[Any, ...]
 ) -> None:
-    """Test 98/85: the section is scoped to this membership, not to the campaign."""
+    """Test 98/85: the desk is scoped to this membership, not to the campaign."""
 
     campaign, company, _contact, _membership, _policy, _evidence = scenario
-    build(db_session, scenario)
+    _ready(db_session, scenario)
 
     other = Contact(
         first_name="Bystander",
@@ -409,8 +352,17 @@ def test_a_contact_in_a_campaign_without_a_sequence_sees_no_other_contacts_seque
     db_session.flush()
 
     body = client.get(f"/app/people/{other.id}?campaign={campaign.id}").text
-    assert "No sequence has been written yet" in body
+    assert "Open in Campaign" not in body
     assert SUBJECTS[0] not in body
+
+    # Asking the Campaign for the bystander's desk opens nothing, and certainly
+    # not the other person's emails.
+    overview = client.get(
+        f"/app/campaigns/{campaign.id}?section=all&person={membership.id}&email=1"
+    ).text
+    assert 'class="v2-desk"' not in overview
+    assert SUBJECTS[0] not in overview
+    assert BODIES[0] not in overview
 
 
 # ---------------------------------------------------------------------------
@@ -547,65 +499,41 @@ def test_all_seven_bodies_are_readable_without_any_review(
 ) -> None:
     """Requirement: all seven messages available, with no operator action first.
 
-    The requirement never changed; how it is satisfied did. It used to be met
-    one ``?step=`` request at a time, and this test walked those seven requests
-    asserting each showed its own message. Beta 1 renders all seven at once, so
-    the walk is now over the single page.
+    The requirement never changed; how it is satisfied did. The desk renders
+    one email per request, so this walks the seven and asserts each shows its
+    own message with no review row anywhere.
 
     Each body appears twice by design -- once in the ``<pre>`` an operator reads
     and copies, once prefilled into that message's edit form -- so this asserts
     presence rather than a count, and asserts the readable copy separately.
     """
 
-    _campaign, _company, contact, membership, _policy, _evidence = scenario
-    build(db_session, scenario)
+    _ready(db_session, scenario)
     assert db_session.scalar(select(func.count(EmailSequenceMessageReview.id))) == 0
 
-    body = client.get(f"/app/people/{contact.id}?campaign={membership.campaign_id}").text
     for position in range(1, SEQUENCE_LENGTH + 1):
+        body = client.get(_desk_url(scenario, position)).text
         assert BODIES[position - 1] in body, f"message {position} is not readable"
-    # Seven readable bodies, not seven edit boxes.
-    assert body.count('class="v2-mail-body" id="seq-body-') == SEQUENCE_LENGTH
-    # Readable without any operator action, and said to be so.
-    assert body.count("approved by default") >= SEQUENCE_LENGTH
+        # One readable body, not an edit box standing in for it.
+        assert body.count(f'class="v2-doc-body" id="desk-body-{position}"') == 1
+        # And nothing on the desk asks for an approval before reading it.
+        for pressure in ("Needs approval", "Approve before", "Waiting for you"):
+            assert pressure not in body
 
 
-def test_the_contact_page_renders_all_seven_planned_timings(
+def test_the_desk_renders_all_seven_planned_timings(
     db_session: Session, client: TestClient, scenario: tuple[Any, ...]
 ) -> None:
-    """The whole ladder, not only its ends."""
+    """The whole ladder, not only its ends: the rail names every day."""
 
-    _campaign, _company, contact, membership, _policy, _evidence = scenario
-    build(db_session, scenario)
-    body = client.get(f"/app/people/{contact.id}?campaign={membership.campaign_id}").text
-    assert "Day 0 — first message" in body
-    for elapsed, delay in ((3, 3), (7, 4), (12, 5), (18, 6), (25, 7), (35, 10)):
-        assert f"Day {elapsed} — {delay} days later" in body
-
-
-def test_the_pages_never_print_the_bare_word_approved_without_saying_whose(
-    db_session: Session, client: TestClient, scenario: tuple[Any, ...]
-) -> None:
-    """A default must never read as somebody's judgement.
-
-    Checked on the rendered pages before and after a human decision, so the
-    distinction has to survive both states rather than only the empty one.
-    """
-
-    _campaign, _company, contact, membership, _policy, _evidence = scenario
-    sequence = build(db_session, scenario)
-    contact_url = f"/app/people/{contact.id}?campaign={membership.campaign_id}&step=1"
-
-    fresh = client.get(contact_url).text
-    assert "approved by default" in fresh
-    assert "approved by you" not in fresh
-    assert "not by anyone" in fresh
-
-    rows = sequence_read.message_rows(db_session, sequence=sequence)
-    sequence_review.approve_message(db_session, message_version_id=rows[0].version_id)
-    db_session.commit()
-
-    after = client.get(contact_url).text
-    assert "approved by you" in after
-    assert "approved by default" in after, "the other six are still defaults"
-    assert "not by anyone" not in after
+    _ready(db_session, scenario)
+    body = client.get(_desk_url(scenario, 1)).text
+    assert body.count('class="v2-rail-step') == SEQUENCE_LENGTH
+    for position, elapsed in enumerate((0, 3, 7, 12, 18, 25, 35), start=1):
+        assert f"Email {position}" in body
+        assert f"Day {elapsed}" in body
+    # And the selected email's card says which day it is.
+    for position, elapsed in enumerate((0, 3, 7, 12, 18, 25, 35), start=1):
+        doc = _doc(client.get(_desk_url(scenario, position)).text)
+        assert f'<span class="v2-doc-k">Email {position}</span>' in doc
+        assert f"Day {elapsed}" in doc
