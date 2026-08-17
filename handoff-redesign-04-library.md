@@ -1,6 +1,6 @@
 # Handoff — Redesign slice 4: Library, read by everyone, edited by administrators
 
-**Branch:** `redesign/04-library` · contains reconciled Slice 3 by merge · merge after PR 3
+**Branch:** `redesign/04-library` · contains main-reconciled Slice 3 via merges `dec86686`, `c1c4408a`, `f9656cd1` · merge after PR 3
 **Spec:** VMR_OUTBOUND_UX_IA_PASS2.md section D.7, Phase 5. Locked with Sahil (16 Aug): the Library is only editable by an Admin.
 
 ## What changed
@@ -15,6 +15,8 @@ Services untouched: the routes call the same `seller_knowledge` write functions 
 - ruff / ruff format / mypy clean.
 - New `tests/test_library.py` (4): user reads every section and sees no form; admin sees forms; user POST to an admin library route → 403 `admin_required`; admin edits an offering and the change renders.
 - `tests/test_route_authorization.py`: the KB asymmetry test is restated for the Library (in slice 5, where the legacy pages leave).
+
+- On the reconciled head `f9656cd1`: library, route authorization, customer UI, seller knowledge, extension account linking, sending desk — 493 collected, all green except one main-only test whose ~40 KB parametrize id overflows Windows' `PYTEST_CURRENT_TEST` env var (identical error on pristine main).
 
 ## Notes for review
 - No schema change. Knowledge-base *generation* (`/knowledge-base/generate`, the Claude-CLI subprocess) is not carried into the Library UI; it is retired with the legacy pages in slice 5 and listed there as a deferred Admin data tool.

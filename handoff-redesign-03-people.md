@@ -1,6 +1,6 @@
 # Handoff — Redesign slice 3: People and Companies as records
 
-**Branch:** `redesign/03-people-companies` · contains repaired Slice 2 head `5b415b21` by a history-preserving merge (`973fc690`) · merge after PR 2
+**Branch:** `redesign/03-people-companies` · based on current `origin/main` `79467032` (merged Slices 1–2 + PR #294) via history-preserving merges `973fc690` (repaired Slice 2) and `be73a9eb` (current main) · merge after PR 2
 **Spec:** VMR_OUTBOUND_UX_IA_PASS2.md sections D.5–D.6, F.3, Phase 5. Locked with Sahil: the person page is a record, not an email surface; emails are read and acted on in the Campaign.
 
 ## What changed
@@ -21,8 +21,11 @@
 - Tests that assumed the person page carried the seven emails were repointed at the desk or removed with the controls (`test_v2_customer_ui`, `test_customer_operating_model`, `test_v2_beta1_operator_ui`, `test_email_sequence_web`, `test_email_sequence_defects`, `test_gmail_draft_integration`): 29 retargeted, 12 deleted; all six files green (168 + 56 + 74 passed).
 - Screenshots reviewed: People list with selection, Person with Campaigns table and About, Companies, Company.
 
+- On the main-reconciled head `be73a9eb`: 16-file batch (customer UI, operating model, beta1, sequence web/defects, Gmail, sending desk, copy contract, route auth, extension account linking, extension capture auth, hosted auth, CI effective control, production hardening, resolution, review) **1020/1023**; the 3 failures are `/readyz` tests that fail identically on pristine `79467032` in the same environment (Windows psycopg-async).
+
 ## Notes for review
 - No schema change.
+- `app/core/http.py`, `app/web/extension_link_routes.py`, `app/main.py`, `tests/test_extension_account_linking.py` are byte-identical to `origin/main` — the PR #294 consent-CSP behaviour is untouched.
 - A sequence whose generation/validation FAILED shows as Processing on the person page (it never becomes Ready); the failure detail is on Admin › Diagnostics. Same as slice 1's rule that customer pages never name Agents.
 
 ## Proposed tracker payload

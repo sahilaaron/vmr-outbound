@@ -1,6 +1,6 @@
 # Handoff — Redesign slice 5: Admin in the shell, legacy customer pages retired
 
-**Branch:** `redesign/05-admin-legacy` · contains reconciled Slice 4 by merge · merge after PR 4
+**Branch:** `redesign/05-admin-legacy` · contains main-reconciled Slice 4 via merges `8f27a72c`, `0f4c5b86`, `817e9555` · merge after PR 4
 **Spec:** VMR_OUTBOUND_UX_IA_PASS2.md sections D.8, E, Phase 6. Locked with Sahil: Admin hidden first, consolidated last, in the same shell.
 
 ## What changed
@@ -27,7 +27,9 @@
 - Route authorization: 80 user-reachable (101 − retired twins + six redirects); the Library asymmetry test replaces the KB one; PROVIDER_SPEND 7.
 - Deleted `tests/test_seller_knowledge_web.py`, `test_crm_web.py`, `test_company_web.py` (pages gone); repointed workbench, verification, provider-spend, pipeline, enrolment, hosted-auth, agents, resolution, review, extension-capture, autonomous-ready, capture-intake, admin-workbench and seller-knowledge (readiness allow-list) tests.
 - Local runs on the reconciled head, one pytest at a time: 34 web/auth/admin/import/capture files green after repairs; final batch of 13 files (migrations 17/17 upgrade→check→downgrade→re-upgrade, route authorization, copy contract, seller knowledge, beta1 UI, customer UI, operating model, sending desk, library, Gmail, sequence web/defects, import-to-sequence) **629 passed, 0 failed**. `scripts/ci_shards.py verify` exit 0.
-- Known local-only: three `/readyz` tests in `test_production_hardening.py` return 503 on Windows (psycopg async vs ProactorEventLoop); CI is Linux.
+- On the main-reconciled head (`817e9555` + this docs commit): batch E (migrations 17/17, route authorization, PROVIDER_SPEND, copy contract, seller knowledge, beta1, customer UI, operating model, sending desk, library, Gmail, sequence web/defects, import-to-sequence, extension account linking, extension capture auth, hosted auth, CI effective control) **1044 tests, 0 failures**; batch F (workbench, verification, pipeline, enrolment, hosted-auth templates, agents, resolution, review, capture intake, autonomous-ready, admin workbench, capture agreement/feedback/promotion, imports, import web, production hardening, user accounts, Gmail) **671 tests, 3 failures** — the `/readyz` trio. `ci_shards.py verify` PASSED (4104 = 4104).
+- The three `/readyz` tests and the one over-long-parametrize-id error in `test_extension_account_linking.py` reproduce identically on a detached worktree at pristine `79467032` with the same interpreter/runner: environmental (Windows), not slice-caused. CI is Linux.
+- vs `origin/main`: 99 files (+2,752 / −8,002); no migration changes; `app/core/http.py`, extension link routes, `app/main.py` and the extension-linking tests are byte-identical to main.
 
 ## Proposed tracker payload
 | Field | Value |
