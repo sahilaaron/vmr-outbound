@@ -94,6 +94,7 @@ from app.core.auth.extension_link import (
 )
 from app.core.auth.middleware import is_browser_navigation
 from app.core.config import Settings, get_settings
+from app.core.http import CSP_FORM_ACTION_STATE_KEY
 
 router = APIRouter(
     prefix="/extension",
@@ -285,6 +286,34 @@ def _current_user_id() -> uuid.UUID | None:
     return session_account_id(current_operator())
 
 
+def _allow_consent_form_to_reach_the_callback(request: Request, redirect_uri: str) -> None:
+    """Let the consent form's own redirect survive the application's CSP.
+
+    ``form-action`` is checked against the submission **and against every
+    redirect it follows**, using the policy of the page holding the form. The
+    application policy is ``form-action 'self'``, so pressing *Connect extension*
+    posted to ``/extension/authorize``, the route answered ``303`` to
+    ``https://<extension id>.chromiumapp.org/`` — and Chrome refused to navigate
+    there. ``chrome.identity.launchWebAuthFlow`` saw the window die on a failed
+    load and the panel reported a sign-in that "did not complete", while the
+    access log showed the ``303`` being issued exactly as designed.
+
+    What this widens is one directive, on one page, by one source: the single
+    destination this authorization may be delivered to. ``redirect_uri`` has
+    already been proved equal to ``redirect_uri_for(extension_id)`` for an
+    ``extension_id`` in the approved set, so this can only ever name a callback
+    the deployment would have redirected to anyway. Every other response —
+    including this route's own refusal page — keeps ``form-action 'self'``, and
+    ``app/core/http.py`` re-validates the shape before it uses it.
+
+    The host-source form (no trailing slash) is deliberate: a CSP source ending
+    in ``/`` is a path-prefix rule, and this needs to say "this origin", not
+    "paths under this origin".
+    """
+
+    request.scope.setdefault("state", {})[CSP_FORM_ACTION_STATE_KEY] = redirect_uri.rstrip("/")
+
+
 def _issued_redirect(request_: _AuthorizationRequest, code: str) -> RedirectResponse:
     """303 back to the extension with the code and the client's own ``state``.
 
@@ -351,6 +380,10 @@ def authorize_page(
         return _issued_redirect(validated, code)
 
     operator = current_operator()
+    # The consent page is the only document in the application whose form has to
+    # redirect off-origin, and it is the last thing this route does before
+    # rendering it.
+    _allow_consent_form_to_reach_the_callback(request, validated.redirect_uri)
     return templates.TemplateResponse(
         request=request,
         name="extension_link_consent.html",

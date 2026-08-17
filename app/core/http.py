@@ -23,9 +23,10 @@ _REQUEST_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:\-]{0,63}$")
 _request_id_context: ContextVar[str | None] = ContextVar("vmr_request_id", default=None)
 _logger = logging.getLogger("vmr.http")
 
+_STRICT_FORM_ACTION = "form-action 'self'"
 _APPLICATION_CSP = (
     "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; "
-    "form-action 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+    f"{_STRICT_FORM_ACTION}; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
     "script-src 'self'; connect-src 'self'"
 )
 _DOCS_CSP = (
@@ -34,6 +35,47 @@ _DOCS_CSP = (
     "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
     "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net"
 )
+
+#: The ASGI-state key a response may set to add ONE ``form-action`` source to its
+#: own Content-Security-Policy. Nothing else about the policy is adjustable, and
+#: no other directive can be reached through it.
+#:
+#: This exists for exactly one page. ``form-action`` governs a form submission
+#: *and every redirect that submission follows*, so ``form-action 'self'`` let the
+#: extension consent form POST to ``/extension/authorize`` and then silently
+#: blocked the ``303`` it answered with, whose ``Location`` is on
+#: ``chromiumapp.org`` by construction. The server issued a perfectly good
+#: authorization, Chrome refused to navigate to it, and
+#: ``chrome.identity.launchWebAuthFlow`` reported the window as a failed load --
+#: so the access log showed ``POST /extension/authorize 303`` on a sign-in the
+#: operator was told had simply not completed. The silent reconnect path never
+#: hit this, because it is a plain navigation and ``form-action`` does not govern
+#: those, which is why the failure looked like a consent-only defect.
+CSP_FORM_ACTION_STATE_KEY = "csp_extra_form_action"
+
+#: The only shape the key above may carry: one Chrome extension's own web-auth
+#: callback origin. Re-validated here rather than trusted from application state,
+#: on the same principle as every other boundary in this package -- a route bug
+#: must not be able to widen a security header, and an unrecognised value leaves
+#: the policy exactly as it was.
+_EXTENSION_CALLBACK_ORIGIN = re.compile(r"^https://[a-p]{32}\.chromiumapp\.org$")
+
+
+def _content_security_policy(scope: Scope, path: str) -> str:
+    """The policy for this response, and the one place it may be widened.
+
+    Defaults are unchanged: the interactive documentation keeps its own policy
+    and everything else keeps the application policy verbatim. A response that
+    asked for an extra ``form-action`` source gets that source appended to that
+    one directive, and only when it is a well-formed extension callback origin.
+    """
+
+    if path in {"/docs", "/docs/oauth2-redirect", "/redoc"}:
+        return _DOCS_CSP
+    requested = (scope.get("state") or {}).get(CSP_FORM_ACTION_STATE_KEY)
+    if isinstance(requested, str) and _EXTENSION_CALLBACK_ORIGIN.match(requested):
+        return _APPLICATION_CSP.replace(_STRICT_FORM_ACTION, f"{_STRICT_FORM_ACTION} {requested}")
+    return _APPLICATION_CSP
 
 
 def valid_request_id(value: str) -> bool:
@@ -310,12 +352,7 @@ class ProductionHTTPMiddleware:
                 set_header("X-Frame-Options", "DENY")
                 set_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
                 path = str(scope.get("path", ""))
-                set_header(
-                    "Content-Security-Policy",
-                    _DOCS_CSP
-                    if path in {"/docs", "/docs/oauth2-redirect", "/redoc"}
-                    else _APPLICATION_CSP,
-                )
+                set_header("Content-Security-Policy", _content_security_policy(scope, path))
                 if context.scheme == "https" and self.hsts_max_age_seconds > 0:
                     set_header("Strict-Transport-Security", f"max-age={self.hsts_max_age_seconds}")
                 if path.startswith("/static/"):
