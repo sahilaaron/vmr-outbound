@@ -69,8 +69,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from app.core.config import get_settings  # noqa: E402 - must follow the path anchor above
-from app.db.session import session_scope  # noqa: E402
+from app.db.session import session_scope  # noqa: E402 - must follow the path anchor above
 from app.models.enums import AgentIdentifier, AgentJobStatus  # noqa: E402
 from app.models.verification_job import AgentJob  # noqa: E402
 from app.services.agents import jobs, locking  # noqa: E402
@@ -81,6 +80,7 @@ from app.services.agents.orchestrator import (  # noqa: E402
     prepare_leased_job,
 )
 from app.services.company_intelligence import runner as ci_runner  # noqa: E402
+from app.services.operations import settings as operational  # noqa: E402
 from app.services.resolution.pending import resolve_pending  # noqa: E402
 
 
@@ -362,13 +362,25 @@ def _run_company_intelligence_once(*, worker_id: str, lease_seconds: float) -> s
     queue's own ``FOR UPDATE SKIP LOCKED`` lease path, so a pool of threads
     shares it safely.
 
-    Returns one JSON line describing the outcome, or None when the feature is
+    Returns one JSON line describing the outcome, or None when the control is
     off or the queue is idle.
+
+    The control is read through ``operations.settings``, not from
+    ``Settings.features``. Every other product control is already resolved that
+    way, and this gate was the last place that still trusted the raw environment
+    flag. The difference is not academic: on the staging deployment
+    ``FEATURES__COMPANY_INTELLIGENCE`` was false while an administrator had
+    turned Company Intelligence *on* from Admin → Configuration, so the Admin
+    screen reported the control as effective while this worker silently declined
+    to drain the queue. Twenty-four jobs enqueued by the Research handoff sat at
+    ``PENDING`` with ``attempts=0`` and no lease, and every sequence written in
+    that period recorded ``intelligence_lineage.status = "no_current_version"``.
+    Reading the effective value makes the Admin switch mean what it says.
     """
 
-    if not get_settings().features.company_intelligence:
-        return None
     with session_scope() as session:
+        if not operational.enabled(session, "company_intelligence"):
+            return None
         outcome = ci_runner.run_next(session, worker_id=worker_id, lease_seconds=lease_seconds)
     if outcome is None:
         return None

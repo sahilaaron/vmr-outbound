@@ -402,15 +402,23 @@ def create_app(
 
         app.include_router(admin_workbench_router)
 
-        # Company Intelligence (CI-001) mounts as its own router, behind its own
-        # default-off switch on top of `workbench`. Two consequences, both
-        # deliberate: while the switch is off the paths do not exist at all
-        # (a 404, not a page explaining a disabled feature), and the area can be
-        # added or removed without touching a line of the existing workbench.
-        if settings.features.company_intelligence:
-            from app.web.company_intelligence import router as company_intelligence_router
+        # Company Intelligence (CI-001) mounts as its own router on top of
+        # `workbench`, so the area can be added or removed without touching a
+        # line of the existing workbench.
+        #
+        # It is mounted unconditionally and gated per request by
+        # `require_intelligence_enabled`. Mounting it on
+        # `settings.features.company_intelligence` instead made the control
+        # unreachable from the product: Company Intelligence is a PRODUCT_CONTROL,
+        # an administrator can switch it on in Admin → Configuration, and no
+        # database row can re-run `create_app`. On the staging deployment that
+        # produced a screen reporting the control as effective while every page in
+        # this area answered 404. The observable contract is unchanged — while the
+        # control is off these paths do not exist — but the answer now comes from
+        # the layer that owns it.
+        from app.web.company_intelligence import router as company_intelligence_router
 
-            app.include_router(company_intelligence_router)
+        app.include_router(company_intelligence_router)
 
         app.include_router(web_router)
 

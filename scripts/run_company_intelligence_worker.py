@@ -18,10 +18,14 @@ invocation will spend; ``--once`` claims at most one job and exits. Each job is
 one model call, so an unbounded run over a large backfill is a real cost, and the
 flag that limits it should be easy to reach.
 
-Refuses to start when ``FEATURES__COMPANY_INTELLIGENCE`` is off, rather than
-draining nothing and exiting zero. A worker that looks healthy while doing
-nothing is how an operator spends an afternoon watching a queue that was never
-going to move.
+Refuses to start when Company Intelligence is not *effectively* on — the control
+as ``app.services.operations.settings`` resolves it, which is the deployment
+capability and the administrator's stored setting together, not the raw
+``FEATURES__COMPANY_INTELLIGENCE`` environment value. A worker that looks healthy
+while doing nothing is how an operator spends an afternoon watching a queue that
+was never going to move; a worker that refuses to start because of an environment
+flag an administrator has already overridden on screen is the same waste wearing
+the opposite mask.
 """
 
 from __future__ import annotations
@@ -41,9 +45,9 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from app.core.config import get_settings  # noqa: E402 - must follow the path anchor
-from app.db.session import session_scope  # noqa: E402
+from app.db.session import session_scope  # noqa: E402 - must follow the path anchor
 from app.services.company_intelligence import runner as ci_runner  # noqa: E402
+from app.services.operations import settings as operational  # noqa: E402
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -81,12 +85,18 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
 
-    settings = get_settings()
-    if not settings.features.company_intelligence:
+    # The *effective* control, not the raw environment flag: an administrator can
+    # turn Company Intelligence on from Admin → Configuration, and a worker that
+    # refused to start on the deployment default would contradict the screen that
+    # says the control is on. Same reasoning as the shared worker's drain gate.
+    with session_scope() as session:
+        intelligence_on = operational.enabled(session, "company_intelligence")
+        refusal = operational.refusal(session, "company_intelligence")
+    if not intelligence_on:
         print(
-            "Company Intelligence is switched off "
-            "(set FEATURES__COMPANY_INTELLIGENCE=true). Refusing to start: a worker "
-            "that drains nothing while looking healthy is worse than one that stops.",
+            f"Company Intelligence is not in force. {refusal} "
+            "Refusing to start: a worker that drains nothing while looking "
+            "healthy is worse than one that stops.",
             file=sys.stderr,
         )
         return 2
