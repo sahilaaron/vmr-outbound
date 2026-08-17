@@ -651,7 +651,7 @@ def test_every_other_page_still_renders_without_any_script(
     licence — so a page that did not ask for it must contain no script tag at all.
     """
 
-    for path in ("/campaigns", "/contacts", "/companies", "/knowledge-base"):
+    for path in ("/imports", "/review", "/verification"):
         body = client.get(path).text
         assert "<script" not in body.lower(), f"{path} must stay script-free"
         assert "data-live" not in body, f"{path} must not opt in"

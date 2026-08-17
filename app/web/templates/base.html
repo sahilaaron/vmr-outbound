@@ -40,21 +40,9 @@
         Agent Studio
       </a>
       {% endif %}
-      <a href="/campaigns" class="{{ 'active' if active_nav == 'campaigns' else '' }}">
-        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 11l18-7-7 18-2.5-7.5L3 11z"/></svg>
-        Campaigns
-      </a>
       <a href="/imports" class="{{ 'active' if active_nav == 'imports' else '' }}">
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
         Imports
-      </a>
-      <a href="/contacts" class="{{ 'active' if active_nav == 'contacts' else '' }}">
-        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.5 3.4-5.5 6.5-5.5s5.7 2 6.5 5.5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8"/><path d="M17.5 14.7c2.2.7 3.6 2.5 4 5.3"/></svg>
-        Contacts
-      </a>
-      <a href="/companies" class="{{ 'active' if active_nav == 'companies' else '' }}">
-        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 21h18"/><path d="M5 21V6a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v15"/><path d="M13 21V10a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v11"/><path d="M8 9h2"/><path d="M8 13h2"/><path d="M8 17h2"/></svg>
-        Companies
       </a>
       <a href="/review" class="{{ 'active' if active_nav == 'review' else '' }}">
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3l9 16H3L12 3z"/><path d="M12 10v4"/><path d="M12 17.5v.5"/></svg>
@@ -69,16 +57,15 @@
       </a>
       {% endif %}
 
-      {# Seller context sits in its own section on purpose: what we sell and
-         what we may say about it is our own knowledge, not researched prospect
-         data, and the nav is where that distinction is easiest to see. #}
-      {% if 'seller_knowledge_base' in features_enabled %}
-      <div class="rail-section">Seller context</div>
-      <a href="/knowledge-base" class="{{ 'active' if active_nav == 'knowledge-base' else '' }}">
-        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H19v15H6.5A2.5 2.5 0 0 0 4 20.5V5.5z"/><path d="M4 20.5A2.5 2.5 0 0 1 6.5 18H19v3H6.5A2.5 2.5 0 0 1 4 20.5z"/><path d="M8.5 7.5h6"/><path d="M8.5 11h4"/></svg>
-        Knowledge Base
+      <div class="rail-section">Product</div>
+      <a href="/app">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>
+        VMR Outbound
       </a>
-      {% endif %}
+      <a href="/app/library">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H19v15H6.5A2.5 2.5 0 0 0 4 20.5V5.5z"/><path d="M4 20.5A2.5 2.5 0 0 1 6.5 18H19v3H6.5A2.5 2.5 0 0 1 4 20.5z"/><path d="M8.5 7.5h6"/><path d="M8.5 11h4"/></svg>
+        Library
+      </a>
 
       {# Company Intelligence sits with the prospect-knowledge areas rather than
          with the pipeline: it describes what a company IS, and it cannot send,

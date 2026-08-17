@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="v2-page narrow">
+  <h1 class="v2-h1 big">Data tools</h1>
+  <p class="v2-lede">Import and capture history, identity conflicts, website resolution, verification, and repair. Administrators only.</p>
+  {% set admin_section = 'data' %}{% include "_admin_nav.html" %}
+
+  <div class="v2-admin-grid">
+    <a class="v2-admin-card" href="/imports"><b>Imports</b><span>Every uploaded file, its mapping and its rows.</span></a>
+    <a class="v2-admin-card" href="/contact-captures/pending"><b>Captures waiting on a company</b><span>Chrome captures whose company website is not decided yet.</span></a>
+    <a class="v2-admin-card" href="/review"><b>Identity conflicts</b><span>Imported rows that may be an existing person — decide, never merge automatically.</span></a>
+    <a class="v2-admin-card" href="/verification"><b>Verification console</b><span>Bulk verification runs and provider state. Spends credits.</span></a>
+    <a class="v2-admin-card" href="/app/admin/suppressions"><b>Suppression list</b><span>Addresses and domains that are never contacted.</span></a>
+    <a class="v2-admin-card" href="/admin/company-intelligence/backfill"><b>Company Intelligence backfill</b><span>Explicit, bounded classification runs.</span></a>
+    {% if local_env %}<a class="v2-admin-card" href="/local-tools"><b>Local tools</b><span>Load fixtures and reset the local database.</span></a>{% endif %}
+  </div>
+</div>
+{% endblock %}

@@ -60,7 +60,7 @@
       <tr><td class="mono">extraction_status</td><td class="wrap">{{ snapshot.extraction_status }}</td></tr>
       <tr><td class="mono">missing_sections</td><td class="wrap">{{ snapshot.missing_sections or "—" }}</td></tr>
       <tr><td class="mono">matched_contact</td><td class="wrap">
-        {% if snapshot.matched_contact_id %}<a href="/contacts/{{ snapshot.matched_contact_id }}">{{ snapshot.matched_contact_id }}</a>{% else %}—{% endif %}
+        {% if snapshot.matched_contact_id %}<a href="/app/people/{{ snapshot.matched_contact_id }}">{{ snapshot.matched_contact_id }}</a>{% else %}—{% endif %}
       </td></tr>
       {% if snapshot.duplicate_of_id %}
       <tr><td class="mono">duplicate_of</td><td class="wrap"><a href="/contact-captures/{{ snapshot.duplicate_of_id }}">{{ snapshot.duplicate_of_id }}</a> (same person earlier in this submission)</td></tr>
@@ -105,7 +105,7 @@
     <tbody>
       {% for c in snapshot.review_candidates %}
       <tr>
-        <td><a href="/contacts/{{ c.contact_id }}">{{ c.contact_name or c.contact_id }}</a></td>
+        <td><a href="/app/people/{{ c.contact_id }}">{{ c.contact_name or c.contact_id }}</a></td>
         <td class="wrap">{{ c.contact_company or "—" }}</td>
         <td class="wrap">{{ c.contact_title or "—" }}</td>
         <td class="mono">{{ c.match_basis | join(", ") }}</td>

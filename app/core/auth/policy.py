@@ -320,9 +320,6 @@ _ADMIN_ONLY_UNSAFE_PATTERNS: tuple[re.Pattern[str], ...] = (
     # spend real MillionVerifier credits, and the staging host already holds a
     # live key.
     re.compile(r"^/verification(/.*)?$"),
-    # One live verification per POST, against a credential the same surface can
-    # rotate.
-    re.compile(r"^/contacts/[^/]+/verify$"),
     # The two buttons on a capture that call logo.dev, and the only two on that
     # page that call anything at all. Both pass `force=True` deliberately -- the
     # operator pressed a button and a silent no-op would read as a broken one --
@@ -343,22 +340,6 @@ _ADMIN_ONLY_UNSAFE_PATTERNS: tuple[re.Pattern[str], ...] = (
     # Deciding what captured evidence means is the operator's own work, and it
     # is the only approval a capture's company domain ever gets.
     re.compile(r"^/contact-captures/[^/]+/company/(lookup|resolve)$"),
-    # KB-001 restricted claims are the control that stops the product making a
-    # prohibited claim. Reading them is operator work; deactivating one is not.
-    # Every other knowledge-base section stays writable by a USER, because
-    # operator entry is the only approval the seller knowledge base has.
-    re.compile(r"^/knowledge-base/restricted-claims(/.*)?$"),
-    # Generation is the one knowledge-base write that is not an operator typing.
-    # It spawns the local Claude CLI as a subprocess with operator-supplied URLs
-    # and `WebSearch` enabled, which makes it three things at once: metered model
-    # spend, a fetch primitive that will retrieve whatever address it is handed,
-    # and a prompt-injection sink whose output is written into the knowledge base
-    # the personalization agent draws outreach copy from. A page the seller
-    # controls is the assumption the feature is built on; nothing on this route
-    # enforces it. The manual entry and read surfaces around it stay with the
-    # USER -- operator entry is the only approval KB-001 has, and withholding it
-    # would leave the knowledge base empty rather than safe.
-    re.compile(r"^/knowledge-base/generate$"),
     # The Campaign's website-research switch (the Research Agent's live opt-in,
     # written from Campaign Setup). Campaign-scoped, but it authorises fetching
     # other organisations' websites and metered model spend for a whole cohort

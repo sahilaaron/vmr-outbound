@@ -40,17 +40,12 @@ from app.models.email_verification_studio import (
 from app.models.enums import (
     AgentControlStatus,
     AgentIdentifier,
-    CampaignStatus,
-    ContactWorkflowState,
-    DossierSection,
     EnrichmentConfirmationSource,
     IdentityResolutionType,
     ImportBatchStatus,
     ImportRowOutcome,
     ImportSourceFormat,
     ResearchState,
-    SellerClaimScope,
-    SellerOfferingType,
     VerificationUsageEventType,
 )
 from app.models.linkedin_company import LinkedInCompanySnapshot
@@ -59,8 +54,6 @@ from app.models.personalization_policy import PersonalizationPolicyVersion
 from app.models.verification_job import AgentJob
 from app.services import agent_studio as agent_studio_service
 from app.services import (
-    campaign_access,
-    campaign_contacts,
     devtools,
     identity,
     workbench,
@@ -79,25 +72,13 @@ from app.services.campaign_access import (
     actor_from_request,
     require_campaign_path_access,
 )
-from app.services.campaign_contacts import CampaignContactError
 from app.services.campaigns import (
-    CampaignError,
-    campaign_imports,
-    campaign_members,
-    create_campaign,
     get_campaign_overview,
     list_campaigns,
-    update_campaign,
-)
-from app.services.campaigns import (
-    CampaignNotFound as CampaignRecordNotFound,
 )
 from app.services.captures import promotion as capture_promotion
-from app.services.companies import detail as company_detail
-from app.services.companies import records as company_records
 from app.services.crm import annotations as crm_annotations
 from app.services.crm import detail as crm_detail
-from app.services.crm import records as crm_records
 from app.services.enrichment import companies as enrichment
 from app.services.imports import display, parsing, staging, validation
 from app.services.imports import mapping as mapping_service
@@ -115,12 +96,7 @@ from app.services.personalization import generation as personalization_generatio
 from app.services.personalization import policy as personalization_policy
 from app.services.resolution import pending as resolution_pending
 from app.services.resolution import service as resolution_service
-from app.services.seller import campaign_offerings as seller_campaign_offerings
-from app.services.seller import generate as seller_generate
-from app.services.seller import profile as seller_profile
-from app.services.seller import readiness as seller_readiness
-from app.services.seller import records as seller_records
-from app.services.seller.common import OPERATOR_ACTOR, SellerKnowledgeError, parse_lines
+from app.services.seller.common import OPERATOR_ACTOR
 from app.services.thinking.claude_cli import ClaudeCliThinker
 from app.services.thinking.contracts import ThinkingError
 from app.services.verification import console as verification_console
@@ -162,17 +138,6 @@ SAMPLE_ROWS_SHOWN = 5
 # Uploads are read in bounded chunks so an oversized file is rejected without
 # ever being held fully in memory.
 _UPLOAD_CHUNK_BYTES = 1024 * 1024
-
-_UNAVAILABLE_SECTIONS: dict[str, str] = {
-    # "verification" is handled by a real route (verification_page), which renders
-    # the unavailable state itself when the Phase 2 switches are off.
-    "scoring": "Scoring",
-    "research": "Research",
-    "drafts": "Drafts & Approval",
-    "sequences": "Sequences",
-    "activity": "Activity",
-    "settings": "Settings",
-}
 
 
 def _fmt_dt(value: datetime | date | None) -> str:
@@ -342,151 +307,7 @@ def overview_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespon
     )
 
 
-# --- Campaigns ---------------------------------------------------------------
-
-
-@router.get("/campaigns", response_class=HTMLResponse)
-def campaigns_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    return _render(
-        request,
-        db,
-        "campaigns.html",
-        {
-            "campaigns": list_campaigns(db, actor=actor_from_request(request)),
-            "active_nav": "campaigns",
-            "page_title": "Campaigns",
-        },
-    )
-
-
-# Note: POST /campaigns belongs to the JSON API (app/api/routes.py); the HTML
-# form posts to its own path so the two adapters cannot shadow each other.
-@router.post("/campaigns/create")
-async def campaigns_create(request: Request, db: Session = Depends(get_db)) -> Response:
-    form = await request.form()
-    name = str(form.get("name", "")).strip()
-    description = str(form.get("description", "")).strip() or None
-    status_raw = str(form.get("status", "draft"))
-    try:
-        status = CampaignStatus(status_raw)
-    except ValueError:
-        status = CampaignStatus.DRAFT
-    try:
-        campaign = create_campaign(
-            db,
-            name=name,
-            description=description,
-            status=status,
-            created_by_user_id=actor_from_request(request).user_id,
-        )
-    except CampaignError as exc:
-        return _redirect("/campaigns", err=str(exc))
-    except Exception:
-        db.rollback()
-        return _redirect(
-            "/campaigns",
-            err=f"A campaign named “{name}” already exists. Campaign names must be unique.",
-        )
-    db.commit()
-    return _redirect(f"/campaigns/{campaign.id}", ok=f"Campaign “{campaign.name}” created.")
-
-
-@router.get("/campaigns/{campaign_id}", response_class=HTMLResponse)
-def campaign_detail_page(
-    request: Request, campaign_id: str, db: Session = Depends(get_db)
-) -> HTMLResponse:
-    parsed_id = _parse_uuid(campaign_id)
-    overview = get_campaign_overview(db, parsed_id) if parsed_id else None
-    if overview is None:
-        return _not_found(request, db, "That campaign does not exist.")
-
-    state_filter = request.query_params.get("state") or None
-    state = None
-    if state_filter:
-        try:
-            state = ContactWorkflowState(state_filter)
-        except ValueError:
-            state_filter = None
-    page = _page_number(request)
-    members, total_members = campaign_members(
-        db,
-        overview.campaign.id,
-        state=state,
-        limit=PAGE_SIZE,
-        offset=(page - 1) * PAGE_SIZE,
-    )
-    return _render(
-        request,
-        db,
-        "campaign_detail.html",
-        {
-            "overview": overview,
-            "imports": campaign_imports(db, overview.campaign.id),
-            "members": members,
-            "total_members": total_members,
-            "page": page,
-            "pages": _pages(total_members),
-            "state_filter": state_filter,
-            "workflow_states": list(ContactWorkflowState),
-            # Seller context (KB-001). Present only when the Knowledge Base is
-            # switched on; while off the campaign page renders exactly as before.
-            "knowledge_base_on": _knowledge_base_enabled(db),
-            "campaign_offerings": (
-                seller_campaign_offerings.offerings_for_campaign(db, overview.campaign.id)
-                if _knowledge_base_enabled(db)
-                else []
-            ),
-            "selectable_offerings": (
-                seller_campaign_offerings.selectable_offerings(db, overview.campaign.id)
-                if _knowledge_base_enabled(db)
-                else []
-            ),
-            "campaign_readiness": (
-                seller_readiness.campaign_report(db, overview.campaign)
-                if _knowledge_base_enabled(db)
-                else None
-            ),
-            "active_nav": "campaigns",
-            "page_title": overview.campaign.name,
-        },
-    )
-
-
 # --- Imports: list + upload --------------------------------------------------
-
-
-@router.post("/campaigns/{campaign_id}/settings")
-async def campaign_settings_update(
-    request: Request, campaign_id: str, db: Session = Depends(get_db)
-) -> Response:
-    """Apply the per-campaign policy switch.
-
-    The first campaign-settings write in the HTML UI. An unchecked box is absent
-    from the form body, which is why it is read as presence rather than as a value.
-    """
-
-    parsed_id = _parse_uuid(campaign_id)
-    if parsed_id is None:
-        return _not_found(request, db, "That campaign does not exist.")
-    form = await request.form()
-    try:
-        campaign = update_campaign(
-            db,
-            parsed_id,
-            allow_provisional_domains="allow_provisional_domains" in form,
-            reason="policy switch changed from the campaign page",
-        )
-    except CampaignRecordNotFound:
-        return _not_found(request, db, "That campaign does not exist.")
-    except CampaignError as exc:
-        db.rollback()
-        return _redirect(f"/campaigns/{campaign_id}", err=str(exc))
-    db.commit()
-    provisional = "accepted" if campaign.allow_provisional_domains else "not accepted"
-    return _redirect(
-        f"/campaigns/{campaign_id}",
-        ok=f"Settings saved. Provisional domains {provisional}.",
-    )
 
 
 @router.get("/imports", response_class=HTMLResponse)
@@ -1594,243 +1415,8 @@ async def review_resolve(request: Request, row_id: str, db: Session = Depends(ge
     else:
         note = f"Resolved by {action.value.replace('_', ' ')}."
     if contact_id is not None:
-        return _redirect(f"/contacts/{contact_id}", ok=note)
+        return _redirect(f"/app/people/{contact_id}", ok=note)
     return _redirect("/review", ok=note)
-
-
-# --- Contacts ----------------------------------------------------------------
-
-
-@router.get("/contacts", response_class=HTMLResponse)
-def contacts_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    """The contact CRM list: canonical contacts and pending captures together.
-
-    No campaign is read, accepted or required anywhere on this page. A person
-    the operator saved appears here whether or not the system has finished
-    resolving them, which is the whole point of the contact-first model.
-    """
-
-    params = request.query_params
-    filters = crm_records.CrmFilters(
-        view=params.get("view") or crm_records.VIEW_ALL,
-        search=params.get("q") or None,
-        label_slug=params.get("label") or None,
-        company=params.get("company") or None,
-        source=params.get("source") or None,
-        has_linkedin=_tri_state(params.get("has_linkedin")),
-        has_email=_tri_state(params.get("has_email")),
-        older_than_days=_positive_int(params.get("older_than_days")),
-        sort=params.get("sort") or crm_records.SORT_RECENT,
-    ).normalized()
-
-    page = _page_number(request)
-    rows, total = crm_records.list_crm_rows(
-        db, filters=filters, limit=PAGE_SIZE, offset=(page - 1) * PAGE_SIZE
-    )
-
-    filter_params = {
-        key: value
-        for key, value in (
-            ("view", filters.view if filters.view != crm_records.VIEW_ALL else None),
-            ("q", filters.search),
-            ("label", filters.label_slug),
-            ("company", filters.company),
-            ("source", filters.source),
-            ("has_linkedin", params.get("has_linkedin") or None),
-            ("has_email", params.get("has_email") or None),
-            ("older_than_days", filters.older_than_days),
-            ("sort", filters.sort if filters.sort != crm_records.SORT_RECENT else None),
-        )
-        if value
-    }
-    filter_url = "/contacts" + (f"?{urlencode(filter_params)}" if filter_params else "")
-
-    return _render(
-        request,
-        db,
-        "contacts.html",
-        {
-            "rows": rows,
-            "total": total,
-            "page": page,
-            "pages": _pages(total),
-            "filters": filters,
-            "filter_url": filter_url,
-            "views": crm_records.VIEWS,
-            "sorts": crm_records.SORTS,
-            "labels": crm_annotations.all_labels(db),
-            # Offered so a selection made here can be enrolled without leaving
-            # the page. The list is still not required to view a contact: an
-            # empty list simply hides the enrolment bar.
-            "campaigns": list_campaigns(db, actor=actor_from_request(request)),
-            "active_nav": "contacts",
-            "page_title": "Contacts",
-        },
-    )
-
-
-@router.post("/contacts/add-to-campaign")
-async def contacts_add_to_campaign(request: Request, db: Session = Depends(get_db)) -> Response:
-    """Enrol the selected permanent Contacts into one Campaign.
-
-    Enrolment is the existing single-contact service in a loop, deliberately: it
-    carries eligibility evaluation, source provenance, pipeline initialisation
-    and the first queued Agent Job, none of which is safe to shortcut for speed.
-
-    The flash reports refusals as well as successes. Silently enrolling 87 of 90
-    and reporting "done" would hide exactly the three contacts that need a
-    decision.
-    """
-
-    form = await request.form()
-    campaign_id = _parse_uuid(str(form.get("campaign_id", "")))
-    if campaign_id is None:
-        return _redirect("/contacts", err="Choose a campaign to add the selected contacts to.")
-    # The campaign arrives in the form body, so the router-level path guard does
-    # not see it. Enrolment is a write into somebody's campaign; check it here.
-    campaign_access.require_campaign_access(db, campaign_id, actor_from_request(request))
-
-    selected: list[uuid.UUID] = []
-    for raw in form.getlist("contact_ids"):
-        parsed = _parse_uuid(str(raw))
-        if parsed is not None:
-            selected.append(parsed)
-    if not selected:
-        return _redirect("/contacts", err="Select at least one contact first.")
-
-    back = str(form.get("back") or "/contacts")
-    try:
-        outcome = campaign_contacts.enrol_contacts(
-            db,
-            campaign_id=campaign_id,
-            contact_ids=selected,
-            source_type="manual",
-            source_reference="contacts-page-selection",
-        )
-    except CampaignContactError as exc:
-        db.rollback()
-        return _redirect(back, err=str(exc))
-    db.commit()
-
-    message = outcome.summary
-    if outcome.refused:
-        first_reason = outcome.refused[0][1]
-        message = f"{message} First refusal: {first_reason}"
-    return _redirect(back, ok=message)
-
-
-@router.get("/contacts/{contact_id}", response_class=HTMLResponse)
-def contact_detail_page(
-    request: Request, contact_id: str, db: Session = Depends(get_db)
-) -> HTMLResponse:
-    parsed_id = _parse_uuid(contact_id)
-    detail = crm_detail.get_contact_detail(db, parsed_id) if parsed_id else None
-    if detail is None:
-        return _not_found(request, db, "That contact does not exist.")
-
-    features = operational.effective_flags(db)
-    intel = verification_console.contact_email_intel(db, detail.contact)
-    return _render(
-        request,
-        db,
-        "contact_detail.html",
-        {
-            "detail": detail,
-            "intel": intel,
-            "all_labels": crm_annotations.all_labels(db),
-            "verification_enabled": features.email_generation or features.millionverifier,
-            "generation_enabled": features.email_generation,
-            "millionverifier_enabled": features.millionverifier,
-            "active_nav": "contacts",
-            "page_title": detail.full_name,
-        },
-    )
-
-
-@router.get("/companies", response_class=HTMLResponse)
-def companies_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    """The permanent company list (APP-003).
-
-    Companies exist on their own account. No campaign is read, accepted or
-    required here, and there is no campaign column to filter on: a company is
-    not a target list.
-    """
-
-    params = request.query_params
-    filters = company_records.CompanyFilters(
-        view=params.get("view") or company_records.VIEW_ALL,
-        search=params.get("q") or None,
-        research_state=_research_state(params.get("research")),
-        has_linkedin=_tri_state(params.get("has_linkedin")),
-        sort=params.get("sort") or company_records.SORT_RECENT,
-    ).normalized()
-
-    page = _page_number(request)
-    rows, total = company_records.list_company_rows(
-        db, filters=filters, limit=PAGE_SIZE, offset=(page - 1) * PAGE_SIZE
-    )
-
-    filter_params = {
-        key: value
-        for key, value in (
-            ("view", filters.view if filters.view != company_records.VIEW_ALL else None),
-            ("q", filters.search),
-            ("research", filters.research_state.value if filters.research_state else None),
-            ("has_linkedin", params.get("has_linkedin") or None),
-            ("sort", filters.sort if filters.sort != company_records.SORT_RECENT else None),
-        )
-        if value
-    }
-    filter_url = "/companies" + (f"?{urlencode(filter_params)}" if filter_params else "")
-
-    return _render(
-        request,
-        db,
-        "companies.html",
-        {
-            "rows": rows,
-            "total": total,
-            "page": page,
-            "pages": _pages(total),
-            "filters": filters,
-            "filter_url": filter_url,
-            "views": company_records.VIEWS,
-            "sorts": company_records.SORTS,
-            "research_states": list(ResearchState),
-            "active_nav": "companies",
-            "page_title": "Companies",
-        },
-    )
-
-
-@router.get("/companies/{company_id}", response_class=HTMLResponse)
-def company_detail_page(
-    request: Request, company_id: str, db: Session = Depends(get_db)
-) -> HTMLResponse:
-    """The company workspace: identity, people, provenance, dossiers, conflicts.
-
-    Read-only. Every write path a company could need — confirming a domain,
-    promoting a capture — already exists on the capture resolution screens, and
-    duplicating them here would give an operator two places to make the same
-    decision differently.
-    """
-
-    parsed_id = _parse_uuid(company_id)
-    detail = company_detail.get_company_detail(db, parsed_id) if parsed_id else None
-    if detail is None:
-        return _not_found(request, db, "That company does not exist.")
-
-    return _render(
-        request,
-        db,
-        "company_detail.html",
-        {
-            "detail": detail,
-            "sections": list(DossierSection),
-            "active_nav": "companies",
-            "page_title": detail.company.name,
-        },
-    )
 
 
 @router.get("/captures/{capture_id}", response_class=HTMLResponse)
@@ -1872,7 +1458,7 @@ def _annotation_subject(
 
     if contact_id is not None:
         parsed = _parse_uuid(contact_id)
-        back = f"/contacts/{contact_id}"
+        back = f"/app/people/{contact_id}"
         if parsed is None:
             return None, back
         try:
@@ -1901,17 +1487,6 @@ def _apply_label(db: Session, subject: crm_annotations.Subject, name: str, back:
     return _redirect(back, ok=f"Applied {label.name}.")
 
 
-@router.post("/contacts/{contact_id}/labels")
-async def contact_add_label(
-    request: Request, contact_id: str, db: Session = Depends(get_db)
-) -> Response:
-    subject, back = _annotation_subject(db, contact_id=contact_id)
-    if subject is None:
-        return _redirect("/contacts", err="That contact does not exist.")
-    form = await request.form()
-    return _apply_label(db, subject, str(form.get("label") or ""), back)
-
-
 @router.post("/captures/{capture_id}/labels")
 async def capture_add_label(
     request: Request, capture_id: str, db: Session = Depends(get_db)
@@ -1921,16 +1496,6 @@ async def capture_add_label(
         return _redirect("/contacts", err="That capture does not exist.")
     form = await request.form()
     return _apply_label(db, subject, str(form.get("label") or ""), back)
-
-
-@router.post("/contacts/{contact_id}/labels/{slug}/remove")
-def contact_remove_label(contact_id: str, slug: str, db: Session = Depends(get_db)) -> Response:
-    subject, back = _annotation_subject(db, contact_id=contact_id)
-    if subject is None:
-        return _redirect("/contacts", err="That contact does not exist.")
-    removed = crm_annotations.remove_label(db, subject, slug=slug)
-    db.commit()
-    return _redirect(back, ok="Label removed." if removed else "That label was not applied.")
 
 
 @router.post("/captures/{capture_id}/labels/{slug}/remove")
@@ -1950,17 +1515,6 @@ def _append_note(db: Session, subject: crm_annotations.Subject, text: str, back:
         return _redirect(back, err=str(exc))
     db.commit()
     return _redirect(back, ok="Note added.")
-
-
-@router.post("/contacts/{contact_id}/notes")
-async def contact_add_note(
-    request: Request, contact_id: str, db: Session = Depends(get_db)
-) -> Response:
-    subject, back = _annotation_subject(db, contact_id=contact_id)
-    if subject is None:
-        return _redirect("/contacts", err="That contact does not exist.")
-    form = await request.form()
-    return _append_note(db, subject, str(form.get("note") or ""), back)
 
 
 @router.post("/captures/{capture_id}/notes")
@@ -1989,60 +1543,6 @@ def _verification_available(db: Session) -> bool:
 
 
 WORKER_ID = "workbench-local"
-
-
-@router.post("/contacts/{contact_id}/generate-candidates")
-def contact_generate_candidates(contact_id: str, db: Session = Depends(get_db)) -> Response:
-    if not operational.enabled(db, "email_generation"):
-        return _redirect(f"/contacts/{contact_id}", err="Email generation is disabled.")
-    parsed = _parse_uuid(contact_id)
-    contact = db.get(Contact, parsed) if parsed else None
-    if contact is None:
-        return _redirect("/contacts", err="That contact does not exist.")
-    from app.services.email.candidates import generate_candidates
-
-    result = generate_candidates(db, contact)
-    db.commit()
-    if result.needs_review or result.selected is None:
-        return _redirect(f"/contacts/{contact_id}", err=f"Needs review: {result.review_reason}")
-    return _redirect(
-        f"/contacts/{contact_id}",
-        ok=f"Generated {len(result.candidates)} candidate(s); selected {result.selected.email}.",
-    )
-
-
-@router.post("/contacts/{contact_id}/verify")
-def contact_verify(contact_id: str, db: Session = Depends(get_db)) -> Response:
-    if not operational.enabled(db, "millionverifier"):
-        return _redirect(f"/contacts/{contact_id}", err="MillionVerifier is disabled.")
-    parsed = _parse_uuid(contact_id)
-    contact = db.get(Contact, parsed) if parsed else None
-    if contact is None:
-        return _redirect("/contacts", err="That contact does not exist.")
-    settings = get_settings()
-    # Attribute the request to the contact's campaign when unambiguous (exactly
-    # one membership); otherwise leave campaign attribution unset.
-    from app.models.campaign import CampaignContact
-
-    memberships = list(
-        db.scalars(select(CampaignContact).where(CampaignContact.contact_id == contact.id)).all()
-    )
-    campaign_id = memberships[0].campaign_id if len(memberships) == 1 else None
-    outcome = verification_service.prepare_and_enqueue_contact(
-        db, contact, settings=settings, campaign_id=campaign_id
-    )
-    if outcome.needs_review:
-        db.commit()
-        return _redirect(f"/contacts/{contact_id}", err=f"Needs review: {outcome.review_reason}")
-    provider = _verification_provider(settings)
-    verification_service.run_worker(db, provider=provider, settings=settings, worker_id=WORKER_ID)
-    db.commit()
-    if outcome.reused_evidence is not None:
-        return _redirect(
-            f"/contacts/{contact_id}",
-            ok=f"Reused fresh cached evidence for {outcome.email} (no provider call).",
-        )
-    return _redirect(f"/contacts/{contact_id}", ok=f"Verification processed for {outcome.email}.")
 
 
 @router.get("/verification", response_class=HTMLResponse, name="verification")
@@ -3206,786 +2706,49 @@ def contact_capture_page(
     )
 
 
-# --- Knowledge Base: seller-side context (KB-001) ----------------------------
+# --- Retired customer twins ----------------------------------------------------
 #
-# Seller knowledge, not prospect research. Everything on these pages is typed by
-# an operator, and typing it is the authorization for it, so there is no review
-# step, no approval queue and no model in any of these paths.
+# The operator product owns these records now (People, Companies, Campaigns,
+# Library). Old links and bookmarks resolve into it; nothing renders here.
 
 
-def _knowledge_base_enabled(db: Session) -> bool:
-    """Whether the Knowledge Base is switched on (FND-007 default-off).
+@router.get("/contacts")
+def _legacy_contacts(request: Request) -> RedirectResponse:
+    query = f"?{request.url.query}" if request.url.query else ""
+    return RedirectResponse(f"/app/people{query}", status_code=308)
 
-    ``db`` is a parameter because the switch is an administrator's durable
-    setting rather than an environment variable, so reading it is a query.
-    """
 
-    return operational.enabled(db, "seller_knowledge_base")
+@router.get("/contacts/{contact_id}")
+def _legacy_contact(contact_id: str) -> RedirectResponse:
+    return RedirectResponse(f"/app/people/{contact_id}", status_code=308)
 
 
-def _kb_disabled(request: Request, db: Session) -> HTMLResponse:
-    """The 404 the Knowledge Base shows while its switch is off."""
+@router.get("/companies")
+def _legacy_companies(request: Request) -> RedirectResponse:
+    query = f"?{request.url.query}" if request.url.query else ""
+    return RedirectResponse(f"/app/companies{query}", status_code=308)
 
-    return _not_found(
-        request,
-        db,
-        "The Knowledge Base is not enabled. Set FEATURES__SELLER_KNOWLEDGE_BASE=true "
-        "to switch it on for local operation.",
-    )
 
+@router.get("/companies/{company_id}")
+def _legacy_company(company_id: str) -> RedirectResponse:
+    return RedirectResponse(f"/app/companies/{company_id}", status_code=308)
 
-def _kb_actor() -> str:
-    """Who to record for a Knowledge Base write.
 
-    The workbench has no authentication (it is local-only), so there is no user
-    identity to record. "operator" is accurate; inventing a name would not be.
-    """
+@router.get("/campaigns")
+def _legacy_campaigns() -> RedirectResponse:
+    return RedirectResponse("/app/campaigns", status_code=308)
 
-    return OPERATOR_ACTOR
 
+@router.get("/campaigns/{campaign_id}")
+def _legacy_campaign(campaign_id: str) -> RedirectResponse:
+    return RedirectResponse(f"/app/campaigns/{campaign_id}", status_code=308)
 
-def _kb_context(db: Session, section: str, title: str) -> dict[str, Any]:
-    """Shared context for every Knowledge Base page."""
 
-    return {
-        "active_nav": "knowledge-base",
-        "kb_section": section,
-        "page_title": title,
-        "kb_counts": seller_records.counts(db),
-    }
-
-
-def _offering_type(
-    raw: str | None, *, default: SellerOfferingType = SellerOfferingType.OTHER
-) -> SellerOfferingType:
-    """Coerce the form value, falling back to ``default`` (never an error page)."""
-
-    try:
-        return SellerOfferingType(str(raw))
-    except ValueError:
-        return default
-
-
-def _claim_scope(
-    raw: str | None, *, default: SellerClaimScope = SellerClaimScope.GLOBAL
-) -> SellerClaimScope:
-    try:
-        return SellerClaimScope(str(raw))
-    except ValueError:
-        return default
-
-
-def _show_archived(request: Request) -> bool:
-    return request.query_params.get("archived") == "1"
-
-
-@router.get("/knowledge-base", response_class=HTMLResponse)
-def knowledge_base_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    """Overview and readiness for the seller-side knowledge base."""
-
-    if not _knowledge_base_enabled(db):
-        return _kb_disabled(request, db)
-    return _render(
-        request,
-        db,
-        "knowledge_base.html",
-        {
-            **_kb_context(db, "overview", "Knowledge Base"),
-            "report": seller_readiness.seller_report(db),
-            "profile": seller_profile.get_profile(db),
-        },
-    )
-
-
-@router.post("/knowledge-base/generate")
-async def knowledge_base_generate(request: Request, db: Session = Depends(get_db)) -> Response:
-    """Fill the knowledge base from the seller's own website(s), via the local CLI.
-
-    Writes through the ordinary knowledge-base services, so every entry is
-    validated and audited exactly as a typed one is, and an existing profile,
-    offering or persona is never overwritten by a generated one.
-    """
-
-    if not _knowledge_base_enabled(db):
-        return _redirect("/", err="The Knowledge Base is not enabled.")
-
-    form = await request.form()
-    try:
-        websites = seller_generate.parse_websites(str(form.get("websites", "")))
-    except seller_generate.KnowledgeBaseGenerationError as exc:
-        return _redirect("/knowledge-base", err=str(exc))
-
-    settings = get_settings()
-    try:
-        outcome = seller_generate.generate_from_websites(
-            db,
-            websites=websites,
-            thinker=ClaudeCliThinker(settings=settings),
-        )
-    except seller_generate.KnowledgeBaseGenerationError as exc:
-        db.rollback()
-        return _redirect("/knowledge-base", err=f"Could not read those sites: {exc}")
-    db.commit()
-
-    message = outcome.summary
-    if outcome.skipped:
-        message = f"{message} First: {outcome.skipped[0]}"
-    if not outcome.created_anything:
-        return _redirect("/knowledge-base", err=message)
-    return _redirect("/knowledge-base", ok=message)
-
-
-@router.get("/knowledge-base/company", response_class=HTMLResponse)
-def knowledge_base_company_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    """The seller organisation profile."""
-
-    if not _knowledge_base_enabled(db):
-        return _kb_disabled(request, db)
-    return _render(
-        request,
-        db,
-        "kb_company.html",
-        {
-            **_kb_context(db, "company", "Company profile"),
-            "profile": seller_profile.get_profile(db),
-        },
-    )
-
-
-@router.post("/knowledge-base/company")
-async def knowledge_base_company_save(request: Request, db: Session = Depends(get_db)) -> Response:
-    if not _knowledge_base_enabled(db):
-        return _kb_disabled(request, db)
-    form = await request.form()
-    try:
-        seller_profile.save_profile(
-            db,
-            name=str(form.get("name", "")),
-            short_description=str(form.get("short_description", "")),
-            description=str(form.get("description", "")),
-            positioning=str(form.get("positioning", "")),
-            communication_guidance=str(form.get("communication_guidance", "")),
-            notes=str(form.get("notes", "")),
-            industries_served=parse_lines(str(form.get("industries_served", ""))),
-            geographies_served=parse_lines(str(form.get("geographies_served", ""))),
-            capabilities=parse_lines(str(form.get("capabilities", ""))),
-            differentiators=parse_lines(str(form.get("differentiators", ""))),
-            updated_by=_kb_actor(),
-        )
-    except SellerKnowledgeError as exc:
-        return _redirect("/knowledge-base/company", err=str(exc))
-    db.commit()
-    return _redirect("/knowledge-base/company", ok="Company profile saved.")
-
-
-@router.get("/knowledge-base/offerings", response_class=HTMLResponse)
-def knowledge_base_offerings_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    if not _knowledge_base_enabled(db):
-        return _kb_disabled(request, db)
-    archived = _show_archived(request)
-    return _render(
-        request,
-        db,
-        "kb_offerings.html",
-        {
-            **_kb_context(db, "offerings", "Offerings"),
-            "offerings": seller_records.list_offerings(db, include_archived=archived),
-            "show_archived": archived,
-            "offering_types": list(SellerOfferingType),
-        },
-    )
-
-
-@router.post("/knowledge-base/offerings")
-async def knowledge_base_offering_create(
-    request: Request, db: Session = Depends(get_db)
-) -> Response:
-    if not _knowledge_base_enabled(db):
-        return _kb_disabled(request, db)
-    form = await request.form()
-    try:
-        offering = seller_records.create_offering(
-            db,
-            name=str(form.get("name", "")),
-            offering_type=_offering_type(str(form.get("offering_type", ""))),
-            short_description=str(form.get("short_description", "")),
-            description=str(form.get("description", "")),
-            problems_addressed=parse_lines(str(form.get("problems_addressed", ""))),
-            use_cases=parse_lines(str(form.get("use_cases", ""))),
-            differentiators=parse_lines(str(form.get("differentiators", ""))),
-            notes=str(form.get("notes", "")),
-            created_by=_kb_actor(),
-        )
-    except SellerKnowledgeError as exc:
-        return _redirect("/knowledge-base/offerings", err=str(exc))
-    db.commit()
-    return _redirect(
-        f"/knowledge-base/offerings/{offering.id}", ok=f"Added \u201c{offering.name}\u201d."
-    )
-
-
-@router.get("/knowledge-base/offerings/{offering_id}", response_class=HTMLResponse)
-def knowledge_base_offering_detail_page(
-    request: Request, offering_id: str, db: Session = Depends(get_db)
-) -> HTMLResponse:
-    if not _knowledge_base_enabled(db):
-        return _kb_disabled(request, db)
-    parsed_id = _parse_uuid(offering_id)
-    offering = seller_records.get_offering(db, parsed_id) if parsed_id else None
-    if offering is None:
-        return _not_found(request, db, "That offering does not exist.")
-    linked_proof_points = seller_records.proof_points_for_offering(db, offering.id)
-    linked_claims = seller_records.restricted_claims_for_offering(db, offering.id)
-    linked_personas = seller_records.personas_for_offering(db, offering.id)
-    linked_ids = {
-        "proof_point": {record.id for record in linked_proof_points},
-        "restricted_claim": {record.id for record in linked_claims},
-        "persona": {record.id for record in linked_personas},
-    }
-    return _render(
-        request,
-        db,
-        "kb_offering_detail.html",
-        {
-            **_kb_context(db, "offerings", offering.name),
-            "offering": offering,
-            "offering_types": list(SellerOfferingType),
-            "linked_proof_points": linked_proof_points,
-            "linked_claims": linked_claims,
-            "linked_personas": linked_personas,
-            "available_proof_points": [
-                record
-                for record in seller_records.list_proof_points(db)
-                if record.id not in linked_ids["proof_point"]
-            ],
-            "available_claims": [
-                record
-                for record in seller_records.list_restricted_claims(db)
-                if record.scope is SellerClaimScope.OFFERING
-                and record.id not in linked_ids["restricted_claim"]
-            ],
-            "available_personas": [
-                record
-                for record in seller_records.list_personas(db)
-                if record.id not in linked_ids["persona"]
-            ],
-            "campaigns": seller_campaign_offerings.campaigns_for_offering(
-                db, offering.id, actor=actor_from_request(request)
-            ),
-        },
-    )
-
-
-@router.post("/knowledge-base/offerings/{offering_id}")
-async def knowledge_base_offering_update(
-    request: Request, offering_id: str, db: Session = Depends(get_db)
-) -> Response:
-    if not _knowledge_base_enabled(db):
-        return _kb_disabled(request, db)
-    parsed_id = _parse_uuid(offering_id)
-    offering = seller_records.get_offering(db, parsed_id) if parsed_id else None
-    if offering is None:
-        return _not_found(request, db, "That offering does not exist.")
-    back = f"/knowledge-base/offerings/{offering.id}"
-    form = await request.form()
-    try:
-        seller_records.update_offering(
-            db,
-            offering,
-            name=str(form.get("name", "")),
-            # Default to what the offering already is, so a form that omits the
-            # field cannot silently re-file it as "other".
-            offering_type=_offering_type(
-                str(form.get("offering_type", "")), default=offering.offering_type
-            ),
-            short_description=str(form.get("short_description", "")),
-            description=str(form.get("description", "")),
-            problems_addressed=parse_lines(str(form.get("problems_addressed", ""))),
-            use_cases=parse_lines(str(form.get("use_cases", ""))),
-            differentiators=parse_lines(str(form.get("differentiators", ""))),
-            notes=str(form.get("notes", "")),
-            actor=_kb_actor(),
-        )
-    except SellerKnowledgeError as exc:
-        return _redirect(back, err=str(exc))
-    db.commit()
-    return _redirect(back, ok="Offering saved.")
-
-
-@router.post("/knowledge-base/offerings/{offering_id}/state")
-async def knowledge_base_offering_state(
-    request: Request, offering_id: str, db: Session = Depends(get_db)
-) -> Response:
-    """Archive or restore an offering. Campaigns that name it are unaffected."""
-
-    if not _knowledge_base_enabled(db):
-        return _kb_disabled(request, db)
-    parsed_id = _parse_uuid(offering_id)
-    offering = seller_records.get_offering(db, parsed_id) if parsed_id else None
-    if offering is None:
-        return _not_found(request, db, "That offering does not exist.")
-    back = f"/knowledge-base/offerings/{offering.id}"
-    form = await request.form()
-    restore = str(form.get("action", "")) == "restore"
-    try:
-        if restore:
-            changed = seller_records.restore_offering(db, offering, actor=_kb_actor())
-        else:
-            changed = seller_records.archive_offering(db, offering, actor=_kb_actor())
-    except SellerKnowledgeError as exc:
-        return _redirect(back, err=str(exc))
-    db.commit()
-    if not changed:
-        return _redirect(back, ok="No change — it was already in that state.")
-    if restore:
-        return _redirect(back, ok=f"\u201c{offering.name}\u201d is active again.")
-    return _redirect(
-        back,
-        ok=(
-            f"\u201c{offering.name}\u201d is archived. Campaigns that already name it "
-            "still show it."
-        ),
-    )
-
-
-@router.post("/knowledge-base/offerings/{offering_id}/links")
-async def knowledge_base_offering_link(
-    request: Request, offering_id: str, db: Session = Depends(get_db)
-) -> Response:
-    """Add or remove one proof point, restricted claim, or persona association."""
-
-    if not _knowledge_base_enabled(db):
-        return _kb_disabled(request, db)
-    parsed_id = _parse_uuid(offering_id)
-    offering = seller_records.get_offering(db, parsed_id) if parsed_id else None
-    if offering is None:
-        return _not_found(request, db, "That offering does not exist.")
-    back = f"/knowledge-base/offerings/{offering.id}"
-    form = await request.form()
-    kind = str(form.get("kind", ""))
-    if kind not in ("proof_point", "restricted_claim", "persona"):
-        return _redirect(back, err="Unknown association type.")
-    related_id = _parse_uuid(str(form.get("related_id", "")))
-    if related_id is None:
-        return _redirect(back, err="Select something to associate first.")
-    remove = str(form.get("action", "")) == "remove"
-    label = kind.replace("_", " ")
-    try:
-        if remove:
-            changed = seller_records.unlink_from_offering(
-                db, offering=offering, kind=kind, related_id=related_id, actor=_kb_actor()
-            )
-        else:
-            changed = seller_records.link_to_offering(
-                db, offering=offering, kind=kind, related_id=related_id, actor=_kb_actor()
-            )
-    except SellerKnowledgeError as exc:
-        return _redirect(back, err=str(exc))
-    db.commit()
-    if not changed:
-        return _redirect(back, ok=f"No change \u2014 that {label} was already as you asked.")
-    return _redirect(back, ok=f"{'Removed' if remove else 'Added'} the {label} association.")
-
-
-@router.get("/knowledge-base/proof-points", response_class=HTMLResponse)
-def knowledge_base_proof_points_page(
-    request: Request, db: Session = Depends(get_db)
-) -> HTMLResponse:
-    if not _knowledge_base_enabled(db):
-        return _kb_disabled(request, db)
-    archived = _show_archived(request)
-    proof_points = seller_records.list_proof_points(db, include_archived=archived)
-    return _render(
-        request,
-        db,
-        "kb_proof_points.html",
-        {
-            **_kb_context(db, "proof-points", "Proof points"),
-            "proof_points": proof_points,
-            "offerings_by_record": seller_records.offerings_by_record(
-                db, kind="proof_point", record_ids=[record.id for record in proof_points]
-            ),
-            "show_archived": archived,
-        },
-    )
-
-
-@router.post("/knowledge-base/proof-points")
-async def knowledge_base_proof_point_create(
-    request: Request, db: Session = Depends(get_db)
-) -> Response:
-    if not _knowledge_base_enabled(db):
-        return _kb_disabled(request, db)
-    form = await request.form()
-    try:
-        seller_records.create_proof_point(
-            db,
-            statement=str(form.get("statement", "")),
-            supporting_detail=str(form.get("supporting_detail", "")),
-            source_reference=str(form.get("source_reference", "")),
-            created_by=_kb_actor(),
-        )
-    except SellerKnowledgeError as exc:
-        return _redirect("/knowledge-base/proof-points", err=str(exc))
-    db.commit()
-    return _redirect("/knowledge-base/proof-points", ok="Proof point added.")
-
-
-@router.post("/knowledge-base/proof-points/{proof_point_id}")
-async def knowledge_base_proof_point_update(
-    request: Request, proof_point_id: str, db: Session = Depends(get_db)
-) -> Response:
-    """Edit a proof point. Its offering associations are untouched."""
-
-    if not _knowledge_base_enabled(db):
-        return _kb_disabled(request, db)
-    parsed_id = _parse_uuid(proof_point_id)
-    proof_point = seller_records.get_proof_point(db, parsed_id) if parsed_id else None
-    if proof_point is None:
-        return _not_found(request, db, "That proof point does not exist.")
-    form = await request.form()
-    try:
-        seller_records.update_proof_point(
-            db,
-            proof_point,
-            statement=str(form.get("statement", "")),
-            supporting_detail=str(form.get("supporting_detail", "")),
-            source_reference=str(form.get("source_reference", "")),
-            actor=_kb_actor(),
-        )
-    except SellerKnowledgeError as exc:
-        return _redirect("/knowledge-base/proof-points", err=str(exc))
-    db.commit()
-    return _redirect("/knowledge-base/proof-points", ok="Proof point saved.")
-
-
-@router.post("/knowledge-base/proof-points/{proof_point_id}/state")
-async def knowledge_base_proof_point_state(
-    request: Request, proof_point_id: str, db: Session = Depends(get_db)
-) -> Response:
-    if not _knowledge_base_enabled(db):
-        return _kb_disabled(request, db)
-    parsed_id = _parse_uuid(proof_point_id)
-    proof_point = seller_records.get_proof_point(db, parsed_id) if parsed_id else None
-    if proof_point is None:
-        return _not_found(request, db, "That proof point does not exist.")
-    form = await request.form()
-    restore = str(form.get("action", "")) == "restore"
-    if restore:
-        seller_records.restore_proof_point(db, proof_point, actor=_kb_actor())
-    else:
-        seller_records.archive_proof_point(db, proof_point, actor=_kb_actor())
-    db.commit()
-    return _redirect(
-        "/knowledge-base/proof-points",
-        ok="Proof point restored." if restore else "Proof point archived.",
-    )
-
-
-@router.get("/knowledge-base/restricted-claims", response_class=HTMLResponse)
-def knowledge_base_restricted_claims_page(
-    request: Request, db: Session = Depends(get_db)
-) -> HTMLResponse:
-    if not _knowledge_base_enabled(db):
-        return _kb_disabled(request, db)
-    archived = _show_archived(request)
-    claims = seller_records.list_restricted_claims(db, include_archived=archived)
-    return _render(
-        request,
-        db,
-        "kb_restricted_claims.html",
-        {
-            **_kb_context(db, "restricted-claims", "Restricted claims"),
-            "claims": claims,
-            "offerings_by_record": seller_records.offerings_by_record(
-                db,
-                kind="restricted_claim",
-                # Only offering-scoped claims can have associations, and only
-                # those rows read this map.
-                record_ids=[
-                    claim.id for claim in claims if claim.scope is SellerClaimScope.OFFERING
-                ],
-            ),
-            "show_archived": archived,
-            "claim_scopes": list(SellerClaimScope),
-        },
-    )
-
-
-@router.post("/knowledge-base/restricted-claims")
-async def knowledge_base_restricted_claim_create(
-    request: Request, db: Session = Depends(get_db)
-) -> Response:
-    if not _knowledge_base_enabled(db):
-        return _kb_disabled(request, db)
-    form = await request.form()
-    try:
-        claim = seller_records.create_restricted_claim(
-            db,
-            title=str(form.get("title", "")),
-            explanation=str(form.get("explanation", "")),
-            examples=parse_lines(str(form.get("examples", ""))),
-            scope=_claim_scope(str(form.get("scope", ""))),
-            created_by=_kb_actor(),
-        )
-    except SellerKnowledgeError as exc:
-        return _redirect("/knowledge-base/restricted-claims", err=str(exc))
-    db.commit()
-    if claim.scope is SellerClaimScope.OFFERING:
-        return _redirect(
-            "/knowledge-base/restricted-claims",
-            ok=(
-                "Restriction added. It is scoped to offerings, so link it to each "
-                "offering it applies to from that offering's page."
-            ),
-        )
-    return _redirect(
-        "/knowledge-base/restricted-claims",
-        ok="Restriction added. It applies to everything.",
-    )
-
-
-@router.post("/knowledge-base/restricted-claims/{claim_id}")
-async def knowledge_base_restricted_claim_update(
-    request: Request, claim_id: str, db: Session = Depends(get_db)
-) -> Response:
-    """Edit a restriction. Widening it to global drops its offering links."""
-
-    if not _knowledge_base_enabled(db):
-        return _kb_disabled(request, db)
-    parsed_id = _parse_uuid(claim_id)
-    claim = seller_records.get_restricted_claim(db, parsed_id) if parsed_id else None
-    if claim is None:
-        return _not_found(request, db, "That restriction does not exist.")
-    form = await request.form()
-    previous_scope = claim.scope
-    try:
-        seller_records.update_restricted_claim(
-            db,
-            claim,
-            title=str(form.get("title", "")),
-            explanation=str(form.get("explanation", "")),
-            examples=parse_lines(str(form.get("examples", ""))),
-            scope=_claim_scope(str(form.get("scope", "")), default=previous_scope),
-            actor=_kb_actor(),
-        )
-    except SellerKnowledgeError as exc:
-        return _redirect("/knowledge-base/restricted-claims", err=str(exc))
-    db.commit()
-    if previous_scope is SellerClaimScope.OFFERING and claim.scope is SellerClaimScope.GLOBAL:
-        return _redirect(
-            "/knowledge-base/restricted-claims",
-            ok=(
-                "Restriction saved. It now applies to everything, so its offering "
-                "associations were removed."
-            ),
-        )
-    return _redirect("/knowledge-base/restricted-claims", ok="Restriction saved.")
-
-
-@router.post("/knowledge-base/restricted-claims/{claim_id}/state")
-async def knowledge_base_restricted_claim_state(
-    request: Request, claim_id: str, db: Session = Depends(get_db)
-) -> Response:
-    if not _knowledge_base_enabled(db):
-        return _kb_disabled(request, db)
-    parsed_id = _parse_uuid(claim_id)
-    claim = seller_records.get_restricted_claim(db, parsed_id) if parsed_id else None
-    if claim is None:
-        return _not_found(request, db, "That restriction does not exist.")
-    form = await request.form()
-    restore = str(form.get("action", "")) == "restore"
-    if restore:
-        seller_records.restore_restricted_claim(db, claim, actor=_kb_actor())
-    else:
-        seller_records.archive_restricted_claim(db, claim, actor=_kb_actor())
-    db.commit()
-    return _redirect(
-        "/knowledge-base/restricted-claims",
-        ok="Restriction restored." if restore else "Restriction archived.",
-    )
-
-
-@router.get("/knowledge-base/personas", response_class=HTMLResponse)
-def knowledge_base_personas_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    if not _knowledge_base_enabled(db):
-        return _kb_disabled(request, db)
-    archived = _show_archived(request)
-    personas = seller_records.list_personas(db, include_archived=archived)
-    return _render(
-        request,
-        db,
-        "kb_personas.html",
-        {
-            **_kb_context(db, "personas", "Personas"),
-            "personas": personas,
-            "offerings_by_record": seller_records.offerings_by_record(
-                db, kind="persona", record_ids=[record.id for record in personas]
-            ),
-            "show_archived": archived,
-        },
-    )
-
-
-@router.post("/knowledge-base/personas")
-async def knowledge_base_persona_create(
-    request: Request, db: Session = Depends(get_db)
-) -> Response:
-    if not _knowledge_base_enabled(db):
-        return _kb_disabled(request, db)
-    form = await request.form()
-    try:
-        seller_records.create_persona(
-            db,
-            name=str(form.get("name", "")),
-            role_function=str(form.get("role_function", "")),
-            seniority=str(form.get("seniority", "")),
-            responsibilities=parse_lines(str(form.get("responsibilities", ""))),
-            challenges=parse_lines(str(form.get("challenges", ""))),
-            use_cases=parse_lines(str(form.get("use_cases", ""))),
-            messaging_notes=str(form.get("messaging_notes", "")),
-            created_by=_kb_actor(),
-        )
-    except SellerKnowledgeError as exc:
-        return _redirect("/knowledge-base/personas", err=str(exc))
-    db.commit()
-    return _redirect("/knowledge-base/personas", ok="Persona added.")
-
-
-@router.post("/knowledge-base/personas/{persona_id}")
-async def knowledge_base_persona_update(
-    request: Request, persona_id: str, db: Session = Depends(get_db)
-) -> Response:
-    """Edit a persona. Its offering associations are untouched."""
-
-    if not _knowledge_base_enabled(db):
-        return _kb_disabled(request, db)
-    parsed_id = _parse_uuid(persona_id)
-    persona = seller_records.get_persona(db, parsed_id) if parsed_id else None
-    if persona is None:
-        return _not_found(request, db, "That persona does not exist.")
-    form = await request.form()
-    try:
-        seller_records.update_persona(
-            db,
-            persona,
-            name=str(form.get("name", "")),
-            role_function=str(form.get("role_function", "")),
-            seniority=str(form.get("seniority", "")),
-            responsibilities=parse_lines(str(form.get("responsibilities", ""))),
-            challenges=parse_lines(str(form.get("challenges", ""))),
-            use_cases=parse_lines(str(form.get("use_cases", ""))),
-            messaging_notes=str(form.get("messaging_notes", "")),
-            actor=_kb_actor(),
-        )
-    except SellerKnowledgeError as exc:
-        return _redirect("/knowledge-base/personas", err=str(exc))
-    db.commit()
-    return _redirect("/knowledge-base/personas", ok="Persona saved.")
-
-
-@router.post("/knowledge-base/personas/{persona_id}/state")
-async def knowledge_base_persona_state(
-    request: Request, persona_id: str, db: Session = Depends(get_db)
-) -> Response:
-    if not _knowledge_base_enabled(db):
-        return _kb_disabled(request, db)
-    parsed_id = _parse_uuid(persona_id)
-    persona = seller_records.get_persona(db, parsed_id) if parsed_id else None
-    if persona is None:
-        return _not_found(request, db, "That persona does not exist.")
-    form = await request.form()
-    restore = str(form.get("action", "")) == "restore"
-    try:
-        if restore:
-            seller_records.restore_persona(db, persona, actor=_kb_actor())
-        else:
-            seller_records.archive_persona(db, persona, actor=_kb_actor())
-    except SellerKnowledgeError as exc:
-        return _redirect("/knowledge-base/personas", err=str(exc))
-    db.commit()
-    return _redirect(
-        "/knowledge-base/personas",
-        ok="Persona restored." if restore else "Persona archived.",
-    )
-
-
-# --- Campaign-to-offering association (KB-001) -------------------------------
-
-
-@router.post("/campaigns/{campaign_id}/offerings")
-async def campaign_offering_add(
-    request: Request, campaign_id: str, db: Session = Depends(get_db)
-) -> Response:
-    """Record that a campaign concerns an offering.
-
-    Association only. It never writes the campaign's copy or call to action.
-    """
-
-    if not _knowledge_base_enabled(db):
-        return _kb_disabled(request, db)
-    parsed_id = _parse_uuid(campaign_id)
-    overview = get_campaign_overview(db, parsed_id) if parsed_id else None
-    if overview is None:
-        return _not_found(request, db, "That campaign does not exist.")
-    back = f"/campaigns/{overview.campaign.id}"
-    form = await request.form()
-    offering_id = _parse_uuid(str(form.get("offering_id", "")))
-    if offering_id is None:
-        return _redirect(back, err="Choose an offering first.")
-    try:
-        offering, created = seller_campaign_offerings.associate(
-            db, campaign=overview.campaign, offering_id=offering_id, actor=_kb_actor()
-        )
-    except SellerKnowledgeError as exc:
-        return _redirect(back, err=str(exc))
-    db.commit()
-    if not created:
-        return _redirect(back, ok=f"\u201c{offering.name}\u201d was already on this campaign.")
-    return _redirect(back, ok=f"This campaign now concerns \u201c{offering.name}\u201d.")
-
-
-@router.post("/campaigns/{campaign_id}/offerings/{offering_id}/remove")
-async def campaign_offering_remove(
-    request: Request, campaign_id: str, offering_id: str, db: Session = Depends(get_db)
-) -> Response:
-    """Remove an offering association. Nothing else about the campaign changes."""
-
-    if not _knowledge_base_enabled(db):
-        return _kb_disabled(request, db)
-    parsed_id = _parse_uuid(campaign_id)
-    overview = get_campaign_overview(db, parsed_id) if parsed_id else None
-    if overview is None:
-        return _not_found(request, db, "That campaign does not exist.")
-    back = f"/campaigns/{overview.campaign.id}"
-    parsed_offering_id = _parse_uuid(offering_id)
-    if parsed_offering_id is None:
-        return _redirect(back, err="That offering association does not exist.")
-    removed = seller_campaign_offerings.dissociate(
-        db, campaign=overview.campaign, offering_id=parsed_offering_id, actor=_kb_actor()
-    )
-    db.commit()
-    if not removed:
-        return _redirect(back, ok="No change \u2014 that offering was not on this campaign.")
-    return _redirect(back, ok="Offering association removed.")
-
-
-# --- Later-phase sections: one clean unavailable state -----------------------
-
-
-def _make_unavailable_route(slug: str, title: str) -> None:
-    @router.get(f"/{slug}", response_class=HTMLResponse, name=f"unavailable_{slug}")
-    def unavailable_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-        return _render(
-            request,
-            db,
-            "unavailable.html",
-            {"section_title": title, "active_nav": slug, "page_title": title},
-        )
-
-
-for _slug, _title in _UNAVAILABLE_SECTIONS.items():
-    _make_unavailable_route(_slug, _title)
+@router.get("/knowledge-base")
+@router.get("/knowledge-base/{section}")
+def _legacy_knowledge_base(section: str = "") -> RedirectResponse:
+    suffix = f"/{section}" if section else ""
+    return RedirectResponse(f"/app/library{suffix}", status_code=308)
 
 
 # --- Admin Agent Studio ------------------------------------------------------
