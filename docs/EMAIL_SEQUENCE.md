@@ -382,25 +382,16 @@ indefinitely; there is no step at which it is removed.
 
 ## 12. Historical compatibility
 
-`SequenceAvailability` (in `app/web/v2/routes.py`) resolves exactly one state
-per page, and each is rendered with its own wording by
-`_sequence.html::unavailable`:
+`SequenceAvailability` (`app/web/v2/pages/emails.py`) still resolves exactly one
+state per Campaign membership — `feature_off`, `campaign_off`, `pending`,
+`failed`, `available`, and `available` + `read_only` — and the write routes use
+it to refuse edits when a switch is off. Since the UX Pass 2 redesign the states
+are no longer narrated on the person page: a person is Processing until a
+sequence is complete and validated, Ready for Sending once it is, and the
+sending desk (Campaign › Overview) is the only place the seven emails are read,
+copied and acted on. Failure and switch detail is on Admin › Diagnostics.
 
-| State | When | What the page says |
-|---|---|---|
-| `feature_off` | deployment flag off, nothing generated | the Agent is writing single drafts; nothing is missing |
-| `campaign_off` | flag on, this Campaign has not opted in | this Campaign is not set up to generate sequences, and will not until somebody opts it in |
-| `pending` | opted in, nothing generated yet | this Campaign is opted in; the whole sequence appears at once when it finishes |
-| `failed` | a generation was refused | nothing partial was kept, and nothing further appears on its own |
-| `available` | a live sequence exists | the sequence |
-| `available` + `read_only` | a sequence exists but a switch is now off | the sequence, plus a notice naming which switch and confirming decisions are unchanged |
-
-Legacy single drafts are unaffected and render exactly as before, alongside.
-
-Each of these is asserted by an HTTP test in
-`tests/test_email_sequence_defects.py`. Three of them were unreachable dead code
-in the first implementation, and a test asserted the *absence* of a string no
-route could produce — it passed trivially and proved nothing.
+Legacy single drafts are unaffected and remain readable on the desk alongside.
 
 Historical records fabricate nothing: no follow-ups, no sequence versions, no
 Company Intelligence lineage, no delivery state, no review decision that never
