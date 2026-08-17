@@ -128,13 +128,20 @@ def produce_for_company(
     # turns Company Intelligence on from the Admin Configuration screen expects
     # the next run to produce something, not to wait for a deploy.
     if not operational.enabled(session, "company_intelligence", resolved_settings):
+        # The refusal the operations layer writes, not a hand-rolled one. It names
+        # the actual cause — an administrator's switch, or a missing capability and
+        # which one — and points at Admin → Configuration. Telling an operator to
+        # set an environment variable when the control is theirs to flip on screen
+        # sends them to a shell to fix something that is not broken there.
+        refusal = operational.refusal(session, "company_intelligence", resolved_settings)
         return RunOutcome(
             succeeded=False,
             company_id=company.id,
             code=FEATURE_DISABLED_CODE,
             message=(
-                "Company Intelligence is switched off. Set FEATURES__COMPANY_INTELLIGENCE=true "
-                "to enable it; nothing is produced while it is off."
+                f"{refusal} Nothing is produced while it is off."
+                if refusal
+                else "Company Intelligence is not in force; nothing is produced while it is off."
             ),
             retryable=False,
         )

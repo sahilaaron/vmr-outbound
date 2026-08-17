@@ -1426,3 +1426,207 @@ def test_an_unsafe_destination_is_still_discarded(unsafe: str) -> None:
     from app.core.auth.policy import safe_next_path
 
     assert safe_next_path(unsafe, fallback="/app") == "/app", unsafe
+
+
+# ---------------------------------------------------------------------------
+# K. The consent form's own redirect survives the application's CSP
+# ---------------------------------------------------------------------------
+#
+# The live defect after #290 and after the staging configuration repair. The
+# whole flow worked: the authorization window opened, the operator's session was
+# recognised, the consent page rendered, `Connect extension` was pressed, the
+# route validated everything and answered `303` to
+# `https://<extension id>.chromiumapp.org/?code=...&state=...` -- and the
+# extension reported "Sign-in did not complete."
+#
+# `form-action` is checked against a form submission AND against every redirect
+# that submission follows, using the policy of the page holding the form. The
+# application policy is `form-action 'self'`, so Chrome blocked the navigation to
+# the callback. `chrome.identity.launchWebAuthFlow` saw its window die on a
+# failed load, and the extension's own probe of `/extension/token` then answered
+# `400`, which it classifies as the generic `sign_in_failed`.
+#
+# Two things made this invisible. The access log showed
+# `POST /extension/authorize 303`, so the server looked correct -- it *was*
+# correct. And the silent reconnect path is a plain navigation, which
+# `form-action` does not govern at all, so only the first connection of any
+# install could ever hit it.
+#
+# Proven in a real browser before it was fixed: an identical page served with
+# `form-action 'self'` reports a `form-action` violation on the redirect, and the
+# same page served with the callback origin added does not.
+
+#: The single source the consent page adds, and the only thing that may change.
+CALLBACK_ORIGIN = f"https://{EXTENSION_ID}.chromiumapp.org"
+
+
+def _csp(response: Any) -> str:
+    return response.headers["content-security-policy"]
+
+
+def _form_action_of(policy: str) -> str:
+    for directive in policy.split(";"):
+        if directive.strip().startswith("form-action"):
+            return " ".join(directive.split())
+    raise AssertionError(f"no form-action directive in {policy!r}")
+
+
+def test_the_consent_page_may_submit_to_its_own_extension_callback(client: TestClient) -> None:
+    """The repair. Without this the consent button cannot complete a sign-in.
+
+    Asserted on the page that carries the form, because that is the policy the
+    browser enforces the redirect against -- not the policy on the redirect.
+    """
+
+    account = seed_account(email="csp-consent@vmr.example")
+    _attach_session(client, account.user_id, account.email)
+    _, challenge = _pkce()
+
+    page = client.get(_authorize_url(challenge), headers=NAVIGATION_HEADERS)
+
+    assert page.status_code == 200
+    assert 'action="/extension/authorize"' in page.text
+    assert _form_action_of(_csp(page)) == f"form-action 'self' {CALLBACK_ORIGIN}"
+
+
+def test_the_consent_page_widens_form_action_and_nothing_else(client: TestClient) -> None:
+    """One directive, one source. Every other directive is byte-identical.
+
+    The interesting half of the repair is what it did *not* touch: `script-src`,
+    `connect-src`, `default-src`, `frame-ancestors`, `base-uri` and `object-src`
+    are what stop the consent page becoming a way to run or reach anything, and
+    a widening that quietly took one of them with it would be a real regression
+    hiding behind a working sign-in.
+    """
+
+    account = seed_account(email="csp-narrow@vmr.example")
+    _attach_session(client, account.user_id, account.email)
+    _, challenge = _pkce()
+
+    page = client.get(_authorize_url(challenge), headers=NAVIGATION_HEADERS)
+    ordinary = client.get("/app", headers=NAVIGATION_HEADERS)
+
+    consent_directives = {d.split()[0]: " ".join(d.split()) for d in _csp(page).split(";")}
+    baseline_directives = {d.split()[0]: " ".join(d.split()) for d in _csp(ordinary).split(";")}
+    assert consent_directives.keys() == baseline_directives.keys()
+    for name, value in baseline_directives.items():
+        if name == "form-action":
+            continue
+        assert consent_directives[name] == value, name
+
+
+def test_every_other_response_keeps_form_action_self(client: TestClient) -> None:
+    """The widening is scoped to the one page, including on the same route.
+
+    A refusal renders on the authorize entrypoint too, and it has no form to
+    submit -- so it must not be handed the callback source. The token endpoint
+    and an ordinary application page are here for the same reason: this is the
+    enumeration that says "one page", not an example that says "at least one".
+    """
+
+    account = seed_account(email="csp-elsewhere@vmr.example")
+    csrf = _attach_session(client, account.user_id, account.email)
+    _, challenge = _pkce()
+
+    responses = {
+        "app page": client.get("/app", headers=NAVIGATION_HEADERS),
+        "refusal on the same route": client.get(
+            _authorize_url(challenge, extension_id=UNAPPROVED_EXTENSION_ID),
+            headers=NAVIGATION_HEADERS,
+        ),
+        "the consent submission itself": _consent(client, csrf, challenge),
+        "the token endpoint": _token(client, {"grant_type": "nonsense"}),
+        "sign-in": client.get("/auth/login", headers=NAVIGATION_HEADERS),
+    }
+    for label, response in responses.items():
+        assert _form_action_of(_csp(response)) == "form-action 'self'", label
+        assert ".chromiumapp.org" not in _csp(response), label
+
+
+def test_a_refused_authorization_never_widens_the_policy(client: TestClient) -> None:
+    """Every refusal, not just the sampled one above.
+
+    `_validate` runs before anything is rendered, so no refused request should
+    ever reach the widening -- and an unapproved extension id in particular must
+    not be able to name itself in a VMR-origin security header.
+    """
+
+    account = seed_account(email="csp-refusals@vmr.example")
+    _attach_session(client, account.user_id, account.email)
+    _, challenge = _pkce()
+
+    for case, kwargs in REFUSAL_CASES:
+        refused = client.get(_authorize_url(challenge, **kwargs), headers=NAVIGATION_HEADERS)
+        assert _form_action_of(_csp(refused)) == "form-action 'self'", case
+        assert ".chromiumapp.org" not in _csp(refused), case
+
+
+def test_an_anonymous_caller_cannot_reach_the_widening(client: TestClient) -> None:
+    """No session, no consent page, and therefore no widened policy."""
+
+    _, challenge = _pkce()
+    anonymous = client.get(_authorize_url(challenge), headers=NAVIGATION_HEADERS)
+
+    assert anonymous.status_code < 400
+    assert _form_action_of(_csp(anonymous)) == "form-action 'self'"
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        "https://evil.example",
+        "https://evil.example.chromiumapp.org",
+        CALLBACK_ORIGIN + " https://evil.example",
+        CALLBACK_ORIGIN + "/",
+        "'unsafe-inline'",
+        "*",
+        CALLBACK_ORIGIN + "; script-src *",
+        "",
+        None,
+        12345,
+    ],
+)
+def test_the_hardening_boundary_refuses_a_value_it_did_not_expect(hostile: Any) -> None:
+    """The widening re-validates rather than trusting application state.
+
+    The route already proves its value equals `redirect_uri_for(extension_id)`
+    for an approved id, so this can only fire on a bug -- which is exactly when
+    a security header must not be forgeable. Anything that is not one
+    well-formed extension callback origin leaves the policy untouched, so no
+    route defect can inject a second source or reach another directive.
+    """
+
+    from app.core.http import CSP_FORM_ACTION_STATE_KEY, _content_security_policy
+
+    scope = {"state": {CSP_FORM_ACTION_STATE_KEY: hostile}}
+    policy = _content_security_policy(scope, "/extension/authorize")
+
+    assert _form_action_of(policy) == "form-action 'self'"
+    assert "evil.example" not in policy
+    assert policy == _content_security_policy({"state": {}}, "/extension/authorize")
+
+
+def test_the_widening_names_the_callback_the_code_is_actually_sent_to(
+    client: TestClient,
+) -> None:
+    """The policy and the redirect agree, because both come from one function.
+
+    A `form-action` source that did not match the `Location` would fail exactly
+    the way the defect did, so this pins them to the same value rather than to
+    two copies of the same string.
+    """
+
+    from app.core.auth.extension_link import redirect_uri_for
+
+    account = seed_account(email="csp-agreement@vmr.example")
+    csrf = _attach_session(client, account.user_id, account.email)
+    _, challenge = _pkce()
+
+    page = client.get(_authorize_url(challenge), headers=NAVIGATION_HEADERS)
+    granted = _consent(client, csrf, challenge)
+
+    assert granted.status_code == 303
+    location = granted.headers["location"]
+    assert location.startswith(redirect_uri_for(EXTENSION_ID))
+    source = _form_action_of(_csp(page)).split()[-1]
+    assert location.startswith(source + "/")
