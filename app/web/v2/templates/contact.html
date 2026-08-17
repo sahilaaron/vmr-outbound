@@ -5,7 +5,7 @@
 <div class="v2-page detail">
 
   <div class="v2-crumbs">
-    <a href="/app/contacts">Contacts</a><span class="sep">/</span>{{ detail.full_name | neutralize }}
+    <a href="/app/people">People</a><span class="sep">/</span>{{ detail.full_name | neutralize }}
   </div>
 
   <div class="v2-title-row v2-mt-sm">
@@ -44,10 +44,7 @@
       </div>
     </div>
     <div class="v2-title-actions">
-      {% if latest_draft %}
-      <a class="v2-btn" href="/app/review?draft={{ latest_draft.draft_version_id }}">Read the draft</a>
-      {% endif %}
-      <a class="v2-btn" href="/contacts/{{ detail.contact.id }}">Open in admin Workbench</a>
+      {% if is_admin %}<a class="v2-btn" href="/contacts/{{ detail.contact.id }}">Open in admin Workbench</a>{% endif %}
     </div>
   </div>
 
@@ -56,7 +53,7 @@
     <span class="v2-eyebrow">Campaign</span>
     {% for candidate, campaign in detail.memberships %}
     <a class="v2-chip sm {{ 'on' if membership and candidate.id == membership.id }}"
-       href="/app/contacts/{{ detail.contact.id }}?campaign={{ candidate.campaign_id }}">
+       href="/app/people/{{ detail.contact.id }}?campaign={{ candidate.campaign_id }}">
       {{ (campaign.name | neutralize) if campaign else 'campaign removed' }}
     </a>
     {% endfor %}
@@ -122,7 +119,6 @@
             {{ execution.draft.evidence_supplied }} piece(s) of evidence were supplied to the writer.
             {% if not execution.draft.approved %}Nobody has approved this version.{% endif %}
           </span>
-          {% if latest_draft %}<a href="/app/review?draft={{ latest_draft.draft_version_id }}">Decide on it →</a>{% endif %}
         </div>
       </div>
       {% endif %}
@@ -267,7 +263,7 @@
                mailbox,
                sequence_summary,
                sequence_rows,
-               "/app/contacts/" ~ detail.contact.id ~ "?campaign=" ~ membership.campaign_id ~ "#sequence",
+               "/app/people/" ~ detail.contact.id ~ "?campaign=" ~ membership.campaign_id ~ "#sequence",
                read_only=sequence_availability.read_only) }}
           <div class="v2-seq-copystatus" id="seq-copy-status" role="status" aria-live="polite"></div>
           {% for message_detail in sequence_details %}
@@ -276,7 +272,7 @@
                sequence_summary,
                detail.contact.id,
                membership.campaign_id,
-               "/app/contacts/" ~ detail.contact.id ~ "?campaign=" ~ membership.campaign_id ~ "#message-" ~ message_detail.row.position,
+               "/app/people/" ~ detail.contact.id ~ "?campaign=" ~ membership.campaign_id ~ "#message-" ~ message_detail.row.position,
                read_only=sequence_availability.read_only,
                mailbox=mailbox,
                gmail_draft=gmail_draft_rows.get(message_detail.row.version_id)) }}

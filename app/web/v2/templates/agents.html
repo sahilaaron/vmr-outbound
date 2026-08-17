@@ -54,7 +54,7 @@
             an agent that a campaign needs.
           </p>
           {% else %}
-          <form class="v2-inline-form" method="post" action="/app/agents/{{ selected.value }}/control">
+          <form class="v2-inline-form" method="post" action="/app/admin/agents/{{ selected.value }}/control">
             {# Blank when the page saw no stored control. Never 0: that would claim a
                version exists and turn a conflict into a silent overwrite. #}
             {% set seen_version = detail.effective_control.campaign_version if campaign_id else detail.effective_control.global_version %}
@@ -117,7 +117,7 @@
             switch belongs to one campaign at a time and lives on the campaign's own
             page, next to the contacts it would affect.
             {% if campaign_id %}
-            <a href="/app/campaigns/{{ campaign_id }}?stage={{ selected.value }}">Open it for this campaign →</a>
+            <a href="/app/admin/campaigns/{{ campaign_id }}/diagnostics?stage={{ selected.value }}">Open diagnostics for this campaign →</a>
             {% endif %}
           </dd></div>
           {% endif %}
@@ -185,7 +185,7 @@
         <div class="v2-card-head tight"><h2>Agents</h2></div>
         {% for card in overview.agents %}
         <a class="v2-sidelist-item {{ 'on' if card.agent_id == selected }}"
-           href="/app/agents?agent={{ card.agent_id.value }}{% if campaign_id %}&campaign={{ campaign_id }}{% endif %}">
+           href="/app/admin/agents?agent={{ card.agent_id.value }}{% if campaign_id %}&campaign={{ campaign_id }}{% endif %}">
           <div class="v2-sidelist-top">
             <span class="v2-sidelist-n">{{ card.position + 1 }}</span>
             <b>{{ card.display_name }}</b>
@@ -204,10 +204,10 @@
         <div class="v2-card-head tight"><h2>Scope</h2></div>
         <div class="v2-row tight">
           <div class="v2-chips">
-            <a class="v2-chip sm {{ 'on' if not campaign_id }}" href="/app/agents?agent={{ selected.value }}">Everywhere</a>
+            <a class="v2-chip sm {{ 'on' if not campaign_id }}" href="/app/admin/agents?agent={{ selected.value }}">Everywhere</a>
             {% for overview_row in campaigns %}
             <a class="v2-chip sm {{ 'on' if campaign_id == overview_row.campaign.id }}"
-               href="/app/agents?agent={{ selected.value }}&campaign={{ overview_row.campaign.id }}">{{ overview_row.campaign.name }}</a>
+               href="/app/admin/agents?agent={{ selected.value }}&campaign={{ overview_row.campaign.id }}">{{ overview_row.campaign.name }}</a>
             {% endfor %}
           </div>
           <div class="v2-hint v2-mt-sm">

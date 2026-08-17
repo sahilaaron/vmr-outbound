@@ -1,0 +1,211 @@
+{% extends "base.html" %}
+{% from "_ui.html" import tag %}
+{% block content %}
+{% include "_campaign_header.html" %}
+
+<div class="v2-page narrow">
+  <div class="v2-setup-grid">
+    <form class="v2-stack" method="post" action="{{ base_href }}/setup" id="setup-form">
+
+      <div class="v2-card">
+        <div class="v2-card-head tight"><h2>General</h2></div>
+        <div class="v2-card-body roomy v2-form-stack">
+          <div class="v2-field">
+            <label for="setup-name">Name</label>
+            <input class="v2-input" id="setup-name" name="name" maxlength="255" required value="{{ campaign.name | neutralize }}">
+          </div>
+          <div class="v2-field">
+            <label for="setup-note">Private note <span class="v2-muted">optional</span></label>
+            <textarea class="v2-textarea" id="setup-note" name="description" maxlength="4000" rows="2">{{ campaign.description or '' }}</textarea>
+          </div>
+        </div>
+      </div>
+
+      <div class="v2-card">
+        <div class="v2-card-head tight"><h2>Offering and direction</h2></div>
+        <div class="v2-card-body roomy v2-form-stack">
+          <div class="v2-field">
+            <label for="setup-offering">Offering</label>
+            <div class="v2-hint">The emails may only offer something in your Library.</div>
+            {% if kb_on and offerings %}
+            <select class="v2-select" id="setup-offering" name="offering_id">
+              <option value="">None</option>
+              {% for offering in offerings %}
+              <option value="{{ offering.id }}" {{ 'selected' if linked_offering and offering.id == linked_offering.id }}>{{ offering.name }}</option>
+              {% endfor %}
+            </select>
+            {% elif kb_on %}
+            <p class="v2-note">No offering exists yet. <a href="/app/library/offerings">Add one in the Library</a>.</p>
+            {% else %}
+            <p class="v2-note">The Library is switched off in this environment.</p>
+            {% endif %}
+          </div>
+          <div class="v2-field">
+            <label for="setup-cta">Intended call to action <span class="v2-muted">optional</span></label>
+            <input class="v2-input" id="setup-cta" name="primary_cta" maxlength="500" value="{{ campaign.primary_cta or '' }}" placeholder="e.g. a 20-minute call next week">
+          </div>
+          <div class="v2-field">
+            <label for="setup-direction">Direction for the emails <span class="v2-muted">optional</span></label>
+            <div class="v2-hint">Only what genuinely changes the writing — the angle, the audience, what to avoid.</div>
+            <textarea class="v2-textarea" id="setup-direction" name="messaging_direction" maxlength="4000" rows="3">{{ campaign.messaging_direction or '' }}</textarea>
+          </div>
+        </div>
+      </div>
+
+      <div class="v2-card">
+        <div class="v2-card-head tight"><h2>Preparation</h2></div>
+        <div class="v2-card-body roomy v2-form-stack">
+          <div class="v2-field v2-check-field">
+            <label for="setup-provisional">
+              <input type="checkbox" id="setup-provisional" name="allow_provisional_domains" {{ 'checked' if campaign.allow_provisional_domains }}>
+              Accept the best-available company website when it cannot be confirmed
+            </label>
+            <div class="v2-hint">Unticked, people wait until their company website is confirmed.</div>
+          </div>
+          {% if sequences_on %}
+          <div class="v2-field v2-check-field">
+            <label for="setup-sequence">
+              <input type="checkbox" id="setup-sequence" name="sequence_enabled" {{ 'checked' if sequence_on }}>
+              Prepare seven emails per person, on days {{ cadence_text }}
+            </label>
+            <div class="v2-hint">The cadence is fixed. Unticked, VMR writes one email per person.</div>
+          </div>
+          {% else %}
+          <div class="v2-field">
+            <b>Emails</b>
+            <div class="v2-hint">{% if sequence_on %}Seven per person, on days {{ cadence_text }}. The cadence is fixed.{% else %}One email per person.{% endif %}</div>
+          </div>
+          {% endif %}
+          <div class="v2-field">
+            <b>Website research</b>
+            <div class="v2-hint">
+              {% if research_allowed %}Allowed. VMR reads each company's public website to ground the emails.
+              {% else %}Off. Emails are written without company website research.{% endif %}
+              {% if not is_admin %}Only an administrator can change this.{% endif %}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="v2-btn-row v2-form-actions">
+        <button class="v2-btn primary big" type="submit">Save setup</button>
+        <a class="v2-btn big" href="{{ base_href }}">Back to Overview</a>
+      </div>
+    </form>
+
+    <div class="v2-stack">
+
+      {% if is_admin %}
+      <div class="v2-card">
+        <div class="v2-card-head tight"><h2>Website research</h2></div>
+        <div class="v2-row tight">
+          <div class="v2-note">{{ 'Allowed for this Campaign.' if research_allowed else 'Off for this Campaign.' }} Research reads other organisations' public pages and can spend model budget.</div>
+        </div>
+        <div class="v2-row tight">
+          <form method="post" action="{{ base_href }}/setup/research">
+            <input type="hidden" name="allowed" value="{{ '0' if research_allowed else '1' }}">
+            <button class="v2-btn small" type="submit">{{ 'Turn research off' if research_allowed else 'Allow research' }}</button>
+          </form>
+        </div>
+      </div>
+      {% endif %}
+
+      <div class="v2-card">
+        <div class="v2-card-head tight"><h2>Access</h2></div>
+        {% if access_owner %}
+        <div class="v2-row tight">
+          <div class="v2-sidelist-top"><b>{{ access_owner.display_name or access_owner.email | neutralize }}</b>{{ tag('owner', 'brand', small=true) }}</div>
+          <div class="v2-hint m">{{ access_owner.email | neutralize }}</div>
+        </div>
+        {% endif %}
+        {% for person in access_people if not person.is_creator %}
+        <div class="v2-row tight">
+          <div class="v2-sidelist-top">
+            <b>{{ person.display_name | neutralize }}</b>
+            {% if is_admin %}
+            <form method="post" action="/app/admin/campaigns/{{ campaign.id }}/unassign" class="push">
+              <input type="hidden" name="user_id" value="{{ person.user_id }}">
+              <input type="hidden" name="back" value="{{ base_href }}/setup">
+              <button class="v2-btn small" type="submit">Remove</button>
+            </form>
+            {% endif %}
+          </div>
+          <div class="v2-hint m">{{ person.email | neutralize }}</div>
+        </div>
+        {% endfor %}
+        {% if not access_owner and not access_people %}
+        <div class="v2-row tight v2-note">Administrators only. Nobody else has been given access.</div>
+        {% endif %}
+        {% if is_admin %}
+        <div class="v2-row tight">
+          {% if assignable_users %}
+          <form method="post" action="/app/admin/campaigns/{{ campaign.id }}/assign" class="v2-inline-form">
+            <label class="v2-sr" for="assign-user">Give access to</label>
+            <select class="v2-select sm" id="assign-user" name="user_id" required>
+              <option value="">Give access to…</option>
+              {% for candidate in assignable_users %}
+              <option value="{{ candidate.id }}">{{ candidate.email | neutralize }}</option>
+              {% endfor %}
+            </select>
+            <input type="hidden" name="back" value="{{ base_href }}/setup">
+            <button class="v2-btn small primary" type="submit">Add</button>
+          </form>
+          {% else %}
+          <div class="v2-hint">Everyone with an account already has access.</div>
+          {% endif %}
+        </div>
+        <div class="v2-card-foot plain"><a href="/app/admin/users">Manage accounts →</a></div>
+        {% else %}
+        <div class="v2-card-foot plain">Administrators reach every Campaign. Ask one to give someone access.</div>
+        {% endif %}
+      </div>
+
+      <div class="v2-card">
+        <div class="v2-card-head tight"><h2>Lifecycle</h2></div>
+        <div class="v2-row tight">
+          <div class="v2-note">
+            {% if header.lifecycle == 'active' %}Active. VMR prepares everyone who is added.
+            {% elif header.lifecycle == 'paused' %}Paused. Nothing new is prepared; nothing already prepared is lost.
+            {% elif header.lifecycle == 'draft' %}Not started. Nothing is prepared until you start it.
+            {% else %}Archived. This Campaign is retired.{% endif %}
+          </div>
+        </div>
+        {% if answer.admin %}
+        <div class="v2-row tight v2-note">{{ answer.text }}{% if is_admin %} <a href="/app/admin/campaigns/{{ campaign.id }}/diagnostics">Open diagnostics</a>{% endif %}</div>
+        {% elif header.lifecycle in ('active', 'paused', 'draft') %}
+        <div class="v2-row tight">
+          <form method="post" action="{{ base_href }}/lifecycle">
+            <input type="hidden" name="action" value="{{ 'pause' if header.lifecycle == 'active' else ('resume' if header.lifecycle == 'paused' else 'start') }}">
+            <input type="hidden" name="back" value="{{ base_href }}/setup">
+            <button class="v2-btn small {{ 'primary' if header.lifecycle != 'active' }}" type="submit">
+              {{ 'Pause Campaign' if header.lifecycle == 'active' else ('Resume Campaign' if header.lifecycle == 'paused' else 'Start Campaign') }}
+            </button>
+          </form>
+        </div>
+        {% endif %}
+      </div>
+
+      {% if not header.is_archived %}
+      <div class="v2-card v2-danger" id="archive">
+        <div class="v2-card-head tight"><h2>Archive</h2></div>
+        <div class="v2-row tight">
+          <div class="v2-note">Retires the Campaign from the list. People, emails and history are kept. This cannot be undone.</div>
+        </div>
+        <div class="v2-row tight">
+          <form method="post" action="{{ base_href }}/lifecycle" class="v2-confirm-form">
+            <input type="hidden" name="action" value="archive">
+            <label class="v2-check-inline"><input type="checkbox" required> I understand</label>
+            <button class="v2-btn small danger" type="submit">Archive Campaign</button>
+          </form>
+        </div>
+      </div>
+      {% endif %}
+
+    </div>
+  </div>
+
+  <div class="v2-answer {{ 'ok' if answer.ready else 'warn' }}" role="status">
+    <b>{{ answer.text }}</b>
+  </div>
+</div>
+{% endblock %}

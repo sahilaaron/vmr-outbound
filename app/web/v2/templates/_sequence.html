@@ -93,7 +93,7 @@
 
   <div class="v2-seq-actions">
     <a class="v2-btn sm" href="{{ href }}" aria-expanded="{{ 'true' if open else 'false' }}">{{ 'Hide sequence' if open else 'View sequence …' }}</a>
-    <a class="v2-btn sm ghost" href="/app/contacts/{{ row.contact_id }}?campaign={{ row.campaign_id }}">Open the contact</a>
+    <a class="v2-btn sm ghost" href="/app/people/{{ row.contact_id }}?campaign={{ row.campaign_id }}">Open the contact</a>
   </div>
 </article>
 {% endmacro %}

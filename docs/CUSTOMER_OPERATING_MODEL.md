@@ -182,9 +182,29 @@ the five were machine outcomes, one real contact could contribute to several
 categories at once, and one category was silently capped. The number was
 therefore both wrong and, more importantly, about the wrong thing.
 
-It has been removed rather than renamed. `app/web/v2/context.py` no longer has an
-`AttentionCounts` type or an `attention_counts` function, and `nav_groups()`
-takes no argument, so there is nothing a customer badge could be computed from.
+It has been removed rather than renamed. `app/web/v2/shell.py` has no attention
+counts of any kind and `primary_nav()` takes no argument, so there is nothing a
+customer badge could be computed from.
+
+## 11. Where things live in the product
+
+The customer navigation is exactly **Today · Campaigns · People · Library**, plus
+a role-gated **Admin** entry that keeps the same shell. One **Add people** action
+opens a source chooser (Chrome extension, Google Sheets, a file); the source is a
+delivery mechanism, not a destination.
+
+The **Campaign owns the operating journey.** Its workspace has four tabs —
+Overview, People, Setup, Activity — and every Campaign screen reads one
+projection (`app/services/campaign_workspace.py`) that speaks the three
+preparation outcomes and four lifecycle words (Draft, Active, Paused, Archived)
+and nothing else. Emails are Campaign output, never a place: there is no Emails
+or Review destination, and legacy `/app/review`, `/app/contacts`,
+`/app/knowledge`, `/app/capture` URLs redirect. Agent tiles, re-runs, live
+opt-ins, global Agent controls and the suppression list live under
+`/app/admin/...`.
+
+Routes are one module per destination in `app/web/v2/pages/`; the shell (nav,
+render, filters, feature switches) is `app/web/v2/shell.py`.
 
 ---
 

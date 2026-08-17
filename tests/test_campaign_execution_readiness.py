@@ -490,9 +490,14 @@ def test_the_campaign_page_warns_before_the_button_is_pressed(
     response = client.get(f"/app/campaigns/{campaign.id}")
     assert response.status_code == 200
     body = response.text
-    assert "This campaign cannot be started yet." in body
-    assert "Research Agent" in body
-    assert "a skipped stage cannot be re-run afterwards" in body
+    # The customer is told, in their words, and is not offered a Start that
+    # would be refused. Which Agents are off is said on the Admin page.
+    assert "Preparation is being held by an administrator setting." in body
+    assert "Start Campaign" not in body
+    assert "Research Agent" not in body
+    diagnostics = client.get(f"/app/admin/campaigns/{campaign.id}/diagnostics")
+    assert diagnostics.status_code == 200
+    assert "Research Agent" in diagnostics.text
 
 
 def test_the_execution_switch_refuses_over_http_and_changes_nothing(
@@ -508,8 +513,8 @@ def test_the_execution_switch_refuses_over_http_and_changes_nothing(
     db_session.commit()
 
     response = client.post(
-        f"/app/campaigns/{campaign.id}/execution",
-        data={"enabled": "1"},
+        f"/app/campaigns/{campaign.id}/lifecycle",
+        data={"action": "start"},
         follow_redirects=False,
     )
     assert response.status_code == 303

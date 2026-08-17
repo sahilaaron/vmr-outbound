@@ -3,27 +3,28 @@
 {% block content %}
 <div class="v2-page">
 
+  {% set people_view = 'people' %}{% include "_people_switch.html" %}
   <div class="v2-head">
     <div>
-      <h1 class="v2-h1">Contacts</h1>
+      <h1 class="v2-h1">People</h1>
       <p class="v2-lede">
         {{ total | thousands }} record{{ '' if total == 1 else 's' }} in this view. A person exists
         once, whatever campaigns they are in — capturing someone twice updates the first record
         rather than creating a second.
       </p>
     </div>
-    <a class="v2-btn" href="/app/capture">Capture more</a>
+    <a class="v2-btn primary" href="/app/add-people">Add people</a>
   </div>
 
   <div class="v2-card clip v2-mt">
-    <form class="v2-toolbar" method="get" action="/app/contacts">
+    <form class="v2-toolbar" method="get" action="/app/people">
       <label class="v2-sr" for="contact-q">Search</label>
       <input class="v2-input sm" id="contact-q" name="q" value="{{ filters.search or '' }}"
              placeholder="Search name, company or domain">
       <input type="hidden" name="view" value="{{ filters.view }}">
       <input type="hidden" name="sort" value="{{ filters.sort }}">
       <button class="v2-btn small" type="submit">Search</button>
-      {% if filters.search %}<a class="v2-btn small" href="/app/contacts?view={{ filters.view }}">Clear</a>{% endif %}
+      {% if filters.search %}<a class="v2-btn small" href="/app/people?view={{ filters.view }}">Clear</a>{% endif %}
       <span class="push">Sorted by {{ (sorts | selectattr('0', 'equalto', filters.sort) | map(attribute='1') | first) or 'last change' }}</span>
     </form>
 
@@ -31,13 +32,13 @@
       <div class="v2-chips">
         {% for key, label in views %}
         <a class="v2-chip sm {{ 'on' if filters.view == key }}"
-           href="/app/contacts?view={{ key }}{% if filters.search %}&q={{ filters.search }}{% endif %}">{{ label }}</a>
+           href="/app/people?view={{ key }}{% if filters.search %}&q={{ filters.search }}{% endif %}">{{ label }}</a>
         {% endfor %}
       </div>
       <div class="v2-chips push">
         {% for key, label in sorts %}
         <a class="v2-chip sm {{ 'on' if filters.sort == key }}"
-           href="/app/contacts?view={{ filters.view }}&sort={{ key }}{% if filters.search %}&q={{ filters.search }}{% endif %}">{{ label }}</a>
+           href="/app/people?view={{ filters.view }}&sort={{ key }}{% if filters.search %}&q={{ filters.search }}{% endif %}">{{ label }}</a>
         {% endfor %}
       </div>
     </div>
@@ -48,9 +49,9 @@
       <div class="v2-chips">
         {% for label in labels %}
         <a class="v2-chip sm {{ 'on' if filters.label_slug == label.slug }}"
-           href="/app/contacts?view={{ filters.view }}&label={{ label.slug }}">{{ label.name }}</a>
+           href="/app/people?view={{ filters.view }}&label={{ label.slug }}">{{ label.name }}</a>
         {% endfor %}
-        {% if filters.label_slug %}<a class="v2-chip sm" href="/app/contacts?view={{ filters.view }}">clear label</a>{% endif %}
+        {% if filters.label_slug %}<a class="v2-chip sm" href="/app/people?view={{ filters.view }}">clear label</a>{% endif %}
       </div>
     </div>
     {% endif %}
@@ -72,7 +73,7 @@
           {% for row in rows %}
           <tr>
             <td>
-              <a href="{{ '/app/contacts/' ~ row.contact_id if row.contact_id else row.detail_url }}">{{ row.full_name }}</a>
+              <a href="{{ '/app/people/' ~ row.contact_id if row.contact_id else row.detail_url }}">{{ row.full_name }}</a>
               <div class="v2-sub">{{ row.title or 'no title captured' }}</div>
               {% if row.labels %}
               <div class="v2-sub">{{ row.labels | join(', ') }}</div>
@@ -109,7 +110,7 @@
       {% for row in rows %}
       <div class="v2-item">
         <div class="v2-item-top">
-          <a href="{{ '/app/contacts/' ~ row.contact_id if row.contact_id else row.detail_url }}">{{ row.full_name }}</a>
+          <a href="{{ '/app/people/' ~ row.contact_id if row.contact_id else row.detail_url }}">{{ row.full_name }}</a>
           <span class="when">{{ row.last_updated | ago }}</span>
         </div>
         <div class="v2-sub">{{ row.title or 'no title' }} · {{ row.company_name or 'no company' }}</div>

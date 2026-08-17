@@ -91,7 +91,7 @@ GMAIL_TRANSACTION_COOKIE_NAME = "vmr_gmail_auth"
 _TRANSACTION_KIND = "gmail-mailbox-authorization"
 
 #: Where an operator lands when nothing better was submitted.
-DEFAULT_RETURN_PATH = "/app/review"
+DEFAULT_RETURN_PATH = "/app/account/connections"
 
 #: The client is resolved once per process and stored on app state, so a test
 #: can inject a deterministic stub without a network.

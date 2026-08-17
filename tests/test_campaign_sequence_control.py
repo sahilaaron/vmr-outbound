@@ -320,7 +320,7 @@ def test_the_settings_form_saves_the_sequence_switch_both_ways(
     db_session.commit()
 
     response = client.post(
-        f"/app/campaigns/{campaign.id}/edit",
+        f"/app/campaigns/{campaign.id}/setup",
         data={"name": campaign.name, "sequence_enabled": "on"},
         follow_redirects=False,
     )
@@ -329,7 +329,7 @@ def test_the_settings_form_saves_the_sequence_switch_both_ways(
     assert campaign_opted_in(campaign) is True
 
     response = client.post(
-        f"/app/campaigns/{campaign.id}/edit",
+        f"/app/campaigns/{campaign.id}/setup",
         data={"name": campaign.name},
         follow_redirects=False,
     )
@@ -352,7 +352,7 @@ def test_the_edit_form_renders_the_checkbox_in_its_current_state(
     campaign = _campaign(db_session, cadence_config={CADENCE_KEY: {"enabled": opted_in}})
     db_session.commit()
 
-    response = client.get(f"/app/campaigns/{campaign.id}/edit")
+    response = client.get(f"/app/campaigns/{campaign.id}/setup")
     assert response.status_code == 200
     checkbox = _sequence_checkbox(response.text)
     assert checkbox is not None
@@ -372,7 +372,7 @@ def test_the_edit_form_states_the_fixed_cadence_it_cannot_change(
     campaign = _campaign(db_session)
     db_session.commit()
 
-    body = client.get(f"/app/campaigns/{campaign.id}/edit").text
+    body = client.get(f"/app/campaigns/{campaign.id}/setup").text
     assert ", ".join(str(day) for day in RATIFIED_LADDER) in body
 
 
@@ -392,7 +392,7 @@ def test_saving_the_sequence_switch_bumps_the_settings_version_and_is_audited(
     db_session.commit()
 
     client.post(
-        f"/app/campaigns/{campaign.id}/edit",
+        f"/app/campaigns/{campaign.id}/setup",
         data={"name": campaign.name, "sequence_enabled": "on"},
         follow_redirects=False,
     )
@@ -423,9 +423,9 @@ def test_the_checkbox_is_withheld_where_sequences_cannot_be_generated(
     campaign = _campaign(db_session)
     db_session.commit()
 
-    body = client_without_sequences.get(f"/app/campaigns/{campaign.id}/edit").text
+    body = client_without_sequences.get(f"/app/campaigns/{campaign.id}/setup").text
     assert _sequence_checkbox(body) is None
-    assert "Generate a seven-message sequence" not in body
+    assert "Prepare seven emails per person" not in body
 
 
 def test_saving_an_unrelated_edit_cannot_opt_a_campaign_out_of_a_control_it_was_never_shown(
@@ -444,7 +444,7 @@ def test_saving_an_unrelated_edit_cannot_opt_a_campaign_out_of_a_control_it_was_
     db_session.commit()
 
     response = client_without_sequences.post(
-        f"/app/campaigns/{campaign.id}/edit",
+        f"/app/campaigns/{campaign.id}/setup",
         data={"name": "Renamed, nothing else meant", "description": "still opted in"},
         follow_redirects=False,
     )
@@ -474,7 +474,7 @@ def test_a_campaign_that_predates_the_column_still_renders_and_is_not_opted_in(
     db_session.commit()
     assert campaign.cadence_config is None
 
-    response = client.get(f"/app/campaigns/{campaign.id}/edit")
+    response = client.get(f"/app/campaigns/{campaign.id}/setup")
     assert response.status_code == 200
     checkbox = _sequence_checkbox(response.text)
     assert checkbox is not None

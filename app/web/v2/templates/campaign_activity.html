@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% from "_ui.html" import empty %}
+{% block content %}
+{% include "_campaign_header.html" %}
+
+<div class="v2-page narrow">
+  <div class="v2-card">
+    <div class="v2-card-head tight">
+      <h2>What changed</h2>
+      <span class="v2-hint push">most recent first</span>
+    </div>
+    {% if activity %}
+      {% for line in activity %}
+      <div class="v2-activity-row">
+        <span class="v2-activity-time" title="{{ line.at | dt }}">{{ line.at | day }} <span class="v2-muted">{{ line.at | clock }}</span></span>
+        <div>
+          <div class="v2-activity-text">{{ line.text }}</div>
+          {% if line.meta %}<div class="v2-activity-meta">{{ line.meta }}</div>{% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      {{ empty('Nothing has happened yet', 'Lifecycle and setup changes, people added, and emails written appear here.') }}
+    {% endif %}
+  </div>
+
+  {% if batches %}
+  <div class="v2-card clip v2-mt">
+    <div class="v2-card-head tight"><h2>Files imported</h2></div>
+    <div class="v2-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>File</th>
+            <th class="num">Rows</th>
+            <th class="num">Added</th>
+            <th class="num">Already here</th>
+            <th class="num">Not added</th>
+            <th class="num">When</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for batch in batches %}
+          <tr>
+            <td><a href="{{ base_href }}/imports/{{ batch.id }}">{{ (batch.sanitized_filename or batch.filename or 'upload') | neutralize }}</a></td>
+            <td class="num m">{{ batch.total_rows | thousands }}</td>
+            <td class="num m">{{ batch.accepted_rows | thousands }}</td>
+            <td class="num m">{{ batch.duplicate_rows | thousands }}</td>
+            <td class="num m">{{ (batch.rejected_rows + batch.ambiguous_rows) | thousands }}</td>
+            <td class="num v2-nowrap v2-muted">{{ batch.created_at | when }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

@@ -39,7 +39,7 @@ from app.services import campaign_access
 
 # Imported rather than rebuilt, for the reason `admin_users.py` records: one page
 # shell and one redirect convention for the whole customer-facing interface.
-from app.web.v2.routes import _redirect
+from app.web.v2.shell import redirect as _redirect
 
 router = APIRouter(
     prefix="/app/admin",

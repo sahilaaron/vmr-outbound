@@ -4,7 +4,7 @@
 #}
 <div class="v2-chips v2-mt">
   {% for key, label in kb_sections %}
-  <a class="v2-chip {{ 'on' if kb_section == key }}" href="/app/knowledge{{ '' if key == 'overview' else '/' ~ key }}">
+  <a class="v2-chip {{ 'on' if kb_section == key }}" href="/app/library{{ '' if key == 'overview' else '/' ~ key }}">
     {{ label }}
     {%- if key == 'offerings' %}<span class="count">{{ kb_counts.offerings.active }}</span>
     {%- elif key == 'proof-points' %}<span class="count">{{ kb_counts.proof_points.active }}</span>
