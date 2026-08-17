@@ -12,6 +12,7 @@ from app.web.v2.pages import (  # noqa: F401 - registration by import
     account,
     admin,
     campaigns,
+    desk,
     emails,
     imports,
     legacy,

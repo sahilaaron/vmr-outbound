@@ -357,3 +357,15 @@ and only from an explicit operator click.
 - **No audit event is written.** The draft lineage row *is* the record, and it
   carries actor and timestamps. A second, weaker copy in the audit table would
   be a claim to maintain rather than a fact.
+
+
+## One email, one draft (sending desk)
+
+The customer surface creates drafts **one email at a time** from the sending
+desk (`POST /app/campaigns/{id}/desk/{membership}/{position}/gmail-draft`),
+through `app.services.gmail.drafts.create_draft`. It takes one *current*
+message version (a stale id is refused), requires no review decision, and
+shares the batch path's reservation row, idempotency and lineage
+(`gmail_draft_records`). The confirmation names mailbox and recipient and says
+that nothing is sent or scheduled. The seven-draft batch (`create_drafts`)
+remains for existing callers.

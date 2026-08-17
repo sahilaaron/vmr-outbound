@@ -3253,3 +3253,318 @@ body.v2 tbody tr.is-selected {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* ==========================================================================
+   Inline sending desk: roster (people) + workbook (seven emails).
+   ========================================================================== */
+.v2-ready-filters {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.v2-desk {
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+  border-top: 1px solid var(--n-200);
+  min-height: 420px;
+}
+.v2-desk-roster {
+  border-right: 1px solid var(--n-200);
+  background: var(--n-75);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.v2-desk-roster-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px 6px;
+}
+.v2-roster {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 12px;
+  overflow-y: auto;
+  max-height: 640px;
+}
+.v2-roster-item a {
+  display: block;
+  padding: 8px 14px;
+  color: var(--ink);
+  border-left: 3px solid transparent;
+}
+.v2-roster-item a:hover {
+  text-decoration: none;
+  background: var(--n-100);
+}
+.v2-roster-item.on a {
+  background: var(--n-0);
+  border-left-color: var(--indigo-500);
+}
+.v2-roster-item b {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+}
+.v2-roster-meta {
+  display: block;
+  font-size: 11.5px;
+  color: var(--n-500);
+}
+.v2-workbook {
+  min-width: 0;
+  padding: 16px 20px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.v2-workbook-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.v2-workbook-person {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.v2-workbook-person h3 {
+  font-size: 17px;
+  font-weight: 800;
+}
+.v2-workbook-sub {
+  margin-top: 4px;
+  font-size: 12.5px;
+  color: var(--n-600);
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.v2-workbook-sub .sep {
+  color: var(--n-300);
+}
+.v2-workbook-nav {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.v2-rail {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+}
+.v2-rail-step {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--n-200);
+  border-radius: var(--r-md);
+  background: var(--n-0);
+  color: var(--n-700);
+  min-width: 0;
+}
+.v2-rail-step:hover {
+  text-decoration: none;
+  border-color: var(--n-300);
+}
+.v2-rail-step.on {
+  border-color: var(--indigo-500);
+  box-shadow: inset 0 0 0 1px var(--indigo-500);
+}
+.v2-rail-n {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 700;
+}
+.v2-rail-day {
+  font-size: 11px;
+  color: var(--n-500);
+}
+.v2-rail-state {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--n-500);
+}
+.v2-rail-step.actioned .v2-rail-state {
+  color: var(--ok-700);
+}
+.v2-rail-step.due .v2-rail-state,
+.v2-rail-step.overdue .v2-rail-state,
+.v2-rail-step.ready .v2-rail-state {
+  color: var(--warn-700);
+}
+.v2-rail-step.skipped {
+  background: var(--n-50);
+  color: var(--n-500);
+}
+.v2-doc {
+  border: 1px solid var(--n-200);
+  border-radius: var(--r-xl);
+  background: var(--n-0);
+  box-shadow: var(--sh-sm);
+  padding: 18px 22px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.v2-doc-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  color: var(--n-600);
+}
+.v2-doc-k {
+  font-family: var(--font-display);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--n-500);
+  margin-right: 4px;
+}
+.v2-doc-subject {
+  font-family: var(--font-body);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+.v2-doc-body {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--ink);
+}
+.v2-doc-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding-top: 8px;
+  border-top: 1px solid var(--n-100);
+}
+.v2-inline {
+  display: inline;
+}
+.v2-copy-status {
+  font-size: 12px;
+  color: var(--ok-700);
+}
+.v2-copy-status.is-error {
+  color: var(--err-700);
+}
+.v2-doc-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.v2-warn-text {
+  color: var(--warn-700);
+}
+.v2-doc-more {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-top: 1px solid var(--n-100);
+  padding-top: 8px;
+}
+.v2-disclose > summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--indigo-600);
+  padding: 4px 0;
+  list-style: none;
+}
+.v2-disclose > summary::-webkit-details-marker {
+  display: none;
+}
+.v2-disclose > summary::before {
+  content: "▸ ";
+  color: var(--n-400);
+}
+.v2-disclose[open] > summary::before {
+  content: "▾ ";
+}
+.v2-disclose > *:not(summary) {
+  margin: 6px 0 10px 16px;
+}
+.v2-edit-body {
+  min-height: 220px;
+  font-family: var(--font-body);
+}
+.v2-why {
+  margin: 0;
+}
+.v2-why-row {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr);
+  gap: 10px;
+  padding: 5px 0;
+  font-size: 13px;
+  border-bottom: 1px solid var(--n-100);
+}
+.v2-why-row dt {
+  color: var(--n-500);
+}
+.v2-why-row dd {
+  margin: 0;
+}
+.v2-history-row {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 10px;
+  font-size: 12.5px;
+  padding: 3px 0;
+}
+.v2-history-when {
+  color: var(--n-500);
+}
+body.v2 tbody tr.is-selected td {
+  background: var(--indigo-50);
+}
+@media (max-width: 1000px) {
+  .v2-desk {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .v2-desk-roster {
+    border-right: none;
+    border-bottom: 1px solid var(--n-200);
+  }
+  .v2-roster {
+    max-height: 200px;
+  }
+  .v2-rail {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+/* ---------------- Today ---------------- */
+.v2-due-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 14px;
+  margin-bottom: 8px;
+}
+.v2-due-name {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 14.5px;
+  margin-bottom: 4px;
+}
+.v2-due-line {
+  font-size: 13.5px;
+  color: var(--n-700);
+}
+.v2-due-line .m {
+  font-weight: 600;
+  color: var(--ink);
+}

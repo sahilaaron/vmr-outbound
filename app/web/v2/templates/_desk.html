@@ -1,0 +1,193 @@
+{#
+  The inline sending desk: roster on the left, workbook on the right.
+  Rendered inside the Ready for Sending card of Campaign Overview when a person
+  is selected. Expects: desk (from pages/desk.build_desk), campaign, section,
+  ready_rows (the filtered roster).
+#}
+{% from "_ui.html" import tag %}
+{% set p = desk.progress %}
+{% set em = desk.email %}
+{% set d = desk.detail %}
+<div class="v2-desk" id="desk"
+     data-desk
+     data-prev-person="{{ desk.prev_url or '' }}"
+     data-next-person="{{ desk.next_url or '' }}"
+     data-prev-email="{{ desk.email_url(em.position - 1) if em and em.position > 1 else '' }}"
+     data-next-email="{{ desk.email_url(em.position + 1) if em and em.position < 7 else '' }}"
+     data-close="{{ desk.close_url }}">
+
+  <aside class="v2-desk-roster" aria-label="Ready people">
+    <div class="v2-desk-roster-head">
+      <span class="v2-eyebrow">Ready people</span>
+      <a class="v2-hint" href="{{ desk.close_url }}">Close ✕</a>
+    </div>
+    <ol class="v2-roster">
+      {% for row in ready_rows %}
+      <li class="v2-roster-item {{ 'on' if row.person.membership_id == desk.row.person.membership_id }}">
+        <a href="{{ '/app/campaigns/' ~ campaign.id ~ '?' ~ ('section=' ~ section ~ '&' if section != 'due' else '') ~ 'person=' ~ row.person.membership_id }}#ready" {% if row.person.membership_id == desk.row.person.membership_id %}aria-current="true"{% endif %}>
+          <b>{{ row.person.name | neutralize }}</b>
+          <span class="v2-roster-meta">{{ row.next_label }} · {{ row.due_label }}</span>
+        </a>
+      </li>
+      {% endfor %}
+    </ol>
+  </aside>
+
+  <section class="v2-workbook" aria-label="Emails for {{ desk.row.person.name | neutralize }}">
+    <header class="v2-workbook-head">
+      <div>
+        <div class="v2-workbook-person">
+          <h3>{{ desk.row.person.name | neutralize }}</h3>
+          <span class="v2-muted">{{ (desk.row.person.company | neutralize) or '' }}</span>
+        </div>
+        <div class="v2-workbook-sub">
+          <span class="m">{{ desk.index }} of {{ desk.count }}</span>
+          <span class="sep">·</span>
+          {% if p.next_email %}
+            {% if p.next_email.state == 'ready' %}Email 1 ready to send
+            {% elif p.next_email.state == 'due' %}Email {{ p.next_email.position }} due today
+            {% elif p.next_email.state == 'overdue' %}Email {{ p.next_email.position }} {{ p.due_label | lower }}
+            {% else %}Email {{ p.next_email.position }} due {{ p.due_label | lower }}{% endif %}
+          {% else %}All seven emails done{% endif %}
+          <span class="sep">·</span>
+          <span>{{ p.progress_label }}</span>
+          {% if p.day_zero %}<span class="sep">·</span><span>Day 0 was {{ p.day_zero.strftime('%d %b') }}</span>{% endif %}
+        </div>
+      </div>
+      <div class="v2-workbook-nav">
+        <a class="v2-btn small {{ 'is-disabled' if not desk.prev_url }}" href="{{ desk.prev_url or '#' }}" {% if not desk.prev_url %}aria-disabled="true" tabindex="-1"{% endif %} title="Previous person (K or ↑)">↑ Previous</a>
+        <a class="v2-btn small {{ 'is-disabled' if not desk.next_url }}" href="{{ desk.next_url or '#' }}" {% if not desk.next_url %}aria-disabled="true" tabindex="-1"{% endif %} title="Next person (J or ↓)">Next ↓</a>
+        <a class="v2-btn small" href="/app/people/{{ desk.row.person.contact_id }}?campaign={{ campaign.id }}">Open person</a>
+      </div>
+    </header>
+
+    <nav class="v2-rail" aria-label="Seven emails">
+      {% for e in p.emails %}
+      <a class="v2-rail-step {{ e.state }} {{ 'on' if em and e.position == em.position }}" href="{{ desk.email_url(e.position) }}" {% if em and e.position == em.position %}aria-current="true"{% endif %}>
+        <span class="v2-rail-n">Email {{ e.position }}</span>
+        <span class="v2-rail-day">Day {{ e.day }}</span>
+        <span class="v2-rail-state">{{ e.label }}</span>
+      </a>
+      {% endfor %}
+    </nav>
+
+    {% if d and em %}
+    {% set subject_id = 'desk-subject-' ~ em.position %}
+    {% set body_id = 'desk-body-' ~ em.position %}
+    <article class="v2-doc" aria-labelledby="{{ subject_id }}">
+      <div class="v2-doc-meta">
+        <div><span class="v2-doc-k">To</span> <span class="m">{{ desk.row.person.email | neutralize }}</span></div>
+        <div><span class="v2-doc-k">Email {{ em.position }}</span> · Day {{ em.day }} · {{ d.row.purpose_label }}
+          · {{ tag(em.label, 'ok' if em.state == 'actioned' else ('warn' if em.state in ('due', 'overdue') else ''), small=true) }}
+          {% if em.acted_at %}<span class="v2-hint">by {{ em.acted_by | neutralize }} · {{ em.acted_at | when }}</span>{% endif %}
+          {% if d.row.origin.value == 'human_edited' %}<span class="v2-hint">· Edited by you</span>{% endif %}
+        </div>
+      </div>
+      <h4 class="v2-doc-subject" id="{{ subject_id }}">{{ d.row.subject }}</h4>
+      <pre class="v2-doc-body" id="{{ body_id }}">{{ d.body }}</pre>
+
+      <div class="v2-doc-actions">
+        <button type="button" class="v2-btn" data-copy="full" data-copy-subject="{{ subject_id }}" data-copy-body="{{ body_id }}" data-copy-label-what="Email {{ em.position }}">Copy</button>
+        {% if desk.gmail_on and desk.mailbox.available %}
+          {% if desk.mailbox.connected %}
+          <form method="post" action="/app/campaigns/{{ campaign.id }}/desk/{{ desk.row.person.membership_id }}/{{ em.position }}/gmail-draft" class="v2-inline">
+            <input type="hidden" name="version_id" value="{{ d.row.version_id }}">
+            <input type="hidden" name="section" value="{{ section }}">
+            <button class="v2-btn" type="submit" title="Creates one Gmail draft in {{ desk.mailbox.mailbox_address }} addressed to {{ desk.row.person.email }}. Nothing is sent or scheduled.">
+              {% if desk.draft and desk.draft.status.value == 'CREATED' %}Gmail draft again{% else %}Create Gmail draft{% endif %}
+            </button>
+          </form>
+          {% else %}
+          <a class="v2-btn" href="/app/account/connections">Connect Gmail to draft</a>
+          {% endif %}
+        {% endif %}
+        {% if em.state != 'actioned' and em.state != 'skipped' %}
+        <form method="post" action="/app/campaigns/{{ campaign.id }}/desk/{{ desk.row.person.membership_id }}/{{ em.position }}/actioned" class="v2-inline">
+          <input type="hidden" name="section" value="{{ section }}">
+          <button class="v2-btn primary" type="submit" title="Records that you completed the sending step for this exact email.{% if em.position == 1 %} Sets Day 0 for the follow-ups.{% endif %}">Mark actioned</button>
+        </form>
+        {% else %}
+        <form method="post" action="/app/campaigns/{{ campaign.id }}/desk/{{ desk.row.person.membership_id }}/{{ em.position }}/undo" class="v2-inline">
+          <input type="hidden" name="section" value="{{ section }}">
+          <button class="v2-btn" type="submit">Undo {{ em.label | lower }}</button>
+        </form>
+        {% endif %}
+        <span id="seq-copy-status" class="v2-copy-status" role="status" aria-live="polite"></span>
+      </div>
+
+      <div class="v2-doc-facts">
+        {% if desk.draft %}
+        <span class="v2-hint">Gmail: {{ desk.draft.label }} · {{ desk.draft.updated_at | when }}</span>
+        {% elif desk.stale_draft %}
+        <span class="v2-hint v2-warn-text">The existing Gmail draft uses an earlier version. Create a new draft to use these changes.</span>
+        {% endif %}
+        {% if em.stale_version %}
+        <span class="v2-hint v2-warn-text">This email was edited after it was marked {{ em.label | lower }}.</span>
+        {% endif %}
+        <span class="v2-hint">Copying or drafting does not mark the email actioned. Nothing here sends.</span>
+      </div>
+
+      <div class="v2-doc-more">
+        <details class="v2-disclose">
+          <summary>Edit</summary>
+          <form method="post" action="/app/campaigns/{{ campaign.id }}/desk/{{ desk.row.person.membership_id }}/{{ em.position }}/edit" class="v2-form-stack v2-edit-form">
+            <input type="hidden" name="version_id" value="{{ d.row.version_id }}">
+            <input type="hidden" name="section" value="{{ section }}">
+            <div class="v2-field">
+              <label for="edit-subject-{{ em.position }}">Subject</label>
+              <input class="v2-input" id="edit-subject-{{ em.position }}" name="subject" maxlength="300" value="{{ d.row.subject }}" required>
+            </div>
+            <div class="v2-field">
+              <label for="edit-body-{{ em.position }}">Body</label>
+              <textarea class="v2-textarea v2-edit-body" id="edit-body-{{ em.position }}" name="body" rows="12" required>{{ d.body }}</textarea>
+            </div>
+            <div class="v2-btn-row">
+              <button class="v2-btn primary small" type="submit">Save changes</button>
+              <span class="v2-hint">The earlier text is kept in the history.</span>
+            </div>
+          </form>
+        </details>
+
+        <details class="v2-disclose">
+          <summary>Why this email?</summary>
+          <dl class="v2-why">
+            {% for item in desk.why %}
+            <div class="v2-why-row"><dt>{{ item.label }}</dt><dd>{{ item.text }}{% if item.detail %}<div class="v2-hint">{{ item.detail }}</div>{% endif %}</dd></div>
+            {% endfor %}
+          </dl>
+        </details>
+
+        <details class="v2-disclose">
+          <summary>History</summary>
+          <div class="v2-history">
+            {% for version in desk.versions %}
+            <div class="v2-history-row">
+              <span class="v2-history-when">{{ version.created_at | when }}</span>
+              <span>Version {{ version.message_version }} · {{ version.origin.value | nice }}{% if version.superseded_at %} · replaced{% else %} · current{% endif %}{% if version.created_by %} · {{ version.created_by | neutralize }}{% endif %}</span>
+            </div>
+            {% endfor %}
+            {% for act in desk.history if act.position == em.position %}
+            <div class="v2-history-row">
+              <span class="v2-history-when">{{ act.occurred_at | when }}</span>
+              <span>{{ act.kind.value | capitalize }} by {{ act.actor | neutralize }}{% if act.note %} — {{ act.note | neutralize }}{% endif %}</span>
+            </div>
+            {% endfor %}
+          </div>
+        </details>
+
+        {% if em.position > 1 and em.state not in ('actioned', 'skipped') %}
+        <details class="v2-disclose">
+          <summary>Skip this follow-up</summary>
+          <form method="post" action="/app/campaigns/{{ campaign.id }}/desk/{{ desk.row.person.membership_id }}/{{ em.position }}/skip" class="v2-confirm-form">
+            <input type="hidden" name="section" value="{{ section }}">
+            <label class="v2-check-inline"><input type="checkbox" name="confirm" value="1" required> Skip Email {{ em.position }} for this person</label>
+            <button class="v2-btn small danger" type="submit">Skip follow-up</button>
+            <span class="v2-hint">A deliberate, shared decision. It can be undone.</span>
+          </form>
+        </details>
+        {% endif %}
+      </div>
+    </article>
+    {% endif %}
+  </section>
+</div>

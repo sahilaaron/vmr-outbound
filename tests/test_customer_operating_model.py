@@ -174,7 +174,7 @@ def test_today_has_no_generic_things_want_you_badge_or_card(
         assert phrase not in body, phrase
     assert "v2-nav-badge" not in body
     # The vocabulary that replaced it.
-    assert "Where your contacts stand" in body
+    assert "Campaigns in motion" in body
     assert "Ready for Sending" in body
 
 
@@ -551,7 +551,8 @@ def test_no_automatic_send_action_is_introduced(
         assert claim not in body
 
     today = client.get("/app").text
-    assert "Sending is manual" in today
+    for claim in ("has been sent", "will be sent", "scheduled to send"):
+        assert claim not in today
 
 
 def test_the_seven_message_cadence_is_unchanged(

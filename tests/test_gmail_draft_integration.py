@@ -642,7 +642,9 @@ def test_no_gmail_secret_reaches_a_rendered_page(
     )
     committed_session.commit()
 
-    page = client.get(f"/app/people/{fixture.contact.id}?campaign={fixture.campaign.id}")
+    page = client.get(
+        f"/app/campaigns/{fixture.campaign.id}?section=all&person={fixture.membership.id}"
+    )
     assert page.status_code == 200
     body = page.text
     grant = committed_session.scalars(select(GmailMailboxGrant)).one()
@@ -1513,10 +1515,17 @@ def test_the_page_offers_connect_when_no_mailbox_is_connected(
     )
     committed_session.commit()
 
-    page = client.get(f"/app/people/{fixture.contact.id}?campaign={fixture.campaign.id}")
-    assert page.status_code == 200
-    assert 'action="/gmail/connect"' in page.text
-    assert "Create Gmail drafts" not in page.text
+    # The desk offers the way to connect, never a dead Create button; the
+    # Connections page carries the connect form itself.
+    desk = client.get(
+        f"/app/campaigns/{fixture.campaign.id}?section=all&person={fixture.membership.id}"
+    )
+    assert desk.status_code == 200
+    assert "Connect Gmail to draft" in desk.text
+    assert "gmail-draft" not in desk.text.split("Connect Gmail to draft")[0]
+    connections = client.get("/app/account/connections")
+    assert 'action="/gmail/connect"' in connections.text
+    assert "Create Gmail drafts" not in connections.text
 
 
 def test_the_page_shows_the_connected_mailbox_and_the_create_action(
@@ -1530,13 +1539,22 @@ def test_the_page_shows_the_connected_mailbox_and_the_create_action(
     )
     committed_session.commit()
 
+    # The person page shows the emails and points into the Campaign; the
+    # one-email draft action lives on the sending desk, per selected email.
     page = client.get(f"/app/people/{fixture.contact.id}?campaign={fixture.campaign.id}")
     assert page.status_code == 200
-    assert oauth.mailbox_address in page.text
-    assert f"/app/review/sequence/{fixture.sequence.id}/gmail-drafts" in page.text
-    assert "VMR cannot send" in page.text
+    assert "Open in Campaign" in page.text
+    assert "gmail-drafts" not in page.text
     for version_id in fixture.version_ids:
         assert str(version_id) in page.text
+
+    desk = client.get(
+        f"/app/campaigns/{fixture.campaign.id}?section=all&person={fixture.membership.id}"
+    )
+    assert desk.status_code == 200
+    assert oauth.mailbox_address in desk.text
+    assert f"/desk/{fixture.membership.id}/1/gmail-draft" in desk.text
+    assert "Nothing is sent or scheduled" in desk.text
 
 
 def test_the_review_page_does_not_offer_the_draft_action(
@@ -1608,6 +1626,178 @@ def test_the_one_click_route_creates_the_drafts_and_reports_honestly(
     assert again.status_code == 303
     assert "already existed" in _flash(again)
     assert len(transport.created) == 7
+
+
+# ---------------------------------------------------------------------------
+# The desk's one-email draft is bound to the person in the path
+# ---------------------------------------------------------------------------
+#
+# ``create_draft`` resolves the recipient from the *version's own* sequence. So
+# a version id that is not bound to the membership in the URL does not merely
+# write to the wrong row — it composes an email to somebody else's contact,
+# addressed with their real address and their message text, and puts it in this
+# operator's mailbox. That is a cross-Campaign disclosure, and it is why these
+# assertions check the provider call count rather than only the flash message.
+
+
+def _desk_draft(
+    client: TestClient,
+    fixture: Any,
+    *,
+    position: int,
+    version_id: Any,
+    csrf: str,
+) -> Any:
+    return client.post(
+        f"/app/campaigns/{fixture.campaign.id}/desk/{fixture.membership.id}/{position}/gmail-draft",
+        data={"version_id": str(version_id), "_csrf": csrf},
+        headers={"sec-fetch-site": "same-origin"},
+    )
+
+
+def _two_campaigns(session: Session, owner: str) -> tuple[Any, Any]:
+    caller = build_sequence(session, owner_user_id=owner)
+    victim = build_sequence(
+        session,
+        owner_user_id=owner,
+        company_domain="anvil.example",
+        company_name="Anvil Works",
+    )
+    session.commit()
+    return caller, victim
+
+
+def test_the_desk_draft_refuses_another_campaigns_version_and_calls_gmail_zero_times(
+    hosted: tuple[TestClient, FakeGmailOAuthClient, FakeGmailTransport], committed_session: Session
+) -> None:
+    """A legitimate, current version id from Campaign B, posted at Campaign A's URL.
+
+    Both Campaigns belong to this operator, so campaign access cannot be what
+    refuses it — the only thing standing between the caller and B's contact is
+    the binding between the posted version and the membership in the path.
+    """
+
+    client, oauth, transport = hosted
+    csrf = _signed_in(client)
+    _connect(client, oauth, csrf)
+    caller, victim = _two_campaigns(committed_session, _default_operator_id(committed_session))
+
+    response = _desk_draft(client, caller, position=1, version_id=victim.versions[0].id, csrf=csrf)
+
+    assert response.status_code == 303
+    assert "err=" in response.headers["location"]
+    # Nothing reached Gmail, and no reservation was written before it would have.
+    assert transport.created == []
+    assert transport.access_tokens_seen == []
+    assert committed_session.scalars(select(GmailDraftRecord)).all() == []
+    # B's message is untouched.
+    committed_session.refresh(victim.versions[0])
+    assert victim.versions[0].superseded_at is None
+
+
+def test_the_desk_draft_refuses_another_persons_version_in_the_same_campaign(
+    hosted: tuple[TestClient, FakeGmailOAuthClient, FakeGmailTransport], committed_session: Session
+) -> None:
+    """Same Campaign, different person: still not the selection the path names."""
+
+    client, oauth, transport = hosted
+    csrf = _signed_in(client)
+    _connect(client, oauth, csrf)
+    caller, neighbour = _two_campaigns(committed_session, _default_operator_id(committed_session))
+    neighbour.membership.campaign_id = caller.campaign.id
+    neighbour.sequence.campaign_id = caller.campaign.id
+    committed_session.commit()
+
+    response = _desk_draft(
+        client, caller, position=1, version_id=neighbour.versions[0].id, csrf=csrf
+    )
+
+    assert "err=" in response.headers["location"]
+    assert transport.created == []
+    assert committed_session.scalars(select(GmailDraftRecord)).all() == []
+
+
+def test_the_desk_draft_refuses_the_right_version_at_the_wrong_position(
+    hosted: tuple[TestClient, FakeGmailOAuthClient, FakeGmailTransport], committed_session: Session
+) -> None:
+    """Email 3's version posted to the email-1 URL drafts nothing.
+
+    The operator is looking at email 1. Drafting email 3 from that page would
+    put text they are not reading into a real mailbox.
+    """
+
+    client, oauth, transport = hosted
+    csrf = _signed_in(client)
+    _connect(client, oauth, csrf)
+    fixture = build_sequence(
+        committed_session, owner_user_id=_default_operator_id(committed_session)
+    )
+    committed_session.commit()
+
+    response = _desk_draft(
+        client, fixture, position=1, version_id=fixture.versions[2].id, csrf=csrf
+    )
+
+    assert "err=" in response.headers["location"]
+    assert transport.created == []
+    assert committed_session.scalars(select(GmailDraftRecord)).all() == []
+
+
+def test_the_desk_draft_refuses_a_superseded_version(
+    hosted: tuple[TestClient, FakeGmailOAuthClient, FakeGmailTransport], committed_session: Session
+) -> None:
+    """Stale text must never reach a mailbox the operator believes shows the new text."""
+
+    client, oauth, transport = hosted
+    csrf = _signed_in(client)
+    _connect(client, oauth, csrf)
+    fixture = build_sequence(
+        committed_session, owner_user_id=_default_operator_id(committed_session)
+    )
+    committed_session.commit()
+    stale = fixture.versions[0].id
+    sequence_review.edit_message(
+        committed_session,
+        message_version_id=stale,
+        subject="The text the operator is actually looking at",
+        body="A body long enough to be a real edit.",
+        actor=APPROVED_EMAIL,
+    )
+    committed_session.commit()
+
+    response = _desk_draft(client, fixture, position=1, version_id=stale, csrf=csrf)
+
+    assert "err=" in response.headers["location"]
+    assert transport.created == []
+    assert committed_session.scalars(select(GmailDraftRecord)).all() == []
+
+
+def test_the_desk_draft_still_works_for_this_persons_own_current_version(
+    hosted: tuple[TestClient, FakeGmailOAuthClient, FakeGmailTransport], committed_session: Session
+) -> None:
+    """Anti-over-correction, with a second Campaign present so the check is real.
+
+    The refusals above mean nothing unless the ordinary act still succeeds, and
+    it must succeed while another Campaign's sequence exists in the same
+    database — otherwise a binding that merely found "the only sequence there
+    is" would look correct.
+    """
+
+    client, oauth, transport = hosted
+    csrf = _signed_in(client)
+    _connect(client, oauth, csrf)
+    caller, other = _two_campaigns(committed_session, _default_operator_id(committed_session))
+
+    response = _desk_draft(client, caller, position=1, version_id=caller.versions[0].id, csrf=csrf)
+
+    assert response.status_code == 303
+    assert "ok=" in response.headers["location"]
+    assert "One Gmail draft created" in _flash(response)
+    assert len(transport.created) == 1
+    # And it is addressed to this person, not to the other Campaign's contact.
+    drafted = decoded_message(transport.created[0])
+    assert caller.contact.email is not None and caller.contact.email in drafted
+    assert other.contact.email is not None and other.contact.email not in drafted
 
 
 def test_the_one_click_route_refuses_without_a_connected_mailbox(
@@ -2202,11 +2392,9 @@ def test_an_administrator_does_not_inherit_another_users_mailbox(
         == "disconnected"
     )
 
-    fixture = build_sequence(
-        committed_session, owner_user_id=_default_operator_id(committed_session)
-    )
+    build_sequence(committed_session, owner_user_id=_default_operator_id(committed_session))
     committed_session.commit()
-    page = client.get(f"/app/people/{fixture.contact.id}?campaign={fixture.campaign.id}")
+    page = client.get("/app/account/connections")
     assert page.status_code == 200
     assert 'action="/gmail/connect"' in page.text
     assert "shared-outbox@vmr.example" not in page.text

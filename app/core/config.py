@@ -92,6 +92,12 @@ class Settings(BaseSettings):
         description="Deployment environment label: local | ci | staging | production.",
     )
     debug: bool = False
+    # The calendar the team works in. Follow-up due dates ("Email 3 due today")
+    # are whole local days counted from Day 0, so they need one shared calendar.
+    app_timezone: str = Field(
+        default="Asia/Kolkata",
+        description="IANA time zone used for due-day arithmetic on the sending desk.",
+    )
     release_id: str = Field(
         default="unknown",
         min_length=1,

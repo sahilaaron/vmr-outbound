@@ -33,6 +33,7 @@ from app.services.personalization.cadence import (
 from app.services.seller import campaign_offerings as seller_campaign_offerings
 from app.services.seller import records as seller_records
 from app.web.v2 import shell
+from app.web.v2.pages import desk
 
 router = shell.router
 
@@ -252,8 +253,19 @@ def campaign_create(
 
 @router.get("/campaigns/{campaign_id}")
 def campaign_overview(
-    campaign_id: str, request: Request, db: Session = Depends(get_db)
+    campaign_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    section: str = desk.DEFAULT_FILTER,
+    person: str | None = None,
+    email: str | None = None,
 ) -> HTMLResponse:
+    """Overview, with the Ready for Sending table and the inline sending desk.
+
+    ``?person=<membership>&email=<n>`` opens the workbook in place — a URL that
+    preserves selection, history and reload without becoming a page of its own.
+    """
+
     campaign = _campaign(db, campaign_id)
     if campaign is None:
         return shell.not_found(request, db, "That Campaign does not exist.")
@@ -266,12 +278,44 @@ def campaign_overview(
         if shell.kb_on(db, settings)
         else []
     )
+    all_ready, progress = desk.ready_rows(db, campaign_id=campaign.id, limit=READY_TABLE_LIMIT)
+    chosen = section if section in {key for key, _ in desk.READY_FILTERS} else desk.DEFAULT_FILTER
+    shown = desk.filter_rows(all_ready, chosen)
+    workbook = None
+    if person:
+        # The selected person stays selected whichever filter is active; if the
+        # filter no longer includes them, the roster falls back to everyone.
+        workbook = desk.build_desk(
+            request,
+            db,
+            campaign=campaign,
+            rows=shown,
+            progress=progress,
+            person=person,
+            email=email,
+            section=chosen,
+        )
+        if workbook is None and chosen != "all":
+            shown = all_ready
+            chosen = "all"
+            workbook = desk.build_desk(
+                request,
+                db,
+                campaign=campaign,
+                rows=shown,
+                progress=progress,
+                person=person,
+                email=email,
+                section=chosen,
+            )
     context.update(
         {
-            "ready": campaign_workspace.ready_people(
-                db, campaign_id=campaign.id, limit=READY_TABLE_LIMIT
-            ),
+            "ready_rows": shown,
+            "ready_total": len(all_ready),
             "ready_limit": READY_TABLE_LIMIT,
+            "ready_filters": desk.READY_FILTERS,
+            "section": chosen,
+            "desk": workbook,
             "happening": campaign_workspace.happening_now(header),
             "reasons": campaign_workspace.could_not_prepare_reasons(db, campaign_id=campaign.id),
             "offerings": offerings,
@@ -282,7 +326,8 @@ def campaign_overview(
             "activity": campaign_workspace.activity(
                 db, campaign_id=campaign.id, limit=ACTIVITY_PREVIEW
             ),
-            "live_seconds": 30 if header.progress.processing else None,
+            # Auto-refresh only while VMR is preparing and nobody is working an email.
+            "live_seconds": 30 if (header.progress.processing and workbook is None) else None,
         }
     )
     return shell.render(request, db, "campaign_overview.html", context)
