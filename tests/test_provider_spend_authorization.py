@@ -376,62 +376,24 @@ def test_the_operator_keeps_every_decision_on_the_same_capture(
 # ---------------------------------------------------------------------------
 # H-2 — the Claude CLI
 # ---------------------------------------------------------------------------
+#
+# `POST /knowledge-base/generate` was retired with the legacy Knowledge Base
+# pages: the Library is edited by administrators in place, and generation from
+# a website is not offered from the product any more. The route classification
+# in tests/test_route_authorization.py records that the whole legacy surface is
+# gone; the boundary check below still proves the CLI stub sits on the real
+# call path so a future generation feature cannot silently bypass it.
 
 
-def test_an_ordinary_operator_cannot_spawn_the_claude_cli(
-    client: TestClient, claude_cli_spawns: list[list[str]]
+def test_the_library_is_read_by_operators_and_written_by_administrators(
+    client: TestClient,
 ) -> None:
-    """Refused before a process exists, not after one has already fetched a URL.
-
-    The executable is resolvable (``shutil.which`` is stubbed) and the form is
-    the one the page submits, so a handler that ran would spawn. The empty list
-    is the assertion; the 403 only says where the refusal came from.
-    """
-
     csrf = _user_session(client)
-
-    response = _post(client, "/knowledge-base/generate", csrf, websites=SELLER_WEBSITE)
-
-    assert response.status_code == 403, response.text[:200]
-    assert response.json()["error"] == "admin_required"
-    assert claude_cli_spawns == [], f"{len(claude_cli_spawns)} subprocess(es) were started"
-
-
-def test_an_administrator_still_reaches_generation_and_the_process_runs(
-    client: TestClient, claude_cli_spawns: list[list[str]]
-) -> None:
-    """Identical request from an administrator: exactly one process is started.
-
-    Without this the test above would also pass with the route unmounted, the
-    Knowledge Base switched off, or the thinker never constructed.
-    """
-
-    csrf = _admin_session(client)
-
-    response = _post(client, "/knowledge-base/generate", csrf, websites=SELLER_WEBSITE)
-
-    assert response.status_code != 403, response.text[:200]
-    assert len(claude_cli_spawns) == 1, claude_cli_spawns
-    assert response.headers["location"].startswith("/knowledge-base")
-
-
-def test_the_operator_can_still_fill_the_knowledge_base_by_hand(
-    client: TestClient, claude_cli_spawns: list[list[str]]
-) -> None:
-    """KB-001's actual approval model, protected from the repair.
-
-    Operator entry is the only approval the seller knowledge base has. Generation
-    moved; typing did not, and neither did reading — a knowledge base a USER
-    cannot fill is an empty one, and the personalization agent writes vague copy
-    from an empty knowledge base rather than refusing.
-    """
-
-    csrf = _user_session(client)
-
-    assert client.get("/knowledge-base").status_code != 403
-    assert _post(client, "/knowledge-base/company", csrf, name="VMR").status_code != 403
-    assert _post(client, "/knowledge-base/personas", csrf, name="Head of Ops").status_code != 403
-    assert claude_cli_spawns == []
+    assert client.get("/app/library").status_code != 403
+    assert client.get("/knowledge-base", follow_redirects=False).status_code == 308
+    refused = _post(client, "/app/admin/library/company", csrf, name="VMR")
+    assert refused.status_code == 403
+    assert refused.json()["error"] == "admin_required"
 
 
 # ---------------------------------------------------------------------------

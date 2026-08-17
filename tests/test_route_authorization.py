@@ -286,7 +286,6 @@ ADMIN_SURFACE: tuple[tuple[str, str], ...] = (
     ("PUT", "/api/agents/research/control"),
     ("GET", "/imports"),
     ("GET", "/local-tools"),
-    ("POST", "/campaigns"),
     # The Campaign's website-research switch: the one verb on the operator's own
     # Setup page that authorises real outside work — website fetches and model
     # budget — for a whole cohort at once. The page around it stays
@@ -317,7 +316,6 @@ PROVIDER_SPEND_SURFACE: tuple[tuple[str, str], ...] = (
     ("POST", "/verification/bulk"),
     ("POST", "/verification/run"),
     ("POST", "/verification/recover"),
-    ("POST", f"/contacts/{SAMPLE_ID}/verify"),
     ("POST", "/admin/agents/studio/verification/test"),
     ("POST", "/admin/agents/studio/verification/credentials/millionverifier"),
     # logo.dev. Both send `force=True`, so each press bypasses the
@@ -325,9 +323,6 @@ PROVIDER_SPEND_SURFACE: tuple[tuple[str, str], ...] = (
     # limits them.
     ("POST", f"/contact-captures/{SAMPLE_ID}/company/lookup"),
     ("POST", f"/contact-captures/{SAMPLE_ID}/company/resolve"),
-    # Metered model spend, through a subprocess spawned with operator-supplied
-    # URLs and `WebSearch` enabled.
-    ("POST", "/knowledge-base/generate"),
 )
 
 #: Reads the operator product links to from pages a USER works on every day.
@@ -335,9 +330,9 @@ PROVIDER_SPEND_SURFACE: tuple[tuple[str, str], ...] = (
 #: of them spends money, changes a guardrail, or names an administrator.
 USER_READABLE_SURFACE: tuple[str, ...] = (
     "/verification",
-    "/knowledge-base/restricted-claims",
-    f"/contacts/{SAMPLE_ID}",
-    "/companies",
+    "/app/library/restricted-claims",
+    f"/app/people/{SAMPLE_ID}",
+    "/app/companies",
 )
 
 #: The customer-facing product. A USER is the intended audience for all of it,
@@ -463,7 +458,10 @@ def test_the_classification_counts_are_the_ones_deliberately_recorded() -> None:
     ``tests/test_hosted_auth_templates.py`` records why.
     """
 
-    assert len(PROVIDER_SPEND_SURFACE) == 9, sorted(PROVIDER_SPEND_SURFACE)
+    # 9 to 7: the per-contact verify and the knowledge-base generate routes went
+    # with the legacy customer twins; their surfaces are the verification
+    # console and (later) an Admin data tool.
+    assert len(PROVIDER_SPEND_SURFACE) == 7, sorted(PROVIDER_SPEND_SURFACE)
     # And a third time, 89 to 88, in the withholding direction: `GET /app/agents`
     # joined the control POST on the administrator surface. The monitor names
     # every campaign carrying an Agent override and lists jobs across all of
@@ -480,7 +478,10 @@ def test_the_classification_counts_are_the_ones_deliberately_recorded() -> None:
     # And 94 to 100 with the inline sending desk: five explicit manual acts on
     # one email (actioned, edit, gmail-draft, skip, undo) and Today's dismiss.
     # And 100 to 101: adding existing people to a Campaign from the People list.
-    assert len(EXPECTED_USER_REACHABLE) == 101, len(EXPECTED_USER_REACHABLE)
+    # And 101 to 80 when the legacy customer twins (Contacts, Companies,
+    # Knowledge Base pages and their writes) were retired: six redirects stay
+    # user-reachable, the rest is gone.
+    assert len(EXPECTED_USER_REACHABLE) == 80, len(EXPECTED_USER_REACHABLE)
 
 
 def test_reading_the_verification_page_is_not_spending(client: TestClient) -> None:
@@ -523,23 +524,22 @@ def test_the_user_readable_surface_is_enumerated_rather_than_sampled() -> None:
         assert not is_admin_only_request(path, "GET"), f"GET {path} became administrator-only"
 
 
-def test_restricted_claims_may_be_read_but_not_changed(client: TestClient) -> None:
-    """KB-001's one asymmetry, stated in a single test.
+def test_the_library_is_read_by_operators_and_written_by_administrators(
+    client: TestClient,
+) -> None:
+    """KB-001's asymmetry, restated for the Library.
 
-    Restricted claims are the control that stops the product making a prohibited
-    claim. Reading the list is ordinary operator work; deactivating an entry is
-    lowering a guardrail. Every other knowledge-base section stays writable,
-    because operator entry is the only approval the seller knowledge base has.
+    Reading what we may say is ordinary operator work; changing it — any
+    section, not only message rules — is an administrator's, because operator
+    entry is the only approval the seller knowledge base has and it now sits
+    behind the role.
     """
 
     csrf = _user_session(client)
-    assert client.get("/knowledge-base/restricted-claims").status_code != 403
-    refused = _call(client, "POST", "/knowledge-base/restricted-claims", csrf)
+    assert client.get("/app/library/restricted-claims").status_code != 403
+    refused = _call(client, "POST", "/app/admin/library/restricted-claims", csrf)
     assert refused.status_code == 403
     assert refused.json()["error"] == "admin_required"
-    # The neighbouring section is untouched, so the refusal above is about
-    # restricted claims rather than about the knowledge base as a whole.
-    assert _call(client, "POST", "/knowledge-base/personas", csrf).status_code != 403
 
 
 # ---------------------------------------------------------------------------
@@ -1062,52 +1062,19 @@ EXPECTED_USER_REACHABLE: frozenset[str] = frozenset(
         "POST /contact-captures/{capture_id}/company/correct",
         "POST /contact-captures/{capture_id}/company/reject",
         "POST /contact-captures/{capture_id}/promote",
-        # Contacts. `POST /contacts/{contact_id}/verify` is absent on purpose:
-        # it is the one route here that spends a MillionVerifier credit.
+        # Retired customer twins that survive only as redirects into the product.
         "GET /contacts",
-        "POST /contacts/add-to-campaign",
         "GET /contacts/{contact_id}",
-        "POST /contacts/{contact_id}/generate-candidates",
-        "POST /contacts/{contact_id}/labels",
-        "POST /contacts/{contact_id}/labels/{slug}/remove",
-        "POST /contacts/{contact_id}/notes",
-        # Companies and the immutable evidence snapshots behind them, all reads.
         "GET /companies",
         "GET /companies/{company_id}",
+        "GET /knowledge-base",
+        "GET /knowledge-base/{section}",
+        # Immutable evidence snapshots behind captures, all reads.
         "GET /company-profiles/{snapshot_id}",
         "GET /profiles/{snapshot_id}",
         # The verification page is linked from the operator agents screen. Only
         # the page: `bulk`, `run` and `recover` are administrator-only.
         "GET /verification",
-        # The seller knowledge base. Operator entry is the only approval it has,
-        # so a USER may write every section of it except restricted claims,
-        # whose GET stays here and whose writes do not.
-        #
-        # `POST /knowledge-base/generate` is the second exception and is also
-        # absent deliberately. It is not operator entry at all: it spawns the
-        # local Claude CLI with operator-supplied URLs and `WebSearch` enabled,
-        # which is metered spend, a fetch primitive, and a prompt-injection sink
-        # whose output lands in the knowledge base outreach copy is written from.
-        # Everything a USER needs in order to fill the knowledge base by hand
-        # stays below.
-        "GET /knowledge-base",
-        "GET /knowledge-base/company",
-        "POST /knowledge-base/company",
-        "GET /knowledge-base/offerings",
-        "POST /knowledge-base/offerings",
-        "GET /knowledge-base/offerings/{offering_id}",
-        "POST /knowledge-base/offerings/{offering_id}",
-        "POST /knowledge-base/offerings/{offering_id}/links",
-        "POST /knowledge-base/offerings/{offering_id}/state",
-        "GET /knowledge-base/personas",
-        "POST /knowledge-base/personas",
-        "POST /knowledge-base/personas/{persona_id}",
-        "POST /knowledge-base/personas/{persona_id}/state",
-        "GET /knowledge-base/proof-points",
-        "POST /knowledge-base/proof-points",
-        "POST /knowledge-base/proof-points/{proof_point_id}",
-        "POST /knowledge-base/proof-points/{proof_point_id}/state",
-        "GET /knowledge-base/restricted-claims",
         # Ambiguous-import triage. Reached from a decision card on the
         # operator's own campaign page, and the confirmation is deliberately
         # a human's because merging the wrong two records is not reversible

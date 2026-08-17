@@ -58,7 +58,7 @@
   <div class="card-body small">
     {% if row.validation and row.validation.contact_id %}
     This row {{ "created" if row.validation.outcome.value == "accepted" else "matched" }} contact
-    <a href="/contacts/{{ row.validation.contact_id }}">open the contact record</a>.
+    <a href="/app/people/{{ row.validation.contact_id }}">open the contact record</a>.
     {% elif row.validation and row.validation.outcome.value == "ambiguous" %}
     <strong>No contact was created.</strong> {{ row.validation.note }} Decide manually which existing
     record this person is — or correct the source data (adding an email disambiguates) and re-import.

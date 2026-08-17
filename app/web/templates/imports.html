@@ -47,7 +47,7 @@
       <tr>
         <td><a href="/imports/{{ b.id }}">{{ b.filename or "(unnamed upload)" }}</a>
           <div class="small muted-text">{{ b.source_format.value | upper }}</div></td>
-        <td><a href="/campaigns/{{ campaign.id }}">{{ campaign.name }}</a></td>
+        <td><a href="/app/campaigns/{{ campaign.id }}">{{ campaign.name }}</a></td>
         <td>{{ batch_badge(b) }}</td>
         <td class="num">{{ b.total_rows }}</td>
         <td class="num">{{ b.accepted_rows }}</td>

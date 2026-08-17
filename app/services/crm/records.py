@@ -154,7 +154,7 @@ class CrmRow:
     @property
     def detail_url(self) -> str:
         if self.kind == "contact":
-            return f"/contacts/{self.record_id}"
+            return f"/app/people/{self.record_id}"
         return f"/captures/{self.record_id}"
 
 

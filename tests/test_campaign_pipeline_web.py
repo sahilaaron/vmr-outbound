@@ -182,7 +182,7 @@ def test_the_contacts_page_enrols_a_selection(client: TestClient, db_session: Se
     db_session.commit()
 
     response = client.post(
-        "/contacts/add-to-campaign",
+        "/app/people/add-to-campaign",
         data={"campaign_id": str(campaign.id), "contact_ids": [str(first.id), str(second.id)]},
         follow_redirects=False,
     )
@@ -199,14 +199,14 @@ def test_the_contacts_page_enrols_a_selection(client: TestClient, db_session: Se
 @pytest.mark.parametrize(
     ("payload", "expected"),
     [
-        ({"campaign_id": "", "contact_ids": []}, "Choose a campaign"),
-        ({"campaign_id": str(uuid.uuid4()), "contact_ids": []}, "Select at least one contact"),
+        ({"campaign_id": "", "contact_ids": []}, "Choose a Campaign"),
+        ({"campaign_id": str(uuid.uuid4()), "contact_ids": []}, "Tick at least one person"),
     ],
 )
 def test_the_enrolment_form_refuses_incomplete_input(
     client: TestClient, payload: dict[str, object], expected: str
 ) -> None:
-    response = client.post("/contacts/add-to-campaign", data=payload, follow_redirects=False)
+    response = client.post("/app/people/add-to-campaign", data=payload, follow_redirects=False)
     assert response.status_code == 303
     assert expected in _flash(response)
 
@@ -329,18 +329,20 @@ def test_the_settings_form_saves_the_switch_both_ways(
     db_session.commit()
 
     response = client.post(
-        f"/campaigns/{campaign.id}/settings",
-        data={"allow_provisional_domains": "on"},
+        f"/app/campaigns/{campaign.id}/setup",
+        data={"name": campaign.name, "allow_provisional_domains": "on"},
         follow_redirects=False,
     )
     assert response.status_code == 303
-    assert "accepted" in _flash(response)
+    assert "Setup saved" in _flash(response)
     db_session.expire_all()
     assert campaign.allow_provisional_domains is True
 
     # An unchecked box is absent from the form body, which is how "off" arrives —
-    # so an empty post must turn it off rather than being read as "no change".
-    response = client.post(f"/campaigns/{campaign.id}/settings", data={}, follow_redirects=False)
+    # so a post without it must turn it off rather than being read as "no change".
+    response = client.post(
+        f"/app/campaigns/{campaign.id}/setup", data={"name": campaign.name}, follow_redirects=False
+    )
     assert response.status_code == 303
     db_session.expire_all()
     assert campaign.allow_provisional_domains is False
@@ -356,8 +358,8 @@ def test_saving_settings_bumps_the_settings_version(
     db_session.commit()
 
     client.post(
-        f"/campaigns/{campaign.id}/settings",
-        data={"allow_provisional_domains": "on"},
+        f"/app/campaigns/{campaign.id}/setup",
+        data={"name": campaign.name, "allow_provisional_domains": "on"},
         follow_redirects=False,
     )
     db_session.expire_all()

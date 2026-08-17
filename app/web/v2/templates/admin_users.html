@@ -26,6 +26,7 @@
 {% block content %}
 <div class="v2-page">
   <h1 class="v2-h1">People</h1>
+  {% set admin_section = 'users' %}{% include "_admin_nav.html" %}
   <p class="v2-lede">
     Everyone who may sign in to this deployment. There is no public signup: an account
     exists because an administrator created it here. Disabling an account refuses its

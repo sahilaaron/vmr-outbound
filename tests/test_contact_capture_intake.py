@@ -433,7 +433,7 @@ def test_exact_url_match_refreshes_the_right_contact_only(
     assert decoy.title == "Operations Manager"
     result = body["results"][0]
     assert result["matched_contact_id"] == str(target.id)
-    assert result["contact_url"].endswith(f"/contacts/{target.id}")
+    assert result["contact_url"].endswith(f"/app/people/{target.id}")
 
 
 def test_older_evidence_cannot_replace_newer(
