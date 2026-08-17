@@ -1,5 +1,5 @@
 /**
- * Copy controls for the seven-message sequence on the Contact page.
+ * Copy control for one email on the sending desk (Campaign > Overview).
  *
  * One delegated listener on `document`, driven by `data-` attributes, exactly
  * like `campaigns.js`. The deployed Content-Security-Policy is
@@ -48,8 +48,8 @@
     // into the markup twice.
     var subject = subjectNode ? subjectNode.textContent : "";
     var body = bodyNode ? bodyNode.textContent : "";
-    if (kind === "subject") return subject;
-    if (kind === "body") return body;
+    // One kind: the desk offers one Copy per email, and it copies the whole
+    // email. A button asking for anything else copies nothing, on purpose.
     if (kind === "full") return "Subject: " + subject + "\n\n" + body;
     return null;
   }
@@ -82,11 +82,7 @@
    * the keyboard. Used only when both programmatic paths have failed. */
   function selectSource(button) {
     var doc = button.ownerDocument;
-    var kind = button.getAttribute("data-copy");
-    var id =
-      kind === "subject"
-        ? button.getAttribute("data-copy-subject")
-        : button.getAttribute("data-copy-body");
+    var id = button.getAttribute("data-copy-body");
     var node = id ? doc.getElementById(id) : null;
     if (!node || !window.getSelection || !doc.createRange) return;
     var range = doc.createRange();
