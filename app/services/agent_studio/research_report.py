@@ -185,6 +185,28 @@ class ResearchFallbackView:
 
 
 @dataclass(frozen=True)
+class ResearchClaudeView:
+    """The required primary Claude web-research execution lineage."""
+
+    attempted: bool
+    status: str
+    invocation_reason_code: str | None = None
+    invocation_reason: str | None = None
+    producer: str | None = None
+    producer_version: str | None = None
+    evidence_accepted: int | None = None
+    claims_rejected: int | None = None
+    rejection_reasons: tuple[str, ...] = ()
+    source_urls: tuple[str, ...] = ()
+    error: str | None = None
+    error_code: str | None = None
+    retryable: bool | None = None
+    duration_seconds: float | None = None
+    reused_committed_attempt: bool = False
+    tools: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class ResearchDeterministicView:
     """The first attempt: which workers ran, and whether their output was usable."""
 
@@ -264,6 +286,7 @@ class ResearchReport:
     # to a value that would be a claim about a run that never made one.
     deterministic: ResearchDeterministicView | None = None
     fallback: ResearchFallbackView | None = None
+    claude_research: ResearchClaudeView | None = None
     dossier_basis: str | None = None
 
 
@@ -399,7 +422,12 @@ def _safe_urls(value: object, *, cap: int = 50) -> tuple[str, ...]:
 
 def _execution_lineage(
     job: AgentJob,
-) -> tuple[ResearchDeterministicView | None, ResearchFallbackView | None, str | None]:
+) -> tuple[
+    ResearchDeterministicView | None,
+    ResearchFallbackView | None,
+    ResearchClaudeView | None,
+    str | None,
+]:
     """Read the RES-002 lineage the Research stage committed.
 
     Looked for in the job result first and the stored error detail second,
@@ -410,7 +438,11 @@ def _execution_lineage(
 
     result = _mapping(job.result)
     detail = _mapping(_mapping(job.error).get("detail"))
-    source = result if "fallback" in result or "deterministic" in result else detail
+    source = (
+        result
+        if "claude_research" in result or "fallback" in result or "deterministic" in result
+        else detail
+    )
 
     basis = _safe_string(source.get("dossier_basis"), limit=128)
 
@@ -462,7 +494,31 @@ def _execution_lineage(
             tools=_safe_strings(fallback_raw.get("tools"), limit=64),
         )
 
-    return deterministic, fallback, basis
+    claude_raw = _mapping(source.get("claude_research"))
+    claude_research = None
+    if claude_raw:
+        claude_research = ResearchClaudeView(
+            attempted=bool(claude_raw.get("attempted")),
+            status=_safe_string(claude_raw.get("status"), limit=64) or "unavailable",
+            invocation_reason_code=_safe_string(
+                claude_raw.get("invocation_reason_code"), limit=128
+            ),
+            invocation_reason=_safe_string(claude_raw.get("invocation_reason"), limit=1_000),
+            producer=_safe_string(claude_raw.get("producer"), limit=128),
+            producer_version=_safe_string(claude_raw.get("producer_version"), limit=128),
+            evidence_accepted=_integer(claude_raw.get("evidence_accepted")),
+            claims_rejected=_integer(claude_raw.get("claims_rejected")),
+            rejection_reasons=_safe_strings(claude_raw.get("rejection_reasons"), limit=128),
+            source_urls=_safe_urls(claude_raw.get("source_urls")),
+            error=_safe_string(claude_raw.get("error"), limit=1_000),
+            error_code=_safe_string(claude_raw.get("error_code"), limit=128),
+            retryable=_bool(claude_raw.get("retryable")),
+            duration_seconds=_float(claude_raw.get("duration_seconds")),
+            reused_committed_attempt=bool(claude_raw.get("reused_committed_attempt")),
+            tools=_safe_strings(claude_raw.get("tools"), limit=64),
+        )
+
+    return deterministic, fallback, claude_research, basis
 
 
 def _retryable_error(job: AgentJob) -> bool | None:
@@ -965,10 +1021,10 @@ class DurableResearchReportReader:
         result = _mapping(job.result)
         unavailable: list[str] = []
         warnings: list[str] = []
-        deterministic, fallback, dossier_basis = _execution_lineage(job)
-        if deterministic is None and fallback is None:
+        deterministic, fallback, claude_research, dossier_basis = _execution_lineage(job)
+        if deterministic is None and fallback is None and claude_research is None:
             unavailable.append(
-                "This execution predates the Research fallback and recorded no "
+                "This execution predates persisted Research source lineage and recorded no "
                 "attempt lineage; which source produced its dossier is not persisted."
             )
         submission, link_source = self._submission_for_job(job, result)
@@ -1198,5 +1254,6 @@ class DurableResearchReportReader:
             selection_reason=selection_reason,
             deterministic=deterministic,
             fallback=fallback,
+            claude_research=claude_research,
             dossier_basis=dossier_basis,
         )

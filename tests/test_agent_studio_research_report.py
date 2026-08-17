@@ -647,6 +647,46 @@ def test_the_report_shows_both_attempts_and_sanitizes_what_it_shows(
     assert "sk_live_abcdefgh" not in repr(report)
 
 
+def test_the_report_identifies_claude_as_the_primary_research_source(
+    db_session: Session,
+) -> None:
+    company, job = _lineage_job(db_session)
+    job.result = {
+        "domain": company.domain,
+        "company_id": str(company.id),
+        "domain_outcome": "researched the company through cited public web sources",
+        "research_mode": "claude_primary",
+        "dossier_basis": "claude_cli_web_research",
+        "claude_research": {
+            "attempted": True,
+            "status": "succeeded",
+            "invocation_reason_code": "required_primary_source",
+            "invocation_reason": (
+                "Claude CLI web research is the required Research implementation."
+            ),
+            "producer": "claude-cli",
+            "producer_version": "research-claude-primary/1",
+            "evidence_accepted": 2,
+            "claims_rejected": 1,
+            "rejection_reasons": ["uncited"],
+            "source_urls": ["https://trade.example/kiln-systems"],
+            "tools": ["WebSearch", "WebFetch"],
+        },
+    }
+    db_session.flush()
+
+    report = DurableResearchReportReader(db_session).read_job(job.id)
+
+    assert report is not None
+    assert report.dossier_basis == "claude_cli_web_research"
+    assert report.claude_research is not None
+    assert report.claude_research.status == "succeeded"
+    assert report.claude_research.invocation_reason_code == "required_primary_source"
+    assert report.claude_research.evidence_accepted == 2
+    assert report.deterministic is None
+    assert report.fallback is None
+
+
 def test_a_failed_execution_still_reports_its_fallback_error(db_session: Session) -> None:
     """A run that produced nothing is where the lineage matters most.
 
@@ -716,4 +756,4 @@ def test_an_execution_predating_the_fallback_says_so_rather_than_guessing(
     assert report.deterministic is None
     assert report.fallback is None
     assert report.dossier_basis is None
-    assert any("predates the Research fallback" in item for item in report.unavailable)
+    assert any("predates persisted Research source lineage" in item for item in report.unavailable)

@@ -111,7 +111,7 @@ class CampaignHealthRow:
 
 @dataclass(frozen=True)
 class FallbackRunRow:
-    """One recent Research execution whose durable result records fallback use."""
+    """Legacy type name for one recent Research execution with Claude lineage."""
 
     job_id: uuid.UUID
     campaign_id: uuid.UUID | None
@@ -436,7 +436,7 @@ class ContactDiagnosisView:
 #: lease timestamps), never from prose.
 FAILURE_CATEGORIES: tuple[tuple[str, str], ...] = (
     ("research", "Research failure"),
-    ("research_fallback", "Research fallback failure"),
+    ("research_fallback", "Claude Research failure"),
     ("insufficient_evidence", "Insufficient evidence"),
     ("domain", "Domain problem"),
     ("verification", "Verification problem"),

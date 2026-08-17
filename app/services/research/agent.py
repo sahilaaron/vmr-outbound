@@ -16,20 +16,11 @@ Three outcomes are all legitimate:
   the pipeline advances rather than stalling on a thin website;
 * ``BLOCKED`` / ``TERMINAL`` -- research could not honestly run at all.
 
-**Two attempts, one stage.** The deterministic website worker is always the
-first attempt, and when it produces something usable the run ends there. When
-it does not -- the site is unreachable, JavaScript-only, redirected off-host,
-unparseable, or simply says almost nothing -- the bounded Claude CLI fallback in
-``app.services.research.fallback`` runs as a second attempt within this same
-execution. It is not another Agent, another stage or another job: it is a second
-source, filed under its own worker name, subject to the same fact validation and
-the same evidence model.
-
-The trigger is deliberately coarse. This module never asks *why* the
-deterministic attempt was unusable before deciding whether to fall back; it asks
-only whether the result is usable. Classifying the failure first would mean every
-new way a website can defeat a crawler needs a code change before the fallback
-covers it, and the operator would carry the classification.
+**One required production source.** Every authorized production execution uses
+the bounded Claude CLI web-research implementation in
+``app.services.research.fallback`` as its primary source. The deterministic
+website worker remains available to tests and diagnostics through the legacy
+worker mode below, but the production adapter never supplies or invokes it.
 
 Nothing here writes a canonical Company field -- from either source. Turning
 sourced facts into canonical values is a separate, reviewable decision.
@@ -81,6 +72,7 @@ BASIS_NONE = "no_sourced_evidence"
 BASIS_DETERMINISTIC = "deterministic_website"
 BASIS_FALLBACK = "claude_cli_fallback"
 BASIS_BOTH = "deterministic_website_and_claude_cli_fallback"
+BASIS_CLAUDE = "claude_cli_web_research"
 
 #: How a vendored fact field maps onto the closed dossier section set.
 #: A field with no mapping is still stored as an insight; it just does not
@@ -417,15 +409,47 @@ def _run_fallback(
     )
 
 
+#: Keys on a stored section entry that name the *producer* rather than the
+#: knowledge. Renaming a producer — as this repair renamed the Claude extraction
+#: method — is not a new reading of anything, so the comparison below ignores
+#: them. Nothing is rewritten: an existing version keeps the label it was
+#: committed with, and only the "is this the same reading?" question is answered
+#: without reference to it.
+_PRODUCER_LABEL_KEYS: frozenset[str] = frozenset({"extraction_method"})
+
+
+def _knowledge(value: Any) -> Any:
+    """One section's content with producer labels removed, for comparison only."""
+
+    if isinstance(value, list):
+        return [_knowledge(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _knowledge(item) for key, item in value.items() if key not in _PRODUCER_LABEL_KEYS
+        }
+    return value
+
+
 def _same_reading(
     version: CompanyDossierVersion, *, sections: dict[str, Any], warnings: list[str]
 ) -> bool:
-    """Would interpreting again produce exactly the version already stored?"""
+    """Would interpreting again produce exactly the version already stored?
+
+    "The same" means the same knowledge — the same fields, values, sources,
+    confidences and workers — not the same producer *spelling*. A job that
+    committed evidence before a deployment and is re-driven after it (a
+    recovered lease, an operator re-run, a worker restart mid-flight) rebuilds
+    the identical facts; if a renamed ``extraction_method`` were allowed to make
+    that look like new work, the version number would become an execution
+    counter for the company, which is exactly what :func:`_interpret_once`
+    exists to prevent.
+    """
 
     if list(version.warnings or []) != warnings:
         return False
     return all(
-        getattr(version, name, None) == sections.get(name) for name in dossiers.SECTION_COLUMNS
+        _knowledge(getattr(version, name, None)) == _knowledge(sections.get(name))
+        for name in dossiers.SECTION_COLUMNS
     )
 
 
@@ -510,15 +534,18 @@ def execute_step(
     actor: str = RESEARCH_ACTOR,
     fallback: ResearchFallback | None = None,
     fallback_unavailable_reason: str | None = None,
+    primary_source: ResearchFallback | None = None,
+    primary_unavailable_reason: str | None = None,
 ) -> ResearchStep:
     """Research one Contact's Company and persist what was found.
 
-    ``fallback`` is the second attempt, and ``None`` means there is no second
-    attempt — the behaviour this module had before one existed. The adapter owns
-    that decision; this module only owns *when* a second attempt is warranted.
+    Production supplies ``primary_source`` and never supplies a deterministic
+    worker. The legacy ``workers``/``fallback`` mode remains only for tests,
+    diagnostics, and a future explicitly approved alternate mode.
     """
 
-    if not workers:
+    primary_mode = primary_source is not None or primary_unavailable_reason is not None
+    if not primary_mode and not workers:
         return _blocked(
             "no_workers_enabled",
             "no research worker is enabled for this Agent; "
@@ -554,113 +581,169 @@ def execute_step(
             decision.reason or "company research is not authorized for this contact",
         )
 
-    request = ResearchRequest(
-        domain=domain,
-        company_name=company.name,
-        options=dict(options or {}),
-    )
-
     results: list[WorkerResult] = []
     warnings: list[str] = []
     attempted_workers: list[str] = []
     worker_failures: list[dict[str, Any]] = []
     retryable_failure: ResearchWorkerError | None = None
-    for worker in workers:
-        attempted_workers.append(worker.name)
-        try:
-            results.append(worker.run(request))
-        except ResearchWorkerError as exc:
-            # Every deterministic failure is recorded and the loop continues,
-            # including a retryable one. This used to return RETRY immediately,
-            # which was correct while the website was the only source: there was
-            # nothing else to try, so trying again later was the whole answer.
-            # It is not the answer now. A read timeout is one of the most common
-            # ways a perfectly researchable company produces no dossier, and
-            # retrying it produces the same timeout. The retryable outcome is
-            # kept and returned below if — and only if — nothing usable is
-            # produced by anything else.
-            worker_failures.append(
-                {
-                    "worker": worker.name,
-                    "reason_code": exc.code,
-                    "retryable": exc.retryable,
-                    "reason": str(exc),
-                }
-            )
-            warnings.append(f"{worker.name}: {exc}")
-            if exc.retryable and retryable_failure is None:
-                retryable_failure = exc
+    deterministic_summary: dict[str, Any] | None = None
 
-    usable, unusable_code, unusable_reason = _assess(results, failures=worker_failures)
-    fallback_result, fallback_record, fallback_retryable = _run_fallback(
-        session,
-        company=company,
-        job=job,
-        fallback=fallback,
-        fallback_unavailable_reason=fallback_unavailable_reason,
-        usable=usable,
-        reason_code=unusable_code,
-        reason=unusable_reason,
-    )
-    if fallback_record.error:
-        warnings.append(
-            f"{research_fallback.FALLBACK_WORKER_NAME}: {fallback_record.error}",
-        )
-    if fallback_result is not None:
-        results.append(fallback_result)
-
-    deterministic_summary: dict[str, Any] = {
-        "workers": attempted_workers,
-        "usable": usable,
-        "reason_code": unusable_code,
-        "reason": unusable_reason,
-        "failures": worker_failures,
-    }
-
-    if not results:
-        detail: dict[str, Any] = {
-            "warnings": warnings,
-            "deterministic": deterministic_summary,
-            "fallback": fallback_record.as_dict(),
-            "dossier_basis": BASIS_NONE,
-        }
-        # A transient fault anywhere in the chain means "ask again later" — but
-        # only here, where nothing at all was produced. If a worker returned a
-        # result and the *other* attempt then failed transiently, the result is
-        # committed above instead: it was genuinely gathered, and discarding it
-        # would make enabling the fallback worse than leaving it off, which is
-        # the one outcome a fallback must never produce. The report records that
-        # the second attempt was made and failed, so a re-run stays available.
-        #
-        # A *completed* fallback that found no citable evidence is not transient
-        # and must not retry forever — that is an honest answer about this
-        # company's public web presence, and it arrives as
-        # ``fallback_retryable=False``.
-        if retryable_failure is not None or fallback_retryable:
-            code = (
-                retryable_failure.code
-                if retryable_failure is not None
-                else fallback_record.error_code or "research_retry"
+    if primary_mode:
+        if primary_source is None:
+            primary_record = research_fallback.not_attempted(
+                "claude_research_unavailable",
+                primary_unavailable_reason
+                or "The required Claude CLI web-research source is unavailable.",
             )
-            reason = (
-                str(retryable_failure)
-                if retryable_failure is not None
-                else fallback_record.error or "the research fallback hit a transient fault"
-            )
+            detail = {
+                "claude_research": primary_record.as_dict(),
+                "research_mode": "claude_primary",
+                "dossier_basis": BASIS_NONE,
+            }
             return ResearchStep(
-                kind=ResearchStepKind.RETRY,
-                outcome="research_retry",
+                kind=ResearchStepKind.BLOCKED,
+                outcome="research_blocked",
+                result={"reason_code": "claude_research_unavailable", **detail},
+                reason_code="claude_research_unavailable",
+                reason=primary_unavailable_reason
+                or "The required Claude CLI web-research source is unavailable.",
+            )
+
+        primary_result: WorkerResult | None
+        prior = _committed_fallback_result(session, company=company, job=job)
+        if prior is not None:
+            primary_result = prior
+            primary_record = research_fallback.record_from_result(prior)
+            primary_retryable = False
+        else:
+            subject = FallbackSubject(
+                company_name=company.name,
+                domain=company.domain,
+                country=company.country,
+                industry=company.industry,
+                linkedin_company_url=company.linkedin_company_url,
+            )
+            outcome = primary_source.run(
+                subject,
+                reason_code="required_primary_source",
+                reason="Claude CLI web research is the required Research implementation.",
+                now=now,
+            )
+            primary_result = outcome.result
+            primary_record = research_fallback.record_for(outcome)
+            primary_retryable = outcome.status is FallbackStatus.FAILED and outcome.retryable
+        if primary_record.error:
+            warnings.append(f"{research_fallback.FALLBACK_WORKER_NAME}: {primary_record.error}")
+        if primary_result is not None:
+            results.append(primary_result)
+
+        if not results:
+            detail = {
+                "warnings": warnings,
+                "claude_research": primary_record.as_dict(),
+                "research_mode": "claude_primary",
+                "dossier_basis": BASIS_NONE,
+            }
+            code = primary_record.error_code or "claude_research_failed"
+            reason = primary_record.error or "The required Claude research source failed."
+            return ResearchStep(
+                kind=(ResearchStepKind.RETRY if primary_retryable else ResearchStepKind.TERMINAL),
+                outcome="research_retry" if primary_retryable else "research_failed",
                 result={"reason_code": code, "reason": reason, **detail},
                 reason_code=code,
                 reason=reason,
             )
-        return ResearchStep(
-            kind=ResearchStepKind.TERMINAL,
-            outcome="research_failed",
-            result={"reason_code": "all_workers_failed", **detail},
-            reason_code="all_workers_failed",
-            reason="; ".join(warnings) or "every research source failed",
+    else:
+        request = ResearchRequest(
+            domain=domain,
+            company_name=company.name,
+            options=dict(options or {}),
         )
+        for worker in workers:
+            attempted_workers.append(worker.name)
+            try:
+                results.append(worker.run(request))
+            except ResearchWorkerError as exc:
+                worker_failures.append(
+                    {
+                        "worker": worker.name,
+                        "reason_code": exc.code,
+                        "retryable": exc.retryable,
+                        "reason": str(exc),
+                    }
+                )
+                warnings.append(f"{worker.name}: {exc}")
+                if exc.retryable and retryable_failure is None:
+                    retryable_failure = exc
+
+        usable, unusable_code, unusable_reason = _assess(results, failures=worker_failures)
+        fallback_result, fallback_record, fallback_retryable = _run_fallback(
+            session,
+            company=company,
+            job=job,
+            fallback=fallback,
+            fallback_unavailable_reason=fallback_unavailable_reason,
+            usable=usable,
+            reason_code=unusable_code,
+            reason=unusable_reason,
+        )
+        if fallback_record.error:
+            warnings.append(f"{research_fallback.FALLBACK_WORKER_NAME}: {fallback_record.error}")
+        if fallback_result is not None:
+            results.append(fallback_result)
+
+        deterministic_summary = {
+            "workers": attempted_workers,
+            "usable": usable,
+            "reason_code": unusable_code,
+            "reason": unusable_reason,
+            "failures": worker_failures,
+        }
+
+        if not results:
+            detail = {
+                "warnings": warnings,
+                "deterministic": deterministic_summary,
+                "fallback": fallback_record.as_dict(),
+                "dossier_basis": BASIS_NONE,
+            }
+            # A transient fault anywhere in the chain means "ask again later" — but
+            # only here, where nothing at all was produced. If a worker returned a
+            # result and the *other* attempt then failed transiently, the result is
+            # committed above instead: it was genuinely gathered, and discarding it
+            # would make enabling the fallback worse than leaving it off, which is
+            # the one outcome a fallback must never produce. The report records that
+            # the second attempt was made and failed, so a re-run stays available.
+            #
+            # A *completed* fallback that found no citable evidence is not transient
+            # and must not retry forever — that is an honest answer about this
+            # company's public web presence, and it arrives as
+            # ``fallback_retryable=False``.
+            if retryable_failure is not None or fallback_retryable:
+                code = (
+                    retryable_failure.code
+                    if retryable_failure is not None
+                    else fallback_record.error_code or "research_retry"
+                )
+                reason = (
+                    str(retryable_failure)
+                    if retryable_failure is not None
+                    else fallback_record.error or "the research fallback hit a transient fault"
+                )
+                return ResearchStep(
+                    kind=ResearchStepKind.RETRY,
+                    outcome="research_retry",
+                    result={"reason_code": code, "reason": reason, **detail},
+                    reason_code=code,
+                    reason=reason,
+                )
+            return ResearchStep(
+                kind=ResearchStepKind.TERMINAL,
+                outcome="research_failed",
+                result={"reason_code": "all_workers_failed", **detail},
+                reason_code="all_workers_failed",
+                reason="; ".join(warnings) or "every research source failed",
+            )
 
     for result in results:
         warnings.extend(result.warnings)
@@ -669,6 +752,7 @@ def execute_step(
     raw_payload: dict[str, Any] = {
         "domain": domain,
         "company_id": str(company.id),
+        "research_mode": "claude_primary" if primary_mode else "legacy_worker_mode",
         "workers": [
             {
                 "worker": result.worker,
@@ -717,7 +801,15 @@ def execute_step(
     )
     source_count = len(sections.get(DossierSection.SOURCES.value) or [])
     unknown_count = len(sections.get(DossierSection.UNKNOWNS.value) or [])
-    basis = _basis(results)
+    # Lineage describes what was *accepted*, never merely which producer was
+    # asked. A Claude execution that read four pages and could cite nothing
+    # commits an honest empty dossier, and calling that "cited public web
+    # research" would put a false answer in the one field whose whole job is to
+    # answer "where did this company description come from?".
+    if primary_mode:
+        basis = BASIS_CLAUDE if any(result.facts for result in results) else BASIS_NONE
+    else:
+        basis = _basis(results)
 
     # --- automatic Company Intelligence handoff ----------------------------
     # One idempotent, company-scoped job in the same transaction that commits
@@ -760,19 +852,17 @@ def execute_step(
         "source_count": source_count,
         "unknown_count": unknown_count,
         "producer": INTERPRETER,
-        # --- execution truth, for the Research report --------------------------
-        # What was attempted, what was considered unusable and why, whether the
-        # fallback ran, and what the committed dossier actually rests on. Stored
-        # here rather than derived later: only this frame knows the difference
-        # between "the fallback was not needed" and "the fallback found nothing",
-        # and both leave the same rows behind.
-        "deterministic": deterministic_summary,
-        "fallback": fallback_record.as_dict(),
         "dossier_basis": basis,
         # The automatic Research -> Company Intelligence handoff, recorded on
         # the durable result so the Workbench can show what happened and why.
         "company_intelligence": intelligence.as_dict(),
     }
+    if primary_mode:
+        output["research_mode"] = "claude_primary"
+        output["claude_research"] = primary_record.as_dict()
+    else:
+        output["deterministic"] = deterministic_summary
+        output["fallback"] = fallback_record.as_dict()
     return ResearchStep(
         kind=ResearchStepKind.COMPLETE,
         outcome="research_completed" if sufficient else "research_completed_with_warnings",
@@ -785,8 +875,14 @@ def execute_step(
 def _domain_outcome(basis: str) -> str:
     """The one-line outcome, honest about which source answered."""
 
-    if basis == BASIS_FALLBACK:
+    if basis in {BASIS_CLAUDE, BASIS_FALLBACK}:
         return "researched the company through cited public web sources"
     if basis == BASIS_BOTH:
         return "researched the company website and cited public web sources"
+    if basis == BASIS_NONE:
+        # The sentence an operator reads beside a dossier that holds nothing.
+        # "Researched the company website" would describe a read that either did
+        # not happen or established nothing, which is the same overstatement
+        # BASIS_NONE exists to prevent one field earlier.
+        return "found no citable public evidence about the company"
     return "researched the company website"

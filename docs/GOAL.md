@@ -13,7 +13,7 @@ The current MVP ends at Ready for Sending. Nothing in the pipeline waits for a h
 1. Capture a person into a permanent Contact without requiring a Campaign.
 2. Resolve Contact identity, Company identity and Company domain honestly.
 3. Enrol the permanent Contact into a Campaign explicitly and idempotently.
-4. Run deterministic Company research and persist the raw submission, versioned dossier and sourced facts.
+4. Run bounded Claude CLI web research and persist the cited raw submission, versioned dossier and sourced facts.
 5. Generate email candidates in the fixed policy order.
 6. Verify one exact address through the durable Verification Agent.
 7. Generate derived Insights from persisted evidence through the bounded Claude CLI seam.
@@ -46,7 +46,7 @@ Sending is registered for compatibility with the durable pipeline but has no pro
 ## Agent boundaries
 
 - Capture, identity, Company linking, suppression, verification, job state and approval are deterministic authority.
-- Research gathers evidence through registered workers and does not use Claude.
+- Research gathers cited evidence through the bounded Claude CLI web-research source. The deterministic crawler is not part of normal production execution.
 - Insights and Personalization use the bounded thinking seam with `allowed_tools=()`.
 - No model may verify an address, override suppression, change Agent controls, approve its own draft or send.
 - Missing, provisional and insufficient-evidence states remain explicit.
@@ -90,7 +90,7 @@ The MVP deliberately uses the shortest truthful operating path:
 The product is accepted when one operator can:
 
 - merge and run the customer application on top of the Campaign pipeline;
-- process one authorized real Contact using real website research, live MillionVerifier and real Claude CLI calls;
+- process one authorized real Contact using primary Claude CLI web research, live MillionVerifier and the bounded downstream Claude CLI calls;
 - inspect the Company dossier, source evidence, Verification decision and derived Insights;
 - see the Contact reach Ready for Sending with no human action, and read the generated messages in `/app/review`;
 - optionally edit a message or record a decision against one exact version, and confirm the audit record;

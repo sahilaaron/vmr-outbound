@@ -38,7 +38,16 @@ from tests.test_company_intelligence import (
     seeded,
 )
 from tests.test_company_intelligence_jobs import INDUSTRY_ANSWER, ScriptedThinker, factory
-from tests.test_research_claude_fallback import FakeWorker, _adapters, _fact, _setup
+from tests.test_research_claude_fallback import (
+    FakeWorker,
+    _adapters,
+    _claim,
+    _fact,
+    _setup,
+)
+from tests.test_research_claude_fallback import (
+    ScriptedThinker as ResearchThinker,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -46,6 +55,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 @pytest.fixture(autouse=True)
 def _features(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("FEATURES__COMPANY_RESEARCH", "true")
+    monkeypatch.setenv("FEATURES__RESEARCH_CLAUDE_FALLBACK", "true")
     monkeypatch.setenv("FEATURES__COMPANY_INTELLIGENCE", "true")
     get_settings.cache_clear()
     yield
@@ -91,9 +101,23 @@ def test_research_completion_automatically_queues_company_intelligence(
         ),
         sufficient=True,
     )
-    orchestrator_run_next(db_session, worker_id="handoff-test", adapters=_adapters(worker))
+    thinker = ResearchThinker(
+        payload={
+            "claims": [
+                _claim(
+                    "short_description",
+                    "Kiln Systems builds industrial kiln controllers",
+                ),
+                _claim("headquarters", "Sheffield, United Kingdom"),
+            ]
+        }
+    )
+    orchestrator_run_next(db_session, worker_id="handoff-test", adapters=_adapters(worker, thinker))
 
     db_session.refresh(job)
+    assert len(thinker.calls) == 1
+    assert worker.calls == []
+    assert job.result["dossier_basis"] == "claude_cli_web_research"
     handoff = job.result["company_intelligence"]
     assert handoff["enqueued"] is True
     assert handoff["outcome"] == ci_handoff.OUTCOME_QUEUED

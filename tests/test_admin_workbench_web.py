@@ -339,7 +339,7 @@ def test_research_fallback_lineage_is_rendered_from_the_committed_result(
     assert "claude_cli_fallback" in page
     # The Overview's fallback panel picks the same run up.
     overview = client.get("/admin").text
-    assert "Recent Research fallback use" in overview
+    assert "Recent primary Claude Research" in overview
     assert "claude_cli_fallback" in overview
 
 

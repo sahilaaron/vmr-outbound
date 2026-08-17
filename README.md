@@ -71,7 +71,7 @@ The v2 customer interface and Workbench share services and models but use separa
 1. **Capture Agent** — existing contact-first capture and promotion path.
 2. **Identity Agent** — authoritative LinkedIn identity convergence.
 3. **Company Agent** — permanent Company and domain linking.
-4. **Research Agent** — deterministic registered workers that persist sourced evidence.
+4. **Research Agent** — bounded Claude CLI web research that persists only cited, source-backed evidence.
 5. **Email Agent** — ordered candidate generation.
 6. **Verification Agent** — durable exact-address verification.
 7. **Insights Agent** — Claude CLI interpretation of persisted evidence.

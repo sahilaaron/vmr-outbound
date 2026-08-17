@@ -40,7 +40,7 @@
     <dl class="kv">
       <dt>Campaign Contact</dt><dd>{{ report.contact_label }} · {{ report.campaign_name }}<br><span class="muted-text">{{ report.campaign_contact_id }}</span></dd>
       <dt>Company at execution</dt><dd>{{ report.company_name or 'Unavailable' }} · {{ report.company_id or 'no permanent Company' }}</dd>
-      <dt>Execution domain / current fallback</dt><dd>{{ report.domain or 'Unavailable' }}</dd>
+      <dt>Execution domain</dt><dd>{{ report.domain or 'Unavailable' }}</dd>
       <dt>Current resolution state</dt><dd>{{ report.domain_state or 'No persisted resolution state' }}</dd>
       {% if report.domain_resolution %}
       <dt>Domain decision</dt><dd>{{ report.domain_resolution.scope }} · {{ report.domain_resolution.state }} · {{ report.domain_resolution.decision_kind or 'kind unavailable' }} · policy {{ report.domain_resolution.policy_version or 'unavailable' }} · {{ report.domain_resolution.decided_at | dt }}</dd>
@@ -65,7 +65,24 @@
 <div class="card">
   <div class="card-head"><h2>Research attempts and dossier basis</h2></div>
   <div class="card-body">
-    {% if report.deterministic or report.fallback %}
+    {% if report.claude_research %}
+    <dl class="kv">
+      <dt>Final dossier basis</dt><dd>{{ report.dossier_basis or 'Not persisted for this execution' }}</dd>
+      <dt>Primary Research source</dt>
+      <dd>
+        Claude CLI web research · attempted: {{ 'yes' if report.claude_research.attempted else 'no' }} · status: {{ report.claude_research.status }}
+        {% if report.claude_research.invocation_reason %}<br><span class="muted-text">{{ report.claude_research.invocation_reason }}</span>{% endif %}
+        {% if report.claude_research.reused_committed_attempt %}<br><span class="muted-text">Reused this job's already-committed Claude research; no new model call was made.</span>{% endif %}
+      </dd>
+      {% if report.claude_research.attempted %}
+      <dt>Claude producer</dt><dd>{{ report.claude_research.producer or 'unavailable' }} / {{ report.claude_research.producer_version or 'version unavailable' }}{% if report.claude_research.tools %} · tools: {{ report.claude_research.tools | join(', ') }}{% endif %}{% if report.claude_research.duration_seconds is not none %} · {{ '%.1f s' | format(report.claude_research.duration_seconds) }}{% endif %}</dd>
+      <dt>Claude evidence</dt><dd>{{ report.claude_research.evidence_accepted if report.claude_research.evidence_accepted is not none else '—' }} cited claim(s) accepted · {{ report.claude_research.claims_rejected if report.claude_research.claims_rejected is not none else '—' }} discarded{% if report.claude_research.rejection_reasons %}<br><span class="muted-text">discarded for: {{ report.claude_research.rejection_reasons | join(', ') }}</span>{% endif %}</dd>
+      <dt>Claude sources</dt><dd>{% if report.claude_research.source_urls %}<ul>{% for url in report.claude_research.source_urls %}<li><a href="{{ url }}" rel="noreferrer">{{ url }}</a></li>{% endfor %}</ul>{% else %}None recorded.{% endif %}</dd>
+      <dt>Claude error</dt><dd>{% if report.claude_research.error %}{{ report.claude_research.error }}{% if report.claude_research.error_code %} ({{ report.claude_research.error_code }}){% endif %}{% if report.claude_research.retryable is not none %} · retryable={{ 'yes' if report.claude_research.retryable else 'no' }}{% endif %}{% else %}None recorded.{% endif %}</dd>
+      {% endif %}
+    </dl>
+    <p class="muted-text">Claude-assisted evidence is stored under the <code>claude_web</code> research worker with the <code>claude_cli_web_research:model_cited</code> extraction method. It never writes a canonical Company field.</p>
+    {% elif report.deterministic or report.fallback %}
     <dl class="kv">
       <dt>Final dossier basis</dt><dd>{{ report.dossier_basis or 'Not persisted for this execution' }}</dd>
       <dt>1. Deterministic website worker</dt>
@@ -74,7 +91,7 @@
         output usable: {{ 'yes' if report.deterministic.usable else ('no' if report.deterministic.usable is not none else 'not persisted') }}
         {% if report.deterministic.reason %}<br><span class="muted-text">considered unusable because {{ report.deterministic.reason }}{% if report.deterministic.reason_code %} ({{ report.deterministic.reason_code }}){% endif %}</span>{% endif %}
       {% else %}Not persisted for this execution.{% endif %}</dd>
-      <dt>2. Claude CLI research fallback</dt>
+      <dt>2. Legacy Claude CLI research fallback</dt>
       <dd>{% if report.fallback %}
         attempted: {{ 'yes' if report.fallback.attempted else 'no' }} · status: {{ report.fallback.status }}
         {% if report.fallback.trigger_reason %}<br><span class="muted-text">{{ report.fallback.trigger_reason }}</span>{% endif %}
@@ -94,9 +111,9 @@
       <tbody>{% for item in report.deterministic.failures %}<tr><td>{{ item.research_worker or '—' }}</td><td>{{ item.stage or '—' }}</td><td>{{ item.error }}</td></tr>{% endfor %}</tbody>
     </table>
     {% endif %}
-    <p class="muted-text">Claude-assisted evidence is stored under the <code>claude_web</code> research worker and carries its own extraction method, so it stays distinguishable from deterministically read evidence in the tables below. Neither source writes a canonical Company field.</p>
+    <p class="muted-text">This is historical deterministic-first lineage. New production Research executions use Claude web research as their required primary source.</p>
     {% else %}
-    <p class="muted-text">This execution recorded no attempt lineage. It predates the Research fallback.</p>
+    <p class="muted-text">This execution recorded no source-attempt lineage.</p>
     {% endif %}
   </div>
 </div>
