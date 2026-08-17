@@ -167,6 +167,30 @@ class Settings(BaseSettings):
         le=30,
         description="End-to-end wall-clock budget for one readiness check.",
     )
+    # The pool ceiling is what actually limits Agent worker concurrency, and it
+    # was previously a literal in `create_db_engine` that no deployment could
+    # reach. One worker thread holds a pooled connection for the *whole* of a
+    # job's final transaction, which is where the Agent adapter runs: a Research
+    # job sits inside it for roughly two minutes, visible in
+    # `pg_stat_activity` as `idle in transaction`. So `--workers` above
+    # `database_pool_size + database_max_overflow` buys nothing — the surplus
+    # threads block for the pool timeout and then fail to claim, which reads on
+    # the console as a slow queue rather than as a misconfiguration.
+    #
+    # These stay at the historical 5 + 10 by default, so every existing
+    # deployment keeps exactly the behaviour it had. Raise them together with
+    # VMR_WORKER_CONCURRENCY, and keep the total across all processes inside
+    # PostgreSQL's own `max_connections`.
+    database_pool_size: int = Field(
+        default=5,
+        ge=1,
+        description="Connections the SQLAlchemy pool keeps open per process.",
+    )
+    database_max_overflow: int = Field(
+        default=10,
+        ge=0,
+        description="Connections the pool may open beyond database_pool_size under load.",
+    )
 
     # --- Safety switches -----------------------------------------------------
     # Dry-run defaults ON so that no environment can schedule real email

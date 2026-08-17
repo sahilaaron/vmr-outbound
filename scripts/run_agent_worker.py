@@ -24,12 +24,27 @@ on Postgres, on logo.dev, on MillionVerifier, on a ``claude`` subprocess — and
 Python releases the GIL for all of it. Each thread owns its own Session per
 transaction; nothing is shared but the engine's connection pool.
 
-Two bounds worth knowing. The pool is 5 connections plus 10 overflow, so a worker
-count near that ceiling will start queueing on connections instead of on work. And
-the language-model Agents each spend one ``claude`` invocation, so N workers can
-mean N concurrent CLI calls: if that is too many for your subscription, run a small
-pool scoped with ``--agent research --agent insights --agent personalization`` and
-a larger one for the rest.
+Two bounds worth knowing, and the first is a hard ceiling rather than a guideline.
+
+**Connections.** A thread holds one pooled connection for the whole of a job's
+final transaction — the one the Agent adapter runs inside — so a Research job
+occupies a connection for its entire two-minute model call, not for the
+milliseconds of writing its outcome. ``pg_stat_activity`` shows this as one
+``idle in transaction`` row per busy thread. The ceiling is therefore
+``DATABASE_POOL_SIZE + DATABASE_MAX_OVERFLOW`` (5 + 10 unless the deployment
+raises them), and ``--workers`` above it buys nothing: the surplus threads block
+for the pool timeout and then fail to claim. Raise the two together, and keep the
+sum across every process inside PostgreSQL's ``max_connections``.
+
+**Model calls.** The language-model Agents each spend one ``claude`` invocation,
+so N workers can mean N concurrent CLI calls against one subscription. That does
+not fail cleanly the way the pool does — it stretches each call's latency, and
+calls that cross ``RESEARCH_CLAUDE_FALLBACK_TIMEOUT_SECONDS`` are abandoned and
+retried, so past some point more threads produce less finished work. Raise it in
+steps and watch the ``thinking_timeout`` rate rather than guessing. If a
+particular pool is too many for the subscription, scope it with ``--agent
+research --agent insights --agent personalization`` and run a larger one for the
+rest.
 """
 
 from __future__ import annotations
