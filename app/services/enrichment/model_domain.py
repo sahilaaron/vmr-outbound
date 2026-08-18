@@ -71,6 +71,7 @@ PURPOSE = "company_domain_lookup"
 #: list of the model's prose would be neither auditable nor a sensible column.
 MAX_EVIDENCE_ITEMS = 6
 MAX_DETAIL_CHARS = 240
+MAX_KIND_CHARS = 64
 MAX_REASONING_CHARS = 400
 
 #: Recorded when the answer never addressed whether another company could answer
@@ -314,10 +315,14 @@ def _read_confidence(value: object) -> ModelConfidence:
 def _read_evidence(value: object) -> tuple[dict[str, Any], ...]:
     """The pages the model says it read, normalized and bounded.
 
-    Anything that is not a usable citation is dropped rather than kept as a
-    half-item: the policy counts these, and an entry with no readable host would
-    be counted as evidence while supporting nothing. Items are capped because
-    this is stored on a row and read by a person.
+    An entry with no URL is dropped — there is nothing to record and nothing to
+    check. An entry whose URL yields no host is *kept*, with ``host: null``: it is
+    still what the model said it read, and the policy simply does not count it as
+    support. Those two are deliberately different: dropping it would hide a model
+    that cites prose instead of pages, which is a pattern worth being able to see.
+
+    Items and detail text are capped because this is stored on a row and read by
+    a person, not accumulated as model output.
     """
 
     if not isinstance(value, list):
@@ -343,7 +348,7 @@ def _read_evidence(value: object) -> tuple[dict[str, Any], ...]:
                 # to read URLs. None when the URL is not one we can resolve to a
                 # host, which the policy treats as unsupporting.
                 "host": normalize_domain(url),
-                "kind": (norm.collapse_whitespace(kind) or None) if isinstance(kind, str) else None,
+                "kind": _trimmed(kind, MAX_KIND_CHARS),
                 "detail": _trimmed(detail, MAX_DETAIL_CHARS),
             }
         )
