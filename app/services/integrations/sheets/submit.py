@@ -296,6 +296,7 @@ def _submit_one(
             row=row,
             company_id=company.id if company is not None else None,
             domain=domain,
+            email=_fillable_email(session, contact=contact, row=row),
         )
 
     existing = _membership_for(session, campaign_id=campaign.id, contact_id=contact.id)
@@ -390,8 +391,37 @@ def _resolve_contact(
     return deduped.contact
 
 
+def _fillable_email(session: Session, *, contact: Contact, row: SubmittedRow) -> str | None:
+    """The supplied address, only if writing it onto *contact* is safe.
+
+    ``contacts.email`` is uniquely indexed, and this row may have matched its
+    person by LinkedIn URL or by natural key rather than by address — in which
+    case nothing has yet asked whether somebody else already holds the address
+    the sheet supplied. Writing it blindly would raise an integrity error out of
+    the flush and take the whole request down, for a value that is only ever
+    filling a blank.
+
+    So the address is written only when no other permanent Contact owns it.
+    When one does, the blank stays blank and the pipeline discovers an address
+    for this person as it always would. That is the truthful outcome: two people
+    cannot share a mailbox, and the sheet has not told us which of them is wrong.
+    """
+
+    if not row.email or contact.email:
+        return None
+    holder = dedup.find_existing_contact(session, email=row.email, natural_key=None).contact
+    if holder is not None and holder.id != contact.id:
+        return None
+    return row.email
+
+
 def _fill_blanks(
-    contact: Contact, *, row: SubmittedRow, company_id: uuid.UUID | None, domain: str | None
+    contact: Contact,
+    *,
+    row: SubmittedRow,
+    company_id: uuid.UUID | None,
+    domain: str | None,
+    email: str | None = None,
 ) -> None:
     """Add what the permanent record is missing, and overwrite nothing.
 
@@ -401,8 +431,8 @@ def _fill_blanks(
     and it makes a stale sheet incapable of undoing work done in the product.
     """
 
-    if not contact.email and row.email:
-        contact.email = row.email
+    if not contact.email and email:
+        contact.email = email
     if not contact.title and row.job_title:
         contact.title = row.job_title
     if not contact.linkedin_url and row.linkedin_url:

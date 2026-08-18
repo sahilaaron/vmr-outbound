@@ -1714,6 +1714,70 @@ def test_two_rows_supplying_the_same_address_resolve_to_one_person(
     assert len(db_session.scalars(select(CampaignContact)).all()) == 1
 
 
+def test_a_supplied_address_another_person_already_owns_is_not_written(
+    db_session: Session, enable_sheets: None
+) -> None:
+    """The blank stays blank rather than colliding with a unique index.
+
+    This row matches its person by LinkedIn URL, so nothing has asked whether
+    somebody else already holds the address the sheet supplied — and somebody
+    does. Writing it would raise an integrity error out of the flush and take the
+    whole request down, for a value that was only ever filling a blank.
+
+    Two people cannot share a mailbox and the sheet has not said which of them is
+    wrong, so the address is left alone and the pipeline discovers one for this
+    person exactly as it would have.
+    """
+
+    user = make_user(db_session, email="mine@vmr.example")
+    campaign = make_campaign(db_session, name="Supplied", owner=user)
+    company = seed_company(db_session, name="Kiln Systems", domain="kiln.example")
+
+    owner = Contact(
+        first_name="Grace",
+        last_name="Hopper",
+        company_name="Kiln Systems",
+        company_domain="kiln.example",
+        company_id=company.id,
+        email="shared@kiln.example",
+    )
+    matched = Contact(
+        first_name="Ada",
+        last_name="Lovelace",
+        company_name="Kiln Systems",
+        company_domain="kiln.example",
+        company_id=company.id,
+        linkedin_url="https://www.linkedin.com/in/ada-lovelace",
+    )
+    db_session.add_all([owner, matched])
+    db_session.flush()
+
+    client = make_client(db_session, {"tok": assertion_for(user)})
+    response = client.post(
+        "/integrations/sheets/batches",
+        json=batch_payload(
+            campaign,
+            [
+                row(
+                    "r1",
+                    email="shared@kiln.example",
+                    linkedin_url="https://www.linkedin.com/in/ada-lovelace",
+                )
+            ],
+        ),
+        headers={"Authorization": "Bearer tok"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["rows"][0]["status"] == RowStatus.PENDING.value
+
+    db_session.refresh(matched)
+    db_session.refresh(owner)
+    assert matched.email is None
+    assert owner.email == "shared@kiln.example"
+    assert len(db_session.scalars(select(Contact)).all()) == 2
+
+
 def test_a_suppressed_supplied_address_leaves_nothing_behind(
     db_session: Session, enable_sheets: None
 ) -> None:

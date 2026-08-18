@@ -56,7 +56,7 @@ from app.models.enums import (
 )
 from app.models.pipeline import CampaignContactAgentState, CampaignContactSource
 from app.models.verification_job import AgentJob
-from app.services import campaign_contacts, suppressions
+from app.services import campaign_contacts, customer_status, suppressions
 from app.services.agents import controls
 from app.services.agents.orchestrator import run_next
 from app.services.agents.registry import PIPELINE_ORDER
@@ -76,6 +76,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tests import apollo_factory as af
+from tests.gmail_factory import build_sequence
 from tests.test_research_claude_fallback import (
     FakeWorker,
     ScriptedThinker,
@@ -917,6 +918,58 @@ def test_an_unverified_discovered_address_still_does_not_become_usable(
     assert (
         sheet_results._usable_address(db_session, membership=enrolment.membership, contact=contact)
         is None
+    )
+
+
+def test_the_customer_ready_projection_accepts_a_supplied_address(
+    db_session: Session,
+) -> None:
+    """Ready for Sending needs an address and a package, and says nothing more.
+
+    The customer-facing projection was already correct for this case and is
+    pinned rather than changed: it asks whether the Contact has an address at
+    all, never whether a provider approved one. That is the right question — the
+    three customer words are Processing, Ready for Sending and Could not prepare,
+    and none of them is a deliverability claim — and this test exists so a later
+    tightening of that expression to "verified only" cannot silently strand every
+    contact whose address the operator supplied.
+    """
+
+    fixture = build_sequence(db_session, email=SUPPLIED_EMAIL)
+    membership = fixture.membership
+
+    # Verification completed as a truthful bypass, exactly as the pipeline writes
+    # it for a supplied address.
+    db_session.add(
+        CampaignContactAgentState(
+            campaign_contact_id=membership.id,
+            agent_id=AgentIdentifier.VERIFICATION,
+            status=PipelineStageStatus.COMPLETED,
+            reason_code="verification_bypassed_supplied_email",
+        )
+    )
+    db_session.flush()
+
+    assert (
+        customer_status.status_for_membership(db_session, campaign_contact_id=membership.id)
+        is customer_status.CustomerContactStatus.READY_FOR_SENDING
+    )
+
+    # And no verification evidence was invented to get there.
+    assert db_session.scalars(select(ExactEmailVerification)).all() == []
+    view = verification_status.derive_status_for_contact(db_session, fixture.contact)
+    assert view.visual is not EmailVisualStatus.SUCCESSFUL
+
+
+def test_the_customer_projection_still_refuses_a_package_with_no_address(
+    db_session: Session,
+) -> None:
+    """The other half of the same rule, unchanged: no address, not ready."""
+
+    fixture = build_sequence(db_session, without_email=True)
+    assert (
+        customer_status.status_for_membership(db_session, campaign_contact_id=fixture.membership.id)
+        is not customer_status.CustomerContactStatus.READY_FOR_SENDING
     )
 
 
