@@ -992,6 +992,15 @@ EXPECTED_USER_REACHABLE: frozenset[str] = frozenset(
         "GET /app/campaigns/{campaign_id}/people",
         "GET /app/campaigns/{campaign_id}/setup",
         "POST /app/campaigns/{campaign_id}/setup",
+        # The Campaign's own offering: read one from an address, or go back to
+        # the Library item. A customer decision about their own Campaign, scoped
+        # by the same Campaign path guard as everything else here — and
+        # deliberately *not* an administrator one, unlike `POST .../setup/research`
+        # above it, which authorizes reading other organisations' websites. This
+        # reads a page the operator already chose, spends the same subscription
+        # the rest of preparation does, and publishes nothing to the Library.
+        "POST /app/campaigns/{campaign_id}/setup/offering/analyze",
+        "POST /app/campaigns/{campaign_id}/setup/offering/library",
         "GET /app/companies",
         "GET /app/companies/{company_id}",
         "GET /app/library",
