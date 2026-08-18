@@ -121,6 +121,35 @@
         </div>
       </div>
       {% endif %}
+      {% if offering_runs %}
+      {#
+        The Admin half of the Campaign offering read. The customer sees four
+        progress words and one product sentence; the producer, the attempt count
+        and the exact failure code are here and only here.
+      #}
+      <div class="v2-card">
+        <div class="v2-card-head tight"><h2>Offering research</h2></div>
+        {% for run in offering_runs %}
+        <div class="v2-row tight">
+          <div class="v2-sidelist-top">
+            <b>v{{ run.version_number }}</b>
+            {{ tag(run.status.value, 'ok' if run.status.value == 'ready' else ('err' if run.status.value == 'failed' else ''), small=true) }}
+            {% if run.is_current %}{{ tag('current', 'brand', small=true) }}{% endif %}
+          </div>
+          <div class="v2-hint m">{{ run.source_url | neutralize }}</div>
+          <div class="v2-hint m">
+            attempt {{ run.attempts }}/{{ run.max_attempts }}
+            {% if run.producer %} · {{ run.producer }} {{ run.producer_version or '' }}{% endif %}
+            {% if run.producer_model %} · {{ run.producer_model }}{% endif %}
+            {% if run.context_digest %} · {{ run.context_digest[:12] }}{% endif %}
+          </div>
+          {% if run.failure_code %}
+          <div class="v2-hint m">{{ run.failure_code }} — {{ (run.failure_reason or '') | neutralize }}</div>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
       <div class="v2-card">
         <div class="v2-card-head tight"><h2>Recent pipeline events</h2></div>
         {% for event in activity[:15] %}
