@@ -115,6 +115,7 @@ SHARDS: tuple[Shard, ...] = (
             "tests/test_employee_size_derivation",
             "tests/test_field_provenance",
             "tests/test_logodev_client",
+            "tests/test_model_domain_acceptance",
             "tests/test_model_domain_lookup",
             "tests/test_salesnav_domain_enrichment",
         ),
