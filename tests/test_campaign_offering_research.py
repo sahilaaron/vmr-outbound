@@ -910,6 +910,59 @@ def test_the_structure_is_bounded_but_never_invented() -> None:
     assert parsed.digest() == parse_offering_payload(payload).digest()
 
 
+def test_a_redirect_is_recorded_rather_than_assumed_away(
+    db_session: Session, feature_on: None
+) -> None:
+    """The address asked for and the address read are stored separately.
+
+    A public URL may redirect anywhere, and only the fetching tool sees where it
+    landed — the application makes no request of its own, so it cannot police
+    that. What it can do is refuse to pretend: the run keeps the URL it was
+    given, and the answer keeps the URL the model says it actually read, so a
+    redirect is visible to an auditor instead of being flattened into one field
+    that is right about neither.
+    """
+
+    campaign = make_campaign(db_session)
+    landed = "https://example.com/reports/cement-outlook-2027-edition"
+    run = run_to_completion(
+        db_session, campaign, ScriptedThinker(dict(GOOD_ANSWER, source_url_read=landed))
+    )
+
+    assert run.source_url == PAGE
+    assert run.offering_context["source_url_read"] == landed
+
+    resolved = effective_offering.resolve(db_session, campaign)
+    assert resolved.offering is not None
+    assert resolved.offering.source_url_read == landed
+    # The prompt block cites the address the operator chose, which is the one
+    # they can check; the landing page is on the record next to it.
+    block = effective_offering.primary_offering_block(resolved.offering, source_url=run.source_url)
+    assert PAGE in block
+
+
+def test_a_slow_page_fails_retryably_rather_than_holding_the_lease(
+    db_session: Session, feature_on: None
+) -> None:
+    """A page that never answers must fail the run, not occupy a worker.
+
+    The wall-clock ceiling is the CLI seam's, and a timeout is retryable there
+    for the reason it records: running it again could plausibly work. What
+    matters here is that the run comes back to the queue with the reason on it
+    rather than sitting at ``READING`` until its lease expires.
+    """
+
+    from app.services.thinking.contracts import ThinkingTimeout
+
+    campaign = make_campaign(db_session)
+    run = run_to_completion(
+        db_session, campaign, ScriptedThinker(error=ThinkingTimeout("no answer in 240s"))
+    )
+    assert run.status is CampaignOfferingResearchStatus.QUEUED
+    assert run.failure_code == "thinking_timeout"
+    assert run.lease_owner is None
+
+
 def test_a_thin_answer_is_kept_and_flagged_rather_than_refused() -> None:
     """A thin page is a real thing; the operator should see what was found."""
 
