@@ -96,6 +96,12 @@ class AgentExecutionReport:
     selected_email: str | None
     policy_version: str | None
     error_summary: str | None
+    # Which provider actually produced the accepted answer, whether it was the
+    # fallback rather than the primary, and why the fallback ran. Derived from
+    # the durable provider-step rows, so it reads correctly for history too.
+    final_provider: str | None
+    fallback_used: bool
+    fallback_reason: str | None
     candidates: tuple[CandidateStepReport, ...]
     provider_steps: tuple[ProviderStepReport, ...]
     usage: tuple[UsageReportItem, ...]
@@ -275,6 +281,11 @@ class EmailVerificationReportReader:
                 policy_version=policy_version,
                 error_summary=sanitized_error,
                 candidates=candidates,
+                final_provider=provider_steps[-1].provider_id if provider_steps else None,
+                fallback_used=len(provider_steps) > 1,
+                fallback_reason=(
+                    provider_steps[-2].error_summary if len(provider_steps) > 1 else None
+                ),
                 provider_steps=provider_steps,
                 usage=usage,
                 warnings=tuple(warnings),

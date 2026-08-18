@@ -65,6 +65,7 @@ for _name in list(os.environ):
 # call would spend real MillionVerifier credits or hit the logo.dev quota.
 PROVIDER_KEY_VARS = (
     "MILLIONVERIFIER_API_KEY",
+    "DEBOUNCE_API_KEY",
     "LOGO_DEV_API_KEY",
     "PROVIDER_CREDENTIAL_ENCRYPTION_KEY",
 )
