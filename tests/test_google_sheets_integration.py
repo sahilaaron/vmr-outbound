@@ -1542,6 +1542,211 @@ def test_the_credential_dependency_is_declared_on_the_router_not_the_handlers() 
 
 
 # ---------------------------------------------------------------------------
+# Supplied address and website, over the wire
+# ---------------------------------------------------------------------------
+
+
+def test_a_row_may_supply_the_address_and_the_website(
+    db_session: Session, enable_sheets: None
+) -> None:
+    """The two optional columns, accepted through the real request.
+
+    Proved at the HTTP boundary rather than against the service, because these
+    values arrive from a spreadsheet cell an operator typed — the request is where
+    an unusable one has to be refused, and where an accepted one has to reach
+    durable provenance rather than a variable.
+    """
+
+    user = make_user(db_session, email="mine@vmr.example")
+    campaign = make_campaign(db_session, name="Supplied", owner=user)
+    client = make_client(db_session, {"tok": assertion_for(user)})
+
+    response = client.post(
+        "/integrations/sheets/batches",
+        json=batch_payload(
+            campaign,
+            [
+                row(
+                    "r1",
+                    email="Ada.Lovelace@Kiln.example",
+                    website="https://www.kiln.example/about",
+                )
+            ],
+        ),
+        headers={"Authorization": "Bearer tok"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["counts"] == {"submitted": 1, "accepted": 1, "could_not_prepare": 0}
+
+    contact = db_session.scalars(select(Contact)).one()
+    assert contact.email == "ada.lovelace@kiln.example"
+    assert contact.company_domain == "kiln.example"
+    # The supplied website established the permanent Company. Without it the
+    # Company Agent would block on `company_missing`, leaving a row that supplied
+    # a website worse off than one that supplied nothing.
+    assert contact.company_id is not None
+    company = db_session.get(Company, contact.company_id)
+    assert company is not None and company.domain == "kiln.example"
+    # And it did so without inventing a resolution decision about the company:
+    # nothing was asked, so nothing may be recorded as having answered.
+    assert db_session.scalars(select(CompanyDomainResolution)).all() == []
+
+    membership = db_session.scalars(select(CampaignContact)).one()
+    source = db_session.scalars(
+        select(CampaignContactSource).where(
+            CampaignContactSource.campaign_contact_id == membership.id
+        )
+    ).one()
+    supplied = source.source_context["operator_supplied_inputs"]
+    assert supplied["email"]["normalized"] == "ada.lovelace@kiln.example"
+    assert supplied["email"]["raw"] == "Ada.Lovelace@Kiln.example"
+    assert supplied["email"]["discovered"] is False
+    assert supplied["email"]["verified"] is False
+    assert supplied["company_domain"]["normalized"] == "kiln.example"
+
+    # Nothing was verified, and nothing anywhere says it was.
+    assert db_session.scalars(select(ExactEmailVerification)).all() == []
+
+
+def test_a_malformed_supplied_address_refuses_only_that_row(
+    db_session: Session, enable_sheets: None
+) -> None:
+    """One bad cell costs one row, and the answer names the cell to fix."""
+
+    user = make_user(db_session, email="mine@vmr.example")
+    campaign = make_campaign(db_session, name="Supplied", owner=user)
+    seed_company(db_session, name="Kiln Systems", domain="kiln.example")
+    client = make_client(db_session, {"tok": assertion_for(user)})
+
+    response = client.post(
+        "/integrations/sheets/batches",
+        json=batch_payload(
+            campaign,
+            [
+                row("bad", email="not-an-address"),
+                row("good", first="Grace", last="Hopper"),
+            ],
+        ),
+        headers={"Authorization": "Bearer tok"},
+    )
+
+    assert response.status_code == 200
+    rows = {item["client_row_id"]: item for item in response.json()["rows"]}
+    assert rows["bad"]["status"] == RowStatus.COULD_NOT_PREPARE.value
+    assert rows["bad"]["failure_code"] == "email_unusable"
+    assert "email address" in rows["bad"]["safe_failure_reason"]
+    assert rows["good"]["status"] == RowStatus.PENDING.value
+
+    # The refused row created nothing, and cost the other row nothing.
+    contacts = db_session.scalars(select(Contact)).all()
+    assert [contact.last_name for contact in contacts] == ["Hopper"]
+
+
+def test_an_unreadable_website_still_enrols_the_row(
+    db_session: Session, enable_sheets: None
+) -> None:
+    """A website has a fallback the address does not: the Company Agent.
+
+    So an unreadable one is dropped and recorded rather than refused. Refusing
+    would cost the operator a contact the product can prepare perfectly well.
+    """
+
+    user = make_user(db_session, email="mine@vmr.example")
+    campaign = make_campaign(db_session, name="Supplied", owner=user)
+    client = make_client(db_session, {"tok": assertion_for(user)})
+
+    response = client.post(
+        "/integrations/sheets/batches",
+        json=batch_payload(campaign, [row("r1", website="not a hostname")]),
+        headers={"Authorization": "Bearer tok"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["rows"][0]["status"] == RowStatus.PENDING.value
+
+    contact = db_session.scalars(select(Contact)).one()
+    assert contact.company_domain is None
+
+    membership = db_session.scalars(select(CampaignContact)).one()
+    source = db_session.scalars(
+        select(CampaignContactSource).where(
+            CampaignContactSource.campaign_contact_id == membership.id
+        )
+    ).one()
+    record = source.source_context["operator_supplied_inputs"]["company_domain"]
+    assert record["usable"] is False
+    assert record["raw"] == "not a hostname"
+
+
+def test_two_rows_supplying_the_same_address_resolve_to_one_person(
+    db_session: Session, enable_sheets: None
+) -> None:
+    """An exact normalized address is the strongest dedup key this system has.
+
+    It is also uniquely indexed, so a second row carrying the same address has to
+    match rather than insert — otherwise the request fails against the index.
+    """
+
+    user = make_user(db_session, email="mine@vmr.example")
+    campaign = make_campaign(db_session, name="Supplied", owner=user)
+    client = make_client(db_session, {"tok": assertion_for(user)})
+
+    response = client.post(
+        "/integrations/sheets/batches",
+        json=batch_payload(
+            campaign,
+            [
+                row("r1", email="ada@kiln.example", website="https://kiln.example"),
+                row("r2", first="A.", email="ADA@kiln.example"),
+            ],
+        ),
+        headers={"Authorization": "Bearer tok"},
+    )
+
+    assert response.status_code == 200
+    assert [item["status"] for item in response.json()["rows"]] == [
+        RowStatus.PENDING.value,
+        RowStatus.PENDING.value,
+    ]
+    assert len(db_session.scalars(select(Contact)).all()) == 1
+    assert len(db_session.scalars(select(CampaignContact)).all()) == 1
+
+
+def test_a_suppressed_supplied_address_leaves_nothing_behind(
+    db_session: Session, enable_sheets: None
+) -> None:
+    """The ledger is asked before anything is created, using the supplied value."""
+
+    user = make_user(db_session, email="mine@vmr.example")
+    campaign = make_campaign(db_session, name="Supplied", owner=user)
+    db_session.add(
+        Suppression(
+            suppression_type=SuppressionType.EMAIL,
+            value="ada@kiln.example",
+            reason=SuppressionReason.MANUAL,
+            created_by="operator",
+        )
+    )
+    db_session.flush()
+    client = make_client(db_session, {"tok": assertion_for(user)})
+
+    response = client.post(
+        "/integrations/sheets/batches",
+        json=batch_payload(campaign, [row("r1", email="ada@kiln.example")]),
+        headers={"Authorization": "Bearer tok"},
+    )
+
+    assert response.status_code == 200
+    entry = response.json()["rows"][0]
+    assert entry["status"] == RowStatus.COULD_NOT_PREPARE.value
+    assert entry["failure_code"] == "suppressed"
+    assert db_session.scalars(select(Contact)).all() == []
+    assert db_session.scalars(select(CampaignContact)).all() == []
+
+
+# ---------------------------------------------------------------------------
 # The pure contract, proved without a database
 # ---------------------------------------------------------------------------
 
