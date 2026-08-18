@@ -43,6 +43,7 @@ from app.models.enums import (
     AgentIdentifier,
     CampaignContactEligibility,
     CampaignMembershipStatus,
+    CampaignOfferingSource,
     CampaignStatus,
     ContactWorkflowState,
     PipelineStageStatus,
@@ -89,6 +90,28 @@ class Campaign(Base):
     # upgrading itself to certainty, and they are independent of this switch.
     allow_provisional_domains: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
+    )
+    # --- Which offering this Campaign leads with -----------------------------
+    #
+    # LIBRARY is the behaviour every Campaign has always had and the value every
+    # existing row takes: the emails lead with the approved Library/VMI offering
+    # the Campaign names.
+    #
+    # URL_RESEARCH says the operator asked VMR to read a specific offering page
+    # and lead with what it found. It is an *election*, not a result: the answer
+    # itself lives in ``campaign_offering_research``, versioned, and this column
+    # never tells you whether that answer arrived. Keeping the two apart is what
+    # makes the three product states expressible — elected and still preparing,
+    # elected and ready, elected and failed back to the Library — which one
+    # column could not say.
+    #
+    # It overrides nothing globally. The Library record is untouched by either
+    # value, and switching back to LIBRARY discards no research history.
+    offering_source: Mapped[CampaignOfferingSource] = mapped_column(
+        Enum(CampaignOfferingSource, name="campaign_offering_source"),
+        nullable=False,
+        default=CampaignOfferingSource.LIBRARY,
+        server_default=CampaignOfferingSource.LIBRARY.name,
     )
     settings_version: Mapped[int] = mapped_column(
         Integer, nullable=False, default=1, server_default="1"
