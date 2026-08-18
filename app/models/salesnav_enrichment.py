@@ -196,6 +196,21 @@ class SalesNavCompanyEnrichment(Base):
     # The model's own words for declining, or the seam's words for a failure.
     # Operator-facing only; never an input to any decision.
     model_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The structured claim behind ``model_domain``: how sure the model said it
+    # was, which pages it says it read (each with its parsed host), what it said
+    # about same-named companies, and one auditable sentence of reasoning.
+    #
+    # Unlike ``model_note`` this IS a decision input — it is the only thing the
+    # acceptance policy has to judge a model answer on, and without it a
+    # well-formed hostname would be accepted for being well formed. Stored rather
+    # than judged at lookup time so the acceptance replays: the policy is the only
+    # module entitled to say what an answer meant, and it must be able to say it
+    # again from the row.
+    #
+    # NULL on every row answered before this contract existed. The policy grades
+    # those as unevidenced rather than trusting them, which is the truthful
+    # reading — nothing was recorded, so nothing can be checked.
+    model_claim: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     model_looked_up_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

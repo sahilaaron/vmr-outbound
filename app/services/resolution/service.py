@@ -354,6 +354,7 @@ def gather_evidence(
     model_status = EnrichmentLookupStatus.NOT_STARTED
     model_answer: str | None = None
     model_source: str | None = None
+    model_claim: dict[str, Any] | None = None
 
     if record is not None:
         approved = frozenset(
@@ -371,6 +372,7 @@ def gather_evidence(
         model_status = record.model_lookup_status
         model_answer = record.model_domain
         model_source = record.model_source_url
+        model_claim = record.model_claim if isinstance(record.model_claim, dict) else None
 
     return policy.ResolutionEvidence(
         company_name=hints.name,
@@ -386,6 +388,7 @@ def gather_evidence(
         model_domain=model_answer,
         model_lookup_status=model_status,
         model_source_url=model_source,
+        model_claim=model_claim,
     )
 
 
