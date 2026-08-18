@@ -62,7 +62,7 @@ class EffectiveCampaignOffering:
     campaign_id: uuid.UUID
     mode: CampaignOfferingSource
     #: The Library/VMI side, unchanged and always present. Supporting when there
-    #: is researched primary above it; the primary itself otherwise.
+    #: is a researched primary above it; the primary itself otherwise.
     seller: SellerContext
     #: The current READY research row, when one is leading. ``None`` in every
     #: other case, including "URL mode but still preparing" and "URL mode but the
@@ -124,9 +124,70 @@ def resolve(session: Session, campaign: Campaign) -> EffectiveCampaignOffering:
 # Prompt rendering
 # ---------------------------------------------------------------------------
 #
-# Two renderings already existed for the Library half — the Insights adapter's
-# and Personalization's — and they differ for good reasons. Only the *primary*
-# block is shared, because that is the part the precedence decides.
+# Two renderings of the Library half exist and they differ for good reasons: a
+# drafting prompt needs the approved proof points spelled out, and Insights needs
+# the archived marker. :func:`library_summary` is the second of those, moved here
+# from the Insights adapter so the offering-research prompt can reuse it rather
+# than grow a third. What is shared unconditionally is :func:`with_primary`,
+# because that is the part the precedence decides, and a second copy of it is the
+# defect this module exists to prevent.
+
+
+def library_summary(seller: SellerContext) -> str:
+    """Flatten the seller's own Library knowledge into one prompt block.
+
+    Used by the Insights adapter and by the offering-research prompt, which needs
+    exactly this — here is what we already are and sell — to judge how a
+    researched page stands with it.
+    """
+
+    lines: list[str] = []
+    profile = seller.profile
+    if profile is not None:
+        lines.append(f"Company: {profile.name}")
+        for label, value in (
+            ("What we do", profile.short_description or profile.description),
+            ("Positioning", profile.positioning),
+            ("How we communicate", profile.communication_guidance),
+        ):
+            if value:
+                lines.append(f"{label}: {value}")
+        for label, values in (
+            ("Industries served", profile.industries_served),
+            ("Geographies served", profile.geographies_served),
+            ("Capabilities", profile.capabilities),
+            ("Differentiators", profile.differentiators),
+        ):
+            if values:
+                lines.append(f"{label}: {', '.join(str(item) for item in values)}")
+    for entry in seller.offerings:
+        offering = entry.offering
+        suffix = " (ARCHIVED — no longer offered)" if entry.is_archived else ""
+        lines.append(f"\nOffering — {offering.name}{suffix}")
+        if offering.short_description or offering.description:
+            lines.append(f"  {offering.short_description or offering.description}")
+        for proof in entry.proof_points:
+            lines.append(f"  Proof point: {proof.statement}")
+    return "\n".join(lines) if lines else "(no seller knowledge base has been entered yet)"
+
+
+def with_primary(effective: EffectiveCampaignOffering, library_block: str) -> str:
+    """Compose the offering half of a drafting prompt, in precedence order.
+
+    When there is no researched primary this returns the Library block unchanged,
+    byte for byte — which is what keeps a Library-only Campaign's prompts, and
+    therefore its copy, exactly what they were before this feature existed.
+    """
+
+    if effective.offering is None or effective.research is None:
+        return library_block
+    return "\n\n".join(
+        (
+            primary_offering_block(effective.offering, source_url=effective.research.source_url),
+            supporting_header(effective),
+            library_block,
+        )
+    )
 
 
 def primary_offering_block(offering: OfferingIntelligence, *, source_url: str) -> str:
@@ -170,12 +231,12 @@ def supporting_header(effective: EffectiveCampaignOffering) -> str:
 
 
 def keyword_text(effective: EffectiveCampaignOffering) -> str:
-    """Everything the effective offering says, flattened for keyword matching.
+    """Everything the researched offering says, flattened for keyword matching.
 
     Used by the Personalization context decision, which scores recipient evidence
     by overlap with what we sell. A Campaign leading with a researched offering
     whose words never entered this text would score every genuinely relevant fact
-    as irrelevant, and fall back to the weakest writing strategy — the failure
+    as irrelevant and fall back to the weakest writing strategy — the failure
     would look like bad copy rather than a missing join, so it is worth the two
     lines.
     """

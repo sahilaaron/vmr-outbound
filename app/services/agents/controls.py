@@ -15,6 +15,7 @@ from app.models.agent import AgentControl, CampaignAgentOverride
 from app.models.campaign import Campaign
 from app.models.enums import AgentControlStatus, AgentIdentifier
 from app.services.agents.registry import AGENT_SPECS, get_agent_spec
+from app.services.campaign_offering import consistency as offering_consistency
 from app.services.audit import record_audit_event
 
 MAX_CONFIG_BYTES = 25_000
@@ -386,6 +387,27 @@ def effective_control(
         base_status = AgentControlStatus.DISABLED
         source = CAMPAIGN_EXECUTION_SOURCE
         reason = campaign.disabled_reason or "Campaign execution is disabled"
+    elif base_status is AgentControlStatus.ENABLED and (
+        hold := offering_consistency.holds_agent(session, campaign=campaign, agent_id=agent_id)
+    ):
+        # A Campaign preparing its offering from a URL holds the two stages whose
+        # output depends on what it is selling, so it cannot pitch the Library
+        # offering to the first fifty contacts and the researched one to the rest.
+        #
+        # PAUSED rather than DISABLED, and the difference is the whole point: a
+        # pause projects onto the stage reversibly and is released by the ordinary
+        # control reconciliation the moment a version becomes current. DISABLED
+        # would invite ``schedule_next`` to auto-skip a *skippable* stage —
+        # Insights is one — and SKIPPED is absorbing, so a Campaign would come
+        # back from a two-minute wait having permanently discarded the stage it
+        # was waiting for.
+        #
+        # It is also checked only when the Campaign has not otherwise turned the
+        # Agent off: an operator's own pause or disable is a decision, and a
+        # temporary hold must not overwrite the reason an operator sees.
+        base_status = AgentControlStatus.PAUSED
+        source = offering_consistency.OFFERING_RESEARCH_SOURCE
+        reason = hold
     elif not spec.implemented and base_status is AgentControlStatus.ENABLED:
         base_status = AgentControlStatus.DISABLED
         source = "registry"

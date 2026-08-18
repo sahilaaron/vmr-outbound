@@ -46,7 +46,7 @@ from app.services.personalization.cadence import CadenceError, campaign_opted_in
 from app.services.personalization.sequence_validation import SequenceValidationError
 from app.services.resolution import gates as resolution_gates
 from app.services.resolution import store as resolution_store
-from app.services.seller import context as seller_context
+from app.services.seller import effective as effective_offering
 from app.services.seller.context import SellerContext
 from app.services.sequences import persistence as sequence_persistence
 from app.services.sequences import read as sequence_read
@@ -1187,37 +1187,20 @@ def _text(value: Any, *, limit: int) -> str | None:
     return cleaned[:limit] if cleaned else None
 
 
-def _seller_summary(seller: SellerContext) -> str:
-    """Flatten trusted seller context into the prompt's first block."""
+def _seller_summary(effective: effective_offering.EffectiveCampaignOffering) -> str:
+    """The offering half of an Insights prompt, in the Campaign's own precedence.
 
-    lines: list[str] = []
-    profile = seller.profile
-    if profile is not None:
-        lines.append(f"Company: {profile.name}")
-        for label, value in (
-            ("What we do", profile.short_description or profile.description),
-            ("Positioning", profile.positioning),
-            ("How we communicate", profile.communication_guidance),
-        ):
-            if value:
-                lines.append(f"{label}: {value}")
-        for label, values in (
-            ("Industries served", profile.industries_served),
-            ("Geographies served", profile.geographies_served),
-            ("Capabilities", profile.capabilities),
-            ("Differentiators", profile.differentiators),
-        ):
-            if values:
-                lines.append(f"{label}: {', '.join(str(item) for item in values)}")
-    for entry in seller.offerings:
-        offering = entry.offering
-        suffix = " (ARCHIVED — no longer offered)" if entry.is_archived else ""
-        lines.append(f"\nOffering — {offering.name}{suffix}")
-        if offering.short_description or offering.description:
-            lines.append(f"  {offering.short_description or offering.description}")
-        for proof in entry.proof_points:
-            lines.append(f"  Proof point: {proof.statement}")
-    return "\n".join(lines) if lines else "(no seller knowledge base has been entered yet)"
+    The rendering of the Library half moved to
+    ``app.services.seller.effective.library_summary`` so that the Campaign
+    offering read could reuse it rather than grow a third copy; what is added
+    here is the researched primary, when this Campaign has one. Insights is asked
+    which recipient facts matter, and it can only answer that against what the
+    Campaign is actually selling.
+    """
+
+    return effective_offering.with_primary(
+        effective, effective_offering.library_summary(effective.seller)
+    )
 
 
 def _restricted_claims_block(seller: SellerContext) -> str:
@@ -1283,13 +1266,14 @@ class InsightsAgentAdapter:
         )
         prompt_catalog = employee_size.bounded_prompt_catalog(catalog)
         evidence_by_handle = {item.handle: item for item in prompt_catalog}
-        seller = seller_context.assemble(context.session, campaign_id=context.campaign.id)
+        effective = effective_offering.resolve(context.session, context.campaign)
+        seller = effective.seller
 
         settings = get_settings()
         thinker = self._thinker_factory(settings)
         request = ThinkingRequest(
             prompt=prompts.insights_prompt(
-                seller_summary=_seller_summary(seller),
+                seller_summary=_seller_summary(effective),
                 company_name=company.name,
                 dossier=dossier,
                 evidence_catalog=[item.prompt_value() for item in prompt_catalog],
