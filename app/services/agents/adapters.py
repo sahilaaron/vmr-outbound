@@ -517,16 +517,28 @@ class CompanyAgentAdapter:
         if supplied is not None:
             return {
                 "attempted": False,
-                "reason_code": supplied_inputs.DOMAIN_REASON,
+                "reason_code": (
+                    supplied_inputs.DOMAIN_DERIVED_REASON
+                    if supplied.derived
+                    else supplied_inputs.DOMAIN_REASON
+                ),
                 "reason": (
-                    "The operator supplied this company website at intake, so there was "
-                    "no domain for automatic resolution to establish. Company research "
-                    "is unaffected and still runs."
+                    (
+                        "The operator supplied a corporate address at intake and this "
+                        "domain is its employer half, so there was no domain for "
+                        "automatic resolution to establish."
+                        if supplied.derived
+                        else "The operator supplied this company website at intake, so "
+                        "there was no domain for automatic resolution to establish."
+                    )
+                    + " Company research is unaffected and still runs."
                 ),
                 "supplied_domain": supplied.normalized,
                 "supplied_raw_value": supplied.raw,
                 "supplied_source_type": supplied.source_type,
                 "supplied_source_id": str(supplied.source_id),
+                "domain_source": supplied.origin,
+                "derived_from_email": supplied.derived_from_email,
             }
         if contact.company_id is not None:
             return {

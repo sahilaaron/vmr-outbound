@@ -199,8 +199,22 @@ DISTINCTIVE_FIELDS: frozenset[str] = frozenset(
 
 #: Public mailbox providers. A person at one of these is not thereby an employee
 #: of anything, so the domain can never establish company identity (IMP-001 §14).
-#: A short, explicit list of the providers actually seen in these exports —
-#: deliberately not a heuristic, because "looks personal" is not a fact.
+#: An explicit list of providers — deliberately not a heuristic, because "looks
+#: personal" is not a fact.
+#:
+#: Consumer providers run one mailbox brand under dozens of country domains, and
+#: only the ``.com`` forms were listed. ``yahoo.co.uk`` was blocked while
+#: ``yahoo.fr`` would have founded a company called Acme at yahoo.fr — the same
+#: defect this set exists to prevent, hiding behind a country code. The national
+#: variants of the four largest brands are therefore listed alongside the
+#: providers they belong to, and so are the consumer ISPs whose subscribers are
+#: no more employees of them than a Gmail user is of Google.
+#:
+#: Entries are only ever added, never removed by widening: this set fails
+#: **closed**. A domain in it cannot establish an employer, which costs a row a
+#: review rather than filing a person under the wrong company — recoverable in
+#: the first case, invisible in the second. That asymmetry is why a genuine
+#: employer that also sells mailboxes (``zoho.com``) is listed anyway.
 PUBLIC_EMAIL_DOMAINS: frozenset[str] = frozenset(
     {
         "gmail.com",
@@ -234,6 +248,107 @@ PUBLIC_EMAIL_DOMAINS: frozenset[str] = frozenset(
         "verizon.net",
         "btinternet.com",
         "sbcglobal.net",
+        # --- National variants of the brands already listed above -------------
+        "yahoo.co.jp",
+        "yahoo.com.au",
+        "yahoo.com.br",
+        "yahoo.com.mx",
+        "yahoo.ca",
+        "yahoo.de",
+        "yahoo.es",
+        "yahoo.fr",
+        "yahoo.it",
+        "rocketmail.com",
+        "hotmail.ca",
+        "hotmail.com.br",
+        "hotmail.de",
+        "hotmail.es",
+        "hotmail.fr",
+        "hotmail.it",
+        "outlook.com.au",
+        "outlook.com.br",
+        "outlook.de",
+        "outlook.es",
+        "outlook.fr",
+        "outlook.it",
+        "live.ca",
+        "live.co.uk",
+        "live.com.au",
+        "live.de",
+        "live.fr",
+        "live.it",
+        "live.nl",
+        "gmx.at",
+        "gmx.ch",
+        "gmx.net",
+        "pm.me",
+        # --- Other consumer mailbox providers and ISPs ------------------------
+        "web.de",
+        "t-online.de",
+        "mail.ru",
+        "bk.ru",
+        "inbox.ru",
+        "list.ru",
+        "seznam.cz",
+        "wp.pl",
+        "o2.pl",
+        "onet.pl",
+        "interia.pl",
+        "orange.fr",
+        "wanadoo.fr",
+        "free.fr",
+        "laposte.net",
+        "sfr.fr",
+        "libero.it",
+        "virgilio.it",
+        "tiscali.it",
+        "alice.it",
+        "terra.com.br",
+        "uol.com.br",
+        "bol.com.br",
+        "naver.com",
+        "daum.net",
+        "hanmail.net",
+        "nate.com",
+        "sina.com",
+        "sina.cn",
+        "sohu.com",
+        "foxmail.com",
+        "yeah.net",
+        "aliyun.com",
+        "fastmail.com",
+        "hushmail.com",
+        "tutanota.com",
+        "tuta.io",
+        "att.net",
+        "cox.net",
+        "charter.net",
+        "earthlink.net",
+        "optonline.net",
+        "juno.com",
+        "netzero.net",
+        "bellsouth.net",
+        "roadrunner.com",
+        "shaw.ca",
+        "rogers.com",
+        "sympatico.ca",
+        "telus.net",
+        "bigpond.com",
+        "optusnet.com.au",
+        "xtra.co.nz",
+        "sky.com",
+        "talktalk.net",
+        "virginmedia.com",
+        "ntlworld.com",
+        "blueyonder.co.uk",
+        "tin.it",
+        "bluewin.ch",
+        "telenet.be",
+        "ziggo.nl",
+        "planet.nl",
+        "home.nl",
+        "eircom.net",
+        "iinet.net.au",
     }
 )
 

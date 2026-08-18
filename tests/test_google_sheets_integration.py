@@ -1714,6 +1714,142 @@ def test_two_rows_supplying_the_same_address_resolve_to_one_person(
     assert len(db_session.scalars(select(CampaignContact)).all()) == 1
 
 
+def test_a_corporate_address_alone_persists_the_company_domain(
+    db_session: Session, enable_sheets: None
+) -> None:
+    """Name, company, address, no website — the case the follow-up exists for.
+
+    Proved over HTTP because that is where the operator's row actually arrives,
+    and because the value being read is the *email cell*: a derivation that
+    worked against a hand-built `SubmittedRow` and not against a real request
+    would be a derivation nobody could use.
+    """
+
+    user = make_user(db_session, email="mine@vmr.example")
+    campaign = make_campaign(db_session, name="Derived", owner=user)
+    client = make_client(db_session, {"tok": assertion_for(user)})
+
+    response = client.post(
+        "/integrations/sheets/batches",
+        json=batch_payload(
+            campaign,
+            [row("r1", first="John", last="Smith", company="Acme", email="John@Acme.com")],
+        ),
+        headers={"Authorization": "Bearer tok"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["rows"][0]["status"] == RowStatus.PENDING.value
+
+    contact = db_session.scalars(select(Contact)).one()
+    assert contact.email == "john@acme.com"
+    assert contact.company_domain == "acme.com"
+
+    # The permanent Company exists, so the Company Agent cannot later block on
+    # `company_missing` — and it exists without any resolution decision, because
+    # no resolver, provider or model was asked.
+    assert contact.company_id is not None
+    company = db_session.get(Company, contact.company_id)
+    assert company is not None and company.domain == "acme.com"
+    assert db_session.scalars(select(CompanyDomainResolution)).all() == []
+
+    membership = db_session.scalars(select(CampaignContact)).one()
+    source = db_session.scalars(
+        select(CampaignContactSource).where(
+            CampaignContactSource.campaign_contact_id == membership.id
+        )
+    ).one()
+    domain_record = source.source_context["operator_supplied_inputs"]["company_domain"]
+    assert domain_record["normalized"] == "acme.com"
+    assert domain_record["source"] == "derived_from_operator_supplied_email"
+    assert domain_record["derived_from_email"] == "john@acme.com"
+    assert domain_record["resolved_by_agent"] is False
+
+    # Still no verification claim of any kind.
+    assert db_session.scalars(select(ExactEmailVerification)).all() == []
+
+
+def test_a_free_mailbox_address_persists_no_company_domain(
+    db_session: Session, enable_sheets: None
+) -> None:
+    """Google is not the prospect's employer, and the request must not say it is."""
+
+    user = make_user(db_session, email="mine@vmr.example")
+    campaign = make_campaign(db_session, name="Derived", owner=user)
+    client = make_client(db_session, {"tok": assertion_for(user)})
+
+    response = client.post(
+        "/integrations/sheets/batches",
+        json=batch_payload(
+            campaign,
+            [row("r1", first="John", last="Smith", company="Acme", email="john@gmail.com")],
+        ),
+        headers={"Authorization": "Bearer tok"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["rows"][0]["status"] == RowStatus.PENDING.value
+
+    contact = db_session.scalars(select(Contact)).one()
+    # The address is still taken — that half is unchanged.
+    assert contact.email == "john@gmail.com"
+    # The mailbox provider is not an employer.
+    assert contact.company_domain is None
+    assert contact.company_id is None
+    assert db_session.scalars(select(Company)).all() == []
+
+    membership = db_session.scalars(select(CampaignContact)).one()
+    source = db_session.scalars(
+        select(CampaignContactSource).where(
+            CampaignContactSource.campaign_contact_id == membership.id
+        )
+    ).one()
+    supplied = source.source_context["operator_supplied_inputs"]
+    assert supplied["email"]["normalized"] == "john@gmail.com"
+    assert "company_domain" not in supplied
+
+
+def test_an_explicit_website_beats_the_address_over_the_wire(
+    db_session: Session, enable_sheets: None
+) -> None:
+    user = make_user(db_session, email="mine@vmr.example")
+    campaign = make_campaign(db_session, name="Derived", owner=user)
+    client = make_client(db_session, {"tok": assertion_for(user)})
+
+    response = client.post(
+        "/integrations/sheets/batches",
+        json=batch_payload(
+            campaign,
+            [
+                row(
+                    "r1",
+                    first="John",
+                    last="Smith",
+                    company="Acme",
+                    email="john@subsidiary.com",
+                    website="https://www.acme.com",
+                )
+            ],
+        ),
+        headers={"Authorization": "Bearer tok"},
+    )
+
+    assert response.status_code == 200
+    contact = db_session.scalars(select(Contact)).one()
+    assert contact.company_domain == "acme.com"
+    assert db_session.scalars(select(Company).where(Company.domain == "subsidiary.com")).all() == []
+
+    membership = db_session.scalars(select(CampaignContact)).one()
+    source = db_session.scalars(
+        select(CampaignContactSource).where(
+            CampaignContactSource.campaign_contact_id == membership.id
+        )
+    ).one()
+    domain_record = source.source_context["operator_supplied_inputs"]["company_domain"]
+    assert domain_record["source"] == "operator_supplied_website"
+    assert domain_record["derived_from_email"] is None
+
+
 def test_a_supplied_address_another_person_already_owns_is_not_written(
     db_session: Session, enable_sheets: None
 ) -> None:

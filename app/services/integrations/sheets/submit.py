@@ -214,11 +214,25 @@ def _submit_one(
     # company *name*, and two rows carrying the same name may legitimately carry
     # different websites; letting one row's supplied domain answer for another's
     # name is exactly the silent misfiling this surface refuses elsewhere.
-    if row.website_domain:
-        company_outcome = sheet_companies.link_supplied_website(
+    #
+    # A corporate address the operator typed names the employer just as plainly,
+    # and is used when no readable website was given. It never outranks one: a
+    # person at ``john@subsidiary.com`` whose employer the operator wrote down as
+    # ``parentcompany.com`` works at the parent, and their address is not
+    # evidence to the contrary. A public mailbox derives nothing — see
+    # ``supplied_inputs.derive_company_domain`` — and such a row simply takes the
+    # ordinary path below, exactly as it did before any of this existed.
+    supplied_domain = row.website_domain or supplied_inputs.derive_company_domain(row.email)
+    if supplied_domain:
+        company_outcome = sheet_companies.link_supplied_domain(
             session,
             company_name=row.company_name,
-            domain=row.website_domain,
+            domain=supplied_domain,
+            origin=(
+                supplied_inputs.DOMAIN_SOURCE_WEBSITE
+                if row.website_domain
+                else supplied_inputs.DOMAIN_SOURCE_EMAIL
+            ),
             actor=actor,
         )
     else:

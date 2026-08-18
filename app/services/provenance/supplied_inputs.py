@@ -47,8 +47,16 @@ Two reads, both from durable state, both restart-safe:
   this person's address. If it was, discovery is satisfied without generating a
   candidate, and Verification is satisfied without calling a provider.
 * :func:`supplied_domain` — the Company Agent asks whether the operator named
-  the company's website. If they did, automatic company-domain resolution has
+  the company's domain. If they did, automatic company-domain resolution has
   nothing to establish and is not attempted.
+
+The domain can arrive two ways, and the record keeps them apart. The operator
+may type a website, or they may type a corporate address and nothing else —
+``john@acme.com`` names the employer as plainly as a website cell would, and
+:func:`derive_company_domain` reads it. A stated website always outranks a
+derived one, and a public mailbox derives nothing at all: ``john@gmail.com`` says
+nothing about an employer, and a system that read it as one would file the
+prospect under Google and then write to them about Google.
 
 Both re-derive their answer from the database every time they are called, so a
 worker restart, a retry, or a re-enrolment reaches the same decision as the
@@ -79,24 +87,43 @@ from sqlalchemy.orm import Session
 from app.models.campaign import CampaignContact
 from app.models.contact import Contact
 from app.models.pipeline import CampaignContactSource
+from app.services.imports.apollo import is_public_email_domain
 from app.services.imports.normalization import (
     is_valid_email,
     is_valid_hostname,
     normalize_domain,
     normalize_email,
+    normalize_email_domain,
 )
 
 #: The key inside ``CampaignContactSource.source_context`` holding this record,
 #: and the version of its shape. Versioned because a reader a year from now must
 #: be able to tell an older record from a newer one without guessing.
 CONTEXT_KEY = "operator_supplied_inputs"
-SCHEMA_VERSION = "operator-supplied-inputs/1"
+#: ``/2`` added ``company_domain.source`` and ``company_domain.derived_from_email``.
+#: A ``/1`` record stays readable: the reader below decides on ``usable`` and
+#: ``normalized``, which mean exactly what they always did, and a missing
+#: ``source`` is reported as the website origin — which is the only origin a
+#: ``/1`` record could have had.
+SCHEMA_VERSION = "operator-supplied-inputs/2"
 
 #: The Email outcome and the Company Agent's lineage both report *why* a step was
 #: not performed. Naming the two reasons here keeps a screen, an event and a job
 #: result from spelling them three slightly different ways.
 EMAIL_DERIVATION = "operator_supplied_intake_no_discovery"
 DOMAIN_REASON = "operator_supplied_domain"
+#: Why the Company Agent did not run automatic resolution when the domain came
+#: from the address rather than from a website cell. A separate code from
+#: :data:`DOMAIN_REASON` because the two are separate facts: one is a website the
+#: operator typed, the other is an inference this system drew from an address
+#: they typed. Both skip resolution; only one of them was stated outright.
+DOMAIN_DERIVED_REASON = "derived_from_operator_supplied_email"
+
+#: Where an operator-given company domain came from. Stored verbatim in the
+#: provenance record and echoed by the Company Agent, so one vocabulary covers
+#: the JSON, the stage reason and the report.
+DOMAIN_SOURCE_WEBSITE = "operator_supplied_website"
+DOMAIN_SOURCE_EMAIL = DOMAIN_DERIVED_REASON
 
 
 @dataclass(frozen=True)
@@ -123,12 +150,66 @@ class SuppliedEmail:
 
 @dataclass(frozen=True)
 class SuppliedDomain:
-    """A company website this Campaign was handed."""
+    """A company domain this Campaign was handed, and how it was handed over."""
 
     normalized: str
     raw: str
     source_type: str
     source_id: uuid.UUID
+    #: :data:`DOMAIN_SOURCE_WEBSITE` when the operator typed a website, or
+    #: :data:`DOMAIN_SOURCE_EMAIL` when it was read off the address they typed.
+    origin: str = DOMAIN_SOURCE_WEBSITE
+    #: The address the domain was read from. ``None`` for a typed website.
+    derived_from_email: str | None = None
+
+    @property
+    def derived(self) -> bool:
+        return self.origin == DOMAIN_SOURCE_EMAIL
+
+
+def derive_company_domain(email: str | None) -> str | None:
+    """The employer domain an operator-supplied address establishes, or ``None``.
+
+    ``john@acme.com`` says two things, and only one of them is about the mailbox.
+    The other is *which company this person works at* — the single question
+    automatic company-domain resolution exists to answer. When the operator has
+    already answered it in the address, resolution has nothing left to establish.
+
+    **A public mailbox answers neither question.** ``john@gmail.com`` says
+    nothing whatever about an employer, and a system that read it as one would
+    file the prospect under Google, research Google, and write to them about
+    Google. So the domain is put through the same
+    :func:`~app.services.imports.apollo.is_public_email_domain` set the file
+    import has always used for exactly this decision — one list, checked in one
+    place, rather than a second copy that could drift from it. ``None`` here is
+    not a failure: it means the Company Agent resolves the domain as it would for
+    any other contact.
+
+    Normalization is the canonical pair and nothing new. ``normalize_email`` has
+    already put the address into its IDNA, lower-cased, syntactically-valid form
+    by the time a caller has one; ``normalize_email_domain`` re-derives the host
+    half from it, and ``normalize_domain`` then applies the *same* reading a typed
+    website gets — notably stripping a leading ``www.`` — so ``john@WWW.Acme.COM``
+    and a website cell reading ``https://www.acme.com/about`` produce one string,
+    ``acme.com``, and therefore one permanent Company rather than two.
+
+    The public-mailbox check deliberately runs **after** that stripping, on the
+    value that would actually be stored. Checking first would let ``www.gmail.com``
+    through the set and out the other side as ``gmail.com``.
+    """
+
+    normalized = normalize_email(email)
+    if not normalized or not is_valid_email(normalized):
+        return None
+    host = normalize_email_domain(normalized.rpartition("@")[2])
+    if host is None:
+        return None
+    domain = normalize_domain(host)
+    if not domain or not is_valid_hostname(domain):
+        return None
+    if is_public_email_domain(domain):
+        return None
+    return domain
 
 
 def build_context(
@@ -151,12 +232,14 @@ def build_context(
 
     payload: dict[str, Any] = {}
 
+    supplied_email_value: str | None = None
     if email_raw is not None and email_raw.strip():
         normalized = normalize_email(email_raw)
         usable = bool(normalized) and is_valid_email(normalized or "")
+        supplied_email_value = normalized if usable else None
         payload["email"] = {
             "raw": email_raw.strip()[:512],
-            "normalized": normalized if usable else None,
+            "normalized": supplied_email_value,
             "usable": usable,
             # Said in the record itself, not only in this module's docstring: a
             # later reader holding nothing but the JSON still learns that nobody
@@ -165,15 +248,46 @@ def build_context(
             "verified": False,
         }
 
-    if domain_raw is not None and domain_raw.strip():
-        normalized_domain = normalize_domain(domain_raw)
-        usable_domain = bool(normalized_domain) and is_valid_hostname(normalized_domain or "")
+    website_typed = domain_raw is not None and bool(domain_raw.strip())
+    website_domain = normalize_domain(domain_raw) if website_typed else None
+    if website_domain is not None and not is_valid_hostname(website_domain):
+        website_domain = None
+    derived_domain = derive_company_domain(supplied_email_value)
+
+    if website_typed or derived_domain is not None:
+        # Precedence, stated once. An explicit website is the operator saying
+        # which company this is; a derived domain is this system reading it off
+        # an address. The stated fact outranks the inferred one, always — a
+        # person at ``john@subsidiary.com`` whose employer the operator has
+        # written down as ``parentcompany.com`` works at the parent, and the
+        # address is not evidence to the contrary.
+        #
+        # A website cell that could not be read is not a stated fact at all, so
+        # it does not outrank anything; the derived domain is used and the
+        # unreadable cell is kept verbatim below, where the operator asking "why
+        # did it use a different domain than I typed?" will find it.
+        chosen = website_domain or derived_domain
         payload["company_domain"] = {
-            "raw": domain_raw.strip()[:512],
-            "normalized": normalized_domain if usable_domain else None,
-            "usable": usable_domain,
-            # A website answers "which company is this", never "what matters
-            # about this company". Company Intelligence and Research still run.
+            "raw": domain_raw.strip()[:512] if website_typed and domain_raw else None,
+            "normalized": chosen,
+            "usable": chosen is not None,
+            "source": (
+                DOMAIN_SOURCE_WEBSITE
+                if chosen is not None and chosen == website_domain
+                else DOMAIN_SOURCE_EMAIL
+                if chosen is not None
+                else None
+            ),
+            # Present only when the domain was read off the address, so the exact
+            # value it was read from is recoverable without re-deriving it.
+            "derived_from_email": (
+                supplied_email_value
+                if chosen is not None and chosen == derived_domain and chosen != website_domain
+                else None
+            ),
+            # A domain answers "which company is this", never "what matters about
+            # this company". Company Intelligence and Research still run, and no
+            # resolver, provider or model was invoked to obtain this value.
             "resolved_by_agent": False,
         }
 
@@ -291,23 +405,33 @@ def supplied_domain(
             continue
         source = entry["source"]
         raw = domain.get("raw")
+        origin = domain.get("source")
+        derived = domain.get("derived_from_email")
         return SuppliedDomain(
             normalized=normalized,
             raw=raw if isinstance(raw, str) else normalized,
             source_type=source.source_type,
             source_id=source.id,
+            # A record written before ``source`` existed can only have come from
+            # a website cell, so that is what it is reported as.
+            origin=origin if isinstance(origin, str) else DOMAIN_SOURCE_WEBSITE,
+            derived_from_email=derived if isinstance(derived, str) else None,
         )
     return None
 
 
 __all__ = [
     "CONTEXT_KEY",
+    "DOMAIN_DERIVED_REASON",
     "DOMAIN_REASON",
+    "DOMAIN_SOURCE_EMAIL",
+    "DOMAIN_SOURCE_WEBSITE",
     "EMAIL_DERIVATION",
     "SCHEMA_VERSION",
     "SuppliedDomain",
     "SuppliedEmail",
     "build_context",
+    "derive_company_domain",
     "supplied_domain",
     "supplied_email",
 ]

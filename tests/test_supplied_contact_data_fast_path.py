@@ -42,6 +42,7 @@ import pytest
 from app.core.config import get_settings
 from app.models.campaign import Campaign, CampaignContact
 from app.models.company import Company
+from app.models.company_domain_resolution import CompanyDomainResolution
 from app.models.contact import Contact
 from app.models.email_candidate import EmailCandidate
 from app.models.email_evidence import ExactEmailVerification
@@ -61,6 +62,7 @@ from app.services.agents import controls
 from app.services.agents.orchestrator import run_next
 from app.services.agents.registry import PIPELINE_ORDER
 from app.services.imports import campaign_import
+from app.services.imports.normalization import normalize_domain
 from app.services.integrations.sheets import results as sheet_results
 from app.services.integrations.sheets import submit as sheet_submit
 from app.services.integrations.sheets.contract import (
@@ -970,6 +972,464 @@ def test_the_customer_projection_still_refuses_a_package_with_no_address(
     assert (
         customer_status.status_for_membership(db_session, campaign_contact_id=fixture.membership.id)
         is not customer_status.CustomerContactStatus.READY_FOR_SENDING
+    )
+
+
+# ---------------------------------------------------------------------------
+# The company domain read off an operator-supplied corporate address
+# ---------------------------------------------------------------------------
+#
+# `john@acme.com` names the employer as plainly as a website cell does. What
+# follows proves it is read when it is safe to read, outranked when the operator
+# states a website outright, and never read at all from a public mailbox — the
+# case where reading it would file the prospect under Google and then research
+# Google.
+
+
+CORPORATE_EMAIL = "john@acme.example"
+CORPORATE_DOMAIN = "acme.example"
+
+#: One per provider family the brief names, so a regression cannot quietly
+#: reintroduce a single brand. `pm.me` and `yahoo.fr` are the interesting two:
+#: national and short-form variants are where an exact-match set silently fails.
+FREE_MAILBOXES = [
+    "john@gmail.com",
+    "john@googlemail.com",
+    "john@outlook.com",
+    "john@outlook.fr",
+    "john@hotmail.com",
+    "john@live.com",
+    "john@msn.com",
+    "john@yahoo.com",
+    "john@yahoo.co.uk",
+    "john@yahoo.fr",
+    "john@icloud.com",
+    "john@me.com",
+    "john@mac.com",
+    "john@proton.me",
+    "john@protonmail.com",
+    "john@pm.me",
+    "john@aol.com",
+    "john@zoho.com",
+]
+
+
+def domain_record(db: Session, membership: CampaignContact) -> dict[str, Any] | None:
+    source = db.scalars(
+        select(CampaignContactSource)
+        .where(CampaignContactSource.campaign_contact_id == membership.id)
+        .order_by(CampaignContactSource.recorded_at.asc(), CampaignContactSource.id.asc())
+    ).first()
+    assert source is not None
+    payload = (source.source_context or {}).get(supplied_inputs.CONTEXT_KEY) or {}
+    record = payload.get("company_domain")
+    return record if isinstance(record, dict) else None
+
+
+class RefusingResolution:
+    """A company-domain resolver that fails the test if anything calls it.
+
+    The claim under test is a negative — "no resolver, no provider and no model
+    was invoked" — and a negative is only proved by something that would notice.
+    Asserting on the resulting state cannot distinguish "resolution was skipped"
+    from "resolution ran, spent a call and happened to return the same domain".
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        self.calls += 1
+        raise AssertionError(
+            "automatic company-domain resolution was invoked for a Contact whose "
+            "domain the operator had already supplied"
+        )
+
+
+@pytest.fixture()
+def refuse_resolution(monkeypatch: pytest.MonkeyPatch) -> Iterator[RefusingResolution]:
+    """Make any attempt at automatic resolution an immediate, loud failure.
+
+    Patched at `CompanyAgentAdapter._resolve_company_domain`, which is the single
+    door to the shared resolution process — the deterministic provider ladder and
+    the Claude fallback both sit behind it, so one guard covers both.
+    """
+
+    guard = RefusingResolution()
+    monkeypatch.setattr(
+        "app.services.agents.adapters.CompanyAgentAdapter._resolve_company_domain",
+        guard,
+    )
+    yield guard
+
+
+# --- 1. Corporate address only ---------------------------------------------
+
+
+def test_a_corporate_address_alone_establishes_the_company_domain(
+    db_session: Session, refuse_resolution: RefusingResolution
+) -> None:
+    campaign = make_campaign(db_session)
+    submit(db_session, campaign, email=CORPORATE_EMAIL)
+    membership = membership_of(db_session, campaign)
+    contact = db_session.get(Contact, membership.contact_id)
+    assert contact is not None
+
+    assert contact.email == CORPORATE_EMAIL
+    assert contact.company_domain == CORPORATE_DOMAIN
+    # The permanent Company exists, by the same mechanism a typed website uses.
+    assert contact.company_id is not None
+    company = db_session.get(Company, contact.company_id)
+    assert company is not None and company.domain == CORPORATE_DOMAIN
+    # And no automatic resolution decision was recorded, because none was made.
+    assert db_session.scalars(select(CompanyDomainResolution)).all() == []
+
+    record = domain_record(db_session, membership)
+    assert record is not None
+    assert record["normalized"] == CORPORATE_DOMAIN
+    assert record["source"] == supplied_inputs.DOMAIN_SOURCE_EMAIL
+    assert record["derived_from_email"] == CORPORATE_EMAIL
+    assert record["raw"] is None, "no website cell was typed, so there is none to keep"
+    assert record["resolved_by_agent"] is False
+
+    run_pipeline(db_session)
+    db_session.flush()
+
+    # The resolver guard never fired.
+    assert refuse_resolution.calls == 0
+
+    attempt = stage_output(db_session, membership, AgentIdentifier.COMPANY)[
+        "domain_resolution_attempt"
+    ]
+    assert attempt["attempted"] is False
+    assert attempt["reason_code"] == supplied_inputs.DOMAIN_DERIVED_REASON
+    assert attempt["domain_source"] == supplied_inputs.DOMAIN_SOURCE_EMAIL
+    assert attempt["derived_from_email"] == CORPORATE_EMAIL
+
+    # Everything that produces intelligence still ran.
+    for agent in (AgentIdentifier.COMPANY, AgentIdentifier.RESEARCH):
+        state = stage(db_session, membership, agent)
+        assert state is not None, agent.value
+        assert state.status is PipelineStageStatus.COMPLETED, agent.value
+
+    # And the address itself still short-circuits discovery and verification.
+    result = email_result(db_session, membership)
+    assert result["domain_outcome"] == "supplied_email_accepted"
+    verification = stage(db_session, membership, AgentIdentifier.VERIFICATION)
+    assert verification is not None
+    assert verification.reason_code == "verification_bypassed_supplied_email"
+
+    assert_pipeline_continued_past_verification(db_session, membership)
+    assert_nothing_claims_verification(db_session, membership)
+
+
+# --- 2. Address plus an explicit website ------------------------------------
+
+
+def test_an_explicit_website_outranks_the_address_it_disagrees_with(
+    db_session: Session, refuse_resolution: RefusingResolution
+) -> None:
+    """The operator's stated answer beats this system's inference, always.
+
+    A person at ``john@subsidiary.example`` whose employer the operator wrote down
+    as ``acme.example`` works at the parent. Their address is not evidence to the
+    contrary, and the file import treats the same pair the same way.
+    """
+
+    campaign = make_campaign(db_session)
+    submit(
+        db_session,
+        campaign,
+        email="john@subsidiary.example",
+        website="https://acme.example",
+    )
+    membership = membership_of(db_session, campaign)
+    contact = db_session.get(Contact, membership.contact_id)
+    assert contact is not None
+
+    assert contact.company_domain == "acme.example"
+    company = db_session.get(Company, contact.company_id)
+    assert company is not None and company.domain == "acme.example"
+    # The subsidiary never became a Company at all.
+    assert (
+        db_session.scalars(select(Company).where(Company.domain == "subsidiary.example")).all()
+        == []
+    )
+
+    record = domain_record(db_session, membership)
+    assert record is not None
+    assert record["normalized"] == "acme.example"
+    assert record["source"] == supplied_inputs.DOMAIN_SOURCE_WEBSITE
+    assert record["derived_from_email"] is None
+    assert record["raw"] == "https://acme.example"
+
+    # Nothing is silent about it: the address the operator gave is still on the
+    # record beside the domain that outranked it.
+    source = db_session.scalars(
+        select(CampaignContactSource).where(
+            CampaignContactSource.campaign_contact_id == membership.id
+        )
+    ).one()
+    email_record = source.source_context[supplied_inputs.CONTEXT_KEY]["email"]
+    assert email_record["normalized"] == "john@subsidiary.example"
+
+    run_pipeline(db_session)
+    db_session.flush()
+    assert refuse_resolution.calls == 0
+
+    attempt = stage_output(db_session, membership, AgentIdentifier.COMPANY)[
+        "domain_resolution_attempt"
+    ]
+    assert attempt["reason_code"] == supplied_inputs.DOMAIN_REASON
+    assert attempt["domain_source"] == supplied_inputs.DOMAIN_SOURCE_WEBSITE
+
+
+def test_an_unreadable_website_lets_the_address_answer_instead(
+    db_session: Session,
+) -> None:
+    """An unreadable cell is not a stated fact, so it outranks nothing.
+
+    The cell is still kept verbatim, because the operator asking "why did it use
+    a different domain than I typed?" needs to find what they typed.
+    """
+
+    campaign = make_campaign(db_session)
+    submit(db_session, campaign, email=CORPORATE_EMAIL, website="not a hostname")
+    membership = membership_of(db_session, campaign)
+    contact = db_session.get(Contact, membership.contact_id)
+    assert contact is not None
+
+    assert contact.company_domain == CORPORATE_DOMAIN
+    record = domain_record(db_session, membership)
+    assert record is not None
+    assert record["source"] == supplied_inputs.DOMAIN_SOURCE_EMAIL
+    assert record["raw"] == "not a hostname"
+
+
+# --- 3. Public mailboxes ----------------------------------------------------
+
+
+@pytest.mark.parametrize("address", FREE_MAILBOXES)
+def test_a_public_mailbox_never_becomes_the_company(db_session: Session, address: str) -> None:
+    """The safety rule, one provider family at a time.
+
+    The address still satisfies the email requirement — that half of #307 is
+    unchanged, because the operator did supply an address and no discovery is
+    needed. What it must never do is name an employer.
+    """
+
+    campaign = make_campaign(db_session)
+    submit(db_session, campaign, email=address)
+    membership = membership_of(db_session, campaign)
+    contact = db_session.get(Contact, membership.contact_id)
+    assert contact is not None
+
+    mailbox_domain = address.rpartition("@")[2]
+
+    # The email fast path is intact.
+    assert contact.email == address
+    supplied = supplied_inputs.supplied_email(db_session, membership=membership, contact=contact)
+    assert supplied is not None and supplied.normalized == address
+
+    # The provider is not this person's employer, in any of the four places it
+    # could have become one.
+    assert contact.company_domain != mailbox_domain
+    assert contact.company_domain is None
+    assert contact.company_id is None
+    assert domain_record(db_session, membership) is None
+    assert db_session.scalars(select(Company).where(Company.domain == mailbox_domain)).all() == []
+    assert db_session.scalars(select(Company)).all() == []
+
+    # So company/domain resolution is still this Contact's outstanding work.
+    assert (
+        supplied_inputs.supplied_domain(db_session, membership=membership, contact=contact) is None
+    )
+
+
+@pytest.mark.parametrize("address", FREE_MAILBOXES)
+def test_the_derivation_itself_refuses_every_public_mailbox(address: str) -> None:
+    """The pure rule, proved without a database, so the set cannot silently shrink."""
+
+    assert supplied_inputs.derive_company_domain(address) is None
+
+
+def test_a_public_mailbox_still_leaves_the_company_path_to_the_agent(
+    db_session: Session,
+) -> None:
+    """Not merely "no company" — the Company Agent must still go and find one."""
+
+    campaign = make_campaign(db_session)
+    submit(db_session, campaign, email="john@gmail.com")
+    membership = membership_of(db_session, campaign)
+
+    enable(db_session, AgentIdentifier.RESEARCH)
+    drain(db_session, research_adapters())
+
+    company_stage = stage(db_session, membership, AgentIdentifier.COMPANY)
+    assert company_stage is not None
+    attempt = (company_stage.output_reference or {}).get("domain_resolution_attempt")
+    if attempt is None:
+        assert company_stage.reason_code in {"company_domain_missing", "company_missing"}
+    else:
+        # `skipped_because` is written inside `_resolve_company_domain`, so its
+        # presence proves resolution was entered rather than fast-pathed.
+        assert "skipped_because" in attempt
+        assert attempt.get("reason_code") not in {
+            supplied_inputs.DOMAIN_REASON,
+            supplied_inputs.DOMAIN_DERIVED_REASON,
+        }
+
+
+# --- 4. Values that derive nothing ------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["not-an-address", "john@", "@acme.example", "john acme", "john@..", "john@-.-"],
+)
+def test_a_malformed_address_derives_no_domain(value: str) -> None:
+    assert supplied_inputs.derive_company_domain(value) is None
+
+
+def test_a_malformed_address_still_refuses_the_row_unchanged(db_session: Session) -> None:
+    """#307's row validation is untouched: nothing reaches derivation at all."""
+
+    with pytest.raises(RowContractError) as exc:
+        parse_row(
+            {
+                "client_row_id": "r1",
+                "first_name": "John",
+                "last_name": "Smith",
+                "company_name": "Acme",
+                "email": "not-an-address",
+            },
+            max_context_chars=2_000,
+        )
+    assert exc.value.code == "email_unusable"
+    assert db_session.scalars(select(Company)).all() == []
+
+
+@pytest.mark.parametrize(
+    ("address", "expected"),
+    [
+        ("John@WWW.Acme.COM", "acme.com"),
+        ("  JOHN@Acme.COM  ", "acme.com"),
+        ("john+newsletter@acme.com", "acme.com"),
+        ("john@mail.acme.com", "mail.acme.com"),
+        ("john@acme.co.uk", "acme.co.uk"),
+    ],
+)
+def test_the_derived_domain_is_normalized_the_way_a_website_is(address: str, expected: str) -> None:
+    """One reading of a domain, so one Company — never two rows for one employer.
+
+    ``www.`` is stripped exactly as ``normalize_domain`` strips it from a typed
+    website, which is what makes ``John@WWW.Acme.COM`` and a website cell reading
+    ``https://www.acme.com/about`` converge on one permanent Company. A subdomain
+    that is not ``www`` is kept: ``mail.acme.com`` is what the operator wrote and
+    guessing at registrability is not this system's job.
+    """
+
+    assert supplied_inputs.derive_company_domain(address) == expected
+    # And it agrees with the canonical reading of the same domain typed as a URL.
+    assert supplied_inputs.derive_company_domain(address) == normalize_domain(
+        f"https://{address.strip().rpartition('@')[2]}"
+    )
+
+
+# --- 5. Restart, replay, idempotency ----------------------------------------
+
+
+def test_replaying_the_same_row_creates_no_second_company_or_record(
+    db_session: Session, refuse_resolution: RefusingResolution
+) -> None:
+    campaign = make_campaign(db_session)
+    first = submit(db_session, campaign, email=CORPORATE_EMAIL)
+    second = submit(db_session, campaign, email=CORPORATE_EMAIL)
+
+    assert second.rows[0].already_submitted is True
+    assert second.rows[0].submission_id == first.rows[0].submission_id
+    assert len(db_session.scalars(select(Company)).all()) == 1
+    assert len(db_session.scalars(select(Contact)).all()) == 1
+
+    membership = membership_of(db_session, campaign)
+    sources = db_session.scalars(
+        select(CampaignContactSource).where(
+            CampaignContactSource.campaign_contact_id == membership.id
+        )
+    ).all()
+    assert len(sources) == 1
+
+    # A new generation deliberately re-enrols and appends provenance; it must not
+    # change the domain, its source, or the Company behind it.
+    submit(db_session, campaign, email=CORPORATE_EMAIL, generation=2)
+    contact = db_session.get(Contact, membership.contact_id)
+    assert contact is not None
+    assert contact.company_domain == CORPORATE_DOMAIN
+    assert len(db_session.scalars(select(Company)).all()) == 1
+
+    domain = supplied_inputs.supplied_domain(db_session, membership=membership, contact=contact)
+    assert domain is not None
+    assert domain.normalized == CORPORATE_DOMAIN
+    assert domain.origin == supplied_inputs.DOMAIN_SOURCE_EMAIL
+    assert domain.derived_from_email == CORPORATE_EMAIL
+
+    run_pipeline(db_session)
+    db_session.flush()
+    assert refuse_resolution.calls == 0
+
+
+def test_the_derived_domain_is_re_read_from_durable_state(db_session: Session) -> None:
+    """No in-process memory carries the decision between executions."""
+
+    campaign = make_campaign(db_session)
+    submit(db_session, campaign, email=CORPORATE_EMAIL)
+    membership = membership_of(db_session, campaign)
+    contact = db_session.get(Contact, membership.contact_id)
+    assert contact is not None
+
+    domain = supplied_inputs.supplied_domain(db_session, membership=membership, contact=contact)
+    assert domain is not None
+    assert domain.derived is True
+    assert domain.normalized == CORPORATE_DOMAIN
+
+
+# --- 6. Correction ----------------------------------------------------------
+
+
+def test_correcting_the_address_ends_the_derived_domains_authority(
+    db_session: Session,
+) -> None:
+    """#307's equality guard covers the derived domain too, in both directions.
+
+    A corrected address stops the *email* record satisfying discovery. The domain
+    record has its own guard against the Contact's own ``company_domain``, so a
+    corrected domain stops it too — and neither goes on being authoritative
+    because it was written first.
+    """
+
+    campaign = make_campaign(db_session)
+    submit(db_session, campaign, email=CORPORATE_EMAIL)
+    membership = membership_of(db_session, campaign)
+    contact = db_session.get(Contact, membership.contact_id)
+    assert contact is not None
+
+    contact.email = "john.smith@other.example"
+    db_session.flush()
+    assert (
+        supplied_inputs.supplied_email(db_session, membership=membership, contact=contact) is None
+    )
+    # The domain record still describes the domain the Contact carries, which is
+    # still true and still the Campaign's domain, so it correctly survives.
+    assert (
+        supplied_inputs.supplied_domain(db_session, membership=membership, contact=contact)
+        is not None
+    )
+
+    # Correct the domain as well, and the domain record stops applying too.
+    contact.company_domain = "other.example"
+    db_session.flush()
+    assert (
+        supplied_inputs.supplied_domain(db_session, membership=membership, contact=contact) is None
     )
 
 
