@@ -44,6 +44,7 @@ from app.services.personalization import policy as personalization_policy
 from app.services.personalization import sequence as sequence_generation
 from app.services.personalization.cadence import CadenceError, campaign_opted_in
 from app.services.personalization.sequence_validation import SequenceValidationError
+from app.services.provenance import supplied_inputs
 from app.services.resolution import gates as resolution_gates
 from app.services.resolution import store as resolution_store
 from app.services.seller import context as seller_context
@@ -302,6 +303,8 @@ class CompanyAgentAdapter:
             if company is not None:
                 linked_by_agent = True
                 identity_match_key = "company.resolved_domain"
+        else:
+            resolution_summary = self._not_attempted(context)
         if company is None:
             if not contact.company_domain:
                 raise AgentBlocked(
@@ -485,6 +488,63 @@ class CompanyAgentAdapter:
             result={"domain_outcome": "company_resolved", **output},
             output_reference=output,
         )
+
+    def _not_attempted(self, context: AgentExecutionContext) -> dict[str, Any]:
+        """Why automatic company-domain resolution had nothing to do here.
+
+        This branch is not new behaviour and deliberately does not become any: a
+        Contact that already carries a domain, or already carries the permanent
+        ``company_id`` edge, has never had resolution run against it, because
+        resolution's only question — *which company is this?* — is already
+        answered. What was missing was the record saying so.
+
+        Two facts an operator reads differently used to look identical in the
+        lineage, both as a bare ``null``: "resolution was not attempted because
+        the operator named the website" and "resolution was not attempted because
+        there was nothing to resolve from". Naming them is the whole of this
+        method.
+
+        Note what is *not* skipped, on any of these paths. A supplied website
+        answers which company this is; it says nothing whatever about what
+        matters about that company. Company Intelligence, Research and Insights
+        run for these Contacts exactly as they do for every other.
+        """
+
+        contact = context.contact
+        supplied = supplied_inputs.supplied_domain(
+            context.session, membership=context.membership, contact=contact
+        )
+        if supplied is not None:
+            return {
+                "attempted": False,
+                "reason_code": supplied_inputs.DOMAIN_REASON,
+                "reason": (
+                    "The operator supplied this company website at intake, so there was "
+                    "no domain for automatic resolution to establish. Company research "
+                    "is unaffected and still runs."
+                ),
+                "supplied_domain": supplied.normalized,
+                "supplied_raw_value": supplied.raw,
+                "supplied_source_type": supplied.source_type,
+                "supplied_source_id": str(supplied.source_id),
+            }
+        if contact.company_id is not None:
+            return {
+                "attempted": False,
+                "reason_code": "existing_company_link",
+                "reason": (
+                    "The Contact already carried the permanent Company edge, so there "
+                    "was nothing for automatic resolution to establish."
+                ),
+            }
+        return {
+            "attempted": False,
+            "reason_code": "domain_already_known",
+            "reason": (
+                "The Contact already carried a company domain, so there was nothing for "
+                "automatic resolution to establish."
+            ),
+        }
 
     def _resolve_company_domain(self, context: AgentExecutionContext) -> dict[str, Any] | None:
         """Establish this Contact's company through the shared resolution process.

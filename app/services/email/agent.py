@@ -54,6 +54,7 @@ from app.services.email.discovery_policy import (
 )
 from app.services.imports.normalization import is_valid_email, normalize_domain, normalize_email
 from app.services.pipeline import append_event
+from app.services.provenance import supplied_inputs
 from app.services.resolution.gates import DownstreamStage, authorize_contact
 from app.services.suppressions import evaluate_suppression
 from app.services.verification import studio as verification_studio
@@ -76,6 +77,14 @@ class EmailExecutionOutcome(enum.StrEnum):
     #: called — so this asserts only that an operator-supplied address was taken
     #: as the Campaign's address, never that the mailbox exists.
     IMPORTED_EMAIL_ACCEPTED = "imported_email_accepted"
+    #: The operator supplied this address at intake, on any acquisition surface
+    #: that accepts one. Same truth as ``imported_email_accepted`` and kept
+    #: separate from it on purpose: that value means "it arrived in an uploaded
+    #: file" and carries a file checksum, a row number and a vendor's own claims,
+    #: none of which a spreadsheet row or a typed address has. Neither asserts
+    #: that the mailbox exists — no candidate was generated, no pattern applied
+    #: and no provider called.
+    SUPPLIED_EMAIL_ACCEPTED = "supplied_email_accepted"
     NO_VERIFIED_ADDRESS = "no_verified_address"
     EMPLOYEE_COUNT_UNKNOWN = "employee_count_unknown"
     EMPLOYEE_COUNT_STALE = "employee_count_stale"
@@ -845,6 +854,7 @@ def _terminal_replay_step(
         EmailExecutionOutcome.EXISTING_EMAIL_REUSED,
         EmailExecutionOutcome.VERIFIED_EMAIL_ACCEPTED,
         EmailExecutionOutcome.IMPORTED_EMAIL_ACCEPTED,
+        EmailExecutionOutcome.SUPPLIED_EMAIL_ACCEPTED,
     }:
         kind = EmailExecutionStepKind.COMPLETE
     elif outcome in {
@@ -1180,6 +1190,109 @@ def _imported_step(
     )
 
 
+def _supplied_step(
+    session: Session,
+    *,
+    job: AgentJob,
+    contact: Contact,
+    supplied: supplied_inputs.SuppliedEmail,
+    actor: str,
+) -> EmailExecutionStep:
+    """Complete the Email stage from an operator-supplied address, spending nothing.
+
+    The sibling of :func:`_imported_step`, reached for every acquisition surface
+    that accepts an address rather than only for an uploaded file, and reached in
+    the same place and for the same reason: before candidate policy, because
+    there is nothing to decide. Generating formats for an address the operator
+    already gave us would send the first guess to a paid verification provider.
+
+    Placed ahead of the company-domain gates below on the same reasoning those
+    gates were written with. They exist to stop this system *deriving and
+    verifying* addresses at a domain nobody confirmed — the step that spends
+    money and touches a mail server on the strength of the domain being right.
+    This path derives nothing from the domain and contacts nobody. Suppression is
+    a different question entirely, and is re-asked here, because suppression is
+    about whether this person may be contacted at all.
+
+    What this step does not do is as important as what it does: it writes no
+    :class:`~app.models.email_evidence.ExactEmailVerification` row, sets no
+    verification result, and returns ``verification_id: None``. There is nothing
+    to reference, because nobody was asked.
+    """
+
+    suppression = evaluate_suppression(
+        session,
+        email=supplied.normalized,
+        domain=contact.company_domain,
+    )
+    if suppression.blocked:
+        return EmailExecutionStep(
+            kind=EmailExecutionStepKind.BLOCKED,
+            outcome=EmailExecutionOutcome.SUPPRESSED,
+            result={
+                "domain_outcome": EmailExecutionOutcome.SUPPRESSED.value,
+                "reason": suppression.blocked_reason,
+            },
+            output_reference={"contact_id": str(contact.id)},
+            reason_code=EmailExecutionOutcome.SUPPRESSED.value,
+            reason=suppression.blocked_reason or "The suppression ledger blocks this Contact.",
+        )
+
+    state: dict[str, Any] = {
+        "policy_identifier": "operator_supplied_address",
+        "policy_version": supplied_inputs.SCHEMA_VERSION,
+        "terminal_outcome": EmailExecutionOutcome.SUPPLIED_EMAIL_ACCEPTED.value,
+        "accepted_email": supplied.normalized,
+        "supplied_source_id": str(supplied.source_id),
+        "candidates": [],
+        "current_candidate_index": 0,
+        "accepted_candidate_index": None,
+    }
+    result = {
+        "domain_outcome": EmailExecutionOutcome.SUPPLIED_EMAIL_ACCEPTED.value,
+        "email": supplied.normalized,
+        "supplied_source_id": str(supplied.source_id),
+        "supplied_source_type": supplied.source_type,
+        "supplied_raw_value": supplied.raw,
+        # The four facts that make this outcome truthful. There is deliberately
+        # no key here that a reader could mistake for a verification result.
+        "address_derivation": supplied_inputs.EMAIL_DERIVATION,
+        "candidates_generated": 0,
+        "provider_call_created": False,
+        "verification_id": None,
+    }
+    persisted = _persist_result(job, state, result)
+    record_audit_event(
+        session,
+        actor=actor,
+        action="contact.supplied_email_accepted",
+        entity_type="contact",
+        entity_id=str(contact.id),
+        new_state=supplied.normalized,
+        reason=(
+            "operator-supplied address accepted as the Campaign address; no candidate "
+            "was generated and no verification provider was called"
+        ),
+        context={
+            "email_job_id": str(job.id),
+            "supplied_source_id": str(supplied.source_id),
+            "supplied_source_type": supplied.source_type,
+        },
+    )
+    return EmailExecutionStep(
+        kind=EmailExecutionStepKind.COMPLETE,
+        outcome=EmailExecutionOutcome.SUPPLIED_EMAIL_ACCEPTED,
+        result=persisted,
+        output_reference={
+            "email": supplied.normalized,
+            "supplied_source_id": str(supplied.source_id),
+            "verification_id": None,
+            "reused": False,
+            "address_derivation": supplied_inputs.EMAIL_DERIVATION,
+        },
+    )
+
+
 def _waiting_step(
     *,
     job: AgentJob,
@@ -1301,6 +1414,29 @@ def execute_step(
                 job=job,
                 contact=contact,
                 record=imported,
+                actor=actor,
+            )
+
+        # --- The operator-supplied address path ------------------------------
+        #
+        # Second, and second on purpose. A file import writes both records — the
+        # richer ``ImportedContactEmail`` evidence *and* the source-agnostic
+        # provenance — so checking the file evidence first keeps that path's
+        # outcome, its vendor-claim reporting and its Verification bypass exactly
+        # as they were. Everything else that supplies an address at intake, and
+        # anything that supplies one later, lands here.
+        #
+        # ``supplied_email`` re-derives its answer from the enrolment provenance
+        # every call and returns nothing unless the recorded address still equals
+        # the permanent Contact's own, so a restart, a retry or a re-enrolment
+        # reaches this same decision — and a corrected address stops it.
+        supplied = supplied_inputs.supplied_email(session, membership=membership, contact=contact)
+        if supplied is not None:
+            return _supplied_step(
+                session,
+                job=job,
+                contact=contact,
+                supplied=supplied,
                 actor=actor,
             )
 

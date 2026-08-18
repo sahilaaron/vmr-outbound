@@ -919,6 +919,58 @@ def _complete_verification_from_email(
         )
         return True
 
+    # --- The operator-supplied address bypass --------------------------------
+    #
+    # The same truthful absence as the branch above, for an address that arrived
+    # through an acquisition surface rather than an uploaded file. It is a second
+    # branch rather than a widened first one because the two carry different
+    # evidence and must keep saying so: the import references an
+    # ``ImportedContactEmail`` row with a file checksum behind it, and this
+    # references the enrolment provenance record the operator's submission wrote.
+    # Collapsing them would make a spreadsheet cell indistinguishable from a
+    # vendor export in the stage history.
+    #
+    # What they share is the only thing that matters downstream: no provider was
+    # called, so there is no evidence reference, and inventing one to satisfy the
+    # branch below is the exact failure this design exists to prevent.
+    if outcome == "supplied_email_accepted":
+        supplied_source_id = result.get("supplied_source_id")
+        if not isinstance(supplied_source_id, str):
+            raise jobs.AgentJobError(
+                "an operator-supplied acceptance cannot advance Verification without its "
+                "intake provenance reference"
+            )
+        bypass_reference = {
+            "decision": "bypassed",
+            "verification_id": None,
+            "email": result.get("email"),
+            "provider": None,
+            "provider_called": False,
+            "reused_evidence": False,
+            "source": "operator_supplied_intake",
+            "supplied_source_id": supplied_source_id,
+            "supplied_source_type": result.get("supplied_source_type"),
+            "address_derivation": result.get("address_derivation"),
+            "email_job_id": str(email_job.id),
+        }
+        transition_stage(
+            session,
+            membership=membership,
+            agent_id=AgentIdentifier.VERIFICATION,
+            target=PipelineStageStatus.COMPLETED,
+            event_type=PipelineEventType.STAGE_COMPLETED,
+            actor=actor,
+            job=None,
+            reason_code="verification_bypassed_supplied_email",
+            reason_detail=(
+                "The address was supplied by the operator at intake. No verification "
+                "provider was called and no deliverability is claimed."
+            ),
+            output_reference=bypass_reference,
+            detail=bypass_reference,
+        )
+        return True
+
     if outcome not in {
         "existing_accepted_email_reused",
         "verified_email_accepted",
