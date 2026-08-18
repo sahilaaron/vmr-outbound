@@ -103,6 +103,13 @@ REASON_MODEL_NO_ANSWER = "model_could_not_establish_a_domain"
 REASON_MODEL_UNAVAILABLE = "model_domain_lookup_unavailable"
 REASON_MODEL_ANSWER_UNUSABLE = "model_answer_could_not_be_read_as_a_domain"
 REASON_MODEL_DOMAIN_UNSUITABLE = "model_asserted_an_unsuitable_domain"
+REASON_MODEL_CLAIM_MISSING = "model_answer_carried_no_evidence_record"
+REASON_MODEL_CONFIDENCE_TOO_LOW = "model_confidence_below_acceptance_threshold"
+REASON_MODEL_COMPANY_AMBIGUOUS = "model_reported_a_competing_same_named_company"
+REASON_MODEL_EVIDENCE_MISSING = "model_cited_no_page_it_read"
+REASON_MODEL_EVIDENCE_OFF_DOMAIN = "model_read_no_page_on_the_domain_it_named"
+REASON_MODEL_EVIDENCE_DIRECTORY_ONLY = "model_read_only_directory_or_aggregator_pages"
+REASON_MODEL_EVIDENCE_ACCEPTED = "model_read_the_domains_own_site_and_named_no_rival"
 
 # Per-candidate rejection codes.
 REJECTED_INVALID_DOMAIN = "invalid_domain"
@@ -187,6 +194,36 @@ REASON_TEXT: dict[str, str] = {
     REASON_MODEL_DOMAIN_UNSUITABLE: (
         "The model named a domain that cannot be a company's own — a social network, "
         "directory, platform or parked page."
+    ),
+    REASON_MODEL_CLAIM_MISSING: (
+        "The model named a domain but recorded no evidence for it, so there is nothing "
+        "to judge it on. A domain is accepted on what was read, never on the fact that "
+        "it is spelled like a hostname. Ask again to get an answer under the current "
+        "contract."
+    ),
+    REASON_MODEL_CONFIDENCE_TOO_LOW: (
+        "The model said it was not sure enough of this domain. A likely-looking guess is "
+        "worse than no domain here, so it was not accepted."
+    ),
+    REASON_MODEL_COMPANY_AMBIGUOUS: (
+        "The model found another company that answers to this name and could not rule it "
+        "out, so no domain was accepted. The competing company is recorded below."
+    ),
+    REASON_MODEL_EVIDENCE_MISSING: (
+        "The model named a domain without citing a single page it read. That is an "
+        "assertion, not a finding."
+    ),
+    REASON_MODEL_EVIDENCE_OFF_DOMAIN: (
+        "Nothing the model read was on the domain it named, so the domain is unconfirmed "
+        "by the company's own site."
+    ),
+    REASON_MODEL_EVIDENCE_DIRECTORY_ONLY: (
+        "Every page the model read was a directory or data aggregator. Those repeat what "
+        "somebody else filed and cannot confirm a company's own domain."
+    ),
+    REASON_MODEL_EVIDENCE_ACCEPTED: (
+        "The model read a page on the domain itself, rated the identity match high, and "
+        "named no competing company of the same name."
     ),
     REASON_RANK_IS_NOT_CONFIRMATION: (
         "The provider's ranking was recorded but was not treated as evidence."
@@ -620,6 +657,13 @@ class ResolutionEvidence:
     model_domain: str | None = None
     model_lookup_status: EnrichmentLookupStatus = EnrichmentLookupStatus.NOT_STARTED
     model_source_url: str | None = None
+    #: The structured claim the model made for that domain — its confidence, the
+    #: pages it says it read, and what it said about same-named companies. Stored
+    #: on the enrichment row and read back here, so the acceptance below is
+    #: replayed from evidence rather than re-asked. ``None`` for an answer
+    #: recorded before the claim contract existed, which is graded as unevidenced
+    #: rather than trusted.
+    model_claim: dict[str, Any] | None = None
 
     @property
     def has_company_name(self) -> bool:
@@ -743,6 +787,133 @@ def evaluate_established_evidence(evidence: ResolutionEvidence) -> PolicyDecisio
     return None
 
 
+#: The only grade a model answer is accepted at. Two grades below it exist and
+#: both are refused, deliberately: this fallback runs on the population the brand
+#: matcher already failed on, which is exactly where a same-named company in
+#: another country is most likely to be the one the model found. A wrong domain
+#: here starts a research crawl against a stranger and puts a stranger's facts in
+#: front of an operator, so the cost of a false accept is higher than the cost of
+#: staying unresolved — and staying unresolved is a state the product already
+#: handles.
+MODEL_ACCEPTED_CONFIDENCE = "high"
+
+
+def model_claim_verdict(domain: str, claim: dict[str, Any] | None) -> str | None:
+    """Why *claim* does not support *domain*, or None when it does.
+
+    Pure, and the whole acceptance policy for the model fallback in one place.
+    Four questions, in the order in which a "no" is cheapest to explain:
+
+    1. **Is there a claim at all?** An answer with no evidence record — an answer
+       from before this contract, or one that ignored it — is refused. It is not
+       that such an answer is probably wrong; it is that nothing about it can be
+       checked, and "it parsed as a hostname" is the one thing this policy exists
+       to stop being sufficient.
+    2. **Did it rate itself high?** See :data:`MODEL_ACCEPTED_CONFIDENCE`.
+    3. **Did it rule out the other company of the same name?** A stated rival, or
+       silence on the question, both refuse. Silence refuses because the failure
+       this guards against — Acme Pune answered with Acme Inc's domain — looks
+       exactly like a confident answer that never considered the question.
+    4. **Did it read the company's own site?** At least one cited page must be on
+       the domain being claimed (or a subdomain of it). A directory profile
+       repeats what somebody else filed; a search-results page shows only that
+       the string exists. Neither is the company saying "this is us", and this
+       fallback's entire job is to find the company's own site.
+
+    The rules are checked against what was stored, never against a live call, so
+    the same claim replays to the same verdict a year later.
+    """
+
+    if not isinstance(claim, dict) or not claim:
+        return REASON_MODEL_CLAIM_MISSING
+
+    if str(claim.get("confidence") or "").strip().lower() != MODEL_ACCEPTED_CONFIDENCE:
+        return REASON_MODEL_CONFIDENCE_TOO_LOW
+
+    # Present-and-null is "I checked, there is no rival". Absent, or any text, is
+    # not — including the sentinel the seam records for an unanswered question.
+    if "ambiguity" not in claim or claim.get("ambiguity") is not None:
+        return REASON_MODEL_COMPANY_AMBIGUOUS
+
+    cited = claim.get("evidence")
+    hosts = (
+        [
+            str(item.get("host")).lower().strip(".")
+            for item in cited
+            if isinstance(item, dict) and isinstance(item.get("host"), str) and item.get("host")
+        ]
+        if isinstance(cited, list)
+        else []
+    )
+    if not hosts:
+        return REASON_MODEL_EVIDENCE_MISSING
+
+    target = domain.lower().strip(".")
+    if any(host == target or host.endswith(f".{target}") for host in hosts):
+        return None
+
+    # Nothing was on the domain. Say which of the two ways it failed, because an
+    # operator acts differently on "it only found a Crunchbase page" than on "it
+    # read a real site that was not this one".
+    if all(unsuitable_reason(host) is not None for host in hosts):
+        return REASON_MODEL_EVIDENCE_DIRECTORY_ONLY
+    return REASON_MODEL_EVIDENCE_OFF_DOMAIN
+
+
+def _claim_summary(claim: dict[str, Any] | None) -> dict[str, Any]:
+    """The auditable half of a claim, for storage on the decision.
+
+    The confidence, the pages and the one-line summary; never a prompt, never a
+    response body, never the model's working. What is here is what an operator
+    needs to re-judge the acceptance without re-running anything.
+    """
+
+    if not isinstance(claim, dict):
+        return {}
+    return {
+        "confidence": claim.get("confidence"),
+        "ambiguity": claim.get("ambiguity"),
+        "reasoning_summary": claim.get("reasoning_summary"),
+        "evidence": [item for item in (claim.get("evidence") or []) if isinstance(item, dict)],
+    }
+
+
+def _model_refused(
+    evidence: ResolutionEvidence,
+    *,
+    domain: str,
+    rejection_reason: str,
+    decision_reason: str,
+    warnings: list[str],
+    evaluated: tuple[CandidateEvaluation, ...],
+    provider_reason: str,
+) -> PolicyDecision:
+    """UNRESOLVED, with the model's rejected domain kept as evidence.
+
+    The refused domain is recorded as a candidate rather than dropped, for the
+    same reason a rejected provider candidate is: "we looked at this and said no"
+    is a fact an operator needs, and it is the only way a run of bad model
+    answers is visible as a pattern instead of as silence.
+    """
+
+    rejected = CandidateEvaluation(
+        domain=domain,
+        name=None,
+        rank=None,
+        eligible=False,
+        aligned=False,
+        alignment=None,
+        rejection_reason=rejection_reason,
+    )
+    return PolicyDecision(
+        state=DomainResolutionState.UNRESOLVED,
+        reasons=(provider_reason, decision_reason),
+        warnings=tuple([*warnings, WARNING_CANDIDATES_REJECTED]),
+        candidates=(*evaluated, rejected),
+        provider=evidence.provider,
+    )
+
+
 def _model_fallback(
     evidence: ResolutionEvidence,
     *,
@@ -773,6 +944,13 @@ def _model_fallback(
     any provider candidate, because a model asked for "the official domain" reaches
     for ``linkedin.com`` and ``crunchbase.com`` at least as readily. And the ceiling
     is still PROVISIONAL, so the stages that spend money and send mail stay shut.
+
+    What was *added* on top of both: :func:`model_claim_verdict`. Alignment was the
+    only thing standing between a model answer and acceptance, and waiving it left
+    "is a well-formed hostname, is not on a blocklist" as the entire bar — which
+    admits a confident answer about the wrong company of the same name, the exact
+    failure this population is most exposed to. The claim gate replaces the waived
+    rule with a stronger one: the model has to have read the site.
     """
 
     if evidence.model_lookup_status is EnrichmentLookupStatus.NOT_STARTED:
@@ -812,21 +990,30 @@ def _model_fallback(
 
     unsuitable = unsuitable_reason(domain)
     if unsuitable is not None:
-        rejected = CandidateEvaluation(
+        return _model_refused(
+            evidence,
             domain=domain,
-            name=None,
-            rank=None,
-            eligible=False,
-            aligned=False,
-            alignment=None,
             rejection_reason=unsuitable,
+            decision_reason=REASON_MODEL_DOMAIN_UNSUITABLE,
+            warnings=warnings,
+            evaluated=evaluated,
+            provider_reason=provider_reason,
         )
-        return PolicyDecision(
-            state=DomainResolutionState.UNRESOLVED,
-            reasons=(provider_reason, REASON_MODEL_DOMAIN_UNSUITABLE),
-            warnings=tuple([*warnings, WARNING_CANDIDATES_REJECTED]),
-            candidates=(*evaluated, rejected),
-            provider=evidence.provider,
+
+    # The acceptance policy. Everything above asked whether the *string* could be
+    # a company domain; this asks whether the model established that it is THIS
+    # company's. A syntactically perfect domain with nothing behind it is refused
+    # here, which is the point of the whole gate.
+    unsupported = model_claim_verdict(domain, evidence.model_claim)
+    if unsupported is not None:
+        return _model_refused(
+            evidence,
+            domain=domain,
+            rejection_reason=unsupported,
+            decision_reason=unsupported,
+            warnings=warnings,
+            evaluated=evaluated,
+            provider_reason=provider_reason,
         )
 
     chosen = CandidateEvaluation(
@@ -847,12 +1034,17 @@ def _model_fallback(
             **chosen.as_json(),
             "provider": MODEL_PROVIDER,
             "source_url": evidence.model_source_url,
+            # Kept on the decision, not only on the enrichment row: the decision
+            # is what an operator reads, and "why was this accepted" has to be
+            # answerable from the record that made the acceptance.
+            "claim": _claim_summary(evidence.model_claim),
         },
         provider=MODEL_PROVIDER,
         provider_rank=None,
         reasons=(
             provider_reason,
             REASON_MODEL_ASSERTED_DOMAIN,
+            REASON_MODEL_EVIDENCE_ACCEPTED,
             REASON_MODEL_NAME_ALIGNMENT_WAIVED,
             REASON_MODEL_EVIDENCE_UNCORROBORATED,
         ),

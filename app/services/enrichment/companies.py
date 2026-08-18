@@ -363,6 +363,10 @@ def run_model_lookup(
     record.model_domain = result.domain
     record.model_source_url = result.source_url
     record.model_note = result.reason
+    # None for a refusal or a failure: there is no claim to evidence, and writing
+    # an empty one would make "it answered without evidence" indistinguishable
+    # from "it did not answer" to the policy that has to tell them apart.
+    record.model_claim = result.claim_payload()
     record.model_looked_up_at = datetime.now(UTC)
     record.model_lookup_attempts = (record.model_lookup_attempts or 0) + 1
     session.flush()
@@ -383,6 +387,12 @@ def run_model_lookup(
             "lookup_version": model_domain.LOOKUP_VERSION,
             "status": result.status.value,
             "domain": result.domain,
+            # The grade and the citation count, not the citations: an audit event
+            # says enough to spot a run of thin answers without becoming a place
+            # model prose accumulates. The claim itself is on the record.
+            "confidence": result.confidence.value,
+            "evidence_count": len(result.evidence),
+            "ambiguity_stated": result.ambiguity is not None,
             # Recorded because it is the whole reason this lookup can succeed where
             # the brand matcher could not, and because an operator reviewing a run
             # of bad answers needs to know whether the hint was even present.

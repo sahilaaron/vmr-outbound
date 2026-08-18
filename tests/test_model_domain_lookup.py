@@ -84,6 +84,57 @@ def _model(thinker: ScriptedThinker) -> resolution_service.ModelAccess:
     return resolution_service.ModelAccess(thinker_factory=lambda: thinker, timeout=5.0)
 
 
+def _evidenced(domain: str, **overrides: Any) -> dict[str, Any]:
+    """A model answer that satisfies the acceptance policy.
+
+    The default for every test below that is not *about* the acceptance policy.
+    Since the claim gate landed, a bare ``{"domain": "..."}`` is a rejected
+    answer — so writing one here would quietly turn a test of the resolution path
+    into a test of the refusal path, and it would still pass while asserting
+    nothing it claims to assert.
+    """
+
+    answer: dict[str, Any] = {
+        "domain": domain,
+        "official_website_url": f"https://{domain}/about",
+        "confidence": "high",
+        "evidence": [
+            {
+                "url": f"https://{domain}/about",
+                "kind": "official_site",
+                "detail": "About page names the company and its stated location",
+            }
+        ],
+        "ambiguity": None,
+        "reasoning_summary": "Read the company's own About page.",
+    }
+    answer.update(overrides)
+    return answer
+
+
+def _claim(domain: str, **overrides: Any) -> dict[str, Any]:
+    """The stored form of :func:`_evidenced`, for the pure-policy tests."""
+
+    claim: dict[str, Any] = {
+        "schema_version": model_domain.LOOKUP_VERSION,
+        "domain": domain,
+        "official_website_url": f"https://{domain}/about",
+        "confidence": "high",
+        "evidence": [
+            {
+                "url": f"https://{domain}/about",
+                "host": domain,
+                "kind": "official_site",
+                "detail": "About page names the company and its stated location",
+            }
+        ],
+        "ambiguity": None,
+        "reasoning_summary": "Read the company's own About page.",
+    }
+    claim.update(overrides)
+    return claim
+
+
 # ---------------------------------------------------------------------------
 # Parsing the model's answer
 # ---------------------------------------------------------------------------
@@ -249,6 +300,7 @@ def test_a_model_answer_is_provisional_and_can_never_be_confirmed() -> None:
         _evidence(
             model_lookup_status=EnrichmentLookupStatus.OK,
             model_domain="quanthealth.ai",
+            model_claim=_claim("quanthealth.ai"),
         )
     )
 
@@ -268,7 +320,11 @@ def test_the_waived_alignment_is_recorded_as_waived_not_as_passed() -> None:
     """
 
     decision = policy.evaluate(
-        _evidence(model_lookup_status=EnrichmentLookupStatus.OK, model_domain="abc.xyz")
+        _evidence(
+            model_lookup_status=EnrichmentLookupStatus.OK,
+            model_domain="abc.xyz",
+            model_claim=_claim("abc.xyz"),
+        )
     )
 
     assert decision.state is DomainResolutionState.PROVISIONAL
@@ -299,8 +355,14 @@ def test_domain_hygiene_is_not_waived_for_a_model(domain: str) -> None:
     rule — the one thing that is waived — would not have caught them anyway.
     """
 
+    # Fully evidenced on purpose: the point is that hygiene rejects these even
+    # when the acceptance policy would otherwise have been satisfied.
     decision = policy.evaluate(
-        _evidence(model_lookup_status=EnrichmentLookupStatus.OK, model_domain=domain)
+        _evidence(
+            model_lookup_status=EnrichmentLookupStatus.OK,
+            model_domain=domain,
+            model_claim=_claim(domain),
+        )
     )
 
     assert decision.state is DomainResolutionState.UNRESOLVED
@@ -398,6 +460,13 @@ def test_every_reason_and_warning_code_has_operator_facing_words() -> None:
         policy.REASON_MODEL_UNAVAILABLE,
         policy.REASON_MODEL_ANSWER_UNUSABLE,
         policy.REASON_MODEL_DOMAIN_UNSUITABLE,
+        policy.REASON_MODEL_CLAIM_MISSING,
+        policy.REASON_MODEL_CONFIDENCE_TOO_LOW,
+        policy.REASON_MODEL_COMPANY_AMBIGUOUS,
+        policy.REASON_MODEL_EVIDENCE_MISSING,
+        policy.REASON_MODEL_EVIDENCE_OFF_DOMAIN,
+        policy.REASON_MODEL_EVIDENCE_DIRECTORY_ONLY,
+        policy.REASON_MODEL_EVIDENCE_ACCEPTED,
     ]
     for code in codes:
         assert policy.REASON_TEXT.get(code), code
@@ -419,9 +488,7 @@ def test_a_capture_the_provider_could_not_match_is_rescued(db_session: Session) 
     snapshot = capture_factory.salesnav_capture(
         db_session, company_name="QuantHealth", location="Tel Aviv, Israel"
     )
-    thinker = ScriptedThinker(
-        {"domain": "quanthealth.ai", "source_url": "https://quanthealth.ai/about"}
-    )
+    thinker = ScriptedThinker(_evidenced("quanthealth.ai"))
 
     outcome = resolution_service.resolve(
         db_session,
@@ -442,9 +509,7 @@ def test_the_source_page_the_model_read_is_kept(db_session: Session) -> None:
     """The most useful thing on the record for an operator confirming the domain."""
 
     snapshot = capture_factory.salesnav_capture(db_session, company_name="QuantHealth")
-    thinker = ScriptedThinker(
-        {"domain": "quanthealth.ai", "source_url": "https://quanthealth.ai/about"}
-    )
+    thinker = ScriptedThinker(_evidenced("quanthealth.ai"))
 
     resolution_service.resolve(
         db_session, snapshot=snapshot, access=_provider(), model=_model(thinker), actor=ACTOR
@@ -457,6 +522,10 @@ def test_the_source_page_the_model_read_is_kept(db_session: Session) -> None:
     assert record.model_source_url == "https://quanthealth.ai/about"
     assert record.model_lookup_status is EnrichmentLookupStatus.OK
     assert record.model_lookup_attempts == 1
+    # And the evidence behind it, which is what the acceptance was decided on.
+    assert record.model_claim is not None
+    assert record.model_claim["confidence"] == "high"
+    assert record.model_claim["evidence"][0]["host"] == "quanthealth.ai"
 
 
 def test_a_rejected_model_answer_is_still_recorded(db_session: Session) -> None:
@@ -543,7 +612,7 @@ def test_one_model_call_per_company_however_often_resolution_runs(db_session: Se
 
     snapshot = capture_factory.salesnav_capture(db_session, company_name="QuantHealth")
     thinker = ScriptedThinker(
-        {"domain": None, "reason": "could not tell"}, {"domain": "quanthealth.ai"}
+        {"domain": None, "reason": "could not tell"}, _evidenced("quanthealth.ai")
     )
 
     for _ in range(3):

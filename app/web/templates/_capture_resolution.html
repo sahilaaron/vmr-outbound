@@ -216,6 +216,29 @@
           read <a class="mono" href="{{ record.model_source_url }}" rel="noopener noreferrer nofollow" target="_blank">{{ record.model_source_url }}</a>{% endif %}
         </div>
         {% endif %}
+        {% if record.model_claim %}
+        {# The evidence the acceptance policy graded. Shown because "a model named
+           a domain" is not a reason to believe one, and an operator confirming a
+           provisional domain is being asked to check exactly these three things:
+           how sure it said it was, whether it ruled out the other company of the
+           same name, and which pages it actually opened. #}
+        <div class="small">
+          confidence <span class="mono">{{ record.model_claim.get("confidence") or "unstated" }}</span>
+          · other companies of this name:
+          <span class="mono">{{ record.model_claim.get("ambiguity") or "none reported" }}</span>
+        </div>
+        {% if record.model_claim.get("evidence") %}
+        <ul class="small wrap">
+          {% for page in record.model_claim.get("evidence") %}
+          <li><a class="mono" href="{{ page.get("url") }}" rel="noopener noreferrer nofollow"
+                 target="_blank">{{ page.get("url") }}</a>{% if page.get("detail") %} — {{ page.get("detail") }}{% endif %}</li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+        {% if record.model_claim.get("reasoning_summary") %}
+        <div class="muted-text small wrap">{{ record.model_claim.get("reasoning_summary") }}</div>
+        {% endif %}
+        {% endif %}
         {% if record.model_note %}<div class="muted-text small wrap">{{ record.model_note }}</div>{% endif %}
       </td></tr>
       {% elif readiness and readiness.provider_ready and not readiness.model_ready %}
