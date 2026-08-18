@@ -38,15 +38,18 @@ from app.models.verification_job import AgentJob
 from app.services.agent_studio.email_verification_report import EmailVerificationReportReader
 from app.services.verification import fallback as fallback_policy
 from app.services.verification import queue as jobs
-from app.services.verification import service, waterfall
+from app.services.verification import service, studio, waterfall
+from app.services.verification.decisions import VerificationDecision, decide
 from app.services.verification.policy import get_policy
 from app.services.verification.provider import (
     HttpDebounce,
     ProviderResponse,
     ProviderTransientError,
     SimulatedDebounce,
+    _as_optional_bool,
     evidence_provider_label,
 )
+from cryptography.fernet import Fernet
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -123,19 +126,25 @@ def test_invalid_maps_to_the_invalid_verdict() -> None:
     [
         ("4", EmailPreciseStatus.CATCH_ALL),
         ("3", EmailPreciseStatus.DISPOSABLE),
-        ("8", EmailPreciseStatus.UNKNOWN),
+        ("8", EmailPreciseStatus.ROLE_BASED),
         ("", EmailPreciseStatus.UNKNOWN),
     ],
 )
-def test_risky_maps_conservatively_and_never_to_valid(
+def test_risky_maps_conservatively_and_never_to_an_accepted_address(
     code: str, expected: EmailPreciseStatus
 ) -> None:
-    """Risky is one DeBounce word for several uncertainties. None of them pass."""
+    """Risky is one DeBounce word for several uncertainties. None of them pass.
+
+    The claim is deliberately about the *decision*, not the stored result. A
+    role account is recorded as a valid mailbox carrying the role flag, because
+    that is the only way this model can say "role account" — and the precise
+    status it produces is still one no Campaign Contact advances on.
+    """
 
     mapped = get_policy(get_settings()).map_response(_debounce(_payload(result="Risky", code=code)))
 
     assert mapped.precise is expected
-    assert mapped.result is not EmailVerificationResult.VALID
+    assert decide(mapped.precise).accepted is False
 
 
 def test_unknown_stays_unknown_however_loudly_the_provider_recommends_sending() -> None:
@@ -716,18 +725,20 @@ def test_without_configuration_the_traversal_is_millionverifier_only(
     assert outcome.outcome.precise is EmailPreciseStatus.CATCH_ALL
 
 
-def test_the_key_alone_does_not_authorize_spending_it() -> None:
+def test_the_key_alone_does_not_authorize_spending_it(db_session: Session) -> None:
     keyed_but_off = Settings(debounce_api_key=KEY, features=FeatureFlags(debounce=False))
     flagged_but_keyless = Settings(features=FeatureFlags(debounce=True))
 
-    assert keyed_but_off.debounce_fallback_available() is False
-    assert flagged_but_keyless.debounce_fallback_available() is False
-    assert _settings().debounce_fallback_available() is True
+    assert waterfall.fallback_credentialed(db_session, keyed_but_off) is False
+    assert waterfall.fallback_credentialed(db_session, flagged_but_keyless) is False
+    assert waterfall.fallback_credentialed(db_session, _settings()) is True
 
 
-def test_the_default_traversal_gains_debounce_only_once_it_is_usable() -> None:
-    off = waterfall.default_configuration(_settings(debounce=False))
-    on = waterfall.default_configuration(_settings())
+def test_the_default_traversal_gains_debounce_only_once_it_is_usable(
+    db_session: Session,
+) -> None:
+    off = waterfall.default_configuration(db_session, _settings(debounce=False))
+    on = waterfall.default_configuration(db_session, _settings())
 
     assert [item["id"] for item in off["providers"]] == ["millionverifier"]
     assert [item["id"] for item in on["providers"]] == ["millionverifier", "debounce"]
@@ -739,7 +750,7 @@ def test_an_absent_optional_provider_never_blocks_startup() -> None:
     settings = Settings()
 
     assert settings.has_debounce_key() is False
-    assert settings.debounce_fallback_available() is False
+    assert settings.features.debounce is False
     assert settings.debounce_timeout_seconds >= 2
 
 
@@ -841,3 +852,386 @@ def test_an_imported_supplied_address_reaches_neither_provider(
     assert email_job.result["domain_outcome"] == "imported_email_accepted"
     assert email_job.result["provider_call_created"] is False
     _assert_no_verification_happened(db_session)
+
+
+# --------------------------------------------------------------------------
+# Repair regressions for review findings F1-F4.
+#
+# Each of these reproduces a defect a reviewer demonstrated against the first
+# candidate, so each is written to fail loudly if the repair is ever undone.
+# --------------------------------------------------------------------------
+
+
+def _envelope(success: object, **fields: Any) -> str:
+    """The published Single Validation shape.
+
+    ``success`` and ``balance`` are siblings of ``debounce``, not nested inside
+    it, which is how the vendor actually replies.
+    """
+
+    import json
+
+    return json.dumps(
+        {"debounce": {"email": EMAIL, **fields}, "success": success, "balance": "329918"}
+    )
+
+
+# --- F1. success is documented as an integer and rendered as a string ------
+
+
+@pytest.mark.parametrize("success", [1, "1", True])
+def test_f1_every_documented_true_form_of_success_is_a_usable_envelope(
+    success: object,
+) -> None:
+    """The defect: integer 1 fell through and made a good result unreadable."""
+
+    response = HttpDebounce(
+        KEY, transport=_Body(_envelope(success, result="Safe to Send", code="5"))
+    ).verify(EMAIL)
+
+    assert response.error is None
+    assert response.result == "ok"
+
+
+@pytest.mark.parametrize("success", [0, "0", False])
+def test_f1_every_documented_false_form_of_success_is_a_provider_failure(
+    success: object,
+) -> None:
+    """A false envelope stays a provider failure, never a mailbox verdict."""
+
+    response = HttpDebounce(
+        KEY, transport=_Body(_envelope(success, result="Safe to Send", code="5"))
+    ).verify(EMAIL)
+    mapped = get_policy(get_settings()).map_response(response)
+
+    assert response.result is None
+    assert response.error == "unusable_response"
+    assert not mapped.is_address_evidence
+    assert mapped.precise is not EmailPreciseStatus.UNKNOWN
+
+
+@pytest.mark.parametrize("value", [2, -1, "maybe", "affirmative", [], {}, None])
+def test_f1_undocumented_forms_fail_closed_rather_than_guessing(value: object) -> None:
+    """No truthiness shortcut: an undocumented value is unreadable, not True."""
+
+    assert _as_optional_bool(value) is None
+
+
+def test_f1_a_boolean_field_reads_the_same_however_the_vendor_renders_it() -> None:
+    """The widening covers role and free_email too, not only success."""
+
+    integers = HttpDebounce(
+        KEY, transport=_Body(_envelope(1, result="Safe to Send", code="5", role=0, free_email=1))
+    ).verify(EMAIL)
+    strings = HttpDebounce(
+        KEY,
+        transport=_Body(
+            _envelope("1", result="Safe to Send", code="5", role="false", free_email="true")
+        ),
+    ).verify(EMAIL)
+
+    assert (integers.role, integers.free) == (False, True)
+    assert (strings.role, strings.free) == (False, True)
+
+
+# --- F2. The switch outranks every credential source ----------------------
+
+
+def _rotate_studio_credential(session: Session, settings: Settings) -> None:
+    studio.rotate_credential(
+        session,
+        provider_id="debounce",
+        secret=KEY,
+        label="operator key",
+        actor="test",
+        settings=settings,
+    )
+
+
+def _activate_waterfall_with_debounce(session: Session) -> None:
+    version = studio.create_waterfall_version(
+        session,
+        name="MV then DeBounce",
+        configuration={"providers": [{"id": "millionverifier"}, {"id": "debounce"}]},
+        change_note="test",
+        actor="test",
+    )
+    studio.activate_waterfall(session, policy_version_id=version.id, actor="test", reason="test")
+    session.flush()
+
+
+def _studio_only(*, switch: bool) -> Settings:
+    return Settings(
+        millionverifier_api_key="mv-key",
+        debounce_api_key=None,
+        features=FeatureFlags(debounce=switch),
+        provider_credential_encryption_key=Fernet.generate_key().decode(),
+    )
+
+
+def test_f2_a_studio_credential_cannot_re_enable_a_switched_off_provider(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The defect: the Studio secret was returned before the switch was read."""
+
+    settings = _studio_only(switch=False)
+    _rotate_studio_credential(db_session, settings)
+    _activate_waterfall_with_debounce(db_session)
+
+    primary = _Fake("millionverifier", [_mv("catch_all")])
+    # DeBounce is absent from the factory, so constructing it fails the test.
+    _install(monkeypatch, millionverifier=primary)
+
+    outcome = _run(db_session, settings)
+
+    assert outcome.providers_attempted == ("millionverifier",)
+    assert outcome.fallback_used is False
+    assert waterfall.fallback_credentialed(db_session, settings) is False
+
+
+def test_f2_a_switched_off_provider_is_not_even_offered_a_credential(
+    db_session: Session,
+) -> None:
+    """Proved at the seam: no secret is returned, so nothing can be built."""
+
+    settings = _studio_only(switch=False)
+    _rotate_studio_credential(db_session, settings)
+
+    assert waterfall._credential(db_session, "debounce", settings) is None
+    # The primary is unaffected by the DeBounce switch.
+    assert waterfall._credential(db_session, "millionverifier", settings) == "mv-key"
+
+
+def test_f2_a_switched_off_provider_refuses_an_explicit_studio_live_test(
+    db_session: Session,
+) -> None:
+    """The other path that can construct and call DeBounce."""
+
+    settings = _studio_only(switch=False)
+    _rotate_studio_credential(db_session, settings)
+
+    with pytest.raises(studio.StudioConfigurationError) as raised:
+        studio.provider_test(
+            db_session,
+            provider_id="debounce",
+            email=EMAIL,
+            live=True,
+            actor="test",
+            settings=settings,
+        )
+
+    assert "FEATURES__DEBOUNCE" in str(raised.value)
+
+
+def test_f2_a_studio_credential_is_a_real_credential_once_the_switch_is_on(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The switch is a veto, not a second key requirement."""
+
+    settings = _studio_only(switch=True)
+    _rotate_studio_credential(db_session, settings)
+
+    assert waterfall.fallback_credentialed(db_session, settings) is True
+    assert [
+        item["id"] for item in waterfall.default_configuration(db_session, settings)["providers"]
+    ] == ["millionverifier", "debounce"]
+
+    primary = _Fake("millionverifier", [_mv("catch_all")])
+    fallback = _Fake("debounce", [_mv("ok")])
+    _install(monkeypatch, millionverifier=primary, debounce=fallback)
+
+    outcome = _run(db_session, settings)
+
+    assert fallback.calls == 1
+    assert outcome.providers_attempted == ("millionverifier", "debounce")
+
+
+# --- F3. A deterministic defect is bought once, not once per attempt -------
+
+
+def test_f3_an_unusable_reply_is_purchased_once_not_once_per_retry(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The defect: a reviewer reproduced four paid calls for one address.
+
+    An unusable reply stores no reusable evidence, so nothing throttled the
+    retry loop. It is now permanent for the provider that sent it — the same
+    reply parses the same way every time — so the job stops instead of buying
+    the identical unreadable answer on every remaining attempt.
+    """
+
+    unusable = ProviderResponse(
+        email=EMAIL, result=None, resultcode=None, error="unusable_response"
+    )
+    primary = _Fake("millionverifier", [_mv("catch_all")])
+    fallback = _Fake("debounce", [unusable])
+    _install(monkeypatch, millionverifier=primary, debounce=fallback)
+    job = _claim(db_session)
+
+    outcome = _run(db_session, _settings(), job=job)
+
+    assert fallback.calls == 1
+    assert outcome.outcome.failure_class is VerificationFailureClass.PERMANENT_PROVIDER
+    assert outcome.outcome.condition == "unusable_response"
+    # The pipeline decision is a truthful stop: not a retry, not a verdict.
+    decision = decide(
+        outcome.outcome.precise,
+        failure_class=outcome.outcome.failure_class,
+        retry_available=True,
+    )
+    assert decision.decision is VerificationDecision.STOP_NO_RESULT
+    assert decision.status is EmailPreciseStatus.PROVIDER_ERROR
+
+
+def test_f3_an_unusable_reply_is_still_never_a_mailbox_verdict(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    primary = _Fake("millionverifier", [_mv("catch_all")])
+    fallback = _Fake(
+        "debounce",
+        [ProviderResponse(email=EMAIL, result=None, resultcode=None, error="unusable_response")],
+    )
+    _install(monkeypatch, millionverifier=primary, debounce=fallback)
+
+    _run(db_session, _settings())
+    db_session.flush()
+
+    stored = db_session.scalars(select(ExactEmailVerification)).all()
+    assert [row.provider for row in stored] == ["millionverifier"]
+    assert stored[0].result is EmailVerificationResult.CATCH_ALL
+
+
+def test_f3_a_transport_failure_keeps_its_bounded_retry(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The distinction the repair rests on: transient still means retry."""
+
+    primary = _Fake("millionverifier", [_mv("catch_all")])
+    fallback = _Fake("debounce", [ProviderTransientError("HTTP 429", condition="rate_limit")])
+    _install(monkeypatch, millionverifier=primary, debounce=fallback)
+
+    outcome = _run(db_session, _settings())
+
+    assert outcome.outcome.failure_class is VerificationFailureClass.TRANSIENT_PROVIDER
+    assert (
+        decide(
+            outcome.outcome.precise,
+            failure_class=outcome.outcome.failure_class,
+            retry_available=True,
+        ).decision
+        is VerificationDecision.RETRY_LATER
+    )
+
+
+def test_f3_an_unusable_primary_still_lets_the_fallback_answer(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Permanent for one provider must not mean permanent for the address."""
+
+    primary = _Fake(
+        "millionverifier",
+        [ProviderResponse(email=EMAIL, result="something-new", resultcode=None)],
+    )
+    fallback = _Fake("debounce", [_mv("ok")])
+    _install(monkeypatch, millionverifier=primary, debounce=fallback)
+
+    outcome = _run(db_session, _settings())
+
+    assert outcome.fallback_condition == "unusable_response"
+    assert fallback.calls == 1
+    assert outcome.outcome.precise is EmailPreciseStatus.VALID
+
+
+# --- F4. Code 8 is Role, and Role is a documented classification ----------
+
+
+def test_f4_a_code_only_role_reply_is_a_classification_not_a_parse_failure() -> None:
+    """The defect: code 8 was absent from the table and read as unreadable."""
+
+    response = HttpDebounce(KEY, transport=_Body(_envelope("1", code="8"))).verify(EMAIL)
+    mapped = get_policy(get_settings()).map_response(response)
+
+    assert response.error is None
+    assert response.role is True
+    assert mapped.is_address_evidence
+    assert mapped.precise is EmailPreciseStatus.ROLE_BASED
+
+
+def test_f4_risky_with_the_role_code_is_role_based() -> None:
+    response = HttpDebounce(
+        KEY, transport=_Body(_envelope("1", result="Risky", code="8", reason="Role"))
+    ).verify(EMAIL)
+    mapped = get_policy(get_settings()).map_response(response)
+
+    assert mapped.precise is EmailPreciseStatus.ROLE_BASED
+    # Role is a flag on a valid address in this model, never a result of its own.
+    assert mapped.result is EmailVerificationResult.VALID
+
+
+def test_f4_the_role_code_sets_the_flag_even_when_the_field_disagrees() -> None:
+    """Code 8 is itself the role signal; an absent or false field cannot erase it."""
+
+    absent = HttpDebounce(KEY, transport=_Body(_envelope("1", code="8"))).verify(EMAIL)
+    contradicted = HttpDebounce(
+        KEY, transport=_Body(_envelope("1", code="8", role="false"))
+    ).verify(EMAIL)
+
+    assert absent.role is True
+    assert contradicted.role is True
+
+
+def test_f4_role_based_is_authoritative_and_stops_the_traversal(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Role is an answer about the mailbox, so nothing else is asked."""
+
+    role_reply = HttpDebounce(KEY, transport=_Body(_envelope("1", result="Risky", code="8")))
+    primary = _Fake("millionverifier", [_mv("catch_all")])
+    _install(monkeypatch, millionverifier=primary, debounce=role_reply)
+
+    outcome = _run(db_session, _settings())
+
+    assert outcome.outcome.precise is EmailPreciseStatus.ROLE_BASED
+    assert fallback_policy.assess(outcome.outcome).authoritative
+
+
+def test_f4_a_role_address_never_advances_a_campaign_contact() -> None:
+    """ROLE_BASED keeps its own state; it does not become an accepted address."""
+
+    decision = decide(EmailPreciseStatus.ROLE_BASED)
+
+    assert decision.decision is VerificationDecision.TRY_NEXT_CANDIDATE
+    assert decision.accepted is False
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("1", EmailPreciseStatus.INVALID),
+        ("2", EmailPreciseStatus.INVALID),
+        ("3", EmailPreciseStatus.DISPOSABLE),
+        ("4", EmailPreciseStatus.CATCH_ALL),
+        ("5", EmailPreciseStatus.VALID),
+        ("6", EmailPreciseStatus.INVALID),
+        ("7", EmailPreciseStatus.UNKNOWN),
+        ("8", EmailPreciseStatus.ROLE_BASED),
+    ],
+)
+def test_f4_the_whole_published_code_table_resolves(
+    code: str, expected: EmailPreciseStatus
+) -> None:
+    """Every documented code resolves; none of them is an unreadable reply."""
+
+    response = HttpDebounce(KEY, transport=_Body(_envelope("1", code=code))).verify(EMAIL)
+    mapped = get_policy(get_settings()).map_response(response)
+
+    assert response.error is None
+    assert mapped.precise is expected
+
+
+def test_f4_a_code_outside_the_published_table_is_still_unreadable() -> None:
+    """Widening the table must not widen it into guessing."""
+
+    response = HttpDebounce(KEY, transport=_Body(_envelope("1", code="99"))).verify(EMAIL)
+
+    assert response.error == "unusable_response"

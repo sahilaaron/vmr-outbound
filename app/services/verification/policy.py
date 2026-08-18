@@ -31,10 +31,18 @@ POLICY_VERSION = "ver-1"
 # Transient application-level provider errors that justify a bounded retry.
 _TRANSIENT_ERRORS = frozenset({"ip_address_blocked", "internal_error", "timeout"})
 # A technically successful call whose body carries no verdict this policy can
-# read: unparseable JSON, a missing or unrecognised classification, or a
-# provider envelope that reports its own failure (DeBounce ``success = 0``).
-# Retryable, never address evidence, and never "unknown" — "unknown" is a real
-# thing a provider says about a mailbox and must not double as "unreadable".
+# read: a missing or unrecognised classification, or a provider envelope that
+# reports its own failure (DeBounce ``success = 0``). Never address evidence,
+# and never "unknown" — "unknown" is a real thing a provider says about a
+# mailbox and must not double as "unreadable".
+#
+# Deliberately **not retryable**. A transport failure may succeed on the next
+# try; a reply we cannot parse will parse identically every time, and because
+# an unusable reply stores no reusable evidence, every retry buys the same
+# validation again. Bounded backoff is the wrong tool for a deterministic
+# defect: it converts one wasted credit into one per remaining attempt while
+# never reaching a verdict. This is a provider condition an operator has to
+# clear, which is exactly what the permanent-provider class already means.
 _UNUSABLE_ERRORS = frozenset({"unusable_response", "malformed_response"})
 # Configuration/operational errors that must NOT auto-retry (a retry cannot help
 # until a human acts) and are never address evidence. ``access_rejected`` is a
@@ -123,14 +131,15 @@ class VerificationPolicy:
                 )
             if err in _UNUSABLE_ERRORS:
                 return MappedOutcome(
-                    kind=_KIND_TRANSIENT,
+                    kind=_KIND_PROVIDER_ERROR,
                     result=None,
                     precise=EmailPreciseStatus.PROVIDER_ERROR,
                     credited=False,
-                    retryable=True,
+                    retryable=False,
                     reason=(
                         f"provider response could not be interpreted ({err}); "
-                        "no mailbox verdict was recorded"
+                        "no mailbox verdict was recorded and retrying would only "
+                        "buy the same unreadable answer"
                     ),
                     unusable=True,
                 )
@@ -173,15 +182,19 @@ class VerificationPolicy:
 
         mapped = _RESULT_MAP.get(result_str)
         if mapped is None:
-            # Unrecognised result: treat conservatively as a retryable provider
-            # error, never as a mailbox verdict.
+            # Unrecognised result: never a mailbox verdict, and never retried.
+            # The provider will answer the same way next time, so a retry spends
+            # another credit to learn nothing (see _UNUSABLE_ERRORS above).
             return MappedOutcome(
-                kind=_KIND_TRANSIENT,
+                kind=_KIND_PROVIDER_ERROR,
                 result=None,
                 precise=EmailPreciseStatus.PROVIDER_ERROR,
                 credited=False,
-                retryable=True,
-                reason=f"unrecognised provider result {result_str!r}; will retry",
+                retryable=False,
+                reason=(
+                    f"unrecognised provider result {result_str!r}; no mailbox verdict "
+                    "was recorded and retrying would only buy the same answer"
+                ),
                 unusable=True,
             )
 

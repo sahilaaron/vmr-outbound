@@ -45,6 +45,7 @@ from app.services.verification.studio import (
     StudioConfigurationError,
     active_secret,
     active_waterfall,
+    credential_status,
 )
 
 #: The traversal used when no Studio waterfall version has been activated. It is
@@ -74,11 +75,40 @@ class WaterfallOutcome:
     fallback_reason: str | None = None
 
 
-def default_configuration(settings: Settings) -> dict[str, list[dict[str, object]]]:
+def fallback_enabled(settings: Settings) -> bool:
+    """The operator kill switch for DeBounce, and the only one that counts.
+
+    Off means off everywhere: not in the default order, not through a Studio
+    waterfall that lists the provider, and not through an encrypted Studio
+    credential. An operator who switches this off is told no DeBounce credit
+    will be spent, so no configuration reachable from another screen may
+    contradict that.
+    """
+
+    return bool(settings.features.debounce)
+
+
+def fallback_credentialed(session: Session, settings: Settings) -> bool:
+    """Whether DeBounce is switched on *and* has a usable credential.
+
+    Both credential sources count. A Studio-rotated key is as real as an
+    environment variable — it just cannot override the switch above.
+    """
+
+    if not fallback_enabled(settings):
+        return False
+    if settings.has_debounce_key():
+        return True
+    return credential_status(session, FALLBACK_PROVIDER_ID).configured
+
+
+def default_configuration(
+    session: Session, settings: Settings
+) -> dict[str, list[dict[str, object]]]:
     """The provider order to run when no Studio policy version is active."""
 
     providers: list[dict[str, object]] = [{"id": PRIMARY_PROVIDER_ID, "enabled": True}]
-    if settings.debounce_fallback_available():
+    if fallback_credentialed(session, settings):
         providers.append({"id": FALLBACK_PROVIDER_ID, "enabled": True})
     return {"providers": providers}
 
@@ -86,19 +116,22 @@ def default_configuration(settings: Settings) -> dict[str, list[dict[str, object
 def _credential(session: Session, provider_id: str, settings: Settings) -> str | None:
     """The live secret for *provider_id*, or None when it is not configured.
 
-    Studio-managed credentials win. The environment is the backward-compatible
-    second source, and it is read only: Studio never displays or persists it.
+    The DeBounce switch is consulted *before* either credential source, so a key
+    rotated in Studio cannot quietly re-enable a provider an operator turned off.
+    Otherwise Studio-managed credentials win, with the environment as the
+    backward-compatible second source; it is read only, and Studio never
+    displays or persists it.
     """
 
+    if provider_id == FALLBACK_PROVIDER_ID and not fallback_enabled(settings):
+        return None
     configured = active_secret(session, provider_id, settings)
     if configured is not None:
         return configured[0]
     if provider_id == PRIMARY_PROVIDER_ID:
         return settings.millionverifier_api_key
     if provider_id == FALLBACK_PROVIDER_ID:
-        # The flag is checked as well as the key: an environment that happens to
-        # carry a DeBounce key has not thereby authorized spending its credits.
-        return settings.debounce_api_key if settings.debounce_fallback_available() else None
+        return settings.debounce_api_key
     return None
 
 
@@ -142,7 +175,9 @@ def _resolve_configuration(
     if requested_policy_id is not None and configured is None:
         raise WaterfallUnavailable("The queued waterfall policy no longer exists.")
     configuration: dict[str, object] = (
-        dict(configured.configuration) if configured else dict(default_configuration(settings))
+        dict(configured.configuration)
+        if configured
+        else dict(default_configuration(session, settings))
     )
     return configured, configuration
 

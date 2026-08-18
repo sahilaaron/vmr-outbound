@@ -39,7 +39,10 @@ class ProviderCondition(enum.StrEnum):
     ``UNRESOLVED_RESULT`` — a technically successful call whose verdict the
     active policy cannot treat as settled: catch-all and unknown (E).
     ``UNUSABLE_RESPONSE`` — a response we cannot parse into any verdict:
-    malformed JSON, a missing classification, ``success = 0`` (F).
+    a missing or unrecognised classification, ``success = 0`` (F). Permanent for
+    the provider that sent it — the same reply parses the same way next time —
+    but still worth asking the *next* provider, which is one more call rather
+    than one more call per retry.
     ``NOT_ATTEMPTED`` — refused before provider work, e.g. no address on the
     job. Nothing downstream may fall back on this; there is no question to ask.
     """

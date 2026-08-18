@@ -710,11 +710,7 @@ def verify_exact_address(
             failure_class=VerificationFailureClass.TRANSIENT_PROVIDER,
             precise=EmailPreciseStatus.PROVIDER_ERROR,
             reason=mapped.reason,
-            condition=(
-                ProviderCondition.UNUSABLE_RESPONSE
-                if mapped.unusable
-                else ProviderCondition.TRANSPORT_FAILURE
-            ),
+            condition=ProviderCondition.TRANSPORT_FAILURE,
         )
 
     # Non-retryable provider/config error: fail without paid evidence.
@@ -743,7 +739,16 @@ def verify_exact_address(
         failure_class=VerificationFailureClass.PERMANENT_PROVIDER,
         precise=EmailPreciseStatus.PROVIDER_ERROR,
         reason=mapped.reason,
-        condition=ProviderCondition.ACCESS_REJECTED,
+        # A reply we could not read and a credential the provider rejected are
+        # both permanent for this job, but they are different conditions and the
+        # fallback policy reports them separately. Both stay fallback-eligible:
+        # the *next* provider may still be able to answer, and asking it costs
+        # one call rather than one call per retry.
+        condition=(
+            ProviderCondition.UNUSABLE_RESPONSE
+            if mapped.unusable
+            else ProviderCondition.ACCESS_REJECTED
+        ),
     )
 
 

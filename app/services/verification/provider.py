@@ -87,8 +87,24 @@ _DISPOSABLE_DOMAINS = frozenset({"mailinator.com", "guerrillamail.com", "tempmai
 
 
 def _as_optional_bool(value: object) -> bool | None:
+    """Read one documented boolean-ish provider field, or fail closed.
+
+    DeBounce's schema types ``success``, ``role`` and ``free_email`` as integers
+    or booleans while its published examples render them as strings, so all
+    three forms have to be accepted. What must *not* happen is a truthiness
+    shortcut: ``2``, ``"yes please"`` and ``[]`` are not documented values, and
+    guessing at them is how an unreadable reply turns into a confident verdict.
+    Anything outside the documented set returns None and the caller treats the
+    response as unusable.
+    """
+
     if isinstance(value, bool):
         return value
+    # Checked after bool, because bool is a subclass of int.
+    if isinstance(value, int):
+        if value in (0, 1):
+            return bool(value)
+        return None
     if isinstance(value, str):
         normalized = value.casefold().strip()
         if normalized in {"true", "1", "yes"}:
@@ -563,7 +579,7 @@ class HttpDebounce:
             subresult=str(nested.get("reason")) if nested.get("reason") else None,
             quality=str(nested.get("result")) if nested.get("result") else None,
             free=_as_optional_bool(nested.get("free_email")),
-            role=_as_optional_bool(nested.get("role")),
+            role=(True if code == _DEBOUNCE_ROLE_CODE else _as_optional_bool(nested.get("role"))),
             didyoumean=nested.get("did_you_mean") or None,
             credits=int(nested["balance"]) if str(nested.get("balance", "")).isdigit() else None,
             error=None,
@@ -589,9 +605,16 @@ _DEBOUNCE_RAW_FIELDS = frozenset(
     }
 )
 
-# Documented numeric codes: 4 accept-all, 5 deliverable, 3 disposable, 7 unknown,
-# and 1/2/6 the invalid family. Anything outside this set is unrecognised, which
-# is a failure to read the reply rather than a statement about the mailbox.
+# The published DeBounce result-code table, in full: 1 Syntax, 2 Spam Trap,
+# 3 Disposable, 4 Accept-All, 5 Valid, 6 Invalid, 7 Unknown, 8 Role. Anything
+# outside this set is unrecognised, which is a failure to read the reply rather
+# than a statement about the mailbox.
+#
+# Code 8 maps to the canonical result ``ok`` *carrying the role flag*, because
+# "role account" exists in this model only as a valid address that is role-based
+# — :meth:`VerificationPolicy.precise_for_result` then yields ROLE_BASED, which
+# is a warning and is never an accepted outreach address. It is deliberately not
+# left as a bare ``ok``: see :data:`_DEBOUNCE_ROLE_CODE`.
 _DEBOUNCE_CODE_RESULT: dict[int, str] = {
     1: "invalid",
     2: "invalid",
@@ -600,7 +623,14 @@ _DEBOUNCE_CODE_RESULT: dict[int, str] = {
     5: "ok",
     6: "invalid",
     7: "unknown",
+    8: "ok",
 }
+
+#: The one code that *is itself* the role signal. When DeBounce answers 8 the
+#: role flag is set from the code rather than read from the ``role`` field, so a
+#: reply that classifies an address as Role can never be recorded as an ordinary
+#: valid mailbox because the separate flag happened to be absent.
+_DEBOUNCE_ROLE_CODE = 8
 
 
 def _debounce_safe_raw(payload: dict[str, Any]) -> dict[str, Any]:
@@ -622,9 +652,14 @@ def _classify_debounce(result: object, code: object) -> tuple[str, int | None] |
 
     "Risky" is the only DeBounce class with no exact counterpart in the VMR
     model: one word covering accept-all, role and disposable addresses. The
-    numeric code separates them where it can; where it cannot, Risky maps to
-    ``unknown`` — uncertain, never accepted, and carrying the shortest reuse TTL
-    of the uncertain states. Risky never maps to a valid mailbox.
+    numeric code separates all three — 4 accept-all, 3 disposable, 8 role — and
+    where it cannot, Risky maps to ``unknown``: uncertain, never accepted, and
+    carrying the shortest reuse TTL of the uncertain states.
+
+    Risky never yields an *accepted* address. Code 8 returns ``ok`` only so the
+    caller can set the role flag beside it, which is the single way this model
+    expresses a role account; the precise status that results is ROLE_BASED, a
+    warning that no Campaign Contact advances on.
     """
 
     numeric = _debounce_code(code)
@@ -641,6 +676,8 @@ def _classify_debounce(result: object, code: object) -> tuple[str, int | None] |
             return "catch_all", numeric
         if numeric == 3:
             return "disposable", numeric
+        if numeric == _DEBOUNCE_ROLE_CODE:
+            return "ok", numeric
         return "unknown", numeric
     if label:
         # A classification string we do not recognise: unreadable, not a verdict.

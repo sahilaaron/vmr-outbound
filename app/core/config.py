@@ -454,18 +454,16 @@ class Settings(BaseSettings):
     )
 
     def has_debounce_key(self) -> bool:
-        """True when a non-empty DeBounce key is configured (never logs it)."""
+        """True when a non-empty DeBounce key is configured (never logs it).
 
-        return bool(self.debounce_api_key and self.debounce_api_key.strip())
-
-    def debounce_fallback_available(self) -> bool:
-        """True when DeBounce may be consulted as the verification fallback.
-
-        Both halves are required. The flag alone is an intent with nothing
-        behind it; the key alone is a credential nobody authorized spending.
+        Only answers whether *this* source has a key. Whether DeBounce may
+        actually run is decided by ``verification.waterfall.fallback_enabled``
+        and ``fallback_credentialed``, which also see Studio-managed
+        credentials; asking two different questions under one name is how the
+        switch and the credential drifted apart in the first place.
         """
 
-        return bool(self.features.debounce and self.has_debounce_key())
+        return bool(self.debounce_api_key and self.debounce_api_key.strip())
 
     # --- Local Claude CLI (Research, Insights and Personalization Agents) ---
     #

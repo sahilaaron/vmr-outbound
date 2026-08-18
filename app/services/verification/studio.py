@@ -542,6 +542,11 @@ def provider_test(
 
     if provider_id not in PROVIDERS:
         raise StudioConfigurationError("Choose a registered verification provider.")
+    if live and provider_id == "debounce" and not settings.features.debounce:
+        raise StudioConfigurationError(
+            "DeBounce is switched off (FEATURES__DEBOUNCE). Turn it on before running a "
+            "live test; while it is off no DeBounce call is made and no credit is spent."
+        )
     spec = descriptor(provider_id)
     normalized = normalize_email(email)
     if not normalized or not is_valid_email(normalized):
