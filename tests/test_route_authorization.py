@@ -481,7 +481,13 @@ def test_the_classification_counts_are_the_ones_deliberately_recorded() -> None:
     # And 101 to 80 when the legacy customer twins (Contacts, Companies,
     # Knowledge Base pages and their writes) were retired: six redirects stay
     # user-reachable, the rest is gone.
-    assert len(EXPECTED_USER_REACHABLE) == 80, len(EXPECTED_USER_REACHABLE)
+    # And 80 to 82 with the Campaign offering override: reading an offering from
+    # an address, and going back to the Library item. Both are decisions about
+    # the customer's own Campaign under the same path guard as the rest of
+    # Setup, which is why they are here rather than beside
+    # `POST .../setup/research` — that one authorizes reading *other*
+    # organisations' websites and stays with the administrator.
+    assert len(EXPECTED_USER_REACHABLE) == 82, len(EXPECTED_USER_REACHABLE)
 
 
 def test_reading_the_verification_page_is_not_spending(client: TestClient) -> None:
