@@ -47,11 +47,15 @@ from sqlalchemy.orm import Session
 from app.models.campaign import Campaign
 from app.models.enums import AgentIdentifier, CampaignOfferingSource
 from app.services.campaign_offering import jobs
+from app.services.operations import settings as operational
 
 #: ``EffectiveAgentControl.source`` when this hold is what paused the Agent.
 #: Named so the Workbench, diagnostics and reconciliation can tell it apart from
 #: an operator's pause and from the Campaign's own execution switch.
 OFFERING_RESEARCH_SOURCE = "campaign_offering_research"
+
+#: The administrator control this whole feature sits behind.
+FEATURE_KEY = "campaign_offering_research"
 
 #: The stages whose output depends on what the Campaign is selling. Insights
 #: chooses which recipient facts matter *to this offering*; Personalization
@@ -78,6 +82,13 @@ def offering_context_hold(session: Session, campaign: Campaign) -> str | None:
     if campaign.offering_source is not CampaignOfferingSource.URL_RESEARCH:
         return None
     if jobs.current_version(session, campaign_id=campaign.id) is not None:
+        return None
+    if not operational.enabled(session, FEATURE_KEY):
+        # The control was switched off while this Campaign was waiting. Nothing
+        # is coming — the runner refuses a claimed run for the same reason — so
+        # holding would be a Campaign that can never run and whose only control
+        # for it is no longer on the screen. It falls back to its Library
+        # offering, consistently, exactly as a failed read does.
         return None
     if jobs.active_run(session, campaign_id=campaign.id) is None:
         # Nothing is coming. The Campaign falls back to its Library offering,

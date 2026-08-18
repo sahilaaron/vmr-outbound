@@ -61,7 +61,10 @@ from app.services.thinking.claude_cli import ClaudeCliThinker
 from app.services.thinking.contracts import Thinker, ThinkingError, ThinkingRequest
 
 PRODUCER = "campaign-offering-research"
-FEATURE_KEY = "campaign_offering_research"
+#: One definition, shared with the consistency hold: a control that is off has to
+#: mean the same thing in both places, or a Campaign waits for a read that will
+#: never be claimed.
+FEATURE_KEY = consistency.FEATURE_KEY
 FEATURE_DISABLED_CODE = "feature_disabled"
 CAMPAIGN_MISSING_CODE = "campaign_missing"
 

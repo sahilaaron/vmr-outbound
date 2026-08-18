@@ -491,12 +491,20 @@ def test_an_operator_pause_outranks_the_offering_hold(
 
     Both answers are "paused", so only ``source`` tells them apart — and the
     operator's own decision is the one they need to see in order to undo it.
+
+    The pause is written as a *Campaign override* rather than a global control
+    because that is the one that actually applies here: ``create_campaign``
+    already writes per-Campaign Agent rows, and a global control underneath an
+    override is not the effective status. Pausing the wrong level would leave the
+    Agent enabled, the hold would fire, and the test would pass for a reason
+    that has nothing to do with what it claims.
     """
 
     campaign = make_campaign(db_session)
     campaign.execution_enabled = True
-    agent_controls.set_global_control(
+    agent_controls.set_campaign_override(
         db_session,
+        campaign_id=campaign.id,
         agent_id=AgentIdentifier.PERSONALIZATION,
         status=AgentControlStatus.PAUSED,
         reason="held by the operator",

@@ -133,6 +133,16 @@ def _setup_answer(
             "text": "Paused. Resume the Campaign to carry on preparing people.",
             "action": "resume",
         }
+    # A Campaign waiting for its own offering read is told so before anything
+    # else about readiness. Placed here for the same reason ``is_paused`` is: it
+    # is the consequence of the customer's own act on their own Campaign, it is
+    # temporary, and it resolves without anybody doing anything. Saying
+    # "held by an administrator setting" — or worse, "Ready to prepare people" —
+    # while nothing is being prepared would be false in the one window where the
+    # customer is most likely to be watching.
+    hold = offering_consistency.offering_context_hold(db, campaign)
+    if hold:
+        return {"ready": False, "text": hold}
     if campaign_opted_in(campaign):
         readiness = agent_readiness.execution_readiness(db, campaign=campaign)
         if not readiness.runnable:
