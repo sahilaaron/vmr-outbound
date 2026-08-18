@@ -283,7 +283,7 @@ is read.
 {
   "schema_version": "google-sheets-batch/1",
   "account": { "email": "...", "display_name": "..." },
-  "limits": { "max_batch_rows": 50, "max_result_ids": 200, "max_context_chars": 1000 },
+  "limits": { "max_batch_rows": 500, "max_result_ids": 200, "max_context_chars": 1000 },
   "campaigns": [{ "id": "...", "name": "...", "status": "active", "execution_enabled": true }]
 }
 ```
@@ -366,7 +366,10 @@ The first UAT is one user and one sheet. Nothing here forecloses 100–500:
 - durable work stays in the existing PostgreSQL Agent queue — no Redis, no Kafka,
   nothing new;
 - **bounded** batches and bounded result reads, both configured, both refused
-  whole when exceeded;
+  whole when exceeded. The supported ingestion maximum is **500 contact rows per
+  submission** (`SHEETS__MAX_BATCH_ROWS`), which is 500 rows of *data*: the
+  header row is detected by the add-on and never submitted. A 501-row request is
+  refused whole with the limit stated, never truncated to a silent 500;
 - **idempotent** by derived key, so client retries are free;
 - authorization is evaluated per request from the current account;
 - submit spends nothing, so there is no intake spend to attribute; provider

@@ -44,16 +44,23 @@ class SheetsIntegrationSettings(BaseModel):
         description="OAuth client ids whose Google ID tokens the add-on may present.",
     )
 
-    #: The largest number of rows one submit request may carry.
+    #: The largest number of rows one submit request may carry, and the whole of
+    #: the supported Google Sheets ingestion maximum: nothing else in the path
+    #: bounds a cohort, so this number *is* the customer-facing contract.
     #:
     #: A ceiling rather than a queue: an oversized batch is refused whole, with
     #: the limit stated, so the add-on can chunk deliberately instead of the
-    #: server silently processing a prefix. Fifty is one Apps Script execution's
-    #: worth of work at the observed per-row cost, and each new company name in
-    #: a batch may spend at most one logo.dev lookup, so this is also the bound
-    #: on what a single click can cost.
+    #: server silently processing a prefix.
+    #:
+    #: Five hundred is the size of a real prospect sheet. Fifty was set when
+    #: intake could still spend a logo.dev lookup per new company name, so the
+    #: request bound doubled as a spend bound; ``companies.py`` since removed
+    #: every provider call from intake, leaving one submit as bounded,
+    #: deterministic database work that costs nothing per row. The remaining
+    #: reason to bound it at all is that one request should stay one Apps Script
+    #: execution, which five hundred rows of pure database work is.
     max_batch_rows: int = Field(
-        default=50,
+        default=500,
         gt=0,
         le=500,
         description="Maximum prospect rows accepted in one submit request.",
