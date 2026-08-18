@@ -60,9 +60,8 @@ from app.models.user import User
 from app.models.verification_job import AgentJob
 from app.services import campaign_contacts
 from app.services import pipeline as pipeline_service
-from app.services.agents import controls
+from app.services.agents import controls, orchestrator
 from app.services.agents import jobs as agent_jobs
-from app.services.agents import orchestrator
 from app.services.enrichment import logodev
 from app.services.integrations.sheets import submit as sheet_submit
 from app.services.integrations.sheets.contract import (
@@ -1778,7 +1777,9 @@ def test_resubmitting_somebody_whose_stage_already_ran_is_not_an_internal_error(
         headers={"Authorization": "Bearer tok"},
     )
     assert first.status_code == 200
-    membership = db_session.get(CampaignContact, uuid.UUID(first.json()["rows"][0]["submission_id"]))
+    membership = db_session.get(
+        CampaignContact, uuid.UUID(first.json()["rows"][0]["submission_id"])
+    )
     assert membership is not None
     stalled = carry_into_a_failed_second_stage(db_session, membership)
 
@@ -1811,7 +1812,9 @@ def test_the_benign_replay_duplicates_nothing(db_session: Session, enable_sheets
         json=batch_payload(campaign, [row("r1")]),
         headers={"Authorization": "Bearer tok"},
     )
-    membership = db_session.get(CampaignContact, uuid.UUID(first.json()["rows"][0]["submission_id"]))
+    membership = db_session.get(
+        CampaignContact, uuid.UUID(first.json()["rows"][0]["submission_id"])
+    )
     assert membership is not None
     stalled = carry_into_a_failed_second_stage(db_session, membership)
     jobs_before = db_session.query(AgentJob).count()
@@ -1856,7 +1859,9 @@ def test_the_pipeline_still_reads_as_it_did_after_the_benign_replay(
         json=batch_payload(campaign, [row("r1")]),
         headers={"Authorization": "Bearer tok"},
     )
-    membership = db_session.get(CampaignContact, uuid.UUID(first.json()["rows"][0]["submission_id"]))
+    membership = db_session.get(
+        CampaignContact, uuid.UUID(first.json()["rows"][0]["submission_id"])
+    )
     assert membership is not None
     stalled = carry_into_a_failed_second_stage(db_session, membership)
     stalled_agent = stalled.agent_id
@@ -1898,7 +1903,9 @@ def test_one_already_known_person_cannot_refuse_the_rest_of_the_batch(
         json=batch_payload(campaign, [row("r1")]),
         headers={"Authorization": "Bearer tok"},
     )
-    membership = db_session.get(CampaignContact, uuid.UUID(first.json()["rows"][0]["submission_id"]))
+    membership = db_session.get(
+        CampaignContact, uuid.UUID(first.json()["rows"][0]["submission_id"])
+    )
     assert membership is not None
     carry_into_a_failed_second_stage(db_session, membership)
 
