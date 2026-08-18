@@ -26,7 +26,7 @@ healthy.
 
 **Success releases the hold; so does the last failure.** Both are the moment
 ``consistency.offering_context_hold`` starts answering ``None``, and both call
-``release_hold`` so held memberships are queued again in the same transaction
+``reconcile_offering_hold`` so held memberships are queued again in the same transaction
 that closed the run. Forgetting either would leave a Campaign paused with nothing
 left to wait for.
 
@@ -94,13 +94,6 @@ class RunOutcome:
             "outcome": self.code,
             "message": self.message,
         }
-
-
-#: What the customer is told when a run could not produce an offering. One
-#: sentence, product vocabulary, no code and no diagnostics — those stay on the
-#: run for Admin. Every failure path maps here; the differences between them are
-#: recorded, not displayed.
-CUSTOMER_FAILURE_MESSAGE = "Could not prepare this offering — using VMI for now."
 
 
 def _supporting_offering_id(session: Session, *, campaign_id: uuid.UUID) -> uuid.UUID | None:
@@ -224,7 +217,7 @@ def execute_run(
     # The Campaign now has a current version, so the hold this run was the reason
     # for no longer answers. Releasing it here, in the same transaction, is what
     # stops a prepared Campaign sitting paused until somebody touches a control.
-    consistency.release_hold(session, campaign=campaign, actor=worker_id)
+    consistency.reconcile_offering_hold(session, campaign=campaign, actor=worker_id)
     return RunOutcome(
         succeeded=True,
         campaign_id=campaign.id,
@@ -257,7 +250,7 @@ def _fail(
     # applies and there is nothing to release. A terminal failure with no current
     # version is the fallback state, and the Campaign has to be let go.
     if campaign is not None and not run.is_active:
-        consistency.release_hold(session, campaign=campaign, actor=worker_id)
+        consistency.reconcile_offering_hold(session, campaign=campaign, actor=worker_id)
     return RunOutcome(
         succeeded=False,
         campaign_id=run.campaign_id,

@@ -15,8 +15,8 @@ from app.models.agent import AgentControl, CampaignAgentOverride
 from app.models.campaign import Campaign
 from app.models.enums import AgentControlStatus, AgentIdentifier
 from app.services.agents.registry import AGENT_SPECS, get_agent_spec
-from app.services.campaign_offering import consistency as offering_consistency
 from app.services.audit import record_audit_event
+from app.services.campaign_offering import consistency as offering_consistency
 
 MAX_CONFIG_BYTES = 25_000
 

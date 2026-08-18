@@ -22,12 +22,12 @@ from app.services import campaign_access, campaign_workspace, customer_status
 from app.services import campaigns as campaign_service
 from app.services import drafts as draft_service
 from app.services.agents import controls as agent_controls
+from app.services.agents import readiness as agent_readiness
+from app.services.campaign_access import actor_from_request
 from app.services.campaign_offering import consistency as offering_consistency
 from app.services.campaign_offering import jobs as offering_jobs
 from app.services.campaign_offering import read as offering_read
 from app.services.campaign_offering.urls import OfferingUrlError
-from app.services.agents import readiness as agent_readiness
-from app.services.campaign_access import actor_from_request
 from app.services.campaigns import CampaignError
 from app.services.personalization.cadence import (
     DEFAULT_ELAPSED_DAYS,
@@ -594,7 +594,9 @@ def campaign_offering_analyze(
     # Without this a Campaign that is already running would keep preparing emails
     # from the Library offering while the researched one was being read, which is
     # the exact split the hold exists to prevent.
-    offering_consistency.release_hold(db, campaign=campaign, actor=draft_service.OPERATOR_ACTOR)
+    offering_consistency.reconcile_offering_hold(
+        db, campaign=campaign, actor=draft_service.OPERATOR_ACTOR
+    )
     db.commit()
     return shell.redirect(back, ok="Reading that page now. Emails wait until it is ready.")
 
@@ -615,10 +617,10 @@ def campaign_offering_library(
     if campaign is None:
         return shell.redirect("/app/campaigns", err="That Campaign does not exist.")
     back = f"/app/campaigns/{campaign.id}/setup"
-    offering_jobs.use_library_offering(
+    offering_jobs.use_library_offering(db, campaign=campaign, actor=draft_service.OPERATOR_ACTOR)
+    offering_consistency.reconcile_offering_hold(
         db, campaign=campaign, actor=draft_service.OPERATOR_ACTOR
     )
-    offering_consistency.release_hold(db, campaign=campaign, actor=draft_service.OPERATOR_ACTOR)
     db.commit()
     return shell.redirect(back, ok="This Campaign leads with your Library offering.")
 

@@ -34,7 +34,7 @@ from app.models.campaign_offering_research import (
 )
 from app.models.enums import CampaignOfferingResearchStatus, CampaignOfferingSource
 from app.services.audit import record_audit_event
-from app.services.campaign_offering.urls import OfferingUrlError, normalize_offering_url
+from app.services.campaign_offering.urls import normalize_offering_url
 
 JOB_ACTOR = "system:campaign-offering-research"
 
@@ -349,9 +349,7 @@ def mark_analyzing(
     return run
 
 
-def mark_connecting(
-    session: Session, *, run: CampaignOfferingResearch
-) -> CampaignOfferingResearch:
+def mark_connecting(session: Session, *, run: CampaignOfferingResearch) -> CampaignOfferingResearch:
     """The structure is valid; it is being attached to the seller's own context."""
 
     run.status = CampaignOfferingResearchStatus.CONNECTING

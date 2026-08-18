@@ -37,7 +37,7 @@ stage is about to be queued.
 
 The hold is a *pause*, never a disable. It projects onto the stage reversibly,
 survives a restart, and is released by the ordinary control reconciliation the
-moment a version becomes current — see :func:`release_hold`.
+moment a version becomes current — see :func:`reconcile_offering_hold`.
 """
 
 from __future__ import annotations
@@ -94,14 +94,21 @@ def holds_agent(session: Session, *, campaign: Campaign, agent_id: AgentIdentifi
     return offering_context_hold(session, campaign)
 
 
-def release_hold(session: Session, *, campaign: Campaign, actor: str = "system") -> int:
-    """Re-queue the work this Campaign's offering hold was pausing.
+def reconcile_offering_hold(session: Session, *, campaign: Campaign, actor: str = "system") -> int:
+    """Project this Campaign's current offering hold — or its absence — onto its work.
 
-    Called when a version becomes current and when the last run fails — the two
-    moments :func:`offering_context_hold` starts answering ``None``. It projects
-    the now-enabled control onto each affected membership through the ordinary
-    reconciliation path, so paused jobs return to ``PENDING`` and memberships
-    standing at a held stage are scheduled again.
+    Called at all four moments the answer to :func:`offering_context_hold`
+    changes: a read is requested, a version becomes current, the last run fails,
+    and the Campaign returns to its Library offering. It runs in both directions
+    deliberately, because both are needed and neither is the interesting one on
+    its own — asking for a read has to stop work already standing at Insights,
+    and a version arriving has to start it again.
+
+    It is the ordinary control reconciliation, not a second mechanism: paused
+    jobs whose reason was a control return to ``PENDING``, memberships standing
+    at a held stage are scheduled again, and a job paused for a *domain* reason
+    keeps its own reason. That reuse is the point — a bespoke resume here would
+    be a second thing to keep in step with the first.
 
     The import is local: ``orchestrator`` imports ``controls``, and ``controls``
     imports this module for the hold itself. Deferring it keeps that a

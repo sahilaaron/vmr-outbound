@@ -88,6 +88,7 @@ from app.db.session import (  # noqa: E402 - must follow the path anchor above
     configured_pool_capacity,
     session_scope,
 )
+from app.models.campaign_offering_research import CampaignOfferingResearch  # noqa: E402
 from app.models.enums import AgentIdentifier, AgentJobStatus  # noqa: E402
 from app.models.verification_job import AgentJob  # noqa: E402
 from app.services.agents import jobs, locking  # noqa: E402
@@ -97,7 +98,6 @@ from app.services.agents.orchestrator import (  # noqa: E402
     execute_started_job,
     prepare_leased_job,
 )
-from app.models.campaign_offering_research import CampaignOfferingResearch  # noqa: E402
 from app.services.campaign_offering import jobs as offering_jobs  # noqa: E402
 from app.services.campaign_offering import runner as offering_runner  # noqa: E402
 from app.services.company_intelligence import runner as ci_runner  # noqa: E402
@@ -473,9 +473,7 @@ def _run_campaign_offering_research_once(*, worker_id: str, lease_seconds: float
     """
 
     with session_scope() as session:
-        run = offering_jobs.claim_next(
-            session, worker_id=worker_id, lease_seconds=lease_seconds
-        )
+        run = offering_jobs.claim_next(session, worker_id=worker_id, lease_seconds=lease_seconds)
         run_id = run.id if run is not None else None
     if run_id is None:
         return None
@@ -618,9 +616,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Narrowing to specific Agents is a request to do one thing only, the same
     # convention capture resolution follows.
     include_intelligence = not args.skip_company_intelligence and agent_ids is None
-    include_offering_research = (
-        not args.skip_campaign_offering_research and agent_ids is None
-    )
+    include_offering_research = not args.skip_campaign_offering_research and agent_ids is None
 
     def _backfill() -> None:
         """Resolve captures that are not yet Contacts, so they have jobs to claim.

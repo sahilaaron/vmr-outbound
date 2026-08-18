@@ -1267,7 +1267,6 @@ class InsightsAgentAdapter:
         prompt_catalog = employee_size.bounded_prompt_catalog(catalog)
         evidence_by_handle = {item.handle: item for item in prompt_catalog}
         effective = effective_offering.resolve(context.session, context.campaign)
-        seller = effective.seller
 
         settings = get_settings()
         thinker = self._thinker_factory(settings)
