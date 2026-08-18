@@ -2578,3 +2578,339 @@ def test_the_extension_capture_credential_reaches_no_gmail_route(
         assert committed_session.scalars(select(GmailMailboxGrant)).all() == []
     finally:
         get_settings.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# N. The Connect Gmail button that did nothing (staging, 2026-08-18)
+# ---------------------------------------------------------------------------
+#
+# The customer-path blocker this section pins. On staging, pressing Connect
+# Gmail did nothing at all: no consent screen, no error, no change to the page.
+# Everything server-side was correct, which is what made it hard to see --
+# `POST /gmail/connect 303` nine times in the access log, every one of them a
+# properly formed authorization URL, and not one `GET /gmail/callback` in the
+# deployment's entire history. Nobody could connect a mailbox, so nobody could
+# create a Gmail draft.
+#
+# The cause is `Content-Security-Policy: ... form-action 'self'`, set on every
+# response by `app/core/http.py`. `form-action` is enforced against a form
+# submission **and against every redirect that submission follows**, judged
+# against the policy of the page holding the form. The Connect Gmail form posts
+# to `/gmail/connect`; that route answers `303` to Google's consent screen; the
+# browser refuses to navigate there and reports nothing to the page.
+#
+# Two things kept it hidden. Google *sign-in* was never affected, because it
+# starts from `<a href="/auth/google/start">` -- a plain navigation, which
+# `form-action` does not govern. And `TestClient` does not enforce CSP, so the
+# whole suite above passed against a feature no browser could start. These tests
+# therefore assert the *header on the page that carries the form*, which is the
+# thing the browser actually reads. Identical in shape to the extension consent
+# repair in `tests/test_extension_account_linking.py`, and for the same reason.
+
+#: The one source the Connections page adds, and the only thing that may change.
+GOOGLE_CONSENT_ORIGIN = "https://accounts.google.com"
+
+
+def _csp_of(response: Any) -> str:
+    return response.headers["content-security-policy"]
+
+
+def _form_action_of(policy: str) -> str:
+    for directive in policy.split(";"):
+        if directive.strip().startswith("form-action"):
+            return " ".join(directive.split())
+    raise AssertionError(f"no form-action directive in {policy!r}")
+
+
+def test_the_connections_page_may_submit_to_googles_consent_screen(
+    hosted: tuple[TestClient, FakeGmailOAuthClient, FakeGmailTransport],
+) -> None:
+    """The repair. Without this the Connect Gmail button cannot start a consent.
+
+    Asserted on the page that carries the form, because that is the policy the
+    browser enforces the redirect against -- not the policy on the redirect.
+    """
+
+    client, _oauth, _transport = hosted
+    _signed_in(client)
+
+    page = client.get("/app/account/connections")
+
+    assert page.status_code == 200
+    assert 'action="/gmail/connect"' in page.text
+    assert _form_action_of(_csp_of(page)) == f"form-action 'self' {GOOGLE_CONSENT_ORIGIN}"
+
+
+def test_the_reconnect_state_carries_the_same_permission(
+    hosted: tuple[TestClient, FakeGmailOAuthClient, FakeGmailTransport],
+    committed_session: Session,
+) -> None:
+    """Reconnect Gmail is the same form, so it needs the same policy.
+
+    A grant Google has stopped accepting renders *Reconnect Gmail*, posting to
+    the same route. Widening only the never-connected case would leave every
+    operator whose token was revoked stuck on a second dead button.
+    """
+
+    client, oauth, _transport = hosted
+    csrf = _signed_in(client)
+    _connect(client, oauth, csrf)
+    grant = committed_session.scalars(select(GmailMailboxGrant)).one()
+    grant.status = GmailGrantStatus.RECONNECT_REQUIRED
+    committed_session.commit()
+
+    page = client.get("/app/account/connections")
+
+    assert "Reconnect Gmail" in page.text
+    assert _form_action_of(_csp_of(page)) == f"form-action 'self' {GOOGLE_CONSENT_ORIGIN}"
+
+
+def test_the_connections_page_widens_form_action_and_nothing_else(
+    hosted: tuple[TestClient, FakeGmailOAuthClient, FakeGmailTransport],
+) -> None:
+    """One directive, one source. Every other directive is byte-identical.
+
+    `script-src`, `connect-src`, `default-src`, `frame-ancestors`, `base-uri`
+    and `object-src` are what stop this page becoming a way to run or reach
+    something else, and a widening that quietly took one of them along would be
+    a real regression hiding behind a working button.
+    """
+
+    client, _oauth, _transport = hosted
+    _signed_in(client)
+
+    page = client.get("/app/account/connections")
+    ordinary = client.get("/app")
+
+    widened = {d.split()[0]: " ".join(d.split()) for d in _csp_of(page).split(";")}
+    baseline = {d.split()[0]: " ".join(d.split()) for d in _csp_of(ordinary).split(";")}
+    assert widened.keys() == baseline.keys()
+    for name, value in baseline.items():
+        if name == "form-action":
+            continue
+        assert widened[name] == value, name
+
+
+def test_every_other_response_keeps_form_action_self(
+    hosted: tuple[TestClient, FakeGmailOAuthClient, FakeGmailTransport],
+    committed_session: Session,
+) -> None:
+    """The widening is scoped to the one render that carries a connect form.
+
+    The connected Connections page is in here deliberately: it carries only the
+    Disconnect form, which redirects back into `/app`, so it has no business
+    naming Google in a VMR-origin security header. This is the enumeration that
+    says "one page", not an example that says "at least one".
+    """
+
+    client, oauth, _transport = hosted
+    csrf = _signed_in(client)
+    fixture = build_sequence(
+        committed_session, owner_user_id=_default_operator_id(committed_session)
+    )
+    committed_session.commit()
+
+    responses = {
+        "today": client.get("/app"),
+        "the desk": client.get(
+            f"/app/campaigns/{fixture.campaign.id}?section=all&person={fixture.membership.id}"
+        ),
+        "sign-in": client.get("/auth/login"),
+        "the connect submission itself": client.post(
+            "/gmail/connect",
+            data={"back": "/app/account/connections", "_csrf": csrf},
+            headers={"sec-fetch-site": "same-origin"},
+        ),
+    }
+    for label, response in responses.items():
+        assert _form_action_of(_csp_of(response)) == "form-action 'self'", label
+        assert "accounts.google.com" not in _csp_of(response), label
+
+    # And once a mailbox is connected the page stops asking for the widening.
+    _connect(client, oauth, csrf)
+    connected = client.get("/app/account/connections")
+    assert "Disconnect Gmail" in connected.text
+    assert _form_action_of(_csp_of(connected)) == "form-action 'self'"
+
+
+def test_an_anonymous_caller_cannot_reach_the_widening(
+    hosted: tuple[TestClient, FakeGmailOAuthClient, FakeGmailTransport],
+) -> None:
+    """No session, no connect form, and therefore no widened policy."""
+
+    client, _oauth, _transport = hosted
+
+    anonymous = client.get("/app/account/connections")
+
+    assert anonymous.status_code == 401
+    assert _form_action_of(_csp_of(anonymous)) == "form-action 'self'"
+
+
+def test_the_widening_names_the_origin_the_button_is_actually_sent_to(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The policy and the `Location` agree, because both come from one setting.
+
+    Driven against the *real* authorization client rather than the fake, which
+    is the whole point: the fake answers on a test origin, and a repair that
+    only agreed with the fake would ship the defect again. `authorization_url`
+    builds a string and touches no socket, and nothing here exchanges a code, so
+    this reaches Google no more than any other test in this file.
+    """
+
+    from urllib.parse import quote
+
+    _apply(monkeypatch, _env())
+    app = create_app(readiness_probe=_AlwaysReadyProbe())
+    setattr(app.state, GMAIL_PROVIDER_STATE_KEY, FakeGmailTransport())
+    client = TestClient(app, base_url=STAGING_ORIGIN, follow_redirects=False)
+    try:
+        csrf = _signed_in(client)
+        page = client.get("/app/account/connections")
+        started = client.post(
+            "/gmail/connect",
+            data={"back": "/app/account/connections", "_csrf": csrf},
+            headers={"sec-fetch-site": "same-origin"},
+        )
+
+        assert started.status_code == 303
+        location = started.headers["location"]
+        source = _form_action_of(_csp_of(page)).split()[-1]
+        assert location.startswith(source + "/")
+        # And it is Google's consent screen, carrying the compose scope.
+        assert location.startswith("https://accounts.google.com/o/oauth2/v2/auth?")
+        assert quote(GMAIL_COMPOSE_SCOPE, safe="") in location
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        "https://evil.example",
+        "https://accounts.google.com.evil.example",
+        "https://accounts.google.com/",
+        "https://accounts.google.com https://evil.example",
+        "https://accounts.google.com; script-src *",
+        "http://accounts.google.com",
+        "'unsafe-inline'",
+        "*",
+        "",
+        None,
+        12345,
+    ],
+)
+def test_the_gmail_hardening_boundary_refuses_a_value_it_did_not_expect(hostile: Any) -> None:
+    """The widening re-validates rather than trusting application state.
+
+    The page already derives its value from the configured authorization
+    endpoint, so this can only fire on a bug -- which is exactly when a security
+    header must not be forgeable. Anything that is not one recognised consent
+    origin leaves the policy untouched, so no route defect can inject a second
+    source or reach another directive.
+    """
+
+    from app.core.http import CSP_FORM_ACTION_STATE_KEY, _content_security_policy
+
+    scope = {"state": {CSP_FORM_ACTION_STATE_KEY: hostile}}
+    policy = _content_security_policy(scope, "/app/account/connections")
+
+    assert _form_action_of(policy) == "form-action 'self'"
+    assert "evil.example" not in policy
+    assert policy == _content_security_policy({"state": {}}, "/app/account/connections")
+
+
+def test_the_consent_origin_is_derived_from_the_configured_endpoint() -> None:
+    """One value behind both the redirect and the policy, and no second copy."""
+
+    assert gmail_settings().authorization_origin() == GOOGLE_CONSENT_ORIGIN
+    assert (
+        gmail_settings(
+            authorization_endpoint="https://accounts.google.com/o/oauth2/auth?prompt=consent"
+        ).authorization_origin()
+        == GOOGLE_CONSENT_ORIGIN
+    )
+    # Anything that is not an https URL with a host is not an origin, and so
+    # widens nothing at all.
+    for endpoint in ("http://accounts.google.com/auth", "not-a-url", "https:///auth"):
+        assert gmail_settings(authorization_endpoint=endpoint).authorization_origin() is None
+
+
+# --- The startup guard, so this cannot ship as a dead button a second time ----
+
+
+def _staging_settings(**overrides: Any) -> Settings:
+    """A staging configuration complete by the whole startup contract."""
+
+    values: dict[str, Any] = {
+        "_env_file": None,
+        "app_env": "staging",
+        "database_url": STAGING_DATABASE_URL,
+        "trusted_hosts": (STAGING_HOST,),
+        "trusted_proxy_cidrs": ("10.20.0.0/24",),
+        "dry_run": True,
+        "auth": AuthSettings(
+            enabled=True,
+            session_secret=SESSION_SECRET,
+            google_client_id=IDENTITY_CLIENT_ID,
+            google_client_secret="identity-client-secret",
+            allowed_operator_emails=(APPROVED_EMAIL,),
+            public_base_url=STAGING_ORIGIN,
+        ),
+    }
+    values.update(overrides)
+    return Settings(**values)
+
+
+def test_staging_starts_with_gmail_drafts_on_and_the_documented_endpoint() -> None:
+    """The shape staging actually runs: unchanged, and still valid."""
+
+    from app.core.runtime import validate_runtime_settings
+
+    validate_runtime_settings(
+        _staging_settings(
+            features={"gmail_drafts": True, "email_sequences": True},
+            gmail=gmail_settings(),
+        )
+    )
+
+
+def test_staging_refuses_a_gmail_endpoint_the_browser_could_never_follow() -> None:
+    """A dead Connect button is a startup error, not a silent customer blocker.
+
+    This is the check that would have caught the defect before a deployment. An
+    authorization endpoint the Content-Security-Policy cannot name produces a
+    button that submits, answers `303`, and does visibly nothing -- so the
+    deployment refuses to start and names the value that is wrong.
+    """
+
+    from app.core.runtime import RuntimeConfigurationError, validate_runtime_settings
+
+    with pytest.raises(RuntimeConfigurationError) as raised:
+        validate_runtime_settings(
+            _staging_settings(
+                features={"gmail_drafts": True, "email_sequences": True},
+                gmail=gmail_settings(
+                    authorization_endpoint="https://accounts.google.test/gmail-consent"
+                ),
+            )
+        )
+
+    message = str(raised.value)
+    assert "GMAIL__AUTHORIZATION_ENDPOINT" in message
+    assert "gmail-client-secret" not in message
+
+
+def test_a_staging_deployment_with_gmail_off_is_unaffected() -> None:
+    """The check is about the button, so it says nothing when there is no button."""
+
+    from app.core.runtime import validate_runtime_settings
+
+    validate_runtime_settings(
+        _staging_settings(
+            features={"gmail_drafts": False},
+            gmail=gmail_settings(
+                authorization_endpoint="https://accounts.google.test/gmail-consent"
+            ),
+        )
+    )

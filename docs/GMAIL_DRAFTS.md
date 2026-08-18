@@ -335,6 +335,19 @@ and only from an explicit operator click.
 
 ## 9. Known bounds carried deliberately
 
+- **Connect Gmail depends on one Content-Security-Policy exception.** The
+  application policy is `form-action 'self'`, and `form-action` governs a form
+  submission *and every redirect it follows*, judged against the policy of the
+  page holding the form. `POST /gmail/connect` answers `303` to Google's consent
+  screen, so `/app/account/connections` names `https://accounts.google.com` as a
+  second `form-action` source when — and only when — it renders a Connect or
+  Reconnect form. Without it the button submits, the access log records a
+  correct `303`, and the browser silently refuses to navigate: exactly the
+  staging defect of 2026-08-18, in which nine `POST /gmail/connect 303` produced
+  not one `GET /gmail/callback`. `app/core/http.py` re-validates the source, and
+  `validate_runtime_settings` refuses a hosted deployment that enables Gmail
+  drafts with an authorization endpoint the policy could not name.
+
 - **The reconciliation window is a wait, not a proof.** Within 60 seconds of an
   ambiguous failure the operator is told to try again shortly. That is the
   honest answer, and it is preferable to a guess in either direction.

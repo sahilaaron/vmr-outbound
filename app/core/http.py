@@ -40,25 +40,54 @@ _DOCS_CSP = (
 #: own Content-Security-Policy. Nothing else about the policy is adjustable, and
 #: no other directive can be reached through it.
 #:
-#: This exists for exactly one page. ``form-action`` governs a form submission
-#: *and every redirect that submission follows*, so ``form-action 'self'`` let the
-#: extension consent form POST to ``/extension/authorize`` and then silently
-#: blocked the ``303`` it answered with, whose ``Location`` is on
-#: ``chromiumapp.org`` by construction. The server issued a perfectly good
-#: authorization, Chrome refused to navigate to it, and
+#: This exists for the two pages that hold a form whose *answer* is a redirect
+#: off this origin, and for nothing else. ``form-action`` governs a form
+#: submission *and every redirect that submission follows*, so
+#: ``form-action 'self'`` let the extension consent form POST to
+#: ``/extension/authorize`` and then silently blocked the ``303`` it answered
+#: with, whose ``Location`` is on ``chromiumapp.org`` by construction. The server
+#: issued a perfectly good authorization, Chrome refused to navigate to it, and
 #: ``chrome.identity.launchWebAuthFlow`` reported the window as a failed load --
 #: so the access log showed ``POST /extension/authorize 303`` on a sign-in the
 #: operator was told had simply not completed. The silent reconnect path never
 #: hit this, because it is a plain navigation and ``form-action`` does not govern
 #: those, which is why the failure looked like a consent-only defect.
+#:
+#: Connect Gmail is the same defect on a different page, found on staging in the
+#: same shape: nine ``POST /gmail/connect 303`` in the access log, not one
+#: ``GET /gmail/callback`` ever, and a customer reporting that the button does
+#: nothing. ``/gmail/connect`` answers ``303`` to Google's consent screen, which
+#: is off-origin by construction, so the Connections page has to name that origin
+#: for the same reason the consent page names the extension callback.
 CSP_FORM_ACTION_STATE_KEY = "csp_extra_form_action"
 
-#: The only shape the key above may carry: one Chrome extension's own web-auth
-#: callback origin. Re-validated here rather than trusted from application state,
-#: on the same principle as every other boundary in this package -- a route bug
-#: must not be able to widen a security header, and an unrecognised value leaves
-#: the policy exactly as it was.
+#: The only two shapes the key above may carry: one Chrome extension's own
+#: web-auth callback origin, or Google's OAuth consent origin. Re-validated here
+#: rather than trusted from application state, on the same principle as every
+#: other boundary in this package -- a route bug must not be able to widen a
+#: security header, and an unrecognised value leaves the policy exactly as it was.
+#:
+#: Both are exact origins with no path: a CSP source ending in ``/`` is a
+#: path-prefix rule, and these need to say "this origin". Neither pattern admits
+#: a space, so no value can add a second source or reach a second directive.
 _EXTENSION_CALLBACK_ORIGIN = re.compile(r"^https://[a-p]{32}\.chromiumapp\.org$")
+_GOOGLE_CONSENT_ORIGIN = re.compile(r"^https://accounts\.google\.com$")
+_PERMITTED_FORM_ACTION_SOURCES = (_EXTENSION_CALLBACK_ORIGIN, _GOOGLE_CONSENT_ORIGIN)
+
+
+def csp_form_action_source_permitted(value: object) -> bool:
+    """Whether one extra ``form-action`` source may be added to the policy.
+
+    Public because two callers need the *same* answer as the middleware: the
+    Connections page, which asks for the widening, and
+    ``app/core/runtime.py``, which refuses at startup to enable Gmail drafts in a
+    hosted deployment whose consent origin this would not permit -- because that
+    combination renders a Connect Gmail button the browser can never follow.
+    """
+
+    return isinstance(value, str) and any(
+        pattern.match(value) for pattern in _PERMITTED_FORM_ACTION_SOURCES
+    )
 
 
 def _content_security_policy(scope: Scope, path: str) -> str:
@@ -67,13 +96,14 @@ def _content_security_policy(scope: Scope, path: str) -> str:
     Defaults are unchanged: the interactive documentation keeps its own policy
     and everything else keeps the application policy verbatim. A response that
     asked for an extra ``form-action`` source gets that source appended to that
-    one directive, and only when it is a well-formed extension callback origin.
+    one directive, and only when it is one of the two origins
+    ``csp_form_action_source_permitted`` recognises.
     """
 
     if path in {"/docs", "/docs/oauth2-redirect", "/redoc"}:
         return _DOCS_CSP
     requested = (scope.get("state") or {}).get(CSP_FORM_ACTION_STATE_KEY)
-    if isinstance(requested, str) and _EXTENSION_CALLBACK_ORIGIN.match(requested):
+    if csp_form_action_source_permitted(requested):
         return _APPLICATION_CSP.replace(_STRICT_FORM_ACTION, f"{_STRICT_FORM_ACTION} {requested}")
     return _APPLICATION_CSP
 
