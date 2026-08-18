@@ -1091,3 +1091,140 @@ def test_a_campaign_id_that_does_not_exist_is_not_a_current_version(
 ) -> None:
     assert jobs.current_version(db_session, campaign_id=uuid.uuid4()) is None
     assert jobs.active_run(db_session, campaign_id=uuid.uuid4()) is None
+
+
+# ---------------------------------------------------------------------------
+# Campaign Setup, over HTTP
+# ---------------------------------------------------------------------------
+#
+# The service tests above prove the rules. These prove the customer can reach
+# them, that the page survives a refresh because it holds no state of its own,
+# and that the two modes are stated rather than left to be inferred.
+
+
+def _client(db_session: Session, monkeypatch: pytest.MonkeyPatch, *, offering: bool):
+    from collections.abc import Iterator
+
+    from app.api.deps import get_db
+    from app.main import create_app
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("FEATURES__WORKBENCH", "true")
+    monkeypatch.setenv("FEATURES__AGENT_WORKBENCH", "true")
+    monkeypatch.setenv("FEATURES__SELLER_KNOWLEDGE_BASE", "true")
+    if offering:
+        monkeypatch.setenv("FEATURES__CAMPAIGN_OFFERING_RESEARCH", "true")
+    get_settings.cache_clear()
+    app = create_app()
+
+    def _override() -> Iterator[Session]:
+        yield db_session
+
+    app.dependency_overrides[get_db] = _override
+    return TestClient(app)
+
+
+def test_setup_offers_both_modes_only_when_the_control_is_on(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Case 2. Off means the choice does not exist, not that it is disabled."""
+
+    campaign = make_campaign(db_session)
+    attach_library(db_session, campaign, make_offering(db_session))
+    db_session.commit()
+
+    with _client(db_session, monkeypatch, offering=False) as client:
+        page = client.get(f"/app/campaigns/{campaign.id}/setup")
+        assert page.status_code == 200
+        assert "Research an offering from a URL" not in page.text
+
+    with _client(db_session, monkeypatch, offering=True) as client:
+        page = client.get(f"/app/campaigns/{campaign.id}/setup")
+        assert page.status_code == 200
+        assert "Use an offering from Library" in page.text
+        assert "Research an offering from a URL" in page.text
+        assert "Analyze offering" in page.text
+
+
+def test_analyzing_from_setup_queues_the_read_and_the_page_shows_where_it_is(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cases 2-4 over HTTP, including the refresh."""
+
+    campaign = make_campaign(db_session)
+    db_session.commit()
+
+    with _client(db_session, monkeypatch, offering=True) as client:
+        posted = client.post(
+            f"/app/campaigns/{campaign.id}/setup/offering/analyze",
+            data={"offering_url": PAGE},
+            follow_redirects=False,
+        )
+        assert posted.status_code == 303
+
+        # A fresh GET, holding nothing from the POST: the page is rebuilt from
+        # the durable row, which is what makes a refresh and a second tab agree.
+        page = client.get(f"/app/campaigns/{campaign.id}/setup")
+        assert "Reading page" in page.text
+        assert "Understanding offering" in page.text
+        assert "Connecting it to your company" in page.text
+        assert "Emails wait until it is ready" in page.text
+
+    run = jobs.latest_run(db_session, campaign_id=campaign.id)
+    assert run is not None and run.source_url == PAGE
+
+
+def test_setup_refuses_an_address_inside_the_network_and_writes_nothing(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Case 15 at the boundary a customer actually touches."""
+
+    campaign = make_campaign(db_session)
+    db_session.commit()
+
+    with _client(db_session, monkeypatch, offering=True) as client:
+        posted = client.post(
+            f"/app/campaigns/{campaign.id}/setup/offering/analyze",
+            data={"offering_url": "http://127.0.0.1:8000/admin"},
+            follow_redirects=False,
+        )
+        assert posted.status_code == 303
+        assert "err=" in posted.headers["location"]
+
+    assert jobs.latest_run(db_session, campaign_id=campaign.id) is None
+    assert campaign.offering_source is CampaignOfferingSource.LIBRARY
+
+
+def test_a_ready_offering_reads_as_primary_and_supporting_with_no_diagnostics(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cases 5, 6 and 17 on the screen the customer operates."""
+
+    campaign = make_campaign(db_session)
+    offering = make_offering(db_session)
+    attach_library(db_session, campaign, offering)
+    monkeypatch.setenv("FEATURES__CAMPAIGN_OFFERING_RESEARCH", "true")
+    monkeypatch.setenv("FEATURES__SELLER_KNOWLEDGE_BASE", "true")
+    get_settings.cache_clear()
+    run = run_to_completion(db_session, campaign, ScriptedThinker(GOOD_ANSWER))
+    db_session.commit()
+
+    with _client(db_session, monkeypatch, offering=True) as client:
+        page = client.get(f"/app/campaigns/{campaign.id}/setup")
+
+    assert "Primary offering" in page.text
+    assert "EU Cement Market Outlook 2027" in page.text
+    assert "Supporting offering" in page.text
+    assert offering.name in page.text
+    assert "Re-analyze" in page.text
+    assert "Change URL" in page.text
+    # Nothing an administrator is meant to see reaches the customer's page: not
+    # the row id, not the queue key, not the producer, and not the digest.
+    for leak in (
+        str(run.id),
+        run.idempotency_key,
+        "campaign-offering-research",
+        run.producer_version or "",
+        run.context_digest or "",
+    ):
+        assert leak not in page.text, leak
