@@ -2084,6 +2084,23 @@ class AdminWorkbenchReader:
                 tuple(name for name in ("millionverifier",) if features.millionverifier),
             ),
             (
+                "debounce",
+                "DeBounce (verification fallback)",
+                settings.has_debounce_key(),
+                (
+                    (
+                        "API key configured; consulted only when MillionVerifier "
+                        "cannot settle an address."
+                        if settings.features.debounce
+                        else "API key configured but FEATURES__DEBOUNCE is off — "
+                        "never called, no credits spent."
+                    )
+                    if settings.has_debounce_key()
+                    else "No API key configured — verification runs MillionVerifier only."
+                ),
+                tuple(name for name in ("debounce",) if features.debounce),
+            ),
+            (
                 "logo_dev",
                 "Logo.dev",
                 settings.has_logo_dev_key(),

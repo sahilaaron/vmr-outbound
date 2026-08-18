@@ -30,6 +30,12 @@ POLICY_VERSION = "ver-1"
 
 # Transient application-level provider errors that justify a bounded retry.
 _TRANSIENT_ERRORS = frozenset({"ip_address_blocked", "internal_error", "timeout"})
+# A technically successful call whose body carries no verdict this policy can
+# read: unparseable JSON, a missing or unrecognised classification, or a
+# provider envelope that reports its own failure (DeBounce ``success = 0``).
+# Retryable, never address evidence, and never "unknown" — "unknown" is a real
+# thing a provider says about a mailbox and must not double as "unreadable".
+_UNUSABLE_ERRORS = frozenset({"unusable_response", "malformed_response"})
 # Configuration/operational errors that must NOT auto-retry (a retry cannot help
 # until a human acts) and are never address evidence. ``access_rejected`` is a
 # transport-level 401/403 from the provider (rejected key/plan/IP).
@@ -67,6 +73,9 @@ class MappedOutcome:
     retryable: bool
     reason: str
     is_role: bool = False
+    # True when the provider replied but the reply could not be interpreted at
+    # all, as opposed to a provider that reported a normal transient failure.
+    unusable: bool = False
 
     @property
     def is_address_evidence(self) -> bool:
@@ -111,6 +120,19 @@ class VerificationPolicy:
                     credited=False,
                     retryable=False,
                     reason="provider reported insufficient credits — top up and re-run",
+                )
+            if err in _UNUSABLE_ERRORS:
+                return MappedOutcome(
+                    kind=_KIND_TRANSIENT,
+                    result=None,
+                    precise=EmailPreciseStatus.PROVIDER_ERROR,
+                    credited=False,
+                    retryable=True,
+                    reason=(
+                        f"provider response could not be interpreted ({err}); "
+                        "no mailbox verdict was recorded"
+                    ),
+                    unusable=True,
                 )
             if err in _TRANSIENT_ERRORS:
                 return MappedOutcome(
@@ -160,6 +182,7 @@ class VerificationPolicy:
                 credited=False,
                 retryable=True,
                 reason=f"unrecognised provider result {result_str!r}; will retry",
+                unusable=True,
             )
 
         is_role = bool(response.role)

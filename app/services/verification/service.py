@@ -44,16 +44,18 @@ from app.services.suppressions import evaluate_suppression
 from app.services.verification import attempts as job_attempts
 from app.services.verification import queue as jobs
 from app.services.verification import usage
+from app.services.verification.fallback import ProviderCondition
 from app.services.verification.policy import MappedOutcome, VerificationPolicy, get_policy
 from app.services.verification.provider import (
     LIVE_PROVIDER_LABEL,
     SIMULATOR_PROVIDER_LABEL,
+    SIMULATOR_PROVIDER_LABELS,
     ProviderResponse,
     ProviderTransientError,
     VerificationProvider,
     build_provider,
     evidence_provider_label,
-    redact_secret,
+    redact_for_provider,
 )
 
 # Compatibility label used by the legacy single-provider console. New
@@ -358,12 +360,22 @@ class VerificationOutcome:
     # Operator-readable and already redacted; None on success.
     reason: str | None = None
     attempt: VerificationAttempt | None = None
+    # Why this step ended, in the vocabulary the fallback policy reads
+    # (``app.services.verification.fallback.ProviderCondition``). It is the
+    # machine-readable half of ``reason``: a rate limit and an unreachable host
+    # both read as "provider error" otherwise, and they are not the same thing.
+    condition: str | None = None
 
     @property
     def simulated(self) -> bool:
-        """True when this outcome came from the network-free simulator."""
+        """True when this outcome came from a network-free simulator.
 
-        return self.provider_label == SIMULATOR_PROVIDER_LABEL
+        Every simulator label counts, not just MillionVerifier's. A DeBounce
+        simulator result that read as live here would be allowed to advance a
+        Campaign Contact on evidence no external provider ever produced.
+        """
+
+        return self.provider_label in SIMULATOR_PROVIDER_LABELS
 
     @property
     def is_address_evidence(self) -> bool:
@@ -415,6 +427,7 @@ def verify_exact_address(
         reason: str | None = None,
         evidence: ExactEmailVerification | None = None,
         evidence_provider: str | None = None,
+        condition: ProviderCondition = ProviderCondition.AUTHORITATIVE,
     ) -> VerificationOutcome:
         effective_provider_label = evidence_provider or provider_label
         record = (
@@ -448,6 +461,7 @@ def verify_exact_address(
             policy_version=policy.version,
             reason=reason,
             attempt=record,
+            condition=condition.value,
         )
 
     if not email:
@@ -456,6 +470,7 @@ def verify_exact_address(
             failure_class=VerificationFailureClass.INVALID_INPUT,
             precise=EmailPreciseStatus.PROVIDER_ERROR,
             reason="verification job has no exact email address",
+            condition=ProviderCondition.NOT_ATTEMPTED,
         )
 
     if jobs.lease_was_reclaimed(job) and (record_attempt or reuse_fresh):
@@ -526,6 +541,7 @@ def verify_exact_address(
             reused=True,
             evidence=fresh,
             evidence_provider=fresh.provider,
+            condition=_condition_for_status(precise),
         )
 
     # One provider call.
@@ -534,8 +550,15 @@ def verify_exact_address(
     except ProviderTransientError as raw_exc:
         # The live client redacts its own key before raising; redact again here so
         # a provider that forgets cannot write a credential into durable text that
-        # the workbench renders (AGENTS.md: secrets never in logs).
-        detail = redact_secret(str(raw_exc), settings.millionverifier_api_key)
+        # the workbench renders (AGENTS.md: secrets never in logs). The provider
+        # is asked to do it, because only it knows which credential it used.
+        detail = redact_for_provider(
+            provider, str(raw_exc), fallback_secret=settings.millionverifier_api_key
+        )
+        transport_condition = {
+            "rate_limit": ProviderCondition.THROTTLED,
+            "provider_5xx": ProviderCondition.TRANSPORT_FAILURE,
+        }.get(getattr(raw_exc, "condition", "transport"), ProviderCondition.TRANSPORT_FAILURE)
         usage.record_usage(
             session,
             event_type=VerificationUsageEventType.TIMEOUT,
@@ -563,6 +586,7 @@ def verify_exact_address(
             failure_class=VerificationFailureClass.TRANSIENT_PROVIDER,
             precise=EmailPreciseStatus.PROVIDER_ERROR,
             reason=f"transport failure: {detail}",
+            condition=transport_condition,
         )
 
     mapped = policy.map_response(response)
@@ -624,6 +648,7 @@ def verify_exact_address(
             precise=mapped.precise,
             result=mapped.result,
             evidence=row,
+            condition=_condition_for_status(mapped.precise),
         )
 
     if mapped.kind == "insufficient_credits":
@@ -654,6 +679,7 @@ def verify_exact_address(
             failure_class=VerificationFailureClass.INSUFFICIENT_CREDITS,
             precise=EmailPreciseStatus.INSUFFICIENT_CREDITS,
             reason=mapped.reason,
+            condition=ProviderCondition.EXHAUSTED_CREDITS,
         )
 
     if mapped.retryable:  # transient provider error / result=error / unrecognised
@@ -684,6 +710,11 @@ def verify_exact_address(
             failure_class=VerificationFailureClass.TRANSIENT_PROVIDER,
             precise=EmailPreciseStatus.PROVIDER_ERROR,
             reason=mapped.reason,
+            condition=(
+                ProviderCondition.UNUSABLE_RESPONSE
+                if mapped.unusable
+                else ProviderCondition.TRANSPORT_FAILURE
+            ),
         )
 
     # Non-retryable provider/config error: fail without paid evidence.
@@ -712,7 +743,21 @@ def verify_exact_address(
         failure_class=VerificationFailureClass.PERMANENT_PROVIDER,
         precise=EmailPreciseStatus.PROVIDER_ERROR,
         reason=mapped.reason,
+        condition=ProviderCondition.ACCESS_REJECTED,
     )
+
+
+def _condition_for_status(precise: EmailPreciseStatus) -> ProviderCondition:
+    """Whether an address verdict settles the mailbox for the fallback policy.
+
+    Catch-all and unknown are genuine provider answers and are stored as such,
+    but the product has never treated them as settled, so they are what makes a
+    later provider worth asking. Everything else in the verdict family is final.
+    """
+
+    if precise in {EmailPreciseStatus.CATCH_ALL, EmailPreciseStatus.UNKNOWN}:
+        return ProviderCondition.UNRESOLVED_RESULT
+    return ProviderCondition.AUTHORITATIVE
 
 
 def _force_refresh_requested(job: VerificationJob) -> bool:

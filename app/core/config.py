@@ -420,6 +420,53 @@ class Settings(BaseSettings):
 
         return bool(self.millionverifier_api_key and self.millionverifier_api_key.strip())
 
+    # --- DeBounce fallback verification (VER-02) ------------------------------
+    # DeBounce sits *behind* MillionVerifier and is consulted only when the
+    # primary provider could not produce an authoritative verdict. It is
+    # optional in every environment: with no key and no feature flag, the
+    # verification path is byte-for-byte the MillionVerifier-only path, and
+    # startup never fails for the absence of an optional provider.
+    #
+    # DeBounce authenticates with the key in the *query string*, so this value
+    # must never reach a log line, a stored payload, or a rendered request URL.
+    # ``repr=False`` / ``exclude=True`` keep it out of ``repr(settings)`` and
+    # ``settings.model_dump()``; the adapter redacts it everywhere else.
+    debounce_api_key: str | None = Field(
+        default=None,
+        repr=False,
+        exclude=True,
+        description="DeBounce Single Validation API key (secret; via DEBOUNCE_API_KEY).",
+    )
+    # Documented single-validation endpoint. Overridable only so tests can point
+    # at a stub; production uses the documented default.
+    debounce_base_url: str = Field(
+        default="https://api.debounce.io/v1/",
+        description="DeBounce Single Validation endpoint.",
+    )
+    # Local wall-clock budget for one DeBounce call. Bounded like every other
+    # provider call: an unbounded fallback would turn a slow primary into a
+    # stalled worker rather than a fast, honest "no verdict".
+    debounce_timeout_seconds: int = Field(
+        default=20,
+        ge=2,
+        le=60,
+        description="DeBounce per-call timeout in seconds.",
+    )
+
+    def has_debounce_key(self) -> bool:
+        """True when a non-empty DeBounce key is configured (never logs it)."""
+
+        return bool(self.debounce_api_key and self.debounce_api_key.strip())
+
+    def debounce_fallback_available(self) -> bool:
+        """True when DeBounce may be consulted as the verification fallback.
+
+        Both halves are required. The flag alone is an intent with nothing
+        behind it; the key alone is a credential nobody authorized spending.
+        """
+
+        return bool(self.features.debounce and self.has_debounce_key())
+
     # --- Local Claude CLI (Research, Insights and Personalization Agents) ---
     #
     # These Agents call the operator's own ``claude`` executable under their

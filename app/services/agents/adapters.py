@@ -1068,6 +1068,9 @@ class VerificationAgentAdapter:
         context.job.policy_version = policy.version
         waterfall_policy_version_id: str | None = None
         providers_attempted: tuple[str, ...] = ()
+        fallback_used = False
+        fallback_condition: str | None = None
+        fallback_reason: str | None = None
         if self._provider_factory is not None:
             provider = self._provider_factory(settings)
             if provider.simulated:
@@ -1104,6 +1107,9 @@ class VerificationAgentAdapter:
             outcome = traversal.outcome
             waterfall_policy_version_id = traversal.policy_version_id
             providers_attempted = traversal.providers_attempted
+            fallback_used = traversal.fallback_used
+            fallback_condition = traversal.fallback_condition
+            fallback_reason = traversal.fallback_reason
 
         decision = self._decide(session, context=context, outcome=outcome)
         context.job.outcome_status = decision.status.value
@@ -1120,6 +1126,12 @@ class VerificationAgentAdapter:
             "provider_called": outcome.provider_called,
             "provider": outcome.provider_label,
             "providers_attempted": list(providers_attempted),
+            # Fallback provenance, recorded on the job's durable output so an
+            # operator can answer "which provider settled this, was it the
+            # fallback, and why did the fallback run" without reconstructing it.
+            "fallback_used": fallback_used,
+            "fallback_condition": fallback_condition,
+            "fallback_reason": fallback_reason,
             "waterfall_policy_version_id": waterfall_policy_version_id,
             "policy_version": outcome.policy_version,
         }

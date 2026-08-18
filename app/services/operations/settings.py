@@ -165,6 +165,39 @@ def _needs_millionverifier(settings: Settings, _stored: Mapping[str, bool]) -> C
     )
 
 
+def _needs_debounce(settings: Settings, stored: Mapping[str, bool]) -> Capability:
+    """DeBounce: a credential, and the primary provider it sits behind.
+
+    Unlike MillionVerifier there is no simulator story here. DeBounce is the
+    *fallback*, so an environment where a simulated answer stands in has nothing
+    for it to fall back from — and a switch that appeared to enable a second
+    provider while a simulator answered would be exactly the misleading state
+    the MillionVerifier capability exists to prevent.
+    """
+
+    configured = settings.has_debounce_key()
+    primary = _resolve(settings, stored, "millionverifier")
+    available = configured and primary
+    if not configured:
+        reason = (
+            "The DeBounce credential is not configured. Set DEBOUNCE_API_KEY in the "
+            "deployment environment, or rotate a credential in Verification Studio; "
+            "it cannot be set from this screen."
+        )
+    elif not primary:
+        reason = "Requires MillionVerifier. DeBounce is the fallback behind it, not a replacement."
+    else:
+        reason = ""
+    return Capability(
+        available=available,
+        reason=reason or None,
+        evidence=(
+            ("DeBounce credential configured", configured),
+            ("MillionVerifier on", primary),
+        ),
+    )
+
+
 def _needs_claude_cli(settings: Settings, _stored: Mapping[str, bool]) -> Capability:
     configured = bool(settings.claude_cli_path)
     return Capability(
@@ -447,6 +480,19 @@ PRODUCT_CONTROLS: tuple[ControlSpec, ...] = (
         group="Providers",
         capability=_needs_millionverifier,
         gates_agents=(AgentIdentifier.VERIFICATION,),
+    ),
+    ControlSpec(
+        key="debounce",
+        label="DeBounce fallback",
+        summary=(
+            "Lets the Verification Agent ask DeBounce when MillionVerifier could not settle "
+            "an address — a timeout, a rejected credential, exhausted credits, a rate limit, "
+            "an unreadable reply, or a catch-all/unknown result. It is never asked to "
+            "second-guess a verdict MillionVerifier did produce. Off means MillionVerifier "
+            "only, and no DeBounce credit is spent."
+        ),
+        group="Providers",
+        capability=_needs_debounce,
     ),
     ControlSpec(
         key="email_generation",

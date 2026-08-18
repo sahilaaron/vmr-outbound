@@ -63,6 +63,13 @@ SIMULATOR_PROVIDER_LABEL = "millionverifier-simulator"
 DEBOUNCE_LIVE_PROVIDER_LABEL = "debounce"
 DEBOUNCE_SIMULATOR_PROVIDER_LABEL = "debounce-simulator"
 
+# Every label that means "no external provider actually checked this address".
+# Membership is what decides whether an outcome may advance a Campaign Contact,
+# so a new simulator that is not listed here would silently become acceptable.
+SIMULATOR_PROVIDER_LABELS: frozenset[str] = frozenset(
+    {SIMULATOR_PROVIDER_LABEL, DEBOUNCE_SIMULATOR_PROVIDER_LABEL}
+)
+
 # Static request headers for the live Single API client. A descriptive User-Agent
 # is good API citizenship (and some providers reject header-less requests); Accept
 # declares that we parse JSON. The version is kept in sync with pyproject.toml.
@@ -96,7 +103,17 @@ class ProviderTransientError(Exception):
 
     Distinct from an application-level ``error`` field in a 200 response — this
     means we never reached a verdict and the job may retry.
+
+    ``condition`` names *which* transport failure this was, using the same
+    vocabulary the provider registry already declares in ``safe_retry_classes``
+    ("transport", "rate_limit", "provider_5xx"). The fallback policy needs to
+    tell a rate limit apart from an unreachable host; without this it would have
+    to parse the message, and a message is not a contract.
     """
+
+    def __init__(self, message: str, *, condition: str = "transport") -> None:
+        super().__init__(message)
+        self.condition = condition
 
 
 @dataclass(frozen=True)
@@ -171,6 +188,21 @@ def redact_payload(value: dict[str, Any], secret: str | None) -> dict[str, Any]:
     if not secret:
         return value
     return cast(dict[str, Any], json.loads(redact_secret(json.dumps(value), secret)))
+
+
+def redact_for_provider(provider: object, text: str, *, fallback_secret: str | None = None) -> str:
+    """Redact *text* using the credential *provider* actually authenticates with.
+
+    Every live client knows its own key and nothing else does. Redacting a
+    DeBounce failure with the MillionVerifier key — which is what a single
+    hard-coded secret would do — protects nothing. Clients expose ``redact``;
+    test doubles that do not fall back to the caller-supplied secret.
+    """
+
+    redactor = getattr(provider, "redact", None)
+    if callable(redactor):
+        return str(redactor(text))
+    return redact_secret(text, fallback_secret)
 
 
 # Historical private alias, kept so the live client's call sites read unchanged.
@@ -274,6 +306,20 @@ class SimulatedMillionVerifier:
 # --- Live HTTP client --------------------------------------------------------
 
 
+def http_transient_condition(status: int) -> str:
+    """Name the transport condition for an HTTP status we could not use.
+
+    Uses the registry's own ``safe_retry_classes`` vocabulary so the fallback
+    policy and the retry policy agree on what a 429 is without a second table.
+    """
+
+    if status == 429:
+        return "rate_limit"
+    if status >= 500:
+        return "provider_5xx"
+    return "transport"
+
+
 class Transport(Protocol):
     """Minimal HTTP GET seam so the live client is testable without a network."""
 
@@ -322,10 +368,15 @@ class HttpMillionVerifier:
         )
         return f"{self._base_url}?{query}"
 
+    def redact(self, text: str) -> str:
+        """Strip this client's credential from any text before it is stored."""
+
+        return _redact(text, self._api_key)
+
     def redacted_url(self, email: str) -> str:
         """The request URL with the key redacted, safe to log or show."""
 
-        return _redact(self._build_url(email), self._api_key)
+        return self.redact(self._build_url(email))
 
     def verify(self, email: str) -> ProviderResponse:
         url = self._build_url(email)
@@ -349,9 +400,11 @@ class HttpMillionVerifier:
             # Other HTTP statuses: a transient transport failure (may retry). The
             # HTTPError string is "HTTP Error <code>: <reason>" (no URL/key); redact
             # defensively regardless.
-            raise ProviderTransientError(_redact(str(exc), self._api_key)) from None
+            raise ProviderTransientError(
+                self.redact(str(exc)), condition=http_transient_condition(exc.code)
+            ) from None
         except Exception as exc:  # transport failure: no verdict, may retry
-            raise ProviderTransientError(_redact(str(exc), self._api_key)) from None
+            raise ProviderTransientError(self.redact(str(exc))) from None
         try:
             data = json.loads(body)
         except json.JSONDecodeError as exc:
@@ -383,7 +436,32 @@ class SimulatedDebounce(SimulatedMillionVerifier):
 
 
 class HttpDebounce:
-    """DeBounce single-validation adapter normalized to ProviderResponse."""
+    """DeBounce Single Validation adapter normalized to :class:`ProviderResponse`.
+
+    Contract (official Single Validation API):
+
+        GET https://api.debounce.io/v1/?api=<key>&email=<addr>
+
+    The response nests the verdict under ``debounce`` and carries a top-level
+    ``success`` flag. ``result`` is the documented human classification — "Safe
+    to Send", "Risky", "Invalid", "Unknown" — and ``code`` is its numeric twin.
+
+    Three rules govern the mapping, and all three exist to stop a fallback
+    provider from manufacturing a verdict VMR has not earned:
+
+    * ``result`` is authoritative when present, with ``code`` refining "Risky";
+      ``code`` alone answers only when ``result`` is absent.
+    * Nothing unrecognised degrades into a mailbox verdict. A missing,
+      unparseable or unknown classification becomes an explicit unusable-response
+      error, never "unknown" — "unknown" is a real thing a provider can say about
+      a mailbox and must not double as "we could not read the reply".
+    * ``send_transactional`` and the vendor's signup guidance are preserved but
+      never consulted. They answer "may this address register an account", which
+      is not the question cold outbound asks.
+
+    DeBounce authenticates through the query string, so no complete request URL
+    is ever returned, stored, or raised — only :meth:`redacted_url`.
+    """
 
     name = "debounce"
     simulated = False
@@ -393,71 +471,91 @@ class HttpDebounce:
         self,
         api_key: str,
         *,
+        base_url: str | None = None,
         timeout_seconds: int = 20,
         transport: Transport | None = None,
     ) -> None:
         self._api_key = api_key
+        if base_url:
+            self._base_url = base_url
         self._timeout = timeout_seconds
         self._transport = transport or UrllibTransport()
 
     def _build_url(self, email: str) -> str:
-        return f"{self._base_url}?{urllib.parse.urlencode({'api': self._api_key, 'email': email})}"
+        query = urllib.parse.urlencode({"api": self._api_key, "email": email})
+        return f"{self._base_url}?{query}"
+
+    def redact(self, text: str) -> str:
+        """Strip this client's credential from any text before it is stored."""
+
+        return _redact(text, self._api_key)
 
     def redacted_url(self, email: str) -> str:
-        return _redact(self._build_url(email), self._api_key)
+        return self.redact(self._build_url(email))
+
+    def _failure(self, email: str, error: str, **extra: Any) -> ProviderResponse:
+        """A provider-level failure: never address evidence, never billed here."""
+
+        return ProviderResponse(
+            email=email,
+            result=None,
+            resultcode=None,
+            error=error,
+            raw={"error": error, **extra},
+        )
 
     def verify(self, email: str) -> ProviderResponse:
         try:
             body = self._transport.get(self._build_url(email), timeout=float(self._timeout))
+        except ProviderTransientError:
+            raise
         except urllib.error.HTTPError as exc:
+            # 401 (rejected key), 402 (no credits) and 403 (forbidden) are settled
+            # operator conditions. They map onto the existing non-retryable
+            # provider-error family so nothing loops, spends, or hammers against
+            # a condition only a human can clear.
             if exc.code in (401, 402, 403):
                 error = "insufficient_credits" if exc.code == 402 else "access_rejected"
-                return ProviderResponse(
-                    email=email,
-                    result=None,
-                    resultcode=None,
-                    error=error,
-                    raw={"error": error, "http_status": exc.code},
-                )
-            raise ProviderTransientError(f"HTTP {exc.code}") from None
+                return self._failure(email, error, http_status=exc.code)
+            raise ProviderTransientError(
+                f"HTTP {exc.code}", condition=http_transient_condition(exc.code)
+            ) from None
         except Exception as exc:
-            raise ProviderTransientError(_redact(str(exc), self._api_key)) from None
+            raise ProviderTransientError(self.redact(str(exc))) from None
         try:
             data = json.loads(body)
         except json.JSONDecodeError as exc:
-            raise ProviderTransientError(f"malformed provider response: {exc}") from None
+            raise ProviderTransientError(
+                f"malformed provider response: {self.redact(str(exc))}"
+            ) from None
+        if not isinstance(data, dict):
+            return self._failure(email, "unusable_response")
         data.pop("api", None)
         data = redact_payload(data, self._api_key)
-        raw_code = (
-            data.get("debounce", {}).get("code")
-            if isinstance(data.get("debounce"), dict)
-            else data.get("code")
-        )
-        try:
-            code = int(str(raw_code))
-        except (TypeError, ValueError):
-            code = 7
-        # Official DeBounce codes: 4 accept-all, 5 deliverable, 3 disposable,
-        # 1/2/6 invalid, 7 unknown. Role is an orthogonal flag.
-        result = {3: "disposable", 4: "catch_all", 5: "ok", 7: "unknown"}.get(code, "invalid")
-        nested = data.get("debounce") if isinstance(data.get("debounce"), dict) else data
-        assert isinstance(nested, dict)
-        role = _as_optional_bool(nested.get("role"))
-        safe_raw = {
-            key: value
-            for key, value in nested.items()
-            if key
-            in {
-                "email",
-                "code",
-                "result",
-                "reason",
-                "role",
-                "free_email",
-                "did_you_mean",
-                "balance",
-            }
-        }
+
+        nested_raw = data.get("debounce")
+        nested: dict[str, Any] = nested_raw if isinstance(nested_raw, dict) else data
+
+        # An application-level error field outranks any classification present.
+        reported_error = nested.get("error") or data.get("error")
+        if reported_error:
+            return ProviderResponse(
+                email=str(nested.get("email", email)),
+                result=None,
+                resultcode=None,
+                error=self.redact(str(reported_error)),
+                raw=_debounce_safe_raw(nested),
+            )
+
+        # ``success`` is the envelope, not the verdict: success = 0 means no
+        # validation was produced at all, which is a provider failure.
+        if "success" in data and _as_optional_bool(data.get("success")) is not True:
+            return self._failure(email, "unusable_response", success=str(data.get("success")))
+
+        classification = _classify_debounce(nested.get("result"), nested.get("code"))
+        if classification is None:
+            return self._failure(email, "unusable_response")
+        result, code = classification
         return ProviderResponse(
             email=str(nested.get("email", email)),
             result=result,
@@ -465,15 +563,91 @@ class HttpDebounce:
             subresult=str(nested.get("reason")) if nested.get("reason") else None,
             quality=str(nested.get("result")) if nested.get("result") else None,
             free=_as_optional_bool(nested.get("free_email")),
-            role=role,
+            role=_as_optional_bool(nested.get("role")),
             didyoumean=nested.get("did_you_mean") or None,
             credits=int(nested["balance"]) if str(nested.get("balance", "")).isdigit() else None,
-            error=(
-                _redact(str(nested.get("error")), self._api_key) if nested.get("error") else None
-            ),
+            error=None,
             livemode=True,
-            raw=safe_raw,
+            raw=_debounce_safe_raw(nested),
         )
+
+
+# The fields worth keeping from a DeBounce reply. An allow-list rather than a
+# deny-list: an unanticipated field can never smuggle a credential or extra PII
+# into durable storage just because the vendor started sending it.
+_DEBOUNCE_RAW_FIELDS = frozenset(
+    {
+        "email",
+        "code",
+        "result",
+        "reason",
+        "role",
+        "free_email",
+        "did_you_mean",
+        "send_transactional",
+        "balance",
+    }
+)
+
+# Documented numeric codes: 4 accept-all, 5 deliverable, 3 disposable, 7 unknown,
+# and 1/2/6 the invalid family. Anything outside this set is unrecognised, which
+# is a failure to read the reply rather than a statement about the mailbox.
+_DEBOUNCE_CODE_RESULT: dict[int, str] = {
+    1: "invalid",
+    2: "invalid",
+    3: "disposable",
+    4: "catch_all",
+    5: "ok",
+    6: "invalid",
+    7: "unknown",
+}
+
+
+def _debounce_safe_raw(payload: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in payload.items() if key in _DEBOUNCE_RAW_FIELDS}
+
+
+def _debounce_code(value: object) -> int | None:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _classify_debounce(result: object, code: object) -> tuple[str, int | None] | None:
+    """Map one DeBounce classification onto the canonical result vocabulary.
+
+    Returns ``None`` when the reply carries nothing this adapter recognises, so
+    the caller raises an unusable-response failure instead of inventing a verdict.
+
+    "Risky" is the only DeBounce class with no exact counterpart in the VMR
+    model: one word covering accept-all, role and disposable addresses. The
+    numeric code separates them where it can; where it cannot, Risky maps to
+    ``unknown`` — uncertain, never accepted, and carrying the shortest reuse TTL
+    of the uncertain states. Risky never maps to a valid mailbox.
+    """
+
+    numeric = _debounce_code(code)
+    label = " ".join(str(result).strip().casefold().split()) if result is not None else ""
+
+    if label in {"safe to send", "safe_to_send", "deliverable"}:
+        return "ok", numeric
+    if label == "invalid":
+        return "invalid", numeric
+    if label == "unknown":
+        return "unknown", numeric
+    if label == "risky":
+        if numeric == 4:
+            return "catch_all", numeric
+        if numeric == 3:
+            return "disposable", numeric
+        return "unknown", numeric
+    if label:
+        # A classification string we do not recognise: unreadable, not a verdict.
+        return None
+    if numeric in _DEBOUNCE_CODE_RESULT:
+        return _DEBOUNCE_CODE_RESULT[numeric], numeric
+    return None
 
 
 def build_provider(
@@ -502,19 +676,24 @@ def build_provider_by_id(
     api_key: str | None,
     timeout_seconds: int = 20,
     live: bool = False,
+    base_url: str | None = None,
 ) -> VerificationProvider:
-    """Build only a provider declared in the fixed registry."""
+    """Build only a provider declared in the fixed registry.
+
+    ``base_url`` exists so an operator setting (and a test stub) can override the
+    documented endpoint. Omitting it keeps each adapter's documented default.
+    """
 
     key = (api_key or "").strip()
     if provider_id == "millionverifier":
         return build_provider(
             api_key=key or None,
-            base_url="https://api.millionverifier.com/api/v3",
+            base_url=base_url or "https://api.millionverifier.com/api/v3",
             timeout_seconds=timeout_seconds,
             live=live,
         )
     if provider_id == "debounce":
         if live and key:
-            return HttpDebounce(key, timeout_seconds=timeout_seconds)
+            return HttpDebounce(key, base_url=base_url, timeout_seconds=timeout_seconds)
         return SimulatedDebounce(api_key=key or None)
     raise ValueError("unknown verification provider")

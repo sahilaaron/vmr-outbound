@@ -138,6 +138,15 @@ class FeatureFlags(BaseModel):
     # Phase 2 — Email Verification
     email_generation: bool = False
     millionverifier: bool = False
+    # VER-02 — DeBounce as the verification *fallback*, never a second opinion.
+    # Off by default and inert while off: the traversal is MillionVerifier-only,
+    # no DeBounce call is made, no DeBounce credit is spent, and no verification
+    # semantics change. Turning it on (with DEBOUNCE_API_KEY set) lets the
+    # waterfall ask DeBounce when MillionVerifier could not settle the mailbox —
+    # a timeout, a rejected credential, exhausted credits, a rate limit, an
+    # unreadable reply, or a catch-all/unknown result. It is never consulted to
+    # second-guess a verdict MillionVerifier did produce.
+    debounce: bool = False
     # Phase 3 — Lead Scoring
     scoring: bool = False
     # Phase 4 — Insights
