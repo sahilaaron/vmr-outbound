@@ -29,6 +29,13 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from app.services.imports.normalization import (
+    is_valid_email,
+    is_valid_hostname,
+    normalize_domain,
+    normalize_email,
+)
+
 #: The add-on's own contract version, echoed on every response so a mismatched
 #: pair is visible in one field rather than inferred from behaviour.
 SCHEMA_VERSION = "google-sheets-batch/1"
@@ -40,6 +47,8 @@ MAX_NAME_CHARS = 255
 MAX_COMPANY_CHARS = 512
 MAX_TITLE_CHARS = 255
 MAX_URL_CHARS = 512
+#: The widest address ``contacts.email`` can hold, and the practical RFC ceiling.
+MAX_EMAIL_CHARS = 320
 
 #: Client-minted identifiers are opaque, but not arbitrary: allowing separators
 #: and whitespace would let a client construct two ids that differ only in a
@@ -116,6 +125,15 @@ class SubmittedRow:
     job_title: str | None = None
     linkedin_url: str | None = None
     context: str | None = None
+    #: The verbatim cell, kept beside the normalized value so provenance can
+    #: show the operator what they actually typed.
+    email_raw: str | None = None
+    #: The normalized address, present only when the raw cell produced a
+    #: syntactically valid one. Never a claim that the mailbox exists.
+    email: str | None = None
+    website_raw: str | None = None
+    #: The normalized hostname, or ``None`` for a website nobody could read.
+    website_domain: str | None = None
 
     @property
     def full_name(self) -> str:
@@ -176,6 +194,63 @@ def normalize_linkedin_url(value: Any) -> str | None:
             code="linkedin_url_unusable",
         )
     return text
+
+
+def normalize_supplied_email(value: Any) -> tuple[str | None, str | None]:
+    """Accept a syntactically valid address, or refuse the row by name.
+
+    Returns ``(raw, normalized)``. Blank is nothing at all and never a refusal —
+    supplying an address is optional, and a Campaign that does not supply one
+    gets the discovery pipeline exactly as before.
+
+    A malformed address *is* refused, and refused for the same reason the
+    LinkedIn URL above is: this value does not decorate the record, it becomes
+    the address this Campaign uses for this person and the reason no discovery
+    runs. Silently dropping it would leave the operator believing they had
+    supplied an address while the pipeline went looking for a different one, and
+    silently keeping it would put an unusable string in the send slot. The row is
+    returned to the sheet with a sentence naming the cell to fix.
+    """
+
+    text = _text(value)
+    if not text:
+        return None, None
+    text = _bounded(text, limit=MAX_EMAIL_CHARS, field="Email", code="email_too_long")
+    normalized = normalize_email(text)
+    if not normalized or not is_valid_email(normalized):
+        raise RowContractError(
+            "the Email value is not a readable email address; correct or clear the cell",
+            code="email_unusable",
+        )
+    return text, normalized
+
+
+def normalize_supplied_website(value: Any) -> tuple[str | None, str | None]:
+    """Read a company website down to its hostname, or read nothing.
+
+    Returns ``(raw, normalized_domain)``. Deliberately *not* symmetrical with the
+    address above: an unreadable website is dropped rather than refused, and the
+    row still enrols.
+
+    The asymmetry follows what each value is for. A website only answers "which
+    company is this", and there is an existing, correct answer when it is
+    missing — the Company Agent establishes the domain itself, which is precisely
+    what happens for every row that never supplied one. Refusing the row would
+    cost the operator a contact the product can prepare perfectly well. An
+    address has no such fallback in the send slot.
+
+    The unreadable value is still recorded in provenance as supplied-but-unusable,
+    so "why did it resolve a different domain than I typed?" has an answer.
+    """
+
+    text = _text(value)
+    if not text:
+        return None, None
+    text = _bounded(text, limit=MAX_URL_CHARS, field="Website", code="website_too_long")
+    normalized = normalize_domain(text)
+    if not normalized or not is_valid_hostname(normalized):
+        return text, None
+    return text, normalized
 
 
 @dataclass(frozen=True)
@@ -292,6 +367,9 @@ def parse_row(payload: Any, *, max_context_chars: int) -> SubmittedRow:
             code="context_too_long",
         )
 
+    email_raw, email = normalize_supplied_email(payload.get("email"))
+    website_raw, website_domain = normalize_supplied_website(payload.get("website"))
+
     return SubmittedRow(
         client_row_id=client_row_id,
         first_name=first_name,
@@ -300,6 +378,10 @@ def parse_row(payload: Any, *, max_context_chars: int) -> SubmittedRow:
         job_title=job_title,
         linkedin_url=normalize_linkedin_url(payload.get("linkedin_url")),
         context=context,
+        email_raw=email_raw,
+        email=email,
+        website_raw=website_raw,
+        website_domain=website_domain,
     )
 
 
@@ -360,6 +442,7 @@ def _digest(*parts: str) -> str:
 
 __all__ = [
     "MAX_CLIENT_ID_CHARS",
+    "MAX_EMAIL_CHARS",
     "SCHEMA_VERSION",
     "BatchContractError",
     "RejectedRow",
@@ -370,6 +453,8 @@ __all__ = [
     "batch_id",
     "normalize_client_id",
     "normalize_linkedin_url",
+    "normalize_supplied_email",
+    "normalize_supplied_website",
     "parse_row",
     "parse_rows",
     "row_idempotency_key",

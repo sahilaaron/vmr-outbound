@@ -9,7 +9,7 @@ The four words
 
 ``pending``            accepted, waiting its turn
 ``processing``         an Agent currently holds it
-``ready``              a usable verified address **and** a validated sequence
+``ready``              a usable address **and** a validated sequence
 ``could_not_prepare``  it stopped, and a person has to do something
 
 ``pending`` is a promise that the row will move, so it is only ever said of a row
@@ -25,12 +25,18 @@ Why ``ready`` requires *both* halves
 ------------------------------------
 
 The output contract of this surface is an address to write to and seven messages
-to send. A verified address with no sequence is not usable, and seven messages
-addressed to an unverified mailbox are worse than nothing. So the row turns
-``ready`` only when the address is ``VALID`` under the existing verification
-policy — not catch-all, not role-based, not vendor-claimed — and the sequence is
-generated complete, validated and exactly seven messages long. Anything less
-stays ``processing``, because it is.
+to send. An address with no sequence is not usable, and seven messages with
+nowhere to send them are worse than nothing. So the row turns ``ready`` only when
+both exist: the sequence generated complete, validated and exactly seven messages
+long, and an address that is either ``VALID`` under the existing verification
+policy — not catch-all, not role-based, not guessed — or one the operator
+supplied themselves and the pipeline therefore never tried to verify. Anything
+less stays ``processing``, because it is.
+
+``ready`` is not, and has never been, a deliverability claim. It says a package
+exists and where the operator asked it to go. Which of the two kinds of address a
+row holds is recorded on the Verification stage and shown truthfully everywhere
+verification status is displayed; see :func:`_usable_address`.
 
 Why a stopped row is not simply "failed"
 ----------------------------------------
@@ -55,6 +61,7 @@ from app.models.campaign import CampaignContact
 from app.models.contact import Contact
 from app.models.email_sequence import SEQUENCE_LENGTH, EmailSequence
 from app.models.enums import (
+    AgentIdentifier,
     ContactWorkflowState,
     EmailVisualStatus,
     PipelineStageStatus,
@@ -169,7 +176,7 @@ def result_for(session: Session, *, membership: CampaignContact) -> RowResult:
     if stop is not None:
         return answer(RowStatus.COULD_NOT_PREPARE, safe_failure_reason=stop)
 
-    address = _usable_address(session, contact=contact)
+    address = _usable_address(session, membership=membership, contact=contact)
     sequence = sequence_read.sequence_for_membership(session, campaign_contact_id=membership.id)
     messages = _messages(session, sequence=sequence)
 
@@ -193,23 +200,73 @@ def result_for(session: Session, *, membership: CampaignContact) -> RowResult:
     )
 
 
-def _usable_address(session: Session, *, contact: Contact | None) -> str | None:
+def _usable_address(
+    session: Session, *, membership: CampaignContact, contact: Contact | None
+) -> str | None:
     """The address this row may be sent to, or nothing.
 
-    ``VALID`` and only ``VALID``. ``CATCH_ALL`` and ``UNKNOWN`` are unresolved by
-    definition, ``ROLE_BASED`` is a real mailbox that policy still refuses, and an
-    imported address with no provider evidence is a vendor's claim rather than a
-    verification. Each of those is already decided by
-    ``app/services/verification``; this reads the decision and does not restate
-    it.
+    Two ways to have one, and the difference between them is never blurred.
+
+    **Verified.** ``VALID`` and only ``VALID``. ``CATCH_ALL`` and ``UNKNOWN`` are
+    unresolved by definition, ``ROLE_BASED`` is a real mailbox that policy still
+    refuses, and a vendor's claim in a file is not a verification. Each of those
+    is already decided by ``app/services/verification``; this reads the decision
+    and does not restate it.
+
+    **Supplied.** The operator handed this Campaign the address, so the pipeline
+    was never going to acquire evidence about it — no candidate was generated and
+    no provider was called, by design. Requiring a verdict here would have made
+    that address unusable on the very surface that accepted it: the row would
+    have sat at ``processing`` forever with its seven messages written and an
+    address the operator typed themselves sitting beside them, waiting for a
+    provider answer that nothing was ever going to ask for.
+
+    The second branch reads the **durable Verification stage**, not the address
+    and not the intake record. A stage that completed through a named bypass is
+    the pipeline's own committed statement that the address requirement was
+    satisfied without verification — the same fact, in the same place, whichever
+    surface supplied the value, and one that a later re-run or correction moves
+    on its own.
+
+    What this deliberately does not do is call a supplied address verified. It
+    returns an address; it does not touch ``EmailVisualStatus``, write evidence,
+    or map anything to ``SUCCESSFUL``. Every screen reading verification status
+    still says, correctly, that nobody checked this mailbox.
     """
 
     if contact is None:
         return None
     view = verification_status.derive_status_for_contact(session, contact)
-    if view.visual is not EmailVisualStatus.SUCCESSFUL:
-        return None
-    return view.email
+    if view.visual is EmailVisualStatus.SUCCESSFUL:
+        return view.email
+    if contact.email and _verification_bypassed(session, membership=membership):
+        return contact.email
+    return None
+
+
+#: Reason codes the Verification stage carries when it completed without a
+#: provider ever being called. Both are truthful absences written by the
+#: orchestrator; neither is a deliverability claim.
+_VERIFICATION_BYPASSES = frozenset(
+    {
+        "verification_bypassed_imported_email",
+        "verification_bypassed_supplied_email",
+    }
+)
+
+
+def _verification_bypassed(session: Session, *, membership: CampaignContact) -> bool:
+    """Whether Verification completed as a recorded bypass for this membership."""
+
+    state = session.scalars(
+        select(CampaignContactAgentState).where(
+            CampaignContactAgentState.campaign_contact_id == membership.id,
+            CampaignContactAgentState.agent_id == AgentIdentifier.VERIFICATION,
+        )
+    ).one_or_none()
+    if state is None or state.status is not PipelineStageStatus.COMPLETED:
+        return False
+    return state.reason_code in _VERIFICATION_BYPASSES
 
 
 def _messages(session: Session, *, sequence: EmailSequence | None) -> tuple[SequenceMessage, ...]:

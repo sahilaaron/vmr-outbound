@@ -75,6 +75,7 @@ from app.services.integrations.sheets.contract import (
     row_idempotency_key,
 )
 from app.services.profiles import refresh as refresh_service
+from app.services.provenance import supplied_inputs
 from app.services.suppressions import evaluate_suppression
 
 #: The provenance ``source_type`` every sheet-sourced membership carries. Not
@@ -201,17 +202,52 @@ def _submit_one(
     cache: sheet_companies.NameCache,
     counters: BatchSubmission,
 ) -> RowSubmission:
-    # A cache read, not a resolution. Established evidence links the row
-    # immediately and for free; nothing established is an ordinary answer that
-    # leaves the link NULL and lets the pipeline take it from there. Either way
-    # no provider is asked, so this step can neither refuse a row nor spend
-    # money — see `companies.py` on why the previous behaviour was wrong.
-    company_outcome = sheet_companies.link_established_company(
-        session,
-        company_name=row.company_name,
-        actor=actor,
-        cache=cache,
-    )
+    # An operator who names the company website has answered "which company is
+    # this", which is the only question company-domain resolution asks. Taken
+    # ahead of the cache read because it is the stronger evidence of the two: a
+    # name matched against previously established domains is an inference, and
+    # this is the person who knows the prospect saying so. It is *not* an answer
+    # to "what matters about this company" — Company Intelligence and Research
+    # still run for every one of these rows.
+    #
+    # The cache is deliberately not consulted or populated here. It is keyed on
+    # company *name*, and two rows carrying the same name may legitimately carry
+    # different websites; letting one row's supplied domain answer for another's
+    # name is exactly the silent misfiling this surface refuses elsewhere.
+    #
+    # A corporate address the operator typed names the employer just as plainly,
+    # and is used when no readable website was given. It never outranks one: a
+    # person at ``john@subsidiary.com`` whose employer the operator wrote down as
+    # ``parentcompany.com`` works at the parent, and their address is not
+    # evidence to the contrary. A public mailbox derives nothing — see
+    # ``supplied_inputs.derive_company_domain`` — and such a row simply takes the
+    # ordinary path below, exactly as it did before any of this existed.
+    supplied_domain = row.website_domain or supplied_inputs.derive_company_domain(row.email)
+    if supplied_domain:
+        company_outcome = sheet_companies.link_supplied_domain(
+            session,
+            company_name=row.company_name,
+            domain=supplied_domain,
+            origin=(
+                supplied_inputs.DOMAIN_SOURCE_WEBSITE
+                if row.website_domain
+                else supplied_inputs.DOMAIN_SOURCE_EMAIL
+            ),
+            actor=actor,
+        )
+    else:
+        # A cache read, not a resolution. Established evidence links the row
+        # immediately and for free; nothing established is an ordinary answer
+        # that leaves the link NULL and lets the pipeline take it from there.
+        # Either way no provider is asked, so this step can neither refuse a row
+        # nor spend money — see `companies.py` on why the previous behaviour was
+        # wrong.
+        company_outcome = sheet_companies.link_established_company(
+            session,
+            company_name=row.company_name,
+            actor=actor,
+            cache=cache,
+        )
     if company_outcome.provider_call_made:  # pragma: no cover - structurally impossible
         counters.provider_calls_made += 1
     company = company_outcome.company
@@ -224,8 +260,16 @@ def _submit_one(
     # already takes an optional domain, so nothing here is relaxed — a domain
     # suppression simply has no domain to match until the pipeline finds one,
     # and every later advancing path asks the ledger again.
+    #
+    # A supplied address is asked about here and not merely later: it is an
+    # identity, and creating a Contact for a suppressed identity is the first
+    # step of contacting it. The existing Contact's own address still governs
+    # when the row matched one, because that is the address the Campaign would
+    # actually use.
     decision = evaluate_suppression(
-        session, email=contact.email if contact is not None else None, domain=domain
+        session,
+        email=(contact.email if contact is not None else None) or row.email,
+        domain=domain,
     )
     if decision.blocked:
         raise RowContractError(
@@ -239,6 +283,12 @@ def _submit_one(
             first_name=row.first_name,
             last_name=row.last_name,
             company_name=row.company_name,
+            # The supplied address, normalized. Recorded as the person's address
+            # and nothing more: no candidate, no evidence row, no verification
+            # result. `contacts.email` has never meant "verified" — the Email and
+            # Verification stages own that claim, and neither is being told
+            # anything here.
+            email=row.email,
             # NULL when nothing has established this company. The model documents
             # that as "not linked yet" and deliberately prefers it to a guess.
             company_domain=domain,
@@ -260,6 +310,7 @@ def _submit_one(
             row=row,
             company_id=company.id if company is not None else None,
             domain=domain,
+            email=_fillable_email(session, contact=contact, row=row),
         )
 
     existing = _membership_for(session, campaign_id=campaign.id, contact_id=contact.id)
@@ -296,12 +347,12 @@ def _resolve_contact(
 ) -> Contact | None:
     """The existing permanent Contact this row names, or ``None`` for a new one.
 
-    Two matchers, in the order the rest of the system uses them. An exact
+    Three matchers, in the order the rest of the system uses them. An exact
     normalized LinkedIn profile URL is the strongest signal and is tried first;
-    the deterministic name-plus-domain natural key is the fallback. Either
-    returning more than one candidate is an ambiguity, and this surface refuses
-    the row rather than choosing — merging the wrong two people is not something
-    a retry can undo.
+    an exact normalized supplied email is next; the deterministic
+    name-plus-domain natural key is the fallback. Any of them returning more than
+    one candidate is an ambiguity, and this surface refuses the row rather than
+    choosing — merging the wrong two people is not something a retry can undo.
 
     With no established domain only the first matcher runs, and that is the
     honest answer rather than a degraded one: the natural key *is*
@@ -330,6 +381,16 @@ def _resolve_contact(
         if len(matches) == 1:
             return matches[0]
 
+    # A supplied address, before the natural key and instead of it. Exact
+    # normalized email is the system's strongest dedup signal (DAT-004) and
+    # `contacts.email` is uniquely indexed, so ignoring it here would not merely
+    # miss a match — the insert below would fail against the index. `dedup`
+    # already refuses to fall through to the natural key when an email is
+    # present and unmatched, which is the required "distinct email means a
+    # distinct person" bias, so this returns whatever it decides either way.
+    if row.email:
+        return dedup.find_existing_contact(session, email=row.email, natural_key=None).contact
+
     if not company_domain:
         return None
 
@@ -344,8 +405,37 @@ def _resolve_contact(
     return deduped.contact
 
 
+def _fillable_email(session: Session, *, contact: Contact, row: SubmittedRow) -> str | None:
+    """The supplied address, only if writing it onto *contact* is safe.
+
+    ``contacts.email`` is uniquely indexed, and this row may have matched its
+    person by LinkedIn URL or by natural key rather than by address — in which
+    case nothing has yet asked whether somebody else already holds the address
+    the sheet supplied. Writing it blindly would raise an integrity error out of
+    the flush and take the whole request down, for a value that is only ever
+    filling a blank.
+
+    So the address is written only when no other permanent Contact owns it.
+    When one does, the blank stays blank and the pipeline discovers an address
+    for this person as it always would. That is the truthful outcome: two people
+    cannot share a mailbox, and the sheet has not told us which of them is wrong.
+    """
+
+    if not row.email or contact.email:
+        return None
+    holder = dedup.find_existing_contact(session, email=row.email, natural_key=None).contact
+    if holder is not None and holder.id != contact.id:
+        return None
+    return row.email
+
+
 def _fill_blanks(
-    contact: Contact, *, row: SubmittedRow, company_id: uuid.UUID | None, domain: str | None
+    contact: Contact,
+    *,
+    row: SubmittedRow,
+    company_id: uuid.UUID | None,
+    domain: str | None,
+    email: str | None = None,
 ) -> None:
     """Add what the permanent record is missing, and overwrite nothing.
 
@@ -355,6 +445,8 @@ def _fill_blanks(
     and it makes a stale sheet incapable of undoing work done in the product.
     """
 
+    if not contact.email and email:
+        contact.email = email
     if not contact.title and row.job_title:
         contact.title = row.job_title
     if not contact.linkedin_url and row.linkedin_url:
@@ -403,6 +495,14 @@ def _provenance(
             "kind": "operator_supplied",
             "verified": False,
         }
+    # The durable record the pipeline reads to decide that discovery and
+    # verification have nothing left to find. Built by the shared module so
+    # every acquisition surface records the same fact in the same shape, and so
+    # the words "discovered" and "verified" appear beside it as `false` rather
+    # than being left for a reader to assume.
+    payload.update(
+        supplied_inputs.build_context(email_raw=row.email_raw, domain_raw=row.website_raw)
+    )
     return payload
 
 

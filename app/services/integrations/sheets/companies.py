@@ -78,6 +78,7 @@ from app.models.enums import DomainResolutionState
 from app.services.audit import record_audit_event
 from app.services.captures import promotion as capture_promotion
 from app.services.enrichment import companies as enrichment
+from app.services.provenance import supplied_inputs
 from app.services.resolution import policy
 from app.services.resolution import service as resolution_service
 
@@ -128,6 +129,75 @@ def new_cache() -> NameCache:
     keep answering with a Company that a later correction has since changed."""
 
     return NameCache()
+
+
+def link_supplied_domain(
+    session: Session,
+    *,
+    company_name: str,
+    domain: str,
+    origin: str,
+    actor: str,
+) -> CompanyOutcome:
+    """The permanent Company for a domain the operator gave, created if new.
+
+    This is the one place this module writes a Company the deployment had not
+    already established, and it is safe for a reason that does not apply to
+    anything else here: the domain is an **operator assertion**, not a provider
+    candidate. The refusal this module documents at length exists to stop a
+    graded, uncorroborated *lookup result* entering as though it were
+    established; a website typed into the sheet by the person who knows the
+    prospect is the same class of evidence the file import already treats as its
+    second-strongest company signal (``CompanyBasis.WEBSITE_DOMAIN``), and it
+    creates a Company from it in exactly this way.
+
+    ``origin`` says which of the two operator assertions this was — a website
+    they typed, or the employer half of an address they typed. It reaches only
+    the audit event: the two are the same *kind* of evidence and must produce the
+    same Company, so branching on it here would be the start of two company
+    identities for one domain. Where they differ is in what the record says they
+    were, which is what the audit event and the enrolment provenance carry. The
+    file import draws exactly this distinction with
+    ``CompanyBasis.WEBSITE_DOMAIN`` and ``CompanyBasis.EMAIL_DOMAIN``, both of
+    which create a company the same way.
+
+    No resolution decision is written, deliberately. A decision row means "the
+    automatic resolution policy spoke about this company", and it did not — it
+    was never asked. ``store.company_state`` therefore reports ``None`` for this
+    Company, which ``resolution.gates`` already documents as unrestricted: a
+    domain that did not come from automatic resolution is not something this task
+    retroactively cast doubt on.
+
+    Creating the row is what makes the supplied domain *useful* rather than
+    harmful. ``CompanyAgentAdapter`` looks the Contact's domain up among permanent
+    Companies and blocks with ``company_missing`` when none matches — so a domain
+    recorded on the Contact and nowhere else would have left every supplied-domain
+    row worse off than one that supplied nothing at all.
+    """
+
+    company = capture_promotion.resolve_company_row(session, domain=domain, name=company_name)
+    record_audit_event(
+        session,
+        actor=actor,
+        action="google_sheets.company_linked_from_supplied_domain",
+        entity_type="company",
+        entity_id=str(company.id),
+        new_state=domain,
+        reason=(
+            "the operator supplied this company website in the spreadsheet"
+            if origin == supplied_inputs.DOMAIN_SOURCE_WEBSITE
+            else "this domain is the employer half of the address the operator supplied"
+        ),
+        context={
+            "resolver_version": RESOLVER_VERSION,
+            "submitted_company_name": company_name,
+            "supplied_domain": domain,
+            "domain_source": origin,
+            "provider_call_made": False,
+            "domain_resolution_performed": False,
+        },
+    )
+    return CompanyOutcome(company=company, domain=domain)
 
 
 def link_established_company(
@@ -241,5 +311,6 @@ __all__ = [
     "RESOLVER_VERSION",
     "CompanyOutcome",
     "link_established_company",
+    "link_supplied_domain",
     "new_cache",
 ]
