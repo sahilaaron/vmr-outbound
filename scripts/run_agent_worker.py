@@ -24,12 +24,27 @@ on Postgres, on logo.dev, on MillionVerifier, on a ``claude`` subprocess — and
 Python releases the GIL for all of it. Each thread owns its own Session per
 transaction; nothing is shared but the engine's connection pool.
 
-Two bounds worth knowing. The pool is 5 connections plus 10 overflow, so a worker
-count near that ceiling will start queueing on connections instead of on work. And
-the language-model Agents each spend one ``claude`` invocation, so N workers can
-mean N concurrent CLI calls: if that is too many for your subscription, run a small
-pool scoped with ``--agent research --agent insights --agent personalization`` and
-a larger one for the rest.
+Two bounds worth knowing, and the first is a hard ceiling rather than a guideline.
+
+**Connections.** A thread holds one pooled connection for the whole of a job's
+final transaction — the one the Agent adapter runs inside — so a Research job
+occupies a connection for its entire two-minute model call, not for the
+milliseconds of writing its outcome. ``pg_stat_activity`` shows this as one
+``idle in transaction`` row per busy thread. The ceiling is therefore
+``DATABASE_POOL_SIZE + DATABASE_MAX_OVERFLOW`` (5 + 10 unless the deployment
+raises them), and ``--workers`` above it buys nothing: the surplus threads block
+for the pool timeout and then fail to claim. Raise the two together, and keep the
+sum across every process inside PostgreSQL's ``max_connections``.
+
+**Model calls.** The language-model Agents each spend one ``claude`` invocation,
+so N workers can mean N concurrent CLI calls against one subscription. That does
+not fail cleanly the way the pool does — it stretches each call's latency, and
+calls that cross ``RESEARCH_CLAUDE_FALLBACK_TIMEOUT_SECONDS`` are abandoned and
+retried, so past some point more threads produce less finished work. Raise it in
+steps and watch the ``thinking_timeout`` rate rather than guessing. If a
+particular pool is too many for the subscription, scope it with ``--agent
+research --agent insights --agent personalization`` and run a larger one for the
+rest.
 """
 
 from __future__ import annotations
@@ -69,7 +84,10 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from app.db.session import session_scope  # noqa: E402 - must follow the path anchor above
+from app.db.session import (  # noqa: E402 - must follow the path anchor above
+    configured_pool_capacity,
+    session_scope,
+)
 from app.models.enums import AgentIdentifier, AgentJobStatus  # noqa: E402
 from app.models.verification_job import AgentJob  # noqa: E402
 from app.services.agents import jobs, locking  # noqa: E402
@@ -202,6 +220,36 @@ _BACKFILL_REQUIRED = ("considered", "promoted", "provider_calls", "failed")
 #: Counters added later. Absent means "this build does not report it", which is a
 #: different statement from "it reported zero" and is written differently.
 _BACKFILL_OPTIONAL = ("model_calls",)
+
+
+def _pool_refusal(*, workers: int, resolve_captures: bool) -> str | None:
+    """Why this thread count cannot be served by this pool, or ``None``.
+
+    The failure being prevented is silent. A thread that cannot check out a
+    connection blocks for the pool timeout and then fails to claim, so an
+    over-provisioned pool of threads does not error — it just quietly stops
+    converting into throughput, and the symptom an operator sees is "the queue is
+    slow". Refusing at startup, naming both numbers and the two settings that
+    move them, is the difference between a five-minute fix and an afternoon.
+
+    The main thread runs the capture backfill on its own session, so the pool has
+    to serve one holder more than there are worker threads whenever that pass is
+    enabled.
+    """
+
+    capacity = configured_pool_capacity()
+    required = workers + (1 if resolve_captures else 0)
+    if required <= capacity:
+        return None
+    backfill = " plus one for the main thread's capture backfill" if resolve_captures else ""
+    return (
+        f"--workers {workers}{backfill} needs {required} database connections, but this "
+        f"process's pool tops out at {capacity} (DATABASE_POOL_SIZE + DATABASE_MAX_OVERFLOW). "
+        "A worker thread holds one connection for the whole of a job's execution, so the "
+        "surplus threads would block for the pool timeout and then fail to claim — the queue "
+        "would look slow rather than misconfigured. Raise DATABASE_POOL_SIZE for this process, "
+        "or lower --workers."
+    )
 
 
 _MISSING = object()
@@ -491,6 +539,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     agent_ids = tuple(AgentIdentifier(value) for value in args.agents) if args.agents else None
     resolve_captures = not args.skip_capture_resolution and agent_ids is None
+
+    refusal = _pool_refusal(workers=args.workers, resolve_captures=resolve_captures)
+    if refusal is not None:
+        raise SystemExit(refusal)
+
     # Narrowing to specific Agents is a request to do one thing only, the same
     # convention capture resolution follows.
     include_intelligence = not args.skip_company_intelligence and agent_ids is None
