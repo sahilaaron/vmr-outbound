@@ -501,9 +501,13 @@ def test_the_prompt_asks_for_every_field_the_policy_grades() -> None:
 def test_an_unevidenced_rescue_leaves_the_capture_unresolved(db_session: Session) -> None:
     """No fake domain is written, and the honest unresolved outcome survives.
 
-    The capture is not promoted and no Company is created — the state the product
-    already knows how to show an operator, rather than a plausible domain that
-    would have sent research after the wrong company.
+    The answer here is the one the old contract asked for — a domain and a source
+    URL, nothing else — which is exactly what a model that ignores the new fields
+    returns. It is parsed into a claim that rates itself ``unknown`` and cites
+    nothing, so it is refused on confidence before the evidence rules are even
+    reached. The capture is not promoted and no Company is created: the state the
+    product already knows how to show an operator, rather than a plausible domain
+    that would have sent research after the wrong company.
     """
 
     snapshot = capture_factory.salesnav_capture(db_session, company_name="QuantHealth")
@@ -517,14 +521,58 @@ def test_an_unevidenced_rescue_leaves_the_capture_unresolved(db_session: Session
     assert outcome.state is DomainResolutionState.UNRESOLVED
     assert outcome.selected_domain is None
     assert not outcome.auto_promoted
-    assert policy.REASON_MODEL_CLAIM_MISSING in [str(r) for r in outcome.decision.reasons]
+    assert policy.REASON_MODEL_CONFIDENCE_TOO_LOW in [str(r) for r in outcome.decision.reasons]
 
-    # What the model said is still recorded. A refusal is not an erasure.
+    # What the model said is still recorded, refusal and all. A rejection is not
+    # an erasure, and the claim shows precisely what was missing.
     record = db_session.scalars(
         select(SalesNavCompanyEnrichment).where(SalesNavCompanyEnrichment.capture_id == snapshot.id)
     ).one()
     assert record.model_domain == DOMAIN
-    assert record.model_claim is None
+    assert record.model_claim is not None
+    assert record.model_claim["confidence"] == model_domain.ModelConfidence.UNKNOWN.value
+    assert record.model_claim["evidence"] == []
+    assert record.model_claim["ambiguity"] == model_domain.AMBIGUITY_NOT_STATED
+
+
+def test_a_row_answered_before_the_claim_contract_is_refused_not_trusted(
+    db_session: Session,
+) -> None:
+    """The migration's behaviour change, asserted where it actually lands.
+
+    ``model_claim`` is NULL on every row answered before this contract existed.
+    Those rows keep the domain they asserted — nothing is rewritten — but the
+    policy grades them as unevidenced rather than trusting them, because nothing
+    was recorded that could be checked. Re-deciding costs no second model call:
+    the record's own lookup status still says it was asked.
+    """
+
+    snapshot = capture_factory.salesnav_capture(db_session, company_name="QuantHealth")
+    thinker = ScriptedThinker(_evidenced(DOMAIN))
+    resolution_service.resolve(
+        db_session, snapshot=snapshot, access=_provider(), model=_model(thinker), actor=ACTOR
+    )
+
+    record = db_session.scalars(
+        select(SalesNavCompanyEnrichment).where(SalesNavCompanyEnrichment.capture_id == snapshot.id)
+    ).one()
+    record.model_claim = None  # what a pre-migration row looks like
+    db_session.flush()
+
+    outcome = resolution_service.resolve(
+        db_session,
+        snapshot=snapshot,
+        access=_provider(),
+        model=_model(thinker),
+        actor=ACTOR,
+        force=True,
+    )
+
+    assert len(thinker.requests) == 1, "no second call is bought to re-judge a stored answer"
+    assert outcome.state is DomainResolutionState.UNRESOLVED
+    assert outcome.selected_domain is None
+    assert policy.REASON_MODEL_CLAIM_MISSING in [str(r) for r in outcome.decision.reasons]
+    assert record.model_domain == DOMAIN, "the asserted domain is kept, not erased"
 
 
 def test_an_ambiguous_company_is_refused_end_to_end(db_session: Session) -> None:
