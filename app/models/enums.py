@@ -1607,3 +1607,55 @@ class GmailDraftStatus(enum.StrEnum):
     CREATED = "created"
     UNCONFIRMED = "unconfirmed"
     FAILED = "failed"
+
+
+class CampaignOfferingSource(enum.StrEnum):
+    """Where one Campaign's *primary* offering pitch comes from.
+
+    A Campaign always has a Library association available — that is the seller's
+    permanent knowledge and it is never rewritten by anything here. This enum
+    records only which of the two the Campaign has *elected* to lead with.
+
+    ``LIBRARY``       the Campaign pitches the approved Library/VMI offering it
+                      names. The behaviour every existing Campaign already has,
+                      and the value every row gets on migration.
+    ``URL_RESEARCH``  the operator asked VMR to read a specific offering page and
+                      lead with what it found. The Library offering does not go
+                      away: it becomes supporting credibility. See
+                      ``app/services/seller/effective.py`` for the precedence.
+    """
+
+    LIBRARY = "library"
+    URL_RESEARCH = "url_research"
+
+
+class CampaignOfferingResearchStatus(enum.StrEnum):
+    """Durable lifecycle of one Campaign offering-research run.
+
+    Its own vocabulary rather than a reuse of either job status already in the
+    schema, for the reason ``IntelligenceJobStatus`` gives: this is
+    Campaign-scoped work that runs outside the Campaign Contact pipeline, and
+    borrowing the pipeline's type would make it look enrollable from the type
+    alone.
+
+    The four non-terminal values are also the customer-facing progress language,
+    which is why they are named for what is happening rather than for what the
+    queue is doing. ``READING`` is the long one — it spans the model's fetch and
+    read of the page, and it is committed before that call starts so a refresh
+    shows it. ``ANALYZING`` and ``CONNECTING`` are the validation of the returned
+    structure and its attachment to the seller's own context; both are short, and
+    both are still written down because a run that dies in one of them should say
+    which.
+
+    ``READY`` is the only status that may be a Campaign's current version, and
+    ``FAILED`` is explicit rather than absent: a Campaign that fell back to its
+    Library offering did so for a recorded reason.
+    """
+
+    QUEUED = "queued"
+    READING = "reading"
+    ANALYZING = "analyzing"
+    CONNECTING = "connecting"
+    READY = "ready"
+    FAILED = "failed"
+    CANCELLED = "cancelled"

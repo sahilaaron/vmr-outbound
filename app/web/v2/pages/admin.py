@@ -26,6 +26,7 @@ from app.services.admin_workbench.reader import AdminWorkbenchReader
 from app.services.agents import rerun as agent_rerun
 from app.services.agents.registry import AGENT_SPECS, PIPELINE_ORDER
 from app.services.campaign_access import actor_from_request
+from app.services.campaign_offering import read as offering_read
 from app.services.imports import display
 from app.services.operations import settings as operational
 from app.web.v2 import shell
@@ -253,6 +254,12 @@ def campaign_diagnostics(
             "rerun_spends": (selected in agent_rerun.SPENDS_PER_CONTACT) if selected else False,
             "rerun_ceiling": agent_rerun.MAX_PER_RERUN,
             "activity": execution.recent_events if execution else (),
+            # Every offering read this Campaign has ever asked for, with the
+            # producer, the attempt count and the exact failure code. This is the
+            # Admin half of the split the customer screen keeps: they see four
+            # progress words and one product sentence, and the diagnostics live
+            # here.
+            "offering_runs": offering_read.admin_history(db, campaign_id=campaign.id),
             "status_labels": customer_status.STATUS_LABELS,
         },
     )

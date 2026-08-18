@@ -88,6 +88,7 @@ from app.db.session import (  # noqa: E402 - must follow the path anchor above
     configured_pool_capacity,
     session_scope,
 )
+from app.models.campaign_offering_research import CampaignOfferingResearch  # noqa: E402
 from app.models.enums import AgentIdentifier, AgentJobStatus  # noqa: E402
 from app.models.verification_job import AgentJob  # noqa: E402
 from app.services.agents import jobs, locking  # noqa: E402
@@ -97,6 +98,8 @@ from app.services.agents.orchestrator import (  # noqa: E402
     execute_started_job,
     prepare_leased_job,
 )
+from app.services.campaign_offering import jobs as offering_jobs  # noqa: E402
+from app.services.campaign_offering import runner as offering_runner  # noqa: E402
 from app.services.company_intelligence import runner as ci_runner  # noqa: E402
 from app.services.operations import settings as operational  # noqa: E402
 from app.services.resolution.pending import resolve_pending  # noqa: E402
@@ -168,6 +171,15 @@ def _parser() -> argparse.ArgumentParser:
             "Do not drain the Company Intelligence queue. By default this worker "
             "processes it whenever the feature switch is on and the Agent queue "
             "is idle — the Research handoff enqueues into it automatically."
+        ),
+    )
+    parser.add_argument(
+        "--skip-campaign-offering-research",
+        action="store_true",
+        help=(
+            "Do not drain the Campaign offering research queue. By default this "
+            "worker processes it whenever the feature switch is on and the Agent "
+            "queue is idle."
         ),
     )
     return parser
@@ -443,6 +455,48 @@ def _run_company_intelligence_once(*, worker_id: str, lease_seconds: float) -> s
     return json.dumps(line, sort_keys=True)
 
 
+def _run_campaign_offering_research_once(*, worker_id: str, lease_seconds: float) -> str | None:
+    """Claim and execute at most one Campaign offering research run.
+
+    Two transactions rather than one, and the split is the point. The claim
+    commits on its own, which is what makes ``Reading page`` a status the customer
+    can actually see: it appears the moment the run is picked up rather than when
+    the model call that follows it has already finished, so a Campaign Setup page
+    refreshed mid-run shows where the work is instead of an unchanged ``Queued``.
+
+    Like the Company Intelligence queue, this runs only when the Agent queue had
+    nothing due, so preparing one Campaign's offering never starves the pipeline.
+    The control is read inside the runner rather than here: a run claimed while
+    the switch is off must record a stated reason on the row, not vanish.
+
+    Returns one JSON line describing the outcome, or None when the queue is idle.
+    """
+
+    with session_scope() as session:
+        run = offering_jobs.claim_next(session, worker_id=worker_id, lease_seconds=lease_seconds)
+        run_id = run.id if run is not None else None
+    if run_id is None:
+        return None
+
+    with session_scope() as session:
+        run = session.get(CampaignOfferingResearch, run_id)
+        if run is None:  # pragma: no cover - the row was just committed
+            return None
+        if run.lease_owner != worker_id:
+            # Another worker recovered the lease between the two transactions.
+            # Theirs to finish; saying so is more useful than silence.
+            return json.dumps(
+                {
+                    "queue": "campaign_offering_research",
+                    "research_id": str(run_id),
+                    "status": "skipped",
+                    "outcome": "lease_changed",
+                }
+            )
+        outcome = offering_runner.execute_run(session, run=run, worker_id=worker_id)
+    return json.dumps(outcome.as_line(), sort_keys=True)
+
+
 class _Tally:
     """Shared job count and stop flag for a pool of worker threads.
 
@@ -477,6 +531,7 @@ def _worker_loop(
     poll_seconds: float,
     tally: _Tally,
     include_intelligence: bool,
+    include_offering_research: bool,
 ) -> None:
     """Claim and execute until asked to stop.
 
@@ -519,6 +574,20 @@ def _worker_loop(
                 tally.record_job()
                 continue
 
+        # Then the Campaign offering research queue, on the same terms.
+        if include_offering_research:
+            try:
+                note = _run_campaign_offering_research_once(
+                    worker_id=worker_id, lease_seconds=lease_seconds
+                )
+            except Exception as exc:  # noqa: BLE001 - a thread must not die quietly
+                tally.emit(json.dumps({"worker": worker_id, "error": str(exc)}))
+                note = None
+            if note is not None:
+                tally.emit(note)
+                tally.record_job()
+                continue
+
         # Nothing was due. Waiting on the stop event rather than sleeping means
         # Ctrl+C is answered immediately instead of after the poll interval.
         if poll_seconds and tally.stop.wait(poll_seconds):
@@ -547,6 +616,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Narrowing to specific Agents is a request to do one thing only, the same
     # convention capture resolution follows.
     include_intelligence = not args.skip_company_intelligence and agent_ids is None
+    include_offering_research = not args.skip_campaign_offering_research and agent_ids is None
 
     def _backfill() -> None:
         """Resolve captures that are not yet Contacts, so they have jobs to claim.
@@ -589,6 +659,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     print(note, flush=True)
                     claimed = True
 
+            if not claimed and include_offering_research:
+                note = _run_campaign_offering_research_once(
+                    worker_id=args.worker_id, lease_seconds=args.lease_seconds
+                )
+                if note is not None:
+                    print(note, flush=True)
+                    claimed = True
+
             if claimed:
                 processed += 1
                 if args.max_jobs is not None and processed >= args.max_jobs:
@@ -611,6 +689,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "poll_seconds": args.poll_seconds,
                 "tally": tally,
                 "include_intelligence": include_intelligence,
+                "include_offering_research": include_offering_research,
             },
             name=f"agent-worker-{index}",
             daemon=True,

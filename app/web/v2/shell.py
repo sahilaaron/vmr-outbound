@@ -318,6 +318,17 @@ def kb_on(db: Session, settings: Settings) -> bool:
     return operational.enabled(db, "seller_knowledge_base", settings)
 
 
+def offering_research_on(db: Session, settings: Settings) -> bool:
+    """Whether Campaign Setup may offer the "research a URL" mode.
+
+    It also requires the Library, because the researched offering never replaces
+    the Library one — it leads, and the Library offering supports it. With the
+    Library off there is nothing for it to support and no offering card to sit in.
+    """
+
+    return kb_on(db, settings) and operational.enabled(db, "campaign_offering_research", settings)
+
+
 def sequences_on(db: Session, settings: Settings) -> bool:
     return operational.enabled(db, "email_sequences", settings)
 

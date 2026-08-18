@@ -504,6 +504,33 @@ class Settings(BaseSettings):
         description="Claude CLI tools the Research source may use. Web read-only.",
     )
 
+    # --- Campaign offering research (one page, one Campaign) -----------------
+    #
+    # Narrower than Research on purpose. Research is asked to *find* pages about
+    # a company, so it needs search. This is asked to read one page an operator
+    # already chose, so search would only give it a way to answer about a
+    # different page than the one that was pointed at — the exact failure the
+    # prompt spends a rule forbidding. Fetch only, therefore, and no shell, file
+    # or edit access in either case.
+    campaign_offering_allowed_tools: tuple[str, ...] = Field(
+        default=("WebFetch",),
+        description="Claude CLI tools the Campaign offering read may use. Fetch only.",
+    )
+    # Generous relative to a drafting call and well inside the CLI ceiling: this
+    # call fetches and reads a real page, and a marketing page behind a slow CDN
+    # is common enough that a tight budget would fail honest work.
+    campaign_offering_timeout_seconds: float = Field(
+        default=240.0,
+        gt=0,
+        description="Maximum wall-clock seconds for one Campaign offering research call.",
+    )
+    # Recorded verbatim on every version this produces, so a stored offering can
+    # always answer which producer wrote it, under which contract.
+    campaign_offering_producer_version: str = Field(
+        default="campaign-offering-research/1",
+        description="Producer version recorded on every Campaign offering research version.",
+    )
+
     features: FeatureFlags = Field(default_factory=FeatureFlags)
 
     # Hosted-operator authentication (env prefix ``AUTH__``). Defaults to off so

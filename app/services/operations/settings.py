@@ -363,6 +363,19 @@ PRODUCT_CONTROLS: tuple[ControlSpec, ...] = (
         gates_agents=(AgentIdentifier.RESEARCH,),
     ),
     ControlSpec(
+        key="campaign_offering_research",
+        label="Campaign offering research",
+        summary=(
+            "Lets one Campaign lead with an offering read from a web address the operator "
+            "gives it, instead of the Library item it names. The Library is never written "
+            "to and no other Campaign is affected; the named Library offering stays "
+            "available as supporting credibility. While a Campaign is waiting for its "
+            "offering, its emails wait too, so everyone in it is pitched the same thing."
+        ),
+        group="Campaigns",
+        capability=_needs_claude_cli,
+    ),
+    ControlSpec(
         key="company_intelligence",
         label="Company intelligence",
         summary=(

@@ -4,6 +4,104 @@
 {% include "_campaign_header.html" %}
 
 <div class="v2-page narrow">
+
+  {% if offering_research_on %}
+  {#
+    The Campaign's offering, and where it comes from. Two modes, and the page
+    says which one is in force rather than leaving it to be inferred from which
+    field happens to be filled in. Everything here is read from the durable row
+    on each request, so a refresh, a second tab and a restart all agree.
+
+    It sits outside the Setup form on purpose: analysing a page is its own act
+    with its own outcome, not a field that is saved with the rest.
+  #}
+  <div class="v2-card v2-offer">
+    <div class="v2-card-head tight"><h2>Offering</h2></div>
+    <div class="v2-card-body roomy">
+
+      <div class="v2-offer-modes">
+        <div class="v2-offer-mode {{ 'on' if not offering.is_url_mode }}">
+          <b>Use an offering from Library</b>
+          <div class="v2-hint">
+            {% if linked_offering %}This Campaign uses <b>{{ linked_offering.name }}</b>.
+            {% else %}No Library offering is attached yet.{% endif %}
+          </div>
+        </div>
+        <div class="v2-offer-mode {{ 'on' if offering.is_url_mode }}">
+          <b>Research an offering from a URL</b>
+          <div class="v2-hint">VMR reads the page and leads with what it finds. Your Library offering stays as supporting context.</div>
+        </div>
+      </div>
+
+      {% if offering.is_url_mode and offering.steps %}
+      <div class="v2-offer-steps" role="status" aria-label="Offering preparation progress">
+        {% for step in offering.steps %}
+        <div class="v2-offer-step {{ step.state }}">
+          <span class="v2-offer-step-mark" aria-hidden="true"></span>
+          <span class="v2-offer-step-label">{{ step.label }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      {% if offering.message %}
+      <p class="v2-note {{ 'warn' if offering.failed }}">{{ offering.message }}</p>
+      {% endif %}
+
+      {% if offering.has_offering %}
+      <div class="v2-offer-summary">
+        <div class="v2-offer-line">
+          <div class="v2-label">Primary offering</div>
+          <b>{{ offering.offering.offering_name | neutralize }}</b>
+          <div class="v2-hint">{{ offering.offering.summary | neutralize }}</div>
+          {% if offering.offering.target_audience %}
+          <div class="v2-hint m">For: {{ offering.offering.target_audience | join('; ') | neutralize }}</div>
+          {% endif %}
+          <div class="v2-hint m">Read from <span class="v2-nowrap">{{ offering.source_url | neutralize }}</span></div>
+        </div>
+        <div class="v2-offer-line">
+          <div class="v2-label">Supporting offering</div>
+          {% if linked_offering %}
+          <b>{{ linked_offering.name }}</b>
+          <div class="v2-hint">Your Library offering and its approved proof points support the primary one. It is unchanged.</div>
+          {% else %}
+          <div class="v2-hint">None attached. <a href="/app/library/offerings">Add one in the Library</a> to give the emails approved proof points.</div>
+          {% endif %}
+        </div>
+      </div>
+      {% endif %}
+
+      {% if not header.is_archived %}
+      <div class="v2-offer-actions">
+        <form method="post" action="{{ base_href }}/setup/offering/analyze" class="v2-inline-form v2-offer-form">
+          <label class="v2-sr" for="offering-url">Offering page address</label>
+          <input class="v2-input" id="offering-url" name="offering_url" type="url" maxlength="2048"
+                 placeholder="https://example.com/your-product"
+                 value="{{ offering.source_url or '' }}"
+                 {{ 'disabled' if offering.in_flight }}>
+          <button class="v2-btn primary" type="submit" {{ 'disabled' if offering.in_flight }}>
+            {{ 'Change URL' if offering.has_history else 'Analyze offering' }}
+          </button>
+        </form>
+        {% if offering.has_history and offering.source_url %}
+        <form method="post" action="{{ base_href }}/setup/offering/analyze">
+          <input type="hidden" name="offering_url" value="{{ offering.source_url }}">
+          <button class="v2-btn small" type="submit" {{ 'disabled' if offering.in_flight }}>Re-analyze</button>
+        </form>
+        {% endif %}
+        {% if offering.is_url_mode %}
+        <form method="post" action="{{ base_href }}/setup/offering/library">
+          <button class="v2-btn small" type="submit">Use Library offering</button>
+        </form>
+        {% endif %}
+      </div>
+      <div class="v2-hint">The address of a public page. This never changes your Library.</div>
+      {% endif %}
+
+    </div>
+  </div>
+  {% endif %}
+
   <div class="v2-setup-grid">
     <form class="v2-stack" method="post" action="{{ base_href }}/setup" id="setup-form">
 
@@ -26,7 +124,10 @@
         <div class="v2-card-body roomy v2-form-stack">
           <div class="v2-field">
             <label for="setup-offering">Offering</label>
-            <div class="v2-hint">The emails may only offer something in your Library.</div>
+            <div class="v2-hint">
+              {% if offering_research_on and offering.is_url_mode %}This Campaign leads with the offering read from a URL, above. What you pick here supports it.
+              {% else %}The emails may only offer something in your Library.{% endif %}
+            </div>
             {% if kb_on and offerings %}
             <select class="v2-select" id="setup-offering" name="offering_id">
               <option value="">None</option>

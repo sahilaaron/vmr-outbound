@@ -24,6 +24,10 @@ from app.services import drafts as draft_service
 from app.services.agents import controls as agent_controls
 from app.services.agents import readiness as agent_readiness
 from app.services.campaign_access import actor_from_request
+from app.services.campaign_offering import consistency as offering_consistency
+from app.services.campaign_offering import jobs as offering_jobs
+from app.services.campaign_offering import read as offering_read
+from app.services.campaign_offering.urls import OfferingUrlError
 from app.services.campaigns import CampaignError
 from app.services.personalization.cadence import (
     DEFAULT_ELAPSED_DAYS,
@@ -129,6 +133,16 @@ def _setup_answer(
             "text": "Paused. Resume the Campaign to carry on preparing people.",
             "action": "resume",
         }
+    # A Campaign waiting for its own offering read is told so before anything
+    # else about readiness. Placed here for the same reason ``is_paused`` is: it
+    # is the consequence of the customer's own act on their own Campaign, it is
+    # temporary, and it resolves without anybody doing anything. Saying
+    # "held by an administrator setting" — or worse, "Ready to prepare people" —
+    # while nothing is being prepared would be false in the one window where the
+    # customer is most likely to be watching.
+    hold = offering_consistency.offering_context_hold(db, campaign)
+    if hold:
+        return {"ready": False, "text": hold}
     if campaign_opted_in(campaign):
         readiness = agent_readiness.execution_readiness(db, campaign=campaign)
         if not readiness.runnable:
@@ -432,6 +446,8 @@ def campaign_setup(
             "sequences_on": shell.sequences_on(db, settings),
             "sequence_on": campaign_opted_in(campaign),
             "cadence_text": CADENCE_TEXT,
+            "offering_research_on": shell.offering_research_on(db, settings),
+            "offering": offering_read.campaign_offering_view(db, campaign),
             "research_allowed": _research_allowed(db, campaign),
             "access_owner": campaign_access.campaign_owner(db, campaign),
             "access_people": campaign_access.campaign_people(db, campaign),
@@ -542,6 +558,81 @@ def campaign_setup_research(
             else "Website research is off for this Campaign."
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Offering: Library or researched from a URL
+# ---------------------------------------------------------------------------
+#
+# Three POSTs, one per thing a customer can decide: read this address, read it
+# again, go back to the Library. Every one of them redirects to Setup, which
+# re-reads the durable row — so the page survives a refresh, a restart and a
+# second tab without any of them holding progress in a session.
+#
+# Authorization is not repeated here. The ``/app`` router carries
+# ``require_campaign_path_access`` as a dependency, so a customer who cannot see
+# this Campaign never reaches the body of these functions. Adding a second check
+# would be a second rule to keep in step with the first.
+
+
+@router.post("/campaigns/{campaign_id}/setup/offering/analyze")
+def campaign_offering_analyze(
+    campaign_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    offering_url: str = Form(""),
+) -> RedirectResponse:
+    """Elect URL mode and queue a read of this address."""
+
+    campaign = _campaign(db, campaign_id)
+    if campaign is None:
+        return shell.redirect("/app/campaigns", err="That Campaign does not exist.")
+    back = f"/app/campaigns/{campaign.id}/setup"
+    if not shell.offering_research_on(db, get_settings()):
+        return shell.redirect(back, err="Researching an offering from a URL is not switched on.")
+    try:
+        offering_jobs.request_research(
+            db,
+            campaign=campaign,
+            raw_url=offering_url,
+            requested_by=draft_service.OPERATOR_ACTOR,
+        )
+    except (OfferingUrlError, offering_jobs.OfferingResearchError) as exc:
+        db.rollback()
+        return shell.redirect(back, err=exc.message)
+    # Project the hold onto work already standing at an offering-dependent stage.
+    # Without this a Campaign that is already running would keep preparing emails
+    # from the Library offering while the researched one was being read, which is
+    # the exact split the hold exists to prevent.
+    offering_consistency.reconcile_offering_hold(
+        db, campaign=campaign, actor=draft_service.OPERATOR_ACTOR
+    )
+    db.commit()
+    return shell.redirect(back, ok="Reading that page now. Emails wait until it is ready.")
+
+
+@router.post("/campaigns/{campaign_id}/setup/offering/library")
+def campaign_offering_library(
+    campaign_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    """Go back to leading with the Library offering.
+
+    Nothing is deleted. Every version stays, and electing URL research again
+    leads with the last good one without spending another read.
+    """
+
+    campaign = _campaign(db, campaign_id)
+    if campaign is None:
+        return shell.redirect("/app/campaigns", err="That Campaign does not exist.")
+    back = f"/app/campaigns/{campaign.id}/setup"
+    offering_jobs.use_library_offering(db, campaign=campaign, actor=draft_service.OPERATOR_ACTOR)
+    offering_consistency.reconcile_offering_hold(
+        db, campaign=campaign, actor=draft_service.OPERATOR_ACTOR
+    )
+    db.commit()
+    return shell.redirect(back, ok="This Campaign leads with your Library offering.")
 
 
 LIFECYCLE_ACTIONS = ("start", "resume", "pause", "archive")

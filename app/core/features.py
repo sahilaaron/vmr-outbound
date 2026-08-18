@@ -226,6 +226,18 @@ class FeatureFlags(BaseModel):
     # usable verified address *and* a validated seven-message sequence, and
     # without that flag no sequence is ever produced.
     google_sheets_integration: bool = False
+    # Campaign-scoped offering research from a URL.
+    #
+    # Off by default, and off means Campaign Setup offers only the Library
+    # choice: no mode switch is rendered, the routes refuse, and the queue is
+    # never drained. Every existing Campaign is in Library mode and stays there.
+    #
+    # Turning it on lets one Campaign lead with an offering read from one page
+    # the operator points at. It publishes nothing to the Library, overrides
+    # nothing globally, and adds no provider: the page is read by the same local
+    # Claude CLI company research already uses, so this control also requires
+    # that CLI to be available.
+    campaign_offering_research: bool = False
     # Phase 7 — Saleshandy
     saleshandy: bool = False
 

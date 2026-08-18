@@ -45,9 +45,10 @@ from app.core.config import get_settings
 from app.db.session import SessionLocal
 from app.main import create_app
 from app.models.campaign import Campaign, CampaignContact, CampaignUserAssignment
+from app.models.campaign_offering_research import CampaignOfferingResearch
 from app.models.contact import Contact
 from app.models.email_sequence import EmailSequenceMessageReview
-from app.models.enums import UserRole, UserState
+from app.models.enums import CampaignOfferingSource, UserRole, UserState
 from app.models.user import User
 from app.services import campaign_access
 from app.services import campaigns as campaign_service
@@ -100,6 +101,12 @@ def _env(**overrides: str) -> dict[str, str]:
         "FEATURES__WORKBENCH": "true",
         "FEATURES__AGENT_WORKBENCH": "true",
         "FEATURES__EMAIL_SEQUENCES": "true",
+        # Same anti-vacuity reason as the line above, for the offering-research
+        # mutation in section C: with either switch off the route answers with a
+        # flash redirect of its own, which would give the owner's half of that
+        # test a second possible cause.
+        "FEATURES__SELLER_KNOWLEDGE_BASE": "true",
+        "FEATURES__CAMPAIGN_OFFERING_RESEARCH": "true",
         "AUTH__ENABLED": "true",
         "AUTH__SESSION_SECRET": SESSION_SECRET,
         "AUTH__ALLOWED_OPERATOR_EMAILS": "[]",
@@ -604,6 +611,66 @@ def test_a_user_is_refused_when_they_post_to_a_campaign_they_were_never_assigned
     _resume(client, creator)
     allowed = _post(client, f"/app/campaigns/{campaign_id}/lifecycle", creator, action="start")
     assert allowed.status_code == 303, allowed.text[:200]
+
+
+def test_a_user_cannot_research_an_offering_for_a_campaign_they_were_never_assigned(
+    client: TestClient,
+) -> None:
+    """The offering routes are mutations that spend a model call and change a pitch.
+
+    Both of them are reached by campaign id alone, so neither is protected by the
+    Setup page having been rendered first. The refusal is asserted by body as
+    well as status for the reason the test above records, and the owner performs
+    the identical mutation afterwards so that "refuse everybody" would not pass.
+    """
+
+    creator = _user_session(client, email="creator@vmr.example")
+    campaign_id = _seed_campaign("Nordic pharma outreach", owner=creator)
+    stranger = _user_session(client, email="stranger@vmr.example")
+
+    _assert_campaign_refused(
+        _post(
+            client,
+            f"/app/campaigns/{campaign_id}/setup/offering/analyze",
+            stranger,
+            offering_url="https://example.com/their-product",
+        ),
+        "POST offering analyze",
+    )
+    _assert_campaign_refused(
+        _post(client, f"/app/campaigns/{campaign_id}/setup/offering/library", stranger),
+        "POST offering library",
+    )
+
+    with SessionLocal() as session:
+        campaign = session.get(Campaign, campaign_id)
+        assert campaign is not None
+        assert campaign.offering_source is CampaignOfferingSource.LIBRARY
+        assert (
+            session.scalars(
+                select(CampaignOfferingResearch).where(
+                    CampaignOfferingResearch.campaign_id == campaign_id
+                )
+            ).all()
+            == []
+        )
+
+    _resume(client, creator)
+    allowed = _post(
+        client,
+        f"/app/campaigns/{campaign_id}/setup/offering/analyze",
+        creator,
+        offering_url="https://example.com/our-product",
+    )
+    assert allowed.status_code == 303, allowed.text[:200]
+    with SessionLocal() as session:
+        owned = session.scalars(
+            select(CampaignOfferingResearch).where(
+                CampaignOfferingResearch.campaign_id == campaign_id
+            )
+        ).all()
+        assert len(owned) == 1
+        assert owned[0].source_url == "https://example.com/our-product"
 
 
 # ---------------------------------------------------------------------------

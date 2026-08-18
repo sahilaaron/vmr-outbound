@@ -159,6 +159,46 @@ asserts the campaign's own fields are byte-identical after an association.
 
 Zero offerings is a valid, permanent state for a campaign.
 
+## The campaign offering override (URL research)
+
+A campaign may lead with an offering VMR read from **one page an operator pointed
+at**, instead of with the Library item it names. It is an override for one
+campaign and nothing else.
+
+**It never touches the Library.** No row in `campaign_offering_research` writes,
+updates or archives a `seller_offerings` row, nothing is published back, and no
+other campaign notices. `supporting_offering_id` is a *reference* to the Library
+offering that was supporting the pitch, recorded so an audit can reconstruct it.
+
+Precedence, decided in exactly one place —
+`app/services/seller/effective.py`:
+
+1. the campaign's current **READY** URL research — the primary pitch;
+2. the campaign's selected Library/VMI offering — supporting credibility, and the
+   primary itself when there is no research leading;
+3. the seller profile — who we are, and why we can credibly offer either.
+
+The per-contact Agents ask that resolver what the offering *is*; none of them
+knows how it was chosen. A precedence rule copied to each of the four call sites
+would be four rules within a release, and the symptom would be a campaign whose
+first email leads with the researched offering and whose fourth does not.
+
+**Versioned, and only success promotes.** Re-analyze and Change URL both insert
+the next version; the previous one keeps its answer, its URL and its timestamps.
+Two check constraints make "a failed re-analysis keeps the last good answer" a
+schema fact rather than a service convention: only a `READY` row may be current,
+and at most one row per campaign may be.
+
+**One campaign, one pitch.** While a campaign has elected URL mode and has no
+current version, Insights and Personalization are held — a reversible pause,
+released by the ordinary control reconciliation the moment a version becomes
+current. Nothing about the recipient is held, and a campaign whose research
+failed does not wait: it falls back to its Library offering for everyone equally
+and says so on the Setup screen.
+
+Off by default: the `campaign_offering_research` administrator control, which
+also requires the Claude CLI and the Library itself.
+
 ## Context readiness
 
 Deterministic Python over stored columns. **No model is involved at any point.**
