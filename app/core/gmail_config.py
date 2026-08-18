@@ -27,6 +27,8 @@ provider keys already get.
 
 from __future__ import annotations
 
+from urllib.parse import urlsplit
+
 from pydantic import BaseModel, Field, field_validator
 
 #: The one Gmail scope this feature requests, plus the two identity scopes it
@@ -144,6 +146,28 @@ class GmailSettings(BaseModel):
         if any(character in candidate for character in ("@", "<", ">", "/", " ", "\t")):
             raise ValueError("GMAIL__MESSAGE_ID_DOMAIN must be a bare domain name")
         return candidate
+
+    def authorization_origin(self) -> str | None:
+        """The origin a Connect Gmail submission is navigated to, or ``None``.
+
+        Exists for the application's Content-Security-Policy rather than for the
+        OAuth request itself. ``form-action`` governs a form submission *and
+        every redirect that submission follows*, judged against the policy of
+        the page holding the form, so the Connections page has to name this
+        origin or the browser silently refuses to follow the ``303`` that
+        ``POST /gmail/connect`` answers with. See ``app/core/http.py``.
+
+        Derived from ``authorization_endpoint`` rather than written out a second
+        time: the policy and the ``Location`` header then cannot disagree, which
+        is the failure this whole mechanism exists to prevent. Anything that is
+        not an ``https`` URL with a host is ``None``, and a ``None`` widens
+        nothing.
+        """
+
+        parts = urlsplit(self.authorization_endpoint)
+        if parts.scheme != "https" or not parts.netloc:
+            return None
+        return f"{parts.scheme}://{parts.netloc}"
 
     def has_client(self) -> bool:
         """True when both halves of the Gmail OAuth client are configured."""

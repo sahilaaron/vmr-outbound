@@ -8,6 +8,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 
 from app.core.config import Settings
+from app.core.http import csp_form_action_source_permitted
 
 _ENVIRONMENTS = frozenset({"local", "development", "test", "ci", "staging", "production"})
 _PRODUCTION_LIKE = frozenset({"staging", "production"})
@@ -195,6 +196,35 @@ def _hosted_promotion_issues(settings: Settings, *, environment: str) -> list[st
     return issues
 
 
+def _gmail_consent_origin_issues(settings: Settings) -> list[str]:
+    """Refuse a Gmail feature whose Connect button the browser could not follow.
+
+    ``POST /gmail/connect`` answers ``303`` to ``GMAIL__AUTHORIZATION_ENDPOINT``,
+    and the application's ``form-action 'self'`` policy blocks that navigation
+    unless the Connections page names that origin -- which it may only do for an
+    origin ``app/core/http.py`` re-validates. An endpoint outside that set
+    therefore produces a Connect Gmail button that submits, answers ``303`` in
+    the access log, and does visibly nothing, which is precisely the staging
+    defect this check exists to make impossible to ship a second time.
+
+    Hosted environments only. Local development enforces no CSP worth the name
+    and is where a stub endpoint is legitimately pointed somewhere else.
+    """
+
+    if not settings.features.gmail_drafts:
+        return []
+    origin = settings.gmail.authorization_origin()
+    if csp_form_action_source_permitted(origin):
+        return []
+    return [
+        "GMAIL__AUTHORIZATION_ENDPOINT must be an https URL on Google's consent "
+        "origin when FEATURES__GMAIL_DRAFTS is enabled outside local development: "
+        "the application's Content-Security-Policy can only permit the Connect "
+        "Gmail form to redirect to an origin it recognises, so any other value "
+        "renders a button the browser silently refuses to follow"
+    ]
+
+
 def validate_runtime_settings(settings: Settings) -> None:
     """Refuse known-dangerous combinations without echoing secret values."""
 
@@ -258,6 +288,8 @@ def validate_runtime_settings(settings: Settings) -> None:
                 )
 
         issues.extend(_hosted_promotion_issues(settings, environment=environment))
+
+        issues.extend(_gmail_consent_origin_issues(settings))
 
         try:
             database_url = make_url(settings.database_url)
