@@ -290,6 +290,58 @@ def test_a_free_mailbox_provider_is_never_a_company_domain(domain: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# When the fallback becomes eligible at all
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "lookup_status",
+    [
+        EnrichmentLookupStatus.API_UNAVAILABLE,
+        EnrichmentLookupStatus.RATE_LIMITED,
+        EnrichmentLookupStatus.ERROR,
+        EnrichmentLookupStatus.MALFORMED,
+        EnrichmentLookupStatus.NOT_STARTED,
+    ],
+)
+def test_a_provider_that_is_still_owed_a_retry_does_not_spend_the_model(
+    lookup_status: EnrichmentLookupStatus,
+) -> None:
+    """The fallback is admitted after a genuine "nothing", not after a bad day.
+
+    A provider that timed out has not said anything about this company yet, and
+    answering with a model instead would both spend a call the retry would have
+    made unnecessary and record a searched answer where a deterministic one was
+    still coming.
+    """
+
+    decision = policy.evaluate(
+        policy.ResolutionEvidence(
+            company_name="QuantHealth",
+            normalized_company_name="quanthealth",
+            lookup_status=lookup_status,
+            # Fully evidenced and irrelevant: it must not be consulted at all.
+            model_lookup_status=EnrichmentLookupStatus.OK,
+            model_domain=DOMAIN,
+            model_claim=_claim(),
+        )
+    )
+
+    assert decision.state is DomainResolutionState.UNRESOLVED
+    assert decision.selected_domain is None
+    assert policy.REASON_MODEL_EVIDENCE_ACCEPTED not in decision.reasons
+
+
+def test_the_fallback_is_eligible_once_the_provider_has_genuinely_finished() -> None:
+    """The other side of the same boundary: NO_MATCH is an answer about this company."""
+
+    decision = _decide(_claim())
+
+    assert decision.state is DomainResolutionState.PROVISIONAL
+    assert policy.REASON_PROVIDER_NO_CANDIDATES in decision.reasons
+
+
+# ---------------------------------------------------------------------------
 # What a refusal and an acceptance leave behind
 # ---------------------------------------------------------------------------
 
