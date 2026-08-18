@@ -864,6 +864,20 @@ body.v2 .v2-lede {
   color: var(--n-400);
 }
 
+/* The strip's last column is the outcome, not a step VMR runs. Same tone as the
+   Ready for Sending count in the header, so the eye reads them as one number. */
+.v2-pipe-stage.is-terminal {
+  background: var(--ok-50);
+}
+.v2-pipe-stage.is-terminal .v2-pipe-idx {
+  background: var(--ok-500);
+  color: #fff;
+}
+.v2-pipe-stage.is-terminal .v2-pipe-count,
+.v2-pipe-stage.is-terminal .v2-pipe-name {
+  color: var(--ok-700);
+}
+
 /* Phase grouping: Find / Learn / Write. */
 .phase-find .v2-pipe-idx {
   background: var(--find-bg);
