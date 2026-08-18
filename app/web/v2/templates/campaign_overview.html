@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_ui.html" import outcome_bar, empty, tag %}
+{% from "_ui.html" import outcome_bar, empty, tag, dot %}
 {% block content %}
 {% include "_campaign_header.html" %}
 
@@ -16,6 +16,58 @@
     {% elif answer.admin %}
     <span class="v2-hint">{% if is_admin %}<a href="/app/admin/campaigns/{{ campaign.id }}/diagnostics">Open diagnostics</a>{% else %}An administrator is handling this.{% endif %}</span>
     {% endif %}
+  </div>
+  {% endif %}
+
+  {#
+    The live strip. Restored on 18 Aug 2026 at Sahil's request: the three
+    outcome counts are the contract, but on their own they hide the work, and a
+    Campaign with 500 people in Research reads as "nothing happened". This shows
+    the funnel — how many got past each step — with what is moving right now
+    underneath it. It is observability only: no step is a control, nothing on
+    it is the customer's to operate, and no Agent, job or queue vocabulary
+    appears. The last column is the same Ready for Sending count as the header.
+  #}
+  {% if header.people %}
+  <div class="v2-card clip v2-mt-sm">
+    <div class="v2-card-head tight">
+      <h2>What VMR is doing right now</h2>
+      <span class="v2-note push">
+        Each number is how many people have got <b>past</b> that step, so the row reads as a funnel.
+        {% if header.progress.processing %}Refreshes on its own while VMR is working.{% endif %}
+      </span>
+    </div>
+    <ol class="v2-pipe">
+      {% for step in pipeline %}
+      <li class="v2-pipe-item">
+        <span class="v2-pipe-stage phase-{{ step.phase }}{{ ' is-terminal' if step.terminal }}" title="{{ step.doing }}">
+          <span class="v2-pipe-top">
+            <span class="v2-pipe-idx">{{ step.index }}</span>
+            <span class="v2-pipe-name">{{ step.label }}</span>
+          </span>
+          <span class="v2-pipe-count">{{ step.through | thousands }}</span>
+          <span class="v2-pipe-notes">
+            {% if step.terminal %}
+              <span class="clear">{% if step.through %}sending is yours{% else %}nobody yet{% endif %}</span>
+            {% else %}
+              {% if step.moving %}<span class="moving">{{ dot('info', true) }}{{ step.moving }} moving now</span>{% endif %}
+              {% if step.waiting %}<span class="clear">{{ step.waiting }} waiting here</span>{% endif %}
+              {% if step.stopped %}<span class="stuck">{{ step.stopped }} stopped here</span>{% endif %}
+              {% if step.paused %}<span class="clear">{{ step.paused }} paused</span>{% endif %}
+              {% if step.skipped %}<span class="clear">{{ step.skipped }} skipped</span>{% endif %}
+              {% if step.quiet %}<span class="clear">all clear</span>{% endif %}
+            {% endif %}
+          </span>
+          {% if step.moving %}<span class="railtrack"><i></i></span>{% endif %}
+        </span>
+      </li>
+      {% endfor %}
+    </ol>
+    <div class="v2-card-foot plain">
+      Captured completes the moment somebody is added, and Identity and Company usually finish in
+      under a second, so you will rarely catch anybody resting on them. Stopped people are explained
+      on their own row under People; VMR retries what it can on its own.
+    </div>
   </div>
   {% endif %}
 

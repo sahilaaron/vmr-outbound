@@ -423,8 +423,76 @@ def test_the_overview_carries_no_agent_or_queue_vocabulary(
     client: TestClient, scenario: workbench_scenario.Scenario
 ) -> None:
     body = _customer_body(client.get(_campaign_url(scenario)).text)
-    for word in ("Agent", "v2-pipe-stage", "job", "queue", "retry", "lease", "settings version"):
+    for word in ("Agent", "job", "queue", "retry", "lease", "settings version"):
         assert word not in body, word
+
+
+def test_the_overview_shows_the_live_preparation_strip(
+    client: TestClient, db_session: Session, scenario: workbench_scenario.Scenario
+) -> None:
+    """The strip is back (18 Aug 2026), in the customer's words.
+
+    Nine columns: eight preparation steps and the Ready outcome. Each carries how
+    many got past it, and what is moving right now underneath. Observability
+    only: no column is a control, and its last number is the header's Ready for
+    Sending count.
+    """
+
+    from app.models.enums import PipelineStageStatus
+    from app.services import campaign_workspace, customer_status
+
+    # One person genuinely in flight on Identity, as the orchestrator leaves a
+    # membership while its job runs.
+    scenario.membership("leased").pipeline_status = PipelineStageStatus.RUNNING
+    db_session.commit()
+
+    body = _customer_body(client.get(_campaign_url(scenario)).text)
+    assert "What VMR is doing right now" in body
+    assert body.count('class="v2-pipe-item"') == 9
+    for label in (
+        "Captured",
+        "Identity",
+        "Company",
+        "Research",
+        "Email address",
+        "Verification",
+        "Insights",
+        "Emails written",
+        "Ready for Sending",
+    ):
+        assert label in body, label
+    assert "1 moving now" in body
+    assert 'class="railtrack"' in body
+    assert "stopped here" in body  # the suppressed person, said as a fact
+    # No column is a link or a button: nothing here is the customer's to operate.
+    assert re.search(r'<a[^>]+class="v2-pipe-stage', body) is None
+    assert re.search(r'<button[^>]+class="v2-pipe-stage', body) is None
+    # The projection agrees with itself: everyone arrived, and Ready is the
+    # header's number.
+    progress = customer_status.progress(db_session, campaign_id=scenario.campaign.id)
+    steps = campaign_workspace.pipeline_steps(
+        db_session, campaign_id=scenario.campaign.id, progress=progress
+    )
+    assert steps[0].label == "Captured"
+    assert steps[0].through == progress.total
+    assert steps[-1].terminal and steps[-1].through == progress.ready_for_sending
+    identity = next(step for step in steps if step.key == "identity")
+    assert identity.moving == 1 and identity.stopped == 1
+    assert all(step.through >= 0 and step.resting >= 0 for step in steps)
+
+
+def test_the_strip_is_absent_before_anybody_is_added(
+    client: TestClient, db_session: Session
+) -> None:
+    client.post(
+        "/app/campaigns/new",
+        data={"name": "Nobody yet", "description": ""},
+        follow_redirects=False,
+    )
+    campaign = db_session.scalars(select(Campaign).where(Campaign.name == "Nobody yet")).one()
+    body = _customer_body(client.get(f"/app/campaigns/{campaign.id}").text)
+    assert "What VMR is doing right now" not in body
+    assert "Nobody has been added yet" in body
 
 
 def test_a_paused_campaign_offers_resume_on_the_overview(

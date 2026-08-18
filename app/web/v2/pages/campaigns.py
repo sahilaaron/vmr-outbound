@@ -311,12 +311,21 @@ def campaign_overview(
     context.update(
         {
             "ready_rows": shown,
-            "ready_total": len(all_ready),
+            # The header's number, not the length of a capped list: on a Campaign
+            # with more ready people than the table shows, the two must agree.
+            "ready_total": header.progress.ready_for_sending,
             "ready_limit": READY_TABLE_LIMIT,
             "ready_filters": desk.READY_FILTERS,
             "section": chosen,
             "desk": workbook,
             "happening": campaign_workspace.happening_now(header),
+            # The live strip: how far people have got and what VMR is doing to
+            # them right now. Observability, not controls — nothing on it is the
+            # customer's to operate — and it shares the header's projection for
+            # its last column.
+            "pipeline": campaign_workspace.pipeline_steps(
+                db, campaign_id=campaign.id, progress=header.progress
+            ),
             "reasons": campaign_workspace.could_not_prepare_reasons(db, campaign_id=campaign.id),
             "offerings": offerings,
             "research_allowed": _research_allowed(db, campaign),

@@ -33,6 +33,7 @@ from app.models.enums import (
 from app.models.import_batch import ImportBatch
 from app.models.pipeline import CampaignContactAgentState
 from app.services import customer_status
+from app.services.agents.registry import PIPELINE_ORDER
 from app.services.customer_status import CustomerContactStatus
 from app.services.imports.display import safe_text
 
@@ -416,6 +417,181 @@ def could_not_prepare_reasons(
         tally[row.detail] = tally.get(row.detail, 0) + 1
     ranked = sorted(tally.items(), key=lambda item: (-item[1], item[0]))
     return [ReasonCount(reason=reason, count=count) for reason, count in ranked[:limit]]
+
+
+# ---------------------------------------------------------------------------
+# The live preparation strip
+# ---------------------------------------------------------------------------
+
+#: The design's three phases, for colour only. Order and membership come from
+#: ``PIPELINE_ORDER``.
+_PHASES: dict[AgentIdentifier, str] = {
+    AgentIdentifier.CAPTURE: "find",
+    AgentIdentifier.IDENTITY: "find",
+    AgentIdentifier.COMPANY: "find",
+    AgentIdentifier.RESEARCH: "learn",
+    AgentIdentifier.EMAIL: "learn",
+    AgentIdentifier.VERIFICATION: "learn",
+    AgentIdentifier.INSIGHTS: "write",
+    AgentIdentifier.PERSONALIZATION: "write",
+    AgentIdentifier.SENDING: "write",
+}
+
+#: What each step is called on the strip. The customer's word for the step, not
+#: the Agent's name — no "Agent" anywhere on the customer's screen.
+_STEP_LABELS: dict[AgentIdentifier, str] = {
+    AgentIdentifier.CAPTURE: "Captured",
+    AgentIdentifier.IDENTITY: "Identity",
+    AgentIdentifier.COMPANY: "Company",
+    AgentIdentifier.RESEARCH: "Research",
+    AgentIdentifier.EMAIL: "Email address",
+    AgentIdentifier.VERIFICATION: "Verification",
+    AgentIdentifier.INSIGHTS: "Insights",
+    AgentIdentifier.PERSONALIZATION: "Emails written",
+}
+
+STEP_READY_LABEL = "Ready for Sending"
+STEP_READY_DOING = "Seven emails written and a confirmed address. Sending is yours."
+
+
+@dataclass(frozen=True)
+class PipelineStep:
+    """One column of the live strip on the Campaign Overview.
+
+    Two different quantities, kept apart because conflating them made the
+    original strip unreadable:
+
+    * ``through`` — how many people have got *past* this step. The big number;
+      it only ever descends left to right, so the row reads as a funnel and
+      answers "did my 500 arrive, and how far have they got".
+    * ``moving`` / ``waiting`` / ``stopped`` / ``paused`` — where people are
+      resting *right now*. The live detail underneath.
+
+    The final column is not a step VMR runs: it is the outcome, counted by the
+    same projection as everything else on the page (:mod:`customer_status`), so
+    the strip's last number and the header's Ready for Sending can never
+    disagree.
+    """
+
+    key: str
+    index: int
+    label: str
+    phase: str
+    #: What VMR is doing to a person resting here, present tense.
+    doing: str
+    through: int = 0
+    skipped: int = 0
+    moving: int = 0
+    waiting: int = 0
+    stopped: int = 0
+    paused: int = 0
+    terminal: bool = False
+
+    @property
+    def resting(self) -> int:
+        return self.moving + self.waiting + self.stopped + self.paused
+
+    @property
+    def quiet(self) -> bool:
+        """Nothing to say underneath the number."""
+
+        return not (self.moving or self.waiting or self.stopped or self.paused or self.skipped)
+
+
+def pipeline_steps(
+    session: Session, *, campaign_id: uuid.UUID, progress: customer_status.CustomerProgress
+) -> tuple[PipelineStep, ...]:
+    """The live strip: eight preparation steps and the Ready outcome.
+
+    Two grouped queries whatever the Campaign's size. ``through`` is read from
+    the durable per-step ledger, which is the only place that remembers a step
+    somebody has already left; where people rest now is read from the
+    memberships. Nothing here is a task for the customer — a stopped person is
+    reported as a fact and explained on their row, and VMR retries what it can.
+    """
+
+    ledger = session.execute(
+        select(
+            CampaignContactAgentState.agent_id,
+            CampaignContactAgentState.status,
+            func.count(CampaignContactAgentState.id),
+        )
+        .join(
+            CampaignContact,
+            CampaignContact.id == CampaignContactAgentState.campaign_contact_id,
+        )
+        .where(CampaignContact.campaign_id == campaign_id)
+        .group_by(CampaignContactAgentState.agent_id, CampaignContactAgentState.status)
+    ).all()
+    passed: dict[AgentIdentifier, tuple[int, int]] = {}
+    for agent_id, status, count in ledger:
+        completed, skipped = passed.get(agent_id, (0, 0))
+        if status is PipelineStageStatus.COMPLETED:
+            completed += int(count)
+        elif status is PipelineStageStatus.SKIPPED:
+            skipped += int(count)
+        passed[agent_id] = (completed, skipped)
+
+    now = session.execute(
+        select(
+            CampaignContact.current_stage,
+            CampaignContact.pipeline_status,
+            func.count(CampaignContact.id),
+        )
+        .where(CampaignContact.campaign_id == campaign_id)
+        .group_by(CampaignContact.current_stage, CampaignContact.pipeline_status)
+    ).all()
+    resting: dict[AgentIdentifier, dict[str, int]] = {}
+    for stage, status, count in now:
+        if stage is None:
+            continue
+        bucket = resting.setdefault(stage, {"moving": 0, "waiting": 0, "stopped": 0, "paused": 0})
+        if status in (PipelineStageStatus.RUNNING, PipelineStageStatus.RETRYING):
+            bucket["moving"] += int(count)
+        elif status in (PipelineStageStatus.FAILED, PipelineStageStatus.BLOCKED):
+            bucket["stopped"] += int(count)
+        elif status is PipelineStageStatus.PAUSED:
+            bucket["paused"] += int(count)
+        elif status in (PipelineStageStatus.COMPLETED, PipelineStageStatus.SKIPPED):
+            # Finished with this step and about to be handed to the next one;
+            # nothing rests here in any sense the customer would recognise.
+            continue
+        else:
+            bucket["waiting"] += int(count)
+
+    steps: list[PipelineStep] = []
+    for position, agent_id in enumerate(PIPELINE_ORDER, start=1):
+        if agent_id is AgentIdentifier.SENDING:
+            continue
+        completed, skipped = passed.get(agent_id, (0, 0))
+        here = resting.get(agent_id, {})
+        steps.append(
+            PipelineStep(
+                key=agent_id.value,
+                index=position,
+                label=_STEP_LABELS.get(agent_id, agent_id.value.title()),
+                phase=_PHASES.get(agent_id, "write"),
+                doing=_PROCESSING_AT.get(agent_id, DETAIL_WAITING),
+                through=completed + skipped,
+                skipped=skipped,
+                moving=here.get("moving", 0),
+                waiting=here.get("waiting", 0),
+                stopped=here.get("stopped", 0),
+                paused=here.get("paused", 0),
+            )
+        )
+    steps.append(
+        PipelineStep(
+            key="ready",
+            index=len(steps) + 1,
+            label=STEP_READY_LABEL,
+            phase="write",
+            doing=STEP_READY_DOING,
+            through=progress.ready_for_sending,
+            terminal=True,
+        )
+    )
+    return tuple(steps)
 
 
 # ---------------------------------------------------------------------------
