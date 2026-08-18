@@ -38,10 +38,12 @@ from app.models.company_domain_resolution import CompanyDomainResolution
 from app.models.contact import Contact
 from app.models.email_evidence import ExactEmailVerification
 from app.models.enums import (
+    AgentControlStatus,
     AgentIdentifier,
     CampaignStatus,
     ContactWorkflowState,
     EmailVerificationResult,
+    PipelineEventType,
     PipelineStageStatus,
     SuppressionReason,
     SuppressionType,
@@ -57,6 +59,9 @@ from app.models.suppression import Suppression
 from app.models.user import User
 from app.models.verification_job import AgentJob
 from app.services import campaign_contacts
+from app.services import pipeline as pipeline_service
+from app.services.agents import controls, orchestrator
+from app.services.agents import jobs as agent_jobs
 from app.services.enrichment import logodev
 from app.services.integrations.sheets import submit as sheet_submit
 from app.services.integrations.sheets.contract import (
@@ -1667,3 +1672,256 @@ def test_a_malformed_authorization_header_is_refused(header: str | None) -> None
 def test_a_well_formed_header_yields_the_token() -> None:
     assert bearer_token("Bearer abc.def.ghi") == "abc.def.ghi"
     assert bearer_token("bearer abc.def.ghi") == "abc.def.ghi"
+
+
+# ---------------------------------------------------------------------------
+# 21. Re-submitting somebody whose stage has already been queued once
+# ---------------------------------------------------------------------------
+#
+# The staging defect this section exists for. A spreadsheet may name somebody who
+# is already in the Campaign and whose current stage was queued by the worker
+# rather than by an enrolment. That stage's durable job then records the stage
+# that scheduled it as its parent, and a later enrolment — which has no parent
+# job to record — presented the same stage key with a different one. The queue
+# read that as key reuse, the exception left the whole request, and one already
+# known person could refuse a batch of five hundred strangers.
+
+
+def enable_the_first_two_stages(db: Session, campaign: Campaign) -> None:
+    """Switch the pipeline on the way an operator switches it on.
+
+    The default state queues nothing, so without this the Contact holds at its
+    first stage and the state under test cannot exist. Staging runs with Campaign
+    execution on and these Agents enabled, which is why the defect was reachable
+    there and not in a suite that leaves everything off.
+    """
+
+    campaign.execution_enabled = True
+    db.flush()
+    for agent_id in (AgentIdentifier.IDENTITY, AgentIdentifier.COMPANY):
+        controls.set_global_control(
+            db,
+            agent_id=agent_id,
+            status=AgentControlStatus.ENABLED,
+            reason="test setup",
+        )
+
+
+def _stage_job(db: Session, membership: CampaignContact, agent_id: AgentIdentifier) -> AgentJob:
+    return db.scalars(
+        select(AgentJob).where(
+            AgentJob.campaign_contact_id == membership.id,
+            AgentJob.agent_id == agent_id,
+        )
+    ).one()
+
+
+def carry_into_a_failed_second_stage(db: Session, membership: CampaignContact) -> AgentJob:
+    """Advance one membership the way the worker does, and fail where it lands.
+
+    This is the staging shape rather than an invented one: the first stage
+    completes, the *worker* schedules the next stage and is therefore recorded as
+    its parent, and that second job then fails terminally. Every step goes
+    through the service the worker itself calls, so the state under test is the
+    state the product actually produces.
+    """
+
+    first = membership.next_stage
+    assert first is not None
+    first_job = _stage_job(db, membership, first)
+    pipeline_service.transition_stage(
+        db,
+        membership=membership,
+        agent_id=first,
+        target=PipelineStageStatus.COMPLETED,
+        event_type=PipelineEventType.STAGE_COMPLETED,
+        actor="worker-a",
+        job=first_job,
+    )
+    second_job = orchestrator.schedule_next(
+        db, membership=membership, actor="worker-a", parent_job=first_job
+    )
+    assert second_job is not None
+    assert second_job.parent_job_id == first_job.id
+    agent_jobs.mark_failed(
+        db,
+        second_job,
+        error_class="AgentExecutionError",
+        reason="the stage failed on its last attempt",
+    )
+    pipeline_service.transition_stage(
+        db,
+        membership=membership,
+        agent_id=second_job.agent_id,
+        target=PipelineStageStatus.FAILED,
+        event_type=PipelineEventType.FAILED_TERMINAL,
+        actor="worker-a",
+        job=second_job,
+    )
+    assert membership.next_stage is second_job.agent_id
+    return second_job
+
+
+def test_resubmitting_somebody_whose_stage_already_ran_is_not_an_internal_error(
+    db_session: Session, enable_sheets: None
+) -> None:
+    user = make_user(db_session, email="mine@vmr.example")
+    campaign = make_campaign(db_session, name="Mine", owner=user)
+    seed_company(db_session, name="Kiln Systems", domain="kiln.example")
+    enable_the_first_two_stages(db_session, campaign)
+    client = make_client(db_session, {"tok": assertion_for(user)})
+
+    first = client.post(
+        "/integrations/sheets/batches",
+        json=batch_payload(campaign, [row("r1")]),
+        headers={"Authorization": "Bearer tok"},
+    )
+    assert first.status_code == 200
+    membership = db_session.get(
+        CampaignContact, uuid.UUID(first.json()["rows"][0]["submission_id"])
+    )
+    assert membership is not None
+    stalled = carry_into_a_failed_second_stage(db_session, membership)
+
+    # A genuinely new submission of the same person: a different row on the
+    # sheet, so the row-level replay guard cannot short-circuit it.
+    again = client.post(
+        "/integrations/sheets/batches",
+        json=batch_payload(campaign, [row("r2")]),
+        headers={"Authorization": "Bearer tok"},
+    )
+
+    assert again.status_code == 200
+    entry = again.json()["rows"][0]
+    assert entry["status"] == RowStatus.PENDING.value
+    # Converged onto the durable state rather than refused or duplicated.
+    assert entry["submission_id"] == str(membership.id)
+    assert entry["already_submitted"] is True
+    assert db_session.get(AgentJob, stalled.id) is not None
+
+
+def test_the_benign_replay_duplicates_nothing(db_session: Session, enable_sheets: None) -> None:
+    user = make_user(db_session, email="mine@vmr.example")
+    campaign = make_campaign(db_session, name="Mine", owner=user)
+    seed_company(db_session, name="Kiln Systems", domain="kiln.example")
+    enable_the_first_two_stages(db_session, campaign)
+    client = make_client(db_session, {"tok": assertion_for(user)})
+
+    first = client.post(
+        "/integrations/sheets/batches",
+        json=batch_payload(campaign, [row("r1")]),
+        headers={"Authorization": "Bearer tok"},
+    )
+    membership = db_session.get(
+        CampaignContact, uuid.UUID(first.json()["rows"][0]["submission_id"])
+    )
+    assert membership is not None
+    stalled = carry_into_a_failed_second_stage(db_session, membership)
+    jobs_before = db_session.query(AgentJob).count()
+    sources_before = db_session.query(CampaignContactSource).count()
+
+    again = client.post(
+        "/integrations/sheets/batches",
+        json=batch_payload(campaign, [row("r2")]),
+        headers={"Authorization": "Bearer tok"},
+    )
+    assert again.status_code == 200
+
+    # One membership, one Contact, and no second job for the stalled stage.
+    assert db_session.query(CampaignContact).count() == 1
+    assert db_session.query(Contact).count() == 1
+    assert db_session.query(AgentJob).count() == jobs_before
+    survivor = db_session.scalars(
+        select(AgentJob).where(AgentJob.idempotency_key == stalled.idempotency_key)
+    ).one()
+    assert survivor.id == stalled.id
+    # A genuinely new row is genuinely new provenance, and exactly one of it.
+    assert db_session.query(CampaignContactSource).count() == sources_before + 1
+    assert (
+        db_session.query(CampaignContactSource)
+        .filter(CampaignContactSource.campaign_contact_id == membership.id)
+        .count()
+        == 2
+    )
+
+
+def test_the_pipeline_still_reads_as_it_did_after_the_benign_replay(
+    db_session: Session, enable_sheets: None
+) -> None:
+    user = make_user(db_session, email="mine@vmr.example")
+    campaign = make_campaign(db_session, name="Mine", owner=user)
+    seed_company(db_session, name="Kiln Systems", domain="kiln.example")
+    enable_the_first_two_stages(db_session, campaign)
+    client = make_client(db_session, {"tok": assertion_for(user)})
+
+    first = client.post(
+        "/integrations/sheets/batches",
+        json=batch_payload(campaign, [row("r1")]),
+        headers={"Authorization": "Bearer tok"},
+    )
+    membership = db_session.get(
+        CampaignContact, uuid.UUID(first.json()["rows"][0]["submission_id"])
+    )
+    assert membership is not None
+    stalled = carry_into_a_failed_second_stage(db_session, membership)
+    stalled_agent = stalled.agent_id
+
+    again = client.post(
+        "/integrations/sheets/batches",
+        json=batch_payload(campaign, [row("r2")]),
+        headers={"Authorization": "Bearer tok"},
+    )
+    assert again.status_code == 200
+
+    db_session.refresh(membership)
+    assert membership.next_stage is stalled_agent
+    state = db_session.scalars(
+        select(CampaignContactAgentState).where(
+            CampaignContactAgentState.campaign_contact_id == membership.id,
+            CampaignContactAgentState.agent_id == stalled_agent,
+        )
+    ).one()
+    # The failure is the durable truth. A replay must not overwrite it with a
+    # fresh "waiting", which would claim work is queued when none is.
+    assert state.status is PipelineStageStatus.FAILED
+    assert state.latest_job_id == stalled.id
+
+
+def test_one_already_known_person_cannot_refuse_the_rest_of_the_batch(
+    db_session: Session, enable_sheets: None
+) -> None:
+    """The blast radius, which is the reason this defect mattered."""
+
+    user = make_user(db_session, email="mine@vmr.example")
+    campaign = make_campaign(db_session, name="Mine", owner=user)
+    seed_company(db_session, name="Kiln Systems", domain="kiln.example")
+    enable_the_first_two_stages(db_session, campaign)
+    client = make_client(db_session, {"tok": assertion_for(user)})
+
+    first = client.post(
+        "/integrations/sheets/batches",
+        json=batch_payload(campaign, [row("r1")]),
+        headers={"Authorization": "Bearer tok"},
+    )
+    membership = db_session.get(
+        CampaignContact, uuid.UUID(first.json()["rows"][0]["submission_id"])
+    )
+    assert membership is not None
+    carry_into_a_failed_second_stage(db_session, membership)
+
+    again = client.post(
+        "/integrations/sheets/batches",
+        json=batch_payload(
+            campaign,
+            [
+                row("r2"),
+                row("r3", first="Grace", last="Hopper"),
+                row("r4", first="Katherine", last="Johnson"),
+            ],
+        ),
+        headers={"Authorization": "Bearer tok"},
+    )
+
+    assert again.status_code == 200
+    assert again.json()["counts"] == {"submitted": 3, "accepted": 3, "could_not_prepare": 0}
+    assert db_session.query(CampaignContact).count() == 3

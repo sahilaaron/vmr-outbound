@@ -219,6 +219,49 @@ def _terminal_eligibility_block(membership: CampaignContact) -> str | None:
     return None
 
 
+#: The task every scheduled pipeline stage runs under. One name, because
+#: :func:`_stage_job_standing_at` recognises a stage's own job by it.
+STAGE_TASK_KIND = "advance_campaign_contact"
+
+
+def _stage_job_standing_at(
+    session: Session,
+    key: str,
+    *,
+    membership: CampaignContact,
+    agent_id: AgentIdentifier,
+) -> AgentJob | None:
+    """The job already at ``key``, but only if it is *this* stage's own job.
+
+    The key names one Campaign Contact's turn at one Agent, and two callers can
+    ask for that same turn while disagreeing about things that are not the work.
+    The worker records the stage that scheduled it as the job's parent; an
+    enrolment has no parent to record. Each pins the control versions that were
+    current when it queued, and those move. None of that changes what is to be
+    done, so a job that is demonstrably this membership's turn at this Agent is
+    the same work however it came to be queued.
+
+    Returns ``None`` for anything else, so a key genuinely standing for other
+    work is left to raise rather than being quietly adopted.
+    """
+
+    standing = session.scalars(
+        select(AgentJob).where(AgentJob.idempotency_key == key)
+    ).one_or_none()
+    if standing is None:
+        return None
+    same_work = (
+        standing.agent_id is agent_id
+        and standing.campaign_contact_id == membership.id
+        and standing.campaign_id == membership.campaign_id
+        and standing.contact_id == membership.contact_id
+        and standing.task_kind == STAGE_TASK_KIND
+        and standing.entity_type == "campaign_contact"
+        and standing.entity_id == membership.id
+    )
+    return standing if same_work else None
+
+
 def stage_job_key(
     campaign_contact_id: uuid.UUID, agent_id: AgentIdentifier, *, generation: int = 1
 ) -> str:
@@ -492,24 +535,45 @@ def schedule_next(
     # state when it runs and records that selection on its own result, so
     # provenance is written after the input is chosen rather than guessed before.
 
-    job, created = jobs.enqueue_job(
-        session,
-        agent_id=agent_id,
-        idempotency_key=key,
-        task_kind="advance_campaign_contact",
-        max_attempts=spec.max_attempts,
-        priority=priority,
-        campaign_id=membership.campaign_id,
-        campaign_contact_id=membership.id,
-        contact_id=membership.contact_id,
-        company_id=None,
-        capture_id=membership.source_capture_id,
-        entity_type="campaign_contact",
-        entity_id=membership.id,
-        input_reference=input_reference,
-        parent_job_id=parent_job.id if parent_job else None,
-        actor=actor,
-    )
+    try:
+        job, created = jobs.enqueue_job(
+            session,
+            agent_id=agent_id,
+            idempotency_key=key,
+            task_kind=STAGE_TASK_KIND,
+            max_attempts=spec.max_attempts,
+            priority=priority,
+            campaign_id=membership.campaign_id,
+            campaign_contact_id=membership.id,
+            contact_id=membership.contact_id,
+            company_id=None,
+            capture_id=membership.source_capture_id,
+            entity_type="campaign_contact",
+            entity_id=membership.id,
+            input_reference=input_reference,
+            parent_job_id=parent_job.id if parent_job else None,
+            actor=actor,
+        )
+    except jobs.JobIdempotencyConflict:
+        # Two callers asked for the same stage's turn and differ only in what
+        # queued it. The queue cannot tell that apart from key reuse — it
+        # compares the whole intent, deliberately — but this function owns the
+        # key and can: if the job standing there is this membership's turn at
+        # this Agent, the work is already durably represented and scheduling is
+        # satisfied by it. This is not a rescheduling; the stage keeps whatever
+        # outcome that job reached, exactly as it does when the two intents
+        # happen to match.
+        #
+        # Reached from ordinary product use: a spreadsheet or an operator
+        # re-enrolling somebody whose stage the worker had already queued used to
+        # turn this into an unhandled 500 on the whole request.
+        #
+        # Anything else is re-raised. A key standing for different work is
+        # corruption, and hiding it here would leave the queue quietly wrong.
+        standing = _stage_job_standing_at(session, key, membership=membership, agent_id=agent_id)
+        if standing is None:
+            raise
+        job, created = standing, False
     state.latest_job_id = job.id
     membership.pipeline_status = PipelineStageStatus.WAITING
     membership.current_stage = agent_id
