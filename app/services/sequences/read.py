@@ -99,6 +99,12 @@ _ACTIVE_STATES = (
 #: identifier; this is what a person reads.
 PURPOSE_LABELS: dict[SequenceMessagePurpose, str] = {
     SequenceMessagePurpose.INITIAL_OUTREACH: "Initial outreach",
+    SequenceMessagePurpose.VALUE_RESOURCE: "Value resource",
+    # Kept, and kept saying what it said. Sequences generated before
+    # ``sequence-builder/v2`` stored this purpose at position 2 and their Email 2
+    # really was a reminder with nothing attached; showing them under the new
+    # label would tell an operator reading old work that it contained a report
+    # link it never contained.
     SequenceMessagePurpose.CONCISE_REMINDER: "Concise reminder",
     SequenceMessagePurpose.NEW_ANGLE: "A different angle",
     SequenceMessagePurpose.ROLE_RELEVANCE: "Relevance to their role",

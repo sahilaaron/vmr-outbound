@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from app.models.email_sequence import SEQUENCE_LENGTH
@@ -43,8 +43,27 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from app.services.personalization.sequence import GeneratedMessage
 
 #: Part of the input digest: changing what validation refuses changes what the
-#: same inputs produce.
-VALIDATION_POLICY_VERSION = "sequence-validation/v1"
+#: same inputs produce. ``/v2`` added the Campaign resource rules below.
+VALIDATION_POLICY_VERSION = "sequence-validation/v2"
+
+#: The placeholder the model writes where the Campaign's Report URL belongs.
+#:
+#: Deliberately unwritable by accident. Doubled square brackets around a
+#: screaming-snake name appear in no register of ordinary English email copy, so
+#: a body containing this string contains it because the prompt asked for it —
+#: which is what makes "exactly once, in exactly one message" a checkable claim
+#: rather than a hopeful one.
+#:
+#: The model never sees the address itself. It writes the marker; the
+#: application substitutes. That is the whole reason the URL in a delivered
+#: Email 2 is guaranteed to be character-for-character the one the operator
+#: saved: no model output is trusted to reproduce it, because no model output
+#: ever contained it.
+RESOURCE_MARKER = "[[CAMPAIGN_RESOURCE_URL]]"
+
+#: The one position that carries the Campaign's resource. Email 6 has its own,
+#: unrelated ``low_friction_resource`` purpose and is not a second home for it.
+RESOURCE_POSITION = 2
 
 SEVERITY_FAILURE = "failure"
 SEVERITY_WARNING = "warning"
@@ -200,6 +219,7 @@ _LEAKAGE_MARKERS: tuple[str, ...] = (
     "curated policy examples",
     "the seven positions and what each is for",
     "sequence coherence and context distribution",
+    "the campaign resource --",
     "follow-up rules -- non-negotiable",
     "return exactly one json object",
     "evidence_insight_ids",
@@ -688,16 +708,160 @@ def _validate_progression(messages: Sequence[GeneratedMessage]) -> list[Finding]
     return findings
 
 
+# ---------------------------------------------------------------------------
+# The Campaign resource
+# ---------------------------------------------------------------------------
+
+
+def merge_resource_url(
+    messages: Sequence[GeneratedMessage], *, resource_url: str
+) -> tuple[tuple[GeneratedMessage, ...], tuple[Finding, ...]]:
+    """Put the exact Report URL into Email 2, and report what the model wrote.
+
+    Two things happen here and they are deliberately not separable. The findings
+    describe the sequence **before** substitution -- how many markers the model
+    produced and where -- because that is the only moment at which the question
+    can be asked. The messages returned are the sequence **after** substitution,
+    which is what everything downstream validates, persists and shows a person.
+
+    Substitution is done on exactly one body, at exactly one position, and only
+    when the model wrote exactly one marker there. Anything else is a failure and
+    leaves the copy untouched: a message the generator did not build around a
+    resource must not have one glued into it, and a message carrying two markers
+    was written by an author who did not follow the instruction, not one to
+    repair silently.
+
+    Nothing is escaped, shortened, re-cased or re-encoded on the way in. The
+    string written into the body is the string
+    ``campaign_resource_urls.normalize_campaign_resource_url`` returned, which is
+    the string the operator saved.
+    """
+
+    findings: list[Finding] = []
+    substituted: list[GeneratedMessage] = []
+    for message in messages:
+        body_count = message.body.count(RESOURCE_MARKER)
+        if RESOURCE_MARKER in message.subject:
+            findings.append(
+                Finding(
+                    SEVERITY_FAILURE,
+                    "resource_marker_in_subject",
+                    "The resource placeholder was written into the subject line, where a "
+                    "web address does not belong.",
+                    message.position,
+                )
+            )
+        if message.position == RESOURCE_POSITION:
+            if body_count == 1:
+                substituted.append(
+                    replace(message, body=message.body.replace(RESOURCE_MARKER, resource_url))
+                )
+                continue
+            findings.append(
+                Finding(
+                    SEVERITY_FAILURE,
+                    "resource_marker_missing",
+                    f"Position {RESOURCE_POSITION} carries the Campaign resource and must "
+                    f"name it exactly once; it was written {body_count} time(s).",
+                    message.position,
+                )
+            )
+        elif body_count:
+            findings.append(
+                Finding(
+                    SEVERITY_FAILURE,
+                    "resource_marker_misplaced",
+                    f"Position {message.position} named the Campaign resource, which only "
+                    f"position {RESOURCE_POSITION} may offer.",
+                    message.position,
+                )
+            )
+        substituted.append(message)
+    return tuple(substituted), tuple(findings)
+
+
+def _validate_resource(
+    messages: Sequence[GeneratedMessage], *, resource_url: str | None
+) -> list[Finding]:
+    """Prove the finished copy carries the address once, in one place, unaltered.
+
+    Runs on the substituted text, so it checks the bytes that would be persisted
+    rather than the intention that produced them. A marker surviving to this
+    point is checked unconditionally -- including when no Report URL is in play
+    at all -- because an internal placeholder reaching a stranger's inbox is the
+    one failure this design has to make impossible rather than unlikely.
+    """
+
+    findings: list[Finding] = []
+
+    for message in messages:
+        if RESOURCE_MARKER in message.body or RESOURCE_MARKER in message.subject:
+            findings.append(
+                Finding(
+                    SEVERITY_FAILURE,
+                    "resource_marker_survived",
+                    "An internal placeholder is still in the finished copy.",
+                    message.position,
+                )
+            )
+
+    if resource_url is None:
+        return findings
+
+    for message in messages:
+        occurrences = message.body.count(resource_url)
+        if message.position == RESOURCE_POSITION:
+            if occurrences != 1:
+                findings.append(
+                    Finding(
+                        SEVERITY_FAILURE,
+                        "resource_url_not_once",
+                        f"Position {RESOURCE_POSITION} contains the report address "
+                        f"{occurrences} time(s) rather than once.",
+                        message.position,
+                    )
+                )
+        elif occurrences:
+            findings.append(
+                Finding(
+                    SEVERITY_FAILURE,
+                    "resource_url_leaked",
+                    f"Position {message.position} repeats the report address, which only "
+                    f"position {RESOURCE_POSITION} offers.",
+                    message.position,
+                )
+            )
+        if resource_url in message.subject:
+            findings.append(
+                Finding(
+                    SEVERITY_FAILURE,
+                    "resource_url_in_subject",
+                    "The report address was written into the subject line.",
+                    message.position,
+                )
+            )
+    return findings
+
+
 def validate_sequence(
     messages: Sequence[GeneratedMessage],
     *,
     decision: ContextDecision,
     cadence: SequenceCadence,
     max_words_by_position: Mapping[int, int],
+    resource_url: str | None = None,
+    extra_findings: Sequence[Finding] = (),
 ) -> ValidationFindings:
-    """Validate every message and then the sequence they form."""
+    """Validate every message and then the sequence they form.
 
-    findings: list[Finding] = []
+    ``extra_findings`` carries observations that could only have been made
+    earlier -- today, what :func:`merge_resource_url` saw before it substituted.
+    They are folded in here rather than raised there so that one refusal reports
+    everything wrong with a sequence at once, which is what an operator reading a
+    failure needs, rather than one defect per attempt.
+    """
+
+    findings: list[Finding] = list(extra_findings)
     for message in messages:
         findings.extend(
             _validate_message(
@@ -710,4 +874,5 @@ def validate_sequence(
     findings.extend(_validate_timing(messages, cadence=cadence))
     findings.extend(_validate_repetition(messages))
     findings.extend(_validate_progression(messages))
+    findings.extend(_validate_resource(messages, resource_url=resource_url))
     return ValidationFindings(findings=tuple(findings))

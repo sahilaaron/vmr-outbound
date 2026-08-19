@@ -52,14 +52,21 @@ from app.models.email_sequence import SEQUENCE_LENGTH
 from app.models.enums import SequenceMessagePurpose, SequenceMessageType
 from app.models.insight import Insight
 from app.models.personalization_policy import PersonalizationPolicyVersion
+from app.services.campaign_resource_urls import (
+    CampaignResourceUrlError,
+    normalize_campaign_resource_url,
+)
 from app.services.companies import dossiers
 from app.services.personalization import generation
 from app.services.personalization.cadence import SequenceCadence, resolve_cadence
 from app.services.personalization.generation import ContextDecision, PreviewError
 from app.services.personalization.policy import PolicyConfig, temperament_instructions
 from app.services.personalization.sequence_validation import (
+    RESOURCE_MARKER,
+    RESOURCE_POSITION,
     VALIDATION_POLICY_VERSION,
     SequenceValidationError,
+    merge_resource_url,
     validate_sequence,
 )
 from app.services.resolution import gates
@@ -70,7 +77,13 @@ from app.services.thinking.contracts import Thinker, ThinkingRequest
 #: Bumping this is a statement that the same inputs would now produce a
 #: different sequence, so it is part of the input digest. Prompt shape, purpose
 #: framework and parse contract all live behind it.
-SEQUENCE_PRODUCER_VERSION = "sequence-builder/v1"
+#:
+#: ``/v2`` moved position 2 from ``concise_reminder`` to ``value_resource``:
+#: the prompt, the purpose framework, the parse contract and the deterministic
+#: resource merge all changed together, so a sequence written by ``/v1`` and one
+#: written by ``/v2`` from identical inputs are genuinely different sequences and
+#: must not share a digest.
+SEQUENCE_PRODUCER_VERSION = "sequence-builder/v2"
 
 #: What each position is for, and the shape of the ask it carries. These are
 #: purposes, not templates -- the Campaign offering, the CTA, the active policy
@@ -85,10 +98,14 @@ PURPOSES: tuple[tuple[int, SequenceMessagePurpose, str, str], ...] = (
     ),
     (
         2,
-        SequenceMessagePurpose.CONCISE_REMINDER,
-        "Concise reminder",
-        "A short, low-friction continuation. Add almost nothing new and ask for less than "
-        "the initial message did. Repeat as little of it as possible.",
+        SequenceMessagePurpose.VALUE_RESOURCE,
+        "Value resource",
+        "Continue naturally from the initial message and give the recipient useful access to "
+        "the Campaign's own research resource. Say briefly why it may be relevant to this "
+        f"particular recipient, using only the supplied context. Write {RESOURCE_MARKER} "
+        "exactly once, exactly as spelled, where the address of that resource belongs. Keep "
+        "it short and useful; this is something offered, not a second and louder ask. Do not "
+        "repeat the initial message.",
     ),
     (
         3,
@@ -142,6 +159,34 @@ MAX_WORDS_BY_POSITION: dict[int, int] = {1: 150, 2: 90, 3: 120, 4: 110, 5: 110, 
 
 class SequenceGenerationError(PreviewError):
     """A sequence cannot be produced without weakening an authoritative rule."""
+
+
+#: What an operator is told when the Campaign has no usable Report URL.
+#:
+#: Said as a missing setting and a place to fix it, because that is what it is.
+#: The alternatives were all worse and all available: write six messages and
+#: report seven, quietly turn Email 2 back into the reminder it used to be, or
+#: put some other address there. Each of those produces a sequence that looks
+#: finished and is not the sequence the Campaign asked for, and none of them is
+#: visible to the person who would have to notice.
+RESOURCE_URL_REQUIRED = "Email 2 can't be prepared — add the Report URL in Campaign Setup."
+
+
+def _resource_url(campaign: Campaign) -> str:
+    """The Campaign's Report URL, or a refusal naming what to do about it.
+
+    Re-validated on the way out rather than read straight off the row. The
+    column is nullable and always will be, a row can predate a rule, and an
+    address the product would refuse to save today is one it must also refuse to
+    put in front of a stranger.
+    """
+
+    try:
+        return normalize_campaign_resource_url(campaign.campaign_resource_url)
+    except CampaignResourceUrlError as exc:
+        raise SequenceGenerationError(
+            RESOURCE_URL_REQUIRED, code="campaign_resource_url_missing"
+        ) from exc
 
 
 @dataclass(frozen=True)
@@ -261,10 +306,18 @@ def compute_input_digest(
     accepted value set*, not just the version id: two CI versions can carry the
     same id-adjacent metadata while accepting different values, and the second
     one produces a different sequence.
+
+    The Campaign's Report URL is in here for exactly that reason. It is the one
+    piece of Campaign configuration that appears verbatim in the finished copy,
+    so a sequence written for report A is not the sequence report B would have
+    produced, and reporting the first as current after the Campaign moved to the
+    second would put the wrong address in front of a stranger. Pointing a
+    Campaign at a new report therefore costs a regeneration, and re-running with
+    the same one still costs nothing.
     """
 
     payload: dict[str, Any] = {
-        "schema": "sequence-input-digest/v1",
+        "schema": "sequence-input-digest/v2",
         "campaign_contact_id": str(membership.id),
         "campaign_id": str(campaign.id),
         "contact_id": str(contact.id),
@@ -284,6 +337,7 @@ def compute_input_digest(
             "sender_context": campaign.sender_context,
             "settings_version": campaign.settings_version,
         },
+        "campaign_resource_url": campaign.campaign_resource_url,
         "policy": {
             "version_id": str(policy.id),
             "version_number": policy.version_number,
@@ -362,6 +416,33 @@ _DISTRIBUTION_RULES = """- Plan the seven messages together, then write them. Ea
   language to manufacture variation is not."""
 
 
+#: What the model is told about the Campaign's resource, and deliberately not
+#: what it is told the resource *is*.
+#:
+#: The address never enters this prompt. Not as context, not as an example, not
+#: behind an instruction to copy it carefully. A model that has never seen the
+#: string cannot truncate it, tidy its casing, drop a query parameter, wrap it in
+#: markdown or decide a shorter one reads better -- and no amount of instruction
+#: makes those failures impossible where the string is present. What the model
+#: writes is a placeholder; what the recipient reads is the operator's own
+#: address, put there by :func:`merge_resource_url` after the copy is fixed.
+_RESOURCE_RULES = f"""- Message {RESOURCE_POSITION} offers the recipient one genuinely
+  useful thing: the read-only research report this Campaign is built around.
+- Write the token {RESOURCE_MARKER} exactly once in message {RESOURCE_POSITION},
+  spelled exactly as shown, on its own or inside an ordinary sentence such as
+  "you can look at the research here: {RESOURCE_MARKER}". The application
+  replaces it with the report's real web address before anybody reads the
+  message.
+- Do not write that token in any other message, do not write it in any subject
+  line, do not invent a web address of your own anywhere in the sequence, and do
+  not describe what the report contains -- you have not seen it and neither has
+  anything else in this system.
+- Introducing the report is the work of message {RESOURCE_POSITION}. Say plainly
+  why it may be worth this particular recipient's attention, using only the
+  supplied context, and leave the ask small. A resource offered as a favour is
+  not a resource offered as leverage."""
+
+
 def _prompt(
     *,
     policy: PersonalizationPolicyVersion,
@@ -423,6 +504,9 @@ THE SEVEN POSITIONS AND WHAT EACH IS FOR
 
 SEQUENCE COHERENCE AND CONTEXT DISTRIBUTION
 {_DISTRIBUTION_RULES}
+
+THE CAMPAIGN RESOURCE -- MESSAGE {RESOURCE_POSITION} ONLY
+{_RESOURCE_RULES}
 
 FOLLOW-UP RULES -- NON-NEGOTIABLE
 {_FOLLOW_UP_RULES}
@@ -660,6 +744,7 @@ def _resolve_inputs(
     dict[str, Any],
     dict[str, Any],
     str,
+    str,
 ]:
     """Everything the digest depends on, resolved once.
 
@@ -678,6 +763,11 @@ def _resolve_inputs(
     if company is None:
         raise SequenceGenerationError("Personalization requires the permanent Company record.")
 
+    # Refused here rather than after the model has been called. This is the one
+    # input a Campaign can be missing entirely, the failure is the operator's to
+    # fix and nobody else's, and a refusal that costs nothing is the only honest
+    # answer to "prepare a sequence whose second message has nothing to offer".
+    resource_url = _resource_url(campaign)
     cadence = resolve_cadence(campaign)
     decision = generation.decide_context(session, membership=membership, policy=policy)
     research_lineage, insights_lineage, intelligence_lineage = _lineage(
@@ -706,6 +796,7 @@ def _resolve_inputs(
         insights_lineage,
         intelligence_lineage,
         digest,
+        resource_url,
     )
 
 
@@ -759,6 +850,7 @@ def generate_sequence(
         insights_lineage,
         intelligence_lineage,
         digest,
+        resource_url,
     ) = _resolve_inputs(session, membership=membership, policy=policy, feature_mode=feature_mode)
 
     # Re-checked here rather than trusted from the pipeline: the ledger can have
@@ -804,11 +896,19 @@ def generate_sequence(
     )
     messages = _parse_messages(answer.payload, cadence=cadence, allowed_evidence=allowed_evidence)
 
+    # Substitution before validation, deliberately. Validation then judges the
+    # text that would actually be persisted -- its length, its repetition, its
+    # leakage -- rather than a draft of it, and the marker rules and the copy
+    # rules are reported together as one refusal.
+    messages, resource_findings = merge_resource_url(messages, resource_url=resource_url)
+
     findings = validate_sequence(
         messages,
         decision=decision,
         cadence=cadence,
         max_words_by_position=MAX_WORDS_BY_POSITION,
+        resource_url=resource_url,
+        extra_findings=resource_findings,
     )
     if findings.failed:
         raise SequenceValidationError(findings)
