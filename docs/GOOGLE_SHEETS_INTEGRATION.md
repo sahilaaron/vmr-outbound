@@ -1,8 +1,10 @@
 # Google Sheets integration
 
 A Google Sheets add-on that takes rows containing a person's name and their
-company and gives back a verified email address and the canonical seven-message
-sequence, using the existing VMR Outbound product for all of it.
+company and gives back a usable email address and the canonical seven-message
+sequence, using the existing VMR Outbound product for all of it. A row may also
+supply the address and the company website it already has, in which case the
+product uses them instead of going to find them (§2, §7a).
 
 Feature switch: `FEATURES__GOOGLE_SHEETS_INTEGRATION` (off by default).
 Configuration block: `SHEETS__*`. Add-on source: `integrations/google-sheets/`.
@@ -22,7 +24,7 @@ Google Sheet rows
         Identity -> Company -> Research -> Email -> Verification
                  -> Insights -> Personalization
   -> POST /integrations/sheets/results
-     -> verified address + seven messages written back into the sheet
+     -> usable address + seven messages written back into the sheet
 ```
 
 Nothing about research, company-domain policy, email discovery, verification,
@@ -38,24 +40,48 @@ permanent Contacts, and they stay.
 
 Required per row: **First Name**, **Last Name**, **Company Name**.
 
-Optional and never required: Job Title, LinkedIn URL, Context.
+Optional and never required: Job Title, LinkedIn URL, Context, **Email Address**,
+**Company Website**.
 
-Not required and not accepted as input: company domain, email address, research.
-The product derives the domain itself (§7) and discovers and verifies the address
-itself.
+Supplying an address or a website is optional in the strongest sense: a sheet
+that supplies neither behaves exactly as it always has, and the product discovers
+the address, verifies it and establishes the company domain itself. What the two
+optional columns change is only that the product no longer has to go and find
+something the operator already knows — see §7a for what that skips and, more
+importantly, what it does not.
+
+`Company Website` accepts a full URL or a bare domain; both are read down to the
+same hostname. There is no separate `Company Domain` input, because there is
+nothing a bare domain says that this column cannot already carry.
+
+Not accepted as input: research, insights, dossiers, message text. Those are
+things the product produces, and a spreadsheet asserting them would be a second
+authority for them.
+
+| Column | Wire field | Required |
+| --- | --- | --- |
+| First Name | `first_name` | yes |
+| Last Name | `last_name` | yes |
+| Company Name | `company_name` | yes |
+| Job Title | `job_title` | no |
+| LinkedIn URL | `linkedin_url` | no |
+| Email Address | `email` | no |
+| Company Website | `website` | no |
+| Context | `context` | no |
 
 Headers are detected, not assumed. The add-on scans the first ten rows for the
 best-matching header row and maps common spellings (`Surname`, `Organisation`,
-`Given Name`, …). Column letters are never hard-coded, and a sheet whose header
-row is row 4 works exactly like one whose header row is row 1.
+`Given Name`, `Work Email`, `Company Domain`, …). Column letters are never
+hard-coded, and a sheet whose header row is row 4 works exactly like one whose
+header row is row 1.
 
 ## 3. What it writes back
 
 | Column | Contents |
 | --- | --- |
 | `VMR Status` | Pending / Processing / Ready / Could not prepare |
-| `Email Address` | The verified address, when there is one |
-| `Email 1` … `Email 7` | `Day <n> — Subject: <subject>` then a blank line then the body |
+| `VMR Email Address` | The address this Campaign will use, when there is one |
+| `VMR Email 1` … `VMR Email 7` | `Day <n> — Subject: <subject>` then a blank line then the body |
 | `VMR Note` | The reason a row stopped, or what it is waiting on |
 | `VMR Last Updated` | When the add-on last wrote to that row |
 | `VMR Contact ID`, `VMR Campaign Contact ID` | For cross-referencing in the app |
@@ -66,8 +92,29 @@ internals, job ids, provider names, stage names or policy versions. A sales
 operator opening this sheet should see an address and seven messages, and the
 detail stays one click away in the app where it has a surface built for it.
 
+Every column the add-on writes is `VMR `-prefixed, and that is a safety property
+rather than a style. Two of these columns used to be called `Email Address` and
+`Email 1`…`Email 7` — names an operator's own source columns very often already
+have — and an existing column is adopted by name, so a sheet that arrived with a
+filled `Email Address` column had it claimed as VMR output and cleared the first
+time a result carried no address.
+
+**No input column is ever written to**, and that is now enforced structurally
+rather than by naming: `planOutputColumns` refuses to adopt any column the header
+mapping claims as an input, whatever it is called, and `planResultWrites` filters
+its own edits against the same mapping before returning them. A collision
+produces a fresh appended column and leaves the operator's data where it is.
+
 Existing VMR columns are reused wherever the operator moved them; new ones are
-appended after the operator's own data. **No input column is ever written to.**
+appended after the operator's own data.
+
+A sheet the previous version of the add-on wrote to still carries its unprefixed
+`Email Address` and `Email 1`…`Email 7` columns. Those are recognised — by the
+exact contiguous run the old client created, `VMR Status` then `Email Address`
+then `Email 1`…`Email 7` — and then left completely alone: not written, not
+renamed, and not read back as though the operator had supplied them. The new
+`VMR `-prefixed columns are appended beside them on the next submit or refresh,
+and the stale ones can be deleted whenever the operator likes.
 
 ## 4. Row states
 
@@ -75,10 +122,14 @@ Four words, and deliberately not the nine Agent names:
 
 - **Pending** — accepted, waiting its turn.
 - **Processing** — an Agent currently holds it.
-- **Ready** — a usable verified address **and** a complete validated
-  seven-message sequence. Both halves, always: an address with no sequence is not
-  usable, and seven messages addressed to an unverified mailbox are worse than
-  nothing.
+- **Ready** — a usable address **and** a complete validated seven-message
+  sequence. Both halves, always: an address with no sequence is not usable, and
+  seven messages with nowhere to send them are worse than nothing. "Usable" means
+  one of exactly two things, and the difference is never blurred: an address
+  `VALID` under the existing verification policy, or an address the operator
+  supplied themselves and the pipeline therefore never tried to verify. **Ready
+  is not a deliverability claim**; every screen that shows verification status
+  still says, truthfully, that nobody checked a supplied mailbox.
 - **Could not prepare** — it stopped and a person has to do something. The reason
   is written into `VMR Note`, sanitized (§10).
 
@@ -87,11 +138,13 @@ creates no draft, no schedule and no send, so an approval gate here would protec
 nothing. Approval remains where it means something — before a Gmail draft, in the
 app.
 
-"Ready" is decided by existing policy, not by this surface: the address must be
-`VALID` under `app/services/verification` (catch-all, unknown, role-based and
-vendor-claimed addresses are all not ready), and the sequence must be
-`generation_status = COMPLETE`, not `validation_status = FAILED`, and exactly
-seven messages.
+"Ready" is decided by existing policy, not by this surface: a *discovered*
+address must be `VALID` under `app/services/verification` (catch-all, unknown,
+role-based and vendor-claimed addresses are all not ready); a *supplied* address
+qualifies only when the durable Verification stage carries a recorded bypass, so
+the exemption is the pipeline's own committed statement rather than this surface
+deciding. The sequence must be `generation_status = COMPLETE`, not
+`validation_status = FAILED`, and exactly seven messages.
 
 ## 5. Account linking
 
@@ -258,6 +311,55 @@ established evidence for the next contact, and `resolution.gates` opens company
 research and nothing after it. That is exactly the position a capture-promoted
 Contact is in.
 
+## 7a. When the operator already knows the address or the website
+
+Both optional columns from §2 answer questions the pipeline would otherwise go
+and answer for itself. Neither is a claim that the value is correct, and nothing
+in this path ever becomes one.
+
+**A supplied address** (`email`) satisfies email discovery without generating a
+candidate and satisfies verification without calling a provider. The Verification
+stage completes as a **recorded bypass** — `verification_bypassed_supplied_email`
+— carrying `provider_called: false` and no evidence reference, because nobody was
+asked. No `ExactEmailVerification` row is written and `EmailVisualStatus` is not
+touched, so the app still reports this mailbox as unchecked. A malformed address
+refuses that one row by name; a blank one is simply absent.
+
+**A supplied website** (`website`) answers "which company is this", which is the
+only question automatic company-domain resolution asks. The permanent Company is
+created or linked from it and resolution is not attempted, with the lineage
+recording `operator_supplied_domain` rather than a bare null. An unreadable
+website is *not* a refusal — the row enrols and the Company Agent establishes the
+domain as it would for any other contact — because §7 already has a correct
+answer when no website is given.
+
+**A corporate address also names the employer.** With no readable website, the
+domain is read off the supplied address instead, recorded as
+`derived_from_operator_supplied_email`. An explicit website always outranks a
+derived domain: a person at `john@subsidiary.com` whose employer the operator
+wrote down as `parentcompany.com` works at the parent, and their address is not
+evidence to the contrary.
+
+**A public mailbox establishes no employer.** `john@gmail.com` says nothing
+whatever about where somebody works, so the derivation refuses every domain in
+the shared `PUBLIC_EMAIL_DOMAINS` set the file import has always used — and such
+a row simply takes the ordinary §7 path.
+
+**What is not skipped.** Identity, Company Intelligence, Research, Insights and
+Personalization run for these rows exactly as for every other. A domain answers
+which company this is; it says nothing about what matters about that company.
+Suppression is re-evaluated for a supplied address both at submit and again in
+the Email stage, because suppression is about whether this person may be
+contacted at all.
+
+The whole record lives in `CampaignContactSource.source_context` under
+`operator_supplied_inputs`, and each read re-derives its answer from the database
+— so a restart, a retry or a re-enrolment reaches the same decision, and an
+operator correcting `contacts.email` ends the fast path's authority immediately.
+
+Code: `app/services/provenance/supplied_inputs.py`, and the Sheets half in
+`app/services/integrations/sheets/submit.py`.
+
 ## 8. Async model
 
 The add-on never holds a request open while the pipeline runs.
@@ -299,10 +401,15 @@ is read.
   "generation": 1,
   "rows": [
     { "client_row_id": "k1", "first_name": "...", "last_name": "...",
-      "company_name": "...", "job_title": "...", "linkedin_url": "...", "context": "..." }
+      "company_name": "...", "job_title": "...", "linkedin_url": "...",
+      "email": "...", "website": "...", "context": "..." }
   ]
 }
 ```
+
+`email` and `website` are optional and are the operator's own values (§2, §7a).
+A malformed `email` refuses that row by name; an unreadable `website` is recorded
+verbatim and otherwise ignored, and the row enrols.
 
 Response: `batch_id`, `counts`, and per row `client_row_id`, `status`,
 `submission_id`, `contact_id`, `already_submitted`, `safe_failure_reason`,
@@ -321,6 +428,13 @@ operator the rest of their selection.
 
 Response rows carry `status`, `email_address`, `messages` (only when ready, and
 then always exactly seven), `safe_failure_reason`, `note`, `updated_at`.
+
+`email_address` here is the address the Campaign will use, which may be one the
+operator supplied — it is not an assertion that anything verified it (§4, §7a).
+The add-on writes it to `VMR Email Address`, never to an operator column, and
+only when the response actually carries the field: the submit response does not,
+and treating that omission as an empty address is precisely the defect the
+`VMR ` prefix and the input-mapping guard exist to prevent.
 
 A `GET /batches/{id}` was considered and rejected: it needs a batch table this
 integration does not otherwise need, and the add-on already holds one identifier
@@ -341,6 +455,14 @@ enumeration oracle.
   an ambiguity the operator resolves — the row is refused rather than merged.
 - **A spreadsheet fills blanks and overwrites nothing.** Re-submitting a row can
   never undo work done in the product.
+- **The add-on writes into no column an operator owns.** Enforced twice and
+  structurally: the output planner refuses to adopt any column the header mapping
+  claims, and the result planner filters its own edits against the same mapping.
+  A collision appends a new `VMR ` column rather than taking the operator's (§3).
+- **A supplied address is never called verified.** It satisfies the address
+  requirement through a recorded bypass on the Verification stage and writes no
+  evidence row, so nothing downstream can mistake it for a checked mailbox
+  (§7a).
 - **A spreadsheet URL is not an observation.** A LinkedIn URL typed into a cell
   is stored on the Contact but creates no `linkedin_identity_links` row, so a typo
   cannot become permanent matching authority.
@@ -414,6 +536,7 @@ Marketplace publication is **not** required for the first user.
 | Settings | `app/core/sheets_config.py` |
 | Routes | `app/api/integrations_sheets.py` |
 | Wire contract (pure) | `app/services/integrations/sheets/contract.py` |
+| Operator-supplied inputs | `app/services/provenance/supplied_inputs.py` |
 | Account resolution | `app/services/integrations/sheets/identity.py` |
 | Company from a name | `app/services/integrations/sheets/companies.py` |
 | Submit | `app/services/integrations/sheets/submit.py` |

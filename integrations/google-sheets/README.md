@@ -80,8 +80,13 @@ campaigns.
 ## Using it
 
 1. Put **First Name**, **Last Name** and **Company Name** columns in the sheet.
-   Job Title, LinkedIn URL and Context are optional. A company domain and an email
-   address are neither needed nor accepted.
+   Job Title, LinkedIn URL, Context, **Email Address** and **Company Website** are
+   optional. Supplying the last two is optional in the strongest sense: leave them
+   out and the product discovers the address, verifies it and works out the
+   company domain itself, exactly as before. Fill them in and it uses what you
+   already know instead of going to find it —
+   `docs/GOOGLE_SHEETS_INTEGRATION.md` §7a says precisely what that skips and what
+   it does not. `Company Website` takes a URL or a bare domain.
 2. Pick a campaign. Check the mapping the add-on guessed.
 3. Select the rows and press **Process selected rows**. With nothing selected it
    offers every data row.
@@ -89,7 +94,22 @@ campaigns.
    stay open.
 
 Rows read **Pending → Processing → Ready**, or **Could not prepare** with the
-reason in `VMR Note`. Ready means a verified address *and* seven messages.
+reason in `VMR Note`. Ready means a usable address *and* seven messages — either
+an address the product verified, or one you supplied and it therefore never tried
+to verify. Ready is not a deliverability claim, and the app still reports a
+supplied mailbox as unchecked.
+
+The add-on writes only `VMR `-prefixed columns — `VMR Status`,
+`VMR Email Address`, `VMR Email 1`…`VMR Email 7`, `VMR Note`,
+`VMR Last Updated`, `VMR Contact ID`, `VMR Campaign Contact ID`, and the hidden
+`VMR Row Key`. **It never writes into a column your data is in**, and that is
+enforced by refusing to reuse any column the header mapping claims, not by hoping
+the names do not clash.
+
+A sheet an earlier version of the add-on wrote to still has unprefixed
+`Email Address` and `Email 1`…`Email 7` columns. They are left exactly as they
+are — never written, never renamed — and the new `VMR ` columns appear beside
+them on the next submit or refresh. Delete the old ones whenever you like.
 
 ## Troubleshooting
 
@@ -110,6 +130,8 @@ node --test
 ```
 
 No dependencies, no network, no Google account. The tests build a fake grid and
-prove the thing that actually matters: a result can never land on the wrong row —
-under sorting, insertion, deletion, a deleted key column, a partly refreshed
-sheet and a retried submission.
+prove the two things that actually matter: a result can never land on the wrong
+row — under sorting, insertion, deletion, a deleted key column, a partly
+refreshed sheet and a retried submission — and a result can never land on a
+column the operator owns, including a sheet whose own columns are called
+`Email Address`, `Company Website` and `Email 1`.
