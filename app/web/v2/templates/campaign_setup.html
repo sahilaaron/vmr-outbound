@@ -177,6 +177,30 @@
             <div class="v2-hint">{% if sequence_on %}Seven per person, on days {{ cadence_text }}. The cadence is fixed.{% else %}One email per person.{% endif %}</div>
           </div>
           {% endif %}
+          {#
+            The Campaign's own report. Kept next to the seven-email switch
+            because that is the only thing that needs it: the second email
+            offers this page, so without it there is no second email to
+            prepare. The field is still shown when the switch is off, so a
+            Campaign can be configured in either order.
+
+            The address is deliberately not the loud part of the row. It is a
+            long string nobody reads, so the row says what it is for and offers
+            one link to go and look, rather than presenting the URL itself as
+            the content.
+          #}
+          <div class="v2-field">
+            <label for="setup-report-url">Report URL{% if not sequence_on %} <span class="v2-muted">optional</span>{% endif %}</label>
+            <div class="v2-hint">Read-only report page shared with prospects in Email 2.</div>
+            <input class="v2-input" id="setup-report-url" name="campaign_resource_url" type="url"
+                   maxlength="2048" placeholder="https://example.com/reports/your-market"
+                   value="{{ campaign.campaign_resource_url or '' }}">
+            {% if resource_url %}
+            <div class="v2-hint m"><a href="{{ resource_url }}" target="_blank" rel="noopener noreferrer nofollow">Open the report&#8239;&#8599;</a> to check it before people are prepared.</div>
+            {% elif sequence_on %}
+            <div class="v2-hint m">Email 2 offers this page. Without it, the seven emails cannot be prepared.</div>
+            {% endif %}
+          </div>
           <div class="v2-field">
             <b>Website research</b>
             <div class="v2-hint">
@@ -260,6 +284,19 @@
         <div class="v2-card-foot plain">Administrators reach every Campaign. Ask one to give someone access.</div>
         {% endif %}
       </div>
+
+      {% if sequence_on %}
+      <div class="v2-card">
+        <div class="v2-card-head tight"><h2>Report</h2></div>
+        <div class="v2-row tight">
+          {% if resource_url %}
+          <div class="v2-note">Email 2 offers <a href="{{ resource_url }}" target="_blank" rel="noopener noreferrer nofollow">this report&#8239;&#8599;</a>.</div>
+          {% else %}
+          <div class="v2-note">No Report URL yet. Email 2 offers the Campaign's read-only report, so the seven emails cannot be prepared without one.</div>
+          {% endif %}
+        </div>
+      </div>
+      {% endif %}
 
       <div class="v2-card">
         <div class="v2-card-head tight"><h2>Lifecycle</h2></div>

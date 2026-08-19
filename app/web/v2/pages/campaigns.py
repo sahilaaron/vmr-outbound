@@ -28,7 +28,9 @@ from app.services.campaign_offering import consistency as offering_consistency
 from app.services.campaign_offering import jobs as offering_jobs
 from app.services.campaign_offering import read as offering_read
 from app.services.campaign_offering.urls import OfferingUrlError
+from app.services.campaign_resource_urls import stored_resource_url
 from app.services.campaigns import CampaignError
+from app.services.personalization import sequence as sequence_generation
 from app.services.personalization.cadence import (
     DEFAULT_ELAPSED_DAYS,
     campaign_opted_in,
@@ -150,6 +152,23 @@ def _setup_answer(
                 "ready": False,
                 "text": "Preparation is being held by an administrator setting.",
                 "admin": True,
+            }
+        # Said before Start rather than after it. A seven-message Campaign whose
+        # Email 2 has nothing to offer cannot produce a complete sequence, and
+        # the generator refuses for exactly this reason -- but it refuses one
+        # contact at a time, in a queue, where the customer is not looking. This
+        # is the same fact, on the page where the setting lives and where it
+        # takes ten seconds to fix.
+        #
+        # Placed *below* the administrator hold and *above* the draft sentence
+        # for the same reason the two of those are ordered the way they are: a
+        # hold the customer cannot lift outranks a gap they can, and a gap they
+        # can fix outranks "not started", which would otherwise send them to
+        # press Start and wait for nothing.
+        if stored_resource_url(campaign.campaign_resource_url) is None:
+            return {
+                "ready": False,
+                "text": sequence_generation.RESOURCE_URL_REQUIRED,
             }
     if header.is_draft:
         return {
@@ -445,6 +464,7 @@ def campaign_setup(
             "linked_offerings": linked,
             "sequences_on": shell.sequences_on(db, settings),
             "sequence_on": campaign_opted_in(campaign),
+            "resource_url": stored_resource_url(campaign.campaign_resource_url),
             "cadence_text": CADENCE_TEXT,
             "offering_research_on": shell.offering_research_on(db, settings),
             "offering": offering_read.campaign_offering_view(db, campaign),
@@ -466,6 +486,7 @@ def campaign_setup_save(
     description: str = Form(""),
     messaging_direction: str = Form(""),
     primary_cta: str = Form(""),
+    campaign_resource_url: str = Form(""),
     offering_id: str = Form(""),
     allow_provisional_domains: str = Form(""),
     sequence_enabled: str = Form(""),
@@ -489,6 +510,7 @@ def campaign_setup_save(
             description=description or None,
             messaging_direction=messaging_direction or None,
             primary_cta=primary_cta or None,
+            campaign_resource_url=campaign_resource_url,
             allow_provisional_domains=shell.checkbox(allow_provisional_domains),
             cadence_config=with_campaign_opt_in(campaign, enabled=opted_in),
             actor=draft_service.OPERATOR_ACTOR,
