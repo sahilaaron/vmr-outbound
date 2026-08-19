@@ -37,6 +37,10 @@ from app.services.agents.readiness import execution_readiness
 from app.services.agents.registry import PREPARATION_AGENTS, get_agent_spec
 from app.services.audit import record_audit_event
 from app.services.campaign_access import CampaignActor, scope_campaign_statement
+from app.services.campaign_resource_urls import (
+    CampaignResourceUrlError,
+    normalize_campaign_resource_url,
+)
 from app.services.personalization.cadence import (
     CADENCE_KEY,
     campaign_opted_in,
@@ -68,7 +72,11 @@ _TEXT_LIMITS: Final = {
     "messaging_direction": MAX_DIRECTION_LEN,
     "primary_cta": MAX_CTA_LEN,
 }
-_SETTING_FIELDS: Final = tuple(sorted(_JSON_FIELDS | set(_TEXT_LIMITS)))
+#: Not in ``_TEXT_LIMITS``: the Report URL is validated by
+#: ``campaign_resource_urls`` rather than truncated to a length, and refusing a
+#: malformed address is the whole point of the field.
+_URL_FIELDS: Final = frozenset({"campaign_resource_url"})
+_SETTING_FIELDS: Final = tuple(sorted(_JSON_FIELDS | set(_TEXT_LIMITS) | _URL_FIELDS))
 
 
 class CampaignError(Exception):
@@ -112,6 +120,23 @@ def _optional_text(value: str | None, *, field_name: str, limit: int) -> str | N
     if len(cleaned) > limit:
         raise CampaignError(f"{field_name} must be {limit} characters or fewer")
     return cleaned
+
+
+def _resource_url(value: str | None) -> str | None:
+    """The Report URL to store, or ``None`` when the operator cleared it.
+
+    Clearing is a legitimate act — a Campaign can stop being a seven-message
+    Campaign, and a report can be withdrawn — so an empty box means ``None``
+    rather than an error. Anything else is validated, and a refusal is raised as
+    a ``CampaignError`` so every caller that already handles one keeps working.
+    """
+
+    if value is None or not value.strip():
+        return None
+    try:
+        return normalize_campaign_resource_url(value)
+    except CampaignResourceUrlError as exc:
+        raise CampaignError(exc.message) from exc
 
 
 def _json_object(value: dict[str, Any] | None, *, field_name: str) -> dict[str, Any] | None:
@@ -246,6 +271,7 @@ def create_campaign(
     target_audience: dict[str, Any] | None = None,
     messaging_direction: str | None = None,
     primary_cta: str | None = None,
+    campaign_resource_url: str | None = None,
     template_config: dict[str, Any] | None = None,
     cadence_config: dict[str, Any] | None = None,
     sending_settings: dict[str, Any] | None = None,
@@ -291,6 +317,7 @@ def create_campaign(
             limit=MAX_DIRECTION_LEN,
         ),
         primary_cta=_optional_text(primary_cta, field_name="primary_cta", limit=MAX_CTA_LEN),
+        campaign_resource_url=_resource_url(campaign_resource_url),
         template_config=_json_object(template_config, field_name="template_config"),
         cadence_config=_json_object(
             default_campaign_cadence_config(cadence_config), field_name="cadence_config"
@@ -338,6 +365,7 @@ def update_campaign(
     target_audience: dict[str, Any] | None | _Unset = UNSET,
     messaging_direction: str | None | _Unset = UNSET,
     primary_cta: str | None | _Unset = UNSET,
+    campaign_resource_url: str | None | _Unset = UNSET,
     template_config: dict[str, Any] | None | _Unset = UNSET,
     cadence_config: dict[str, Any] | None | _Unset = UNSET,
     sending_settings: dict[str, Any] | None | _Unset = UNSET,
@@ -368,6 +396,8 @@ def update_campaign(
         proposed["primary_cta"] = _optional_text(
             primary_cta, field_name="primary_cta", limit=MAX_CTA_LEN
         )
+    if not isinstance(campaign_resource_url, _Unset):
+        proposed["campaign_resource_url"] = _resource_url(campaign_resource_url)
     if not isinstance(allow_provisional_domains, _Unset):
         proposed["allow_provisional_domains"] = bool(allow_provisional_domains)
     if not isinstance(sender_context, _Unset):

@@ -65,6 +65,27 @@ class Campaign(Base):
     target_audience: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     messaging_direction: Mapped[str | None] = mapped_column(Text, nullable=True)
     primary_cta: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # --- The Campaign's own read-only report ---------------------------------
+    #
+    # Email 2 offers the prospect one useful thing, and this column is the
+    # address of it. It belongs to the Campaign rather than to the Offering
+    # because one Offering is sold into many markets: the carbon-fibre campaign
+    # and the microalgae campaign lead with the same offering and point at
+    # different reports.
+    #
+    # Nullable, and staying nullable. Every Campaign that existed before this
+    # column did has no report, campaigns that write one email per person never
+    # need one, and a NOT NULL column would have made both of those invalid
+    # rows. The requirement is therefore stated where it is actually true — a
+    # Campaign opted in to the seven-message sequence cannot produce Email 2
+    # without it — and enforced in
+    # ``app/services/personalization/sequence.py`` rather than in the schema.
+    #
+    # Stored exactly as the operator typed it, minus surrounding whitespace.
+    # ``app/services/campaign_resource_urls.py`` refuses an address it cannot
+    # accept rather than repairing one: this string is put in front of a
+    # stranger, so a silently rewritten destination is worse than a refusal.
+    campaign_resource_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     template_config: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     cadence_config: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     sending_settings: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)

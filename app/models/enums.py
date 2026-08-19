@@ -1363,7 +1363,16 @@ class SequenceMessagePurpose(enum.StrEnum):
 
     #: Position 1 — the primary personalized outreach.
     INITIAL_OUTREACH = "initial_outreach"
-    #: Position 2 — a concise reminder that adds no new demand.
+    #: Position 2 — the campaign's own read-only report, offered as something
+    #: useful rather than as a second ask. Superseded ``CONCISE_REMINDER`` for
+    #: everything generated from ``sequence-builder/v2`` onward.
+    VALUE_RESOURCE = "value_resource"
+    #: Position 2, historically. **Retained deliberately and permanently.** Every
+    #: sequence written before the resource framework existed stored this value,
+    #: and an Email 2 that was generated as a concise reminder must keep saying
+    #: so: renaming it would make the record claim those messages carried a
+    #: resource they never carried. Nothing generates it any more, and
+    #: ``PURPOSES`` no longer maps any position to it.
     CONCISE_REMINDER = "concise_reminder"
     #: Position 3 — a different evidence, market or company angle.
     NEW_ANGLE = "new_angle"
