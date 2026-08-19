@@ -109,7 +109,7 @@ produce something the builder already knows.
 | # | Purpose | What it is for |
 |---|---|---|
 | 1 | `initial_outreach` | strongest relevant context, clearest offering, one bounded CTA |
-| 2 | `concise_reminder` | low-friction continuation, minimal repetition, asks for less |
+| 2 | `value_resource` | continues from message 1 and offers the Campaign's own read-only report |
 | 3 | `new_angle` | a different evidence, market or company angle |
 | 4 | `role_relevance` | the offering against the contact's recorded function, where supported |
 | 5 | `proof_or_outcome` | approved proof only; no invented figure, customer or result |
@@ -119,6 +119,131 @@ produce something the builder already knows.
 These are *purposes, not templates*. The Campaign offering, the CTA, the active
 Personalization policy, the evidence actually available and the selected
 strategy all outrank them.
+
+Position 6 keeps its own `low_friction_resource` purpose and is unchanged. The
+two are not the same thing: message 2 offers the **Campaign's** authoritative
+report, message 6 offers whatever low-friction example or extract the seller
+context supports.
+
+### Message 2 and the Campaign Report URL
+
+Message 2 used to be `concise_reminder` — a shorter restatement that asked for
+less. It now offers the recipient something instead: the read-only report page
+the Campaign is built around.
+
+**The report belongs to the Campaign, not to the Offering.**
+`campaigns.campaign_resource_url` is where it lives, and the reason is that one
+Offering is sold into many markets. The carbon-fibre campaign, the microalgae
+campaign and the TSCM-equipment campaign can all lead with the same Library
+offering and each point at a different report. Putting the address in seller
+knowledge would have forced them to share one.
+
+The field is surfaced on **Campaign › Setup** as **Report URL**, described as
+"Read-only report page shared with prospects in Email 2", and shown again in the
+Setup summary column with a link to open it, so an operator can check the
+destination before anybody is prepared.
+
+**Only absolute `http`/`https` addresses are accepted**, and
+`app/services/campaign_resource_urls.py` refuses rather than repairs:
+`javascript:`, `data:`, a local path, a bare domain with no scheme, an address
+with credentials in it, a private or internal host and anything with whitespace
+or a control character are all rejected with a sentence the operator can act on.
+Nothing is normalized away — path, query, fragment and case survive exactly as
+typed, because unlike the offering-research address (which is a lookup key for a
+page VMR reads once) this string is copied verbatim into an email and a
+silently-tidied destination is a broken link in a stranger's inbox.
+
+**No valid Report URL, no sequence.** A Campaign opted in to the seven-message
+sequence cannot produce one without it: `generate_sequence` refuses *before the
+model is called*, with `code="campaign_resource_url_missing"` and the operator
+sentence
+
+> Email 2 can't be prepared — add the Report URL in Campaign Setup.
+
+The Agent raises that as `AgentBlocked`, which is a non-terminal condition
+waiting on operator action, so adding the URL and letting the stage run again is
+all the recovery there is. The same sentence is shown on Campaign › Setup before
+Start is pressed, so the gap is visible where it is fixed rather than only in a
+queue. Nothing fabricates a URL, substitutes the VMR homepage, omits the
+resource quietly, turns message 2 back into a reminder, or reports a sequence as
+complete with message 2 unserved.
+
+The column stays **nullable**, permanently. A Campaign that writes one email per
+person has no report, and every Campaign that predates the column has none
+either; a `NOT NULL` constraint would have made both invalid. The requirement is
+stated where it is actually true — at the sequence-generation boundary — not in
+the schema.
+
+### Deterministic insertion: the model never sees the address
+
+The URL is authoritative application data, so nothing about it is delegated to
+the model. It does not appear in the prompt at all — not as context, not as an
+example, not behind an instruction to copy it carefully. A model that has never
+seen the string cannot truncate it, re-case it, drop a query parameter, wrap it
+in markdown or decide a shorter one reads better.
+
+What the model writes is a placeholder:
+
+```
+[[CAMPAIGN_RESOURCE_URL]]
+```
+
+`sequence_validation.RESOURCE_MARKER`, chosen because doubled square brackets
+around a screaming-snake name appear in no register of ordinary email copy — so
+a body containing it contains it *because the prompt asked for it*, which makes
+"exactly once, in exactly one message" a checkable claim.
+
+The merge is `sequence_validation.merge_resource_url`, and it runs after parsing
+and **before** validation, so everything downstream judges the text that would
+actually be persisted:
+
+1. Position 2's body must contain the marker exactly once — otherwise
+   `resource_marker_missing`, and nothing is substituted.
+2. Positions 1 and 3–7 must contain it zero times — otherwise
+   `resource_marker_misplaced`.
+3. No subject line may contain it — otherwise `resource_marker_in_subject`.
+4. Where the count is exactly one, the marker is replaced with the exact stored
+   address, unescaped and unaltered.
+
+Validation then proves the result on the finished copy: no marker survives
+anywhere (`resource_marker_survived`, checked even when no Report URL is in
+play), position 2 contains the address exactly once (`resource_url_not_once`),
+no other position contains it (`resource_url_leaked`), and no subject contains
+it (`resource_url_in_subject`). A failure at any of these is a hard failure, so
+nothing is persisted and nobody is offered the sequence.
+
+The Personalization Agent may personalize the sentence that introduces the
+report, why it may matter to this recipient, the transition from message 1 and
+the surrounding ask. It cannot personalize the address, because it never has it.
+
+**Nothing fetches the report.** No code path opens a socket to it, the model is
+never asked to read it, and this branch adds no web fetching, scraping,
+authentication, click tracking, redirect or shortener of any kind. The Report
+URL is stored and inserted; that is the whole of it.
+
+### Historical sequences stay historical
+
+`SequenceMessagePurpose.CONCISE_REMINDER` is **retained permanently** and is
+still what position 2 of every pre-`sequence-builder/v2` sequence says. No row
+is renamed, no sequence is rewritten, and the review UI still shows those
+messages as *Concise reminder* — because that is what they are. Their Email 2
+carries no report link, and relabelling them `value_resource` would make the
+record describe a message that was never generated.
+
+Nothing generates `concise_reminder` any more: `PURPOSES` maps no position to
+it, so a newly generated position 2 is always `value_resource`, and the parse
+contract refuses a model that claims otherwise
+(`code="sequence_invalid_purpose"`).
+
+One consequence is worth stating rather than discovering. The seven
+`email_sequence_messages` rows are the *logical* messages and are reused across
+regenerations by design (§6), and `purpose` lives on them. Regenerating a
+Campaign Contact whose position-2 row already says `concise_reminder` therefore
+produces new content that offers the report while the row keeps the old label.
+That is the deliberate choice: the alternative is a write that renames a
+historical record, which is the one thing this section exists to prevent. New
+Campaign Contacts — every one enrolled since this revision — get
+`value_resource` from the first generation.
 
 ## 4. Evidence, and what "distributed" means
 
@@ -165,13 +290,32 @@ honest follow-up is not.
 
 `compute_input_digest` produces a SHA-256 over a canonical rendering of every
 sequence-relevant input: the Campaign Contact, the contact's identity fields,
-the Campaign offering and messaging direction and CTA, the policy version, the
-selected strategy, the full context decision, the resolved cadence, the
-Research/Insights/Company-Intelligence lineage, the sequence builder version,
-the validation policy version, and the feature mode.
+the Campaign offering and messaging direction and CTA, **the Campaign Report
+URL**, the policy version, the selected strategy, the full context decision, the
+resolved cadence, the Research/Insights/Company-Intelligence lineage, the
+sequence builder version, the validation policy version, and the feature mode.
+
+The Report URL is in there because it is the one piece of Campaign configuration
+that reaches the finished copy verbatim. A sequence written for report A is not
+the sequence report B would have produced, so pointing a Campaign at a new
+report makes the input materially different and costs a regeneration; the old
+sequence stays exactly as it was written, and re-running with the same report
+still costs nothing.
 
 The digest is checked **before** the model is called. An unchanged input and a
 retry after a committed sequence therefore both cost nothing.
+
+### The sequence producer version
+
+`SEQUENCE_PRODUCER_VERSION` is bumped whenever the same inputs would now produce
+a materially different sequence, and it is part of the digest so that a bump
+forces regeneration rather than leaving stale content reported as current. It
+moved from `sequence-builder/v1` to **`sequence-builder/v2`** when message 2
+became `value_resource`: the purpose framework, the prompt contract, the parse
+and validation contract and the deterministic resource merge all changed
+together. `VALIDATION_POLICY_VERSION` moved to `sequence-validation/v2` for the
+same reason — what validation refuses changed — and the digest schema is now
+`sequence-input-digest/v2`.
 
 ### Replay contract, stated explicitly
 
@@ -215,6 +359,11 @@ strategy, valid and increasing timing matching the resolved cadence, no repeated
 subject line, bounded repetition of openings, subject structures, CTAs,
 sentences and long phrases, and no late follow-up longer than the initial
 message.
+
+**The Campaign resource**: the marker exactly once in position 2 and nowhere
+else before substitution, no marker anywhere afterwards, the exact configured
+address exactly once in position 2 and zero times in positions 1 and 3–7, and
+never in a subject line. See §3.
 
 The three outcomes are **hard failure** (nothing persisted, nobody is offered
 it), **warning** (persisted with the message and shown in review) and
@@ -403,6 +552,13 @@ sequence. An adapter that wrapped old drafts in sequence shape would have to
 invent a sequence version, a purpose and six absences, and every one of those
 would be a small lie in a system whose whole value is not telling them.
 
+The same rule governs the message-2 purpose change. `concise_reminder` is
+retained rather than migrated, old sequences keep the purpose they were written
+with and display it, and only newly generated sequences carry `value_resource`.
+See §3. Single-draft generation is untouched: it never reads
+`campaign_resource_url`, never requires one, and a Campaign that is not opted in
+to the seven-message sequence is unaffected by every rule in this section.
+
 ## 13. Migration
 
 One additive, reversible revision: `0926b59b7912`, on top of `b6d4e07a1f38`.
@@ -429,6 +585,25 @@ a downgrade followed by a re-upgrade would fail on "type already exists".
 Proven by `alembic downgrade -1 && alembic upgrade head && alembic check`, and by
 `tests/test_migrations.py`, which asserts both the refusal and the release path
 after the data is deleted deliberately.
+
+### SEQ-002 — the Report URL and `value_resource`
+
+One additive revision, `e4b1c7f92a30`, on top of `d6a7c4b9e201`. Single Alembic
+head. It adds the nullable `campaigns.campaign_resource_url` column and the
+`VALUE_RESOURCE` label on `sequence_message_purpose`. Nothing is dropped, no row
+is rewritten, and `CONCISE_REMINDER` stays on the type.
+
+`downgrade` **refuses** on either of two conditions, for two different reasons.
+A message already labelled `VALUE_RESOURCE` could survive the type rebuild only
+by being cast to `CONCISE_REMINDER`, which would leave the record calling an
+email with a report link a concise reminder — so the migration stops instead. A
+Campaign carrying a Report URL would lose it silently, because the audit trail
+records which fields changed and not what they became, so the column is the only
+copy; the refusal says to clear those Campaigns first, which is an action an
+operator can actually take.
+
+Both refusals are conditional, so a database that never used either addition
+reverses without ceremony and the round-trip check stays meaningful.
 
 ## 14. Read models and performance
 

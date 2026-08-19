@@ -407,7 +407,7 @@ def test_admin_diagnosis_shows_the_sequence_and_all_seven_positions(
     assert "of 7 messages" in body
     for purpose in (
         "initial_outreach",
-        "concise_reminder",
+        "value_resource",
         "new_angle",
         "role_relevance",
         "proof_or_outcome",

@@ -162,6 +162,7 @@ def imported(db_session: Session) -> tuple[Any, ...]:
 
     campaign = af.make_campaign(db_session, execution=True)
     campaign.cadence_config = {"sequence": {"enabled": True}}
+    campaign.campaign_resource_url = "https://reports.example.com/import-to-sequence"
     campaign.description = "Sourced market intelligence reports for investment teams"
     db_session.flush()
 

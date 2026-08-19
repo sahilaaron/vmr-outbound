@@ -85,16 +85,29 @@ class CountingThinker:
         )
 
 
-#: Seven distinct bodies. Written to pass validation the way a real sequence
-#: should: no repeated opening, no repeated sentence, no shared eight-word
-#: phrase, distinct subjects, and progressively shorter.
+#: The Campaign's read-only report, as an operator would type it. Carries a
+#: path, a query and mixed case on purpose: every one of those is a thing a
+#: tidying validator would quietly change, and none of them may change.
+RESOURCE_URL = "https://reports.example.com/Carbon-Fibre/2026?edition=Preview"
+
+#: Seven distinct bodies, as the finished sequence reads. Written to pass
+#: validation the way a real sequence should: no repeated opening, no repeated
+#: sentence, no shared eight-word phrase, distinct subjects, and progressively
+#: shorter.
+#:
+#: Body 2 holds the report address, because that is what a person and every
+#: other test in the repository see once the sequence exists. What the *model*
+#: returns is these bodies with the address swapped back out for the marker --
+#: see ``sequence_payload`` -- so a test that wants to change a body writes the
+#: text it expects to read, not the placeholder machinery underneath it.
 BODIES: tuple[str, ...] = (
     "Hello Ada, VM Intelligence builds sourced market reports that investment teams can "
     "read in preview before they buy the complete version. Given the kiln control work "
     "your group publishes about, would a short look at one of those previews be useful "
     "to you this month?",
-    "Circling back on my earlier note about sourced market previews. No need for a call "
-    "of any kind. Would a single preview link be worth two minutes of your attention?",
+    "Circling back on my earlier note about sourced market previews. Since your group "
+    "publishes on process control, the read-only edition may be worth a look: "
+    f"{RESOURCE_URL} . No call needed either way — is that the sort of evidence you use?",
     "One further angle worth raising: buyers in adjacent process-control markets often "
     "want an outside read on sector sizing before committing budget to a build. Our "
     "reports carry the underlying sources so an analyst can audit every figure. Does "
@@ -111,9 +124,22 @@ BODIES: tuple[str, ...] = (
     "evidence becomes relevant later, my door stays open.",
 )
 
+
+def model_bodies(bodies: tuple[str, ...]) -> tuple[str, ...]:
+    """The bodies as the *model* would return them: address back to marker.
+
+    The model never sees the report address, so it cannot return one. Doing the
+    swap here rather than in a second literal tuple means a test that edits
+    ``BODIES`` edits what the model wrote too, and a test that repeats one body
+    seven times produces exactly the mistake a model would make.
+    """
+
+    return tuple(body.replace(RESOURCE_URL, sequence_validation.RESOURCE_MARKER) for body in bodies)
+
+
 SUBJECTS: tuple[str, ...] = (
     "Sourced market previews for kiln control",
-    "Two minutes on that preview?",
+    "The read-only edition, if useful",
     "Outside read on sector sizing",
     "Who owns competitive sizing there?",
     "How teams decide inside an afternoon",
@@ -123,7 +149,7 @@ SUBJECTS: tuple[str, ...] = (
 
 PURPOSE_VALUES: tuple[str, ...] = (
     "initial_outreach",
-    "concise_reminder",
+    "value_resource",
     "new_angle",
     "role_relevance",
     "proof_or_outcome",
@@ -144,6 +170,7 @@ def sequence_payload(
     """The JSON a well-behaved model returns, with knobs for the failure tests."""
 
     order = positions if positions is not None else tuple(range(1, len(bodies) + 1))
+    bodies = model_bodies(bodies)
     messages: list[dict[str, Any]] = []
     for index, position in enumerate(order):
         messages.append(
@@ -163,11 +190,14 @@ def sequence_payload(
     return {"rationale": "Planned as one arc with a widening cadence.", "messages": messages}
 
 
-@pytest.fixture()
-def scenario(
+def make_scenario(
     db_session: Session,
 ) -> tuple[Campaign, Company, Contact, CampaignContact, PersonalizationPolicyVersion, str]:
-    """A campaign opted in to sequences, with one supported company insight."""
+    """The ``scenario`` fixture's body, callable from another test module.
+
+    A fixture cannot be imported and re-used without shadowing the name, so the
+    construction lives here and the fixture is the one-line wrapper below.
+    """
 
     campaign, company, contact, membership = _subject(
         db_session,
@@ -176,6 +206,7 @@ def scenario(
         campaign_description="Sourced market intelligence reports for investment teams",
     )
     campaign.cadence_config = {"sequence": {"enabled": True}}
+    campaign.campaign_resource_url = RESOURCE_URL
     db_session.flush()
     evidence_id = _supported_insight(
         db_session,
@@ -184,6 +215,15 @@ def scenario(
     )
     policy = _policy(db_session)
     return campaign, company, contact, membership, policy, evidence_id
+
+
+@pytest.fixture()
+def scenario(
+    db_session: Session,
+) -> tuple[Campaign, Company, Contact, CampaignContact, PersonalizationPolicyVersion, str]:
+    """A campaign opted in to sequences, with a Report URL and one insight."""
+
+    return make_scenario(db_session)
 
 
 @pytest.fixture()
@@ -763,6 +803,7 @@ def test_a_thin_evidence_sequence_stays_truthful_rather_than_padded(
     session_scenario: tuple[Any, ...]
     campaign, company, contact, membership = make_subject(db_session)
     campaign.cadence_config = {"sequence": {"enabled": True}}
+    campaign.campaign_resource_url = RESOURCE_URL
     db_session.flush()
     policy = _policy(db_session)
     session_scenario = (campaign, company, contact, membership, policy, None)

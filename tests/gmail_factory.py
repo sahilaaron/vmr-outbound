@@ -301,6 +301,9 @@ def build_sequence(
         status=CampaignStatus.ACTIVE,
         execution_enabled=True,
         cadence_config={"sequence": {"enabled": True}} if sequence_enabled else {},
+        # Email 2 offers the Campaign's read-only report, so a Campaign opted in
+        # to the seven-message sequence cannot produce one without an address.
+        campaign_resource_url=("https://reports.example.com/gmail" if sequence_enabled else None),
         created_by_user_id=(uuid.UUID(str(owner_user_id)) if owner_user_id is not None else None),
     )
     db.add_all([company, campaign])

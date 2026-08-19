@@ -57,6 +57,9 @@ _DAT_017A_PARENT = _load_migration(
     "d7a3f18c62b4_dat_017a_company_domain_resolution.py"
 ).down_revision
 
+#: The revision immediately below SEQ-002, for the same reason.
+_SEQ_002_PARENT = _load_migration("e4b1c7f92a30_seq_002_email2_value_resource.py").down_revision
+
 #: The revision immediately below KB-001, for the same reason.
 _KB_001_PARENT = _load_migration("b8e5d34a91c7_kb_001_seller_knowledge_base.py").down_revision
 
@@ -889,5 +892,151 @@ def test_seq_001_downgrade_refuses_while_sequence_data_exists(
         cleared = _alembic(["downgrade", _SEQ_001_PARENT], temp_database_url)
         assert cleared.returncode == 0, f"{cleared.stdout}\n{cleared.stderr}"
         assert _alembic(["upgrade", "head"], temp_database_url).returncode == 0
+    finally:
+        engine.dispose()
+
+
+def _seed_report_url(conn: Connection) -> uuid.UUID:
+    """One Campaign carrying a Report URL, and nothing else."""
+
+    campaign_id = uuid.uuid4()
+    conn.execute(
+        text(
+            "INSERT INTO campaigns (id, name, status, campaign_resource_url) "
+            "VALUES (:id, :n, 'DRAFT', :u)"
+        ),
+        {
+            "id": campaign_id,
+            "n": f"Report campaign {campaign_id}",
+            "u": "https://reports.example.com/Carbon?edition=Preview",
+        },
+    )
+    return campaign_id
+
+
+def test_seq_002_downgrade_succeeds_on_an_empty_schema(temp_database_url: str) -> None:
+    """Nothing has used either addition: reverse without ceremony.
+
+    The same property SEQ-001 relies on, for the same reason — a guard that
+    refused unconditionally would make the round-trip check untestable.
+    """
+
+    assert _alembic(["upgrade", "head"], temp_database_url).returncode == 0
+    reversed_cleanly = _alembic(["downgrade", _SEQ_002_PARENT], temp_database_url)
+    assert reversed_cleanly.returncode == 0, f"{reversed_cleanly.stdout}\n{reversed_cleanly.stderr}"
+    assert _alembic(["upgrade", "head"], temp_database_url).returncode == 0
+
+
+def test_seq_002_downgrade_refuses_while_a_message_uses_the_new_purpose(
+    temp_database_url: str,
+) -> None:
+    """Rebuilding the enum without ``VALUE_RESOURCE`` must not recast a row.
+
+    The only cast available is to ``CONCISE_REMINDER``, and it would fit — the
+    position is the same and no sequence holds both, so the unique constraint
+    would not even complain. That is exactly why the migration has to refuse
+    rather than proceed: the resulting row would describe an email carrying a
+    report link as a concise reminder, and nothing afterwards could tell.
+    """
+
+    assert _alembic(["upgrade", "head"], temp_database_url).returncode == 0
+
+    engine = create_engine(temp_database_url)
+    try:
+        with engine.begin() as conn:
+            _seed_sequence(conn, with_review=False)
+            conn.execute(text("UPDATE email_sequence_messages SET purpose = 'VALUE_RESOURCE'"))
+
+        blocked = _alembic(["downgrade", _SEQ_002_PARENT], temp_database_url)
+        output = blocked.stdout + blocked.stderr
+        assert blocked.returncode != 0, "the downgrade must refuse while the label is in use"
+        assert "SEQ-002" in output
+        assert "VALUE_RESOURCE" in output
+        # Bounded: the scale of the loss, never the copy itself.
+        assert "A body worth keeping." not in output
+        assert len(output) < 8_000
+
+        # Clearing the label deliberately releases that half of the guard.
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE email_sequence_messages SET purpose = 'INITIAL_OUTREACH'"))
+        released = _alembic(["downgrade", _SEQ_002_PARENT], temp_database_url)
+        assert released.returncode == 0, f"{released.stdout}\n{released.stderr}"
+        assert _alembic(["upgrade", "head"], temp_database_url).returncode == 0
+    finally:
+        engine.dispose()
+
+
+def test_seq_002_downgrade_refuses_while_a_campaign_holds_a_report_url(
+    temp_database_url: str,
+) -> None:
+    """Dropping the column would lose the address with nothing to recover it from.
+
+    The audit trail records that ``campaign_resource_url`` changed, not what it
+    became, so the column is the only copy. The refusal names an action the
+    operator can actually take — clear the URL — rather than sending them to a
+    backup for a value they typed themselves.
+    """
+
+    assert _alembic(["upgrade", "head"], temp_database_url).returncode == 0
+
+    engine = create_engine(temp_database_url)
+    try:
+        with engine.begin() as conn:
+            campaign_id = _seed_report_url(conn)
+
+        blocked = _alembic(["downgrade", _SEQ_002_PARENT], temp_database_url)
+        output = blocked.stdout + blocked.stderr
+        assert blocked.returncode != 0, "the downgrade must refuse while a Report URL exists"
+        assert "SEQ-002" in output
+        assert "Report URL" in output
+        # The address itself is never echoed into an error string.
+        assert "reports.example.com" not in output
+        assert len(output) < 8_000
+
+        with engine.begin() as conn:
+            conn.execute(
+                text("UPDATE campaigns SET campaign_resource_url = NULL WHERE id = :id"),
+                {"id": campaign_id},
+            )
+        released = _alembic(["downgrade", _SEQ_002_PARENT], temp_database_url)
+        assert released.returncode == 0, f"{released.stdout}\n{released.stderr}"
+        assert _alembic(["upgrade", "head"], temp_database_url).returncode == 0
+    finally:
+        engine.dispose()
+
+
+def test_seq_002_preserves_historical_concise_reminder_rows(temp_database_url: str) -> None:
+    """The upgrade adds a label. It does not touch a row that holds the old one."""
+
+    assert _alembic(["upgrade", _SEQ_002_PARENT], temp_database_url).returncode == 0
+
+    engine = create_engine(temp_database_url)
+    try:
+        with engine.begin() as conn:
+            _seed_sequence(conn, with_review=False)
+            conn.execute(text("UPDATE email_sequence_messages SET purpose = 'CONCISE_REMINDER'"))
+
+        assert _alembic(["upgrade", "head"], temp_database_url).returncode == 0
+
+        with engine.begin() as conn:
+            purposes = (
+                conn.execute(text("SELECT purpose::text FROM email_sequence_messages"))
+                .scalars()
+                .all()
+            )
+            labels = (
+                conn.execute(
+                    text(
+                        "SELECT e.enumlabel FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid "
+                        "WHERE t.typname = 'sequence_message_purpose'"
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+        assert purposes == ["CONCISE_REMINDER"], "the upgrade rewrote a historical row"
+        assert "VALUE_RESOURCE" in labels
+        assert "CONCISE_REMINDER" in labels
     finally:
         engine.dispose()
