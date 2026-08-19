@@ -34,8 +34,13 @@ function readGrid(sheet, extraColumns) {
  * sheet feel owned by the add-on; hiding it keeps it out of the way while
  * leaving the operator entirely free to delete it, which costs them nothing
  * worse than a fresh set of keys next time.
+ *
+ * The label goes in the detected header row, which is not always row 1. Writing
+ * it into row 1 as well — as this did until the header row index was passed in —
+ * left a second copy of every VMR heading above a sheet whose real header sits
+ * under a title line, in cells the operator may have been using for that title.
  */
-function createOutputColumns(sheet, plan) {
+function createOutputColumns(sheet, plan, headerRowIndex) {
   if (!plan.create.length) {
     return;
   }
@@ -43,21 +48,14 @@ function createOutputColumns(sheet, plan) {
   if (needed > 0) {
     sheet.insertColumnsAfter(sheet.getMaxColumns(), needed);
   }
+  var headerRow = (headerRowIndex || 0) + 1;
   for (var index = 0; index < plan.create.length; index += 1) {
     var column = plan.create[index];
-    sheet.getRange(1, column.column + 1).setValue(column.name);
+    sheet.getRange(headerRow, column.column + 1).setValue(column.name);
   }
   var keyColumn = plan.columns[ROW_KEY_COLUMN];
   if (keyColumn !== undefined) {
     sheet.hideColumns(keyColumn + 1);
-  }
-}
-
-/** Write a header label into the header row without touching anything else. */
-function writeHeaderLabels(sheet, headerRowIndex, plan) {
-  for (var index = 0; index < plan.create.length; index += 1) {
-    var column = plan.create[index];
-    sheet.getRange(headerRowIndex + 1, column.column + 1).setValue(column.name);
   }
 }
 

@@ -81,9 +81,12 @@ function submitSelection(campaignId) {
     throw new Error('This sheet has no ' + missing.join(', ') + ' column.');
   }
 
-  var plan = planOutputColumns(values[detected.rowIndex]);
-  createOutputColumns(sheet, plan);
-  writeHeaderLabels(sheet, detected.rowIndex, plan);
+  // The mapping goes to the planner, not just to `buildRows`. It is what stops a
+  // VMR output column being planned on top of a column the operator's own data
+  // is in — a header called `Email Address` is now an input, and an input column
+  // is never an output column.
+  var plan = planOutputColumns(values[detected.rowIndex], { mapping: detected.fields });
+  createOutputColumns(sheet, plan, detected.rowIndex);
 
   values = readGrid(sheet, plan.totalColumns - sheet.getLastColumn());
   var firstDataRow = detected.rowIndex + 1;
@@ -143,6 +146,7 @@ function submitSelection(campaignId) {
     sheet,
     planResultWrites(values, {
       columns: plan.columns,
+      mapping: detected.fields,
       firstDataRow: firstDataRow,
       results: results,
       timestamp: new Date().toISOString(),
@@ -165,9 +169,20 @@ function refreshResults() {
   if (!detected.found) {
     throw new Error('No header row was recognised on this sheet.');
   }
-  var plan = planOutputColumns(values[detected.rowIndex]);
-  if (plan.create.length) {
+  // "Has this sheet been submitted" is a question about the two columns that
+  // carry submission state, not about the full output set. Asking the second
+  // question meant that adding an output column to the add-on locked every sheet
+  // submitted by the previous version out of its own results, reporting them as
+  // never submitted. The missing columns are created instead, which is all the
+  // migration an already-submitted sheet needs: row keys and submission
+  // identifiers are already there and are only ever read here.
+  if (!hasSubmittedColumns(values[detected.rowIndex])) {
     throw new Error('Nothing on this sheet has been submitted to VMR Outbound yet.');
+  }
+  var plan = planOutputColumns(values[detected.rowIndex], { mapping: detected.fields });
+  if (plan.create.length) {
+    createOutputColumns(sheet, plan, detected.rowIndex);
+    values = readGrid(sheet, plan.totalColumns - sheet.getLastColumn());
   }
   var firstDataRow = detected.rowIndex + 1;
   var pending = knownSubmissions(values, plan.columns, firstDataRow);
@@ -198,6 +213,7 @@ function refreshResults() {
     sheet,
     planResultWrites(values, {
       columns: plan.columns,
+      mapping: detected.fields,
       firstDataRow: firstDataRow,
       results: collected,
       timestamp: new Date().toISOString(),
