@@ -249,3 +249,58 @@ test("a capture larger than one save may hold is refused by number, not by bytes
   // have. It must not be what they are told.
   assert.ok(!/payload/i.test(text));
 });
+
+test("a cancelled push says what was saved and what was not, and never claims a rollback", async (t) => {
+  const cancelled = pushView({
+    status: "cancelled",
+    contactsAccepted: 642,
+    contactsPending: 0,
+    contactsCancelled: 1858,
+    totalContacts: 2500,
+    completedChunks: 7,
+    pendingChunks: 0,
+    cancelledChunks: 19,
+  });
+  const p = await panelAtReview(t, {
+    SAVE_INCLUDED_CONTACTS: { ok: true, push: pushView({ totalContacts: 2500 }) },
+    PUSH_STATE: { ok: true, push: cancelled, pushActive: false },
+    CANCEL_PUSH: { ok: true, push: cancelled, accepted: 642, notSent: 1858 },
+    GET_STATE: () => ({
+      ok: true,
+      prefs: DEFAULT_PREFS,
+      metadata: { labels: [], note: null },
+      batchView: fixtures.batchView([fixtures.record()]),
+      lastResult: {
+        submissionId: null,
+        clientSubmissionId: "sub-1",
+        alreadyReceived: false,
+        counts: { submitted: 642, created: 642 },
+        results: [],
+        resultsSeen: 642,
+        resultsRetained: 0,
+        workbenchUrl: null,
+        submittedAt: "2026-08-20T09:15:04.000Z",
+        push: { status: "cancelled", contactsAccepted: 642, contactsCancelled: 1858 },
+      },
+      lastResultContext: { kind: "listings", url: null },
+    }),
+  });
+  await p.click("listings-review-btn");
+  await p.click("save-btn");
+  await p.flush();
+
+  // The escape hatch is on screen while the push is unfinished.
+  assert.equal(p.$("push-cancel").hidden, false);
+  await p.click("push-cancel");
+  await p.flush();
+  await p.flush();
+
+  const text = p.viewText();
+  assert.match(text, /642/);
+  assert.match(text, /1858/);
+  assert.match(text, /cancelled/i);
+  assert.match(text, /not sent/i);
+  // Both halves, and no suggestion that anything was undone.
+  assert.match(text, /Nothing that had already been saved was undone|had already been saved was kept/i);
+  assert.doesNotMatch(text, /2500 contacts saved/);
+});

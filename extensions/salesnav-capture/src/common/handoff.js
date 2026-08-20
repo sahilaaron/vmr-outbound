@@ -274,11 +274,26 @@
           detail: "Wait for it to finish. Nothing has been lost.",
           canRetry: false,
         };
-      case "already_pushed":
+      // Not "already saved" as a verdict on the batch — a verdict per contact.
+      // Some are saved, some were sent without confirmation, and either way
+      // there is nothing here that may legitimately be sent again. Re-offering
+      // a capture id the backend already owns is a 409, not a no-op.
+      case "nothing_to_send":
         return {
-          code: "already_pushed",
-          headline: "This capture has already been saved.",
-          detail: "Capture again, or clear it, before saving.",
+          code: "nothing_to_send",
+          headline: resp.message || "There is nothing new to save in this capture.",
+          detail:
+            resp.notRetried
+              ? `${resp.notRetried} contact(s) were sent earlier without a confirmed result. ` +
+                "Check VMR Outbound before capturing them again."
+              : "Capture more contacts, or clear this capture, to save again.",
+          canRetry: false,
+        };
+      case "push_cancelled":
+        return {
+          code: "push_cancelled",
+          headline: "The save was cancelled.",
+          detail: "Contacts already saved stayed saved. The rest were not sent.",
           canRetry: false,
         };
       // A record so large that no single request could carry it. Refused at

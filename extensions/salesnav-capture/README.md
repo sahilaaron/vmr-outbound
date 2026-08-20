@@ -321,7 +321,51 @@ What that buys the operator:
 * **Nothing is thrown away early.** The reviewed capture is never cleared by
   starting a save, and while a save is unfinished it cannot be cleared, changed
   or added to — the rows are still being delivered. Each chunk's copy is deleted
-  as the backend accepts it, so a long save uses less storage as it goes.
+  as the backend accepts it, so a long save uses less storage as it goes, and a
+  copy no save can still send is reclaimed rather than left on disk.
+* **Saving again never re-sends anybody.** See below.
+
+#### Saving again after the capture changes
+
+A saved contact carries an id the backend owns for ever. Offering that id again
+under a new submission is refused — permanently — so the extension keeps a
+**delivery ledger**: for each captured person, has this one ever left the
+browser?
+
+A new Save therefore contains **only people who have never been transmitted**.
+You can:
+
+* exclude or re-include rows after a save, and save again — the people already
+  saved are simply not offered, and you are told how many;
+* capture more contacts and save — only the new ones go;
+* retry what genuinely failed — a chunk that failed recoverably is carried into
+  the next save unchanged, under its own original submission id, so retrying it
+  is a replay and never a second copy.
+
+A contact that was sent and never confirmed is never re-sent either. The browser
+cannot tell "the request never arrived" from "it arrived and the reply was lost",
+so those people are reported as sent-without-confirmation and left for you to
+check in VMR Outbound, rather than gambled on.
+
+#### Cancelling a save
+
+While a save is unfinished it holds the reviewed set. If it cannot finish — the
+account link was revoked, the deployment will not authorise this install — press
+**Cancel push**.
+
+Cancelling is **not** an undo. Contacts the backend already accepted stay
+accepted; nothing in the browser can reach across and un-save them. What it does
+is stop offering the rest, hand back the reviewed set, reclaim the copies it will
+never send, and tell you both halves:
+
+```
+642 contacts already saved
+1,858 not sent
+Push cancelled
+```
+
+Transient problems do not need this: a network outage or a sign-in that can be
+renewed still recovers on its own.
 
 Reopening the panel reports where the save actually got to — *Saving 650 of
 2,843…*, *Retrying…*, *2,843 contacts saved* — never "done" because the first

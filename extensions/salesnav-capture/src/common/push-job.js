@@ -17,6 +17,32 @@
  * continue, and it continues from the first unfinished chunk rather than from
  * the beginning.
  *
+ * WHAT MAY BE PLANNED, AND WHAT MAY NEVER BE PLANNED AGAIN
+ * --------------------------------------------------------
+ * A `client_capture_id` is unique across the backend's whole capture table, not
+ * per submission. Once the backend has committed one it belongs to that
+ * submission for ever, and any LATER submission carrying it is refused with
+ * `client_capture_id_conflict` — a 409 no retry can clear.
+ *
+ * The first version of this module planned every Save from the whole reviewed
+ * set, so excluding a row after a successful push, or capturing a hundred more
+ * people, re-planned people the backend already held into new chunks under new
+ * submission ids. That wedged the operation permanently.
+ *
+ * The DELIVERY LEDGER is the fix. It records, per `client_capture_id`, whether
+ * that person has ever left the browser:
+ *
+ *   absent    never transmitted -> the ONLY kind a new chunk may contain
+ *   accepted  the backend confirmed it -> saved, never offered again
+ *   in doubt  transmitted, no success seen -> only its own frozen chunk, under
+ *             its own original submission id, may ever carry it again
+ *   terminal  transmitted and given up on -> reported, never re-planned
+ *
+ * "In doubt" is not pessimism. A request that times out is indistinguishable
+ * from a request that committed and lost its response, so anything that reached
+ * the network is treated as possibly-owned by the backend. That is what makes
+ * re-planning safe to forbid and replay safe to allow.
+ *
  * IDENTIFIERS, AND WHY THEY ARE MINTED ONCE
  * -----------------------------------------
  * Every chunk carries its own `clientSubmissionId`, minted when the job is
@@ -68,23 +94,54 @@
     COMPLETED: "completed",
     /** Every chunk was attempted; some are permanently or repeatedly failed. */
     COMPLETED_WITH_FAILURES: "completed_with_failures",
+    /**
+     * The operator stopped it.
+     *
+     * Absorbing: nothing moves a cancelled job back to running, including a
+     * response that arrives from a request already in flight when Cancel was
+     * pressed. That response is still recorded truthfully — the contacts in it
+     * really were saved — but the job stays cancelled.
+     */
+    CANCELLED: "cancelled",
   };
 
   const CHUNK_STATUS = {
     PENDING: "pending",
     ACCEPTED: "accepted",
     FAILED: "failed",
+    /** Never attempted again because the operator stopped the push. */
+    CANCELLED: "cancelled",
   };
 
-  /** Where one chunk's captures live while they wait to be sent. */
-  function chunkKey(jobId, index) {
-    return `${PUSH_STORAGE.CHUNK_PREFIX}${jobId}:${index}`;
+  /**
+   * Where one chunk's captures live while they wait to be sent.
+   *
+   * Keyed by the chunk's own idempotency key, not by its job. A chunk that a
+   * later Save carries forward keeps its submission id — that IS its identity to
+   * the backend — so it keeps its storage key and nothing has to be copied.
+   */
+  function chunkKey(clientSubmissionId) {
+    return `${PUSH_STORAGE.CHUNK_PREFIX}${clientSubmissionId}`;
   }
 
   /** Every chunk key a job could still own, so a finished job leaves nothing. */
   function allChunkKeys(job) {
     if (!job || !Array.isArray(job.chunks)) return [];
-    return job.chunks.map((c) => chunkKey(job.jobId, c.index));
+    return job.chunks.map((c) => chunkKey(c.clientSubmissionId));
+  }
+
+  /**
+   * Chunk keys that must SURVIVE, because the job may still need to send them.
+   *
+   * Everything else under the chunk prefix is reclaimable: an accepted chunk has
+   * done its job, and a chunk belonging to no current job can never be sent by
+   * anything. This is the whole ownership rule the storage sweep applies.
+   */
+  function liveChunkKeys(job) {
+    if (!job || !Array.isArray(job.chunks)) return [];
+    return job.chunks
+      .filter((c) => c.status === CHUNK_STATUS.PENDING || c.status === CHUNK_STATUS.FAILED)
+      .map((c) => chunkKey(c.clientSubmissionId));
   }
 
   /**
@@ -98,8 +155,21 @@
    */
   function createJob(args) {
     const plan = args.plan || { chunks: [], oversized: [], totalContacts: 0 };
-    const chunks = plan.chunks.map((c) => ({
-      index: c.index,
+    // Undelivered chunks inherited from the previous job come FIRST: they are
+    // the older work, they already have their submission ids and their payloads
+    // are already on disk, and re-minting either would be the LP-001 bug in a
+    // new costume. Attempt counters are reset — pressing Save is the operator
+    // asking for another go — but nothing else about them changes.
+    const carried = (args.carried || []).map((c) =>
+      Object.assign({}, c, {
+        status: CHUNK_STATUS.PENDING,
+        attempts: 0,
+        nextAttemptAt: null,
+        carried: true,
+      })
+    );
+    const planned = plan.chunks.map((c) => ({
+      index: 0,
       // Minted ONCE. See the module docstring: re-minting on retry is how a lost
       // response turns into a second copy of a person.
       clientSubmissionId: args.mintId(),
@@ -111,7 +181,12 @@
       lastErrorCode: null,
       nextAttemptAt: null,
       retryable: true,
+      carried: false,
     }));
+    const chunks = carried.concat(planned);
+    chunks.forEach((c, i) => {
+      c.index = i;
+    });
     return {
       v: JOB_VERSION,
       jobId: args.jobId,
@@ -122,8 +197,11 @@
       createdAt: args.createdAt,
       updatedAt: args.createdAt,
       status: chunks.length ? STATUS.PREPARING : STATUS.COMPLETED_WITH_FAILURES,
-      totalContacts: plan.totalContacts,
-      plannedContacts: plan.plannedContacts != null ? plan.plannedContacts : 0,
+      totalContacts:
+        plan.totalContacts + carried.reduce((sum, c) => sum + c.contactCount, 0),
+      plannedContacts:
+        (plan.plannedContacts != null ? plan.plannedContacts : 0) +
+        carried.reduce((sum, c) => sum + c.contactCount, 0),
       totalChunks: chunks.length,
       chunks,
       // Frozen at push time. A campaign chosen after the push started belongs to
@@ -148,6 +226,23 @@
       })),
       workbenchUrl: null,
     };
+  }
+
+  /**
+   * The chunks a NEW job should inherit: everything still owed to the backend.
+   *
+   * A chunk parked as unretryable is deliberately NOT carried — retrying an
+   * identical body against a contract that refused it would fail identically —
+   * but its contacts stay in the ledger, so they are reported rather than
+   * quietly re-planned under a new id.
+   */
+  function carryableChunks(job) {
+    if (!job || !Array.isArray(job.chunks)) return [];
+    return job.chunks.filter(
+      (c) =>
+        (c.status === CHUNK_STATUS.PENDING || c.status === CHUNK_STATUS.FAILED) &&
+        c.retryable !== false
+    );
   }
 
   function acceptedChunks(job) {
@@ -312,6 +407,10 @@
 
   /** Move the job to its correct status given the state of its chunks. */
   function settle(job, now) {
+    // Cancellation is the operator's decision and outranks chunk state. A
+    // response arriving from a request that was already in flight is still
+    // recorded — those contacts really were saved — but it cannot un-cancel.
+    if (job.status === STATUS.CANCELLED) return job;
     const pending = job.chunks.filter((c) => c.status === CHUNK_STATUS.PENDING);
     const failed = job.chunks.filter((c) => c.status === CHUNK_STATUS.FAILED);
     if (pending.length) {
@@ -329,8 +428,38 @@
   function isTerminal(job) {
     return (
       !!job &&
-      (job.status === STATUS.COMPLETED || job.status === STATUS.COMPLETED_WITH_FAILURES)
+      (job.status === STATUS.COMPLETED ||
+        job.status === STATUS.COMPLETED_WITH_FAILURES ||
+        job.status === STATUS.CANCELLED)
     );
+  }
+
+  /**
+   * Stop the push.
+   *
+   * NOT a rollback. Contacts the backend already accepted stay accepted — this
+   * cannot and must not reach across and undo a server-side commit. What it does
+   * is stop offering the rest: every chunk still owed becomes CANCELLED, which
+   * is terminal and is never retried by an alarm, a resume, or a restart.
+   *
+   * Returns the counts the operator has to be told, because "cancelled" without
+   * "and here is what did and did not happen" is not an answer.
+   */
+  function cancel(job, now) {
+    if (!job) return { job, accepted: 0, notSent: 0, transmitted: 0 };
+    let notSent = 0;
+    let transmitted = 0;
+    for (const chunk of job.chunks) {
+      if (chunk.status === CHUNK_STATUS.ACCEPTED) continue;
+      if (chunk.attempts > 0) transmitted += chunk.contactCount;
+      notSent += chunk.contactCount;
+      chunk.status = CHUNK_STATUS.CANCELLED;
+      chunk.nextAttemptAt = null;
+    }
+    job.status = STATUS.CANCELLED;
+    job.cancelledAt = now;
+    job.updatedAt = now;
+    return { job, accepted: contactsAccepted(job), notSent, transmitted };
   }
 
   /**
@@ -343,6 +472,8 @@
     const failedChunks = job.chunks.filter((c) => c.status === CHUNK_STATUS.FAILED);
     const failedContacts = failedChunks.reduce((sum, c) => sum + c.contactCount, 0);
     const pendingChunks = job.chunks.filter((c) => c.status === CHUNK_STATUS.PENDING);
+    const cancelledChunks = job.chunks.filter((c) => c.status === CHUNK_STATUS.CANCELLED);
+    const cancelledContacts = cancelledChunks.reduce((sum, c) => sum + c.contactCount, 0);
     return {
       jobId: job.jobId,
       logicalSubmissionId: job.logicalSubmissionId,
@@ -352,11 +483,17 @@
       totalContacts: job.totalContacts,
       contactsAccepted: accepted,
       contactsFailed: failedContacts,
-      contactsPending: Math.max(0, job.plannedContacts - accepted - failedContacts),
+      contactsPending: Math.max(
+        0,
+        job.plannedContacts - accepted - failedContacts - cancelledContacts
+      ),
+      contactsCancelled: cancelledContacts,
       totalChunks: job.totalChunks,
-      completedChunks: job.chunks.length - pendingChunks.length - failedChunks.length,
+      completedChunks:
+        job.chunks.length - pendingChunks.length - failedChunks.length - cancelledChunks.length,
       pendingChunks: pendingChunks.length,
       failedChunks: failedChunks.length,
+      cancelledChunks: cancelledChunks.length,
       retryableChunks: failedChunks.filter((c) => c.retryable !== false).length,
       campaignId: job.campaignId,
       counts: Object.assign({}, job.counts),
@@ -378,13 +515,106 @@
     };
   }
 
+
+  // ---- the delivery ledger ----------------------------------------------------
+  //
+  // One record per captured person, keyed by `client_capture_id`, answering the
+  // only question that matters when a Save is planned: has this person ever left
+  // the browser? See the module docstring for why "ever left" and not "was
+  // definitely saved" is the right question.
+  //
+  // Pure over a plain object, like everything else here, and small enough to
+  // rewrite after every state transition: 5,000 entries is a few hundred KB, and
+  // it is cleared with the reviewed set it describes.
+
+  const LEDGER_VERSION = 1;
+
+  function emptyLedger() {
+    return { v: LEDGER_VERSION, entries: {} };
+  }
+
+  /** Tolerate a ledger written by an older version by starting clean. */
+  function readLedger(raw) {
+    if (!raw || raw.v !== LEDGER_VERSION || !raw.entries) return emptyLedger();
+    return { v: LEDGER_VERSION, entries: Object.assign({}, raw.entries) };
+  }
+
+  function deliveryState(ledger, captureId) {
+    return (ledger && ledger.entries && ledger.entries[captureId]) || null;
+  }
+
+  /** True when this person has never been transmitted. */
+  function isPlannable(ledger, captureId) {
+    return deliveryState(ledger, captureId) === null;
+  }
+
+  function markDelivery(ledger, captureIds, state) {
+    const next = readLedger(ledger);
+    for (const id of captureIds || []) {
+      if (typeof id !== "string" || !id) continue;
+      // ACCEPTED is final: a later in-doubt marking must never overwrite proof.
+      if (next.entries[id] === PUSH.DELIVERY.ACCEPTED) continue;
+      next.entries[id] = state;
+    }
+    return next;
+  }
+
+  /**
+   * Close the book on everything that was transmitted and never confirmed.
+   *
+   * Used when a job is cancelled or dismissed: those people are no longer going
+   * to be retried by anything, so they stop being "in doubt, pending a retry"
+   * and become "transmitted, unconfirmed, not retried" — which is what the
+   * operator is told. They are still never re-planned: the backend may hold
+   * them, and only their own frozen chunk could ever have proved it.
+   */
+  function finaliseInDoubt(ledger) {
+    const next = readLedger(ledger);
+    for (const [id, state] of Object.entries(next.entries)) {
+      if (state === PUSH.DELIVERY.IN_DOUBT) next.entries[id] = PUSH.DELIVERY.TERMINAL;
+    }
+    return next;
+  }
+
+  /** How many people are in each delivery state, for truthful reporting. */
+  function ledgerCounts(ledger, captureIds) {
+    const counts = { accepted: 0, inDoubt: 0, terminal: 0, unsent: 0 };
+    for (const id of captureIds || []) {
+      switch (deliveryState(ledger, id)) {
+        case PUSH.DELIVERY.ACCEPTED:
+          counts.accepted += 1;
+          break;
+        case PUSH.DELIVERY.IN_DOUBT:
+          counts.inDoubt += 1;
+          break;
+        case PUSH.DELIVERY.TERMINAL:
+          counts.terminal += 1;
+          break;
+        default:
+          counts.unsent += 1;
+      }
+    }
+    return counts;
+  }
+
   return {
     JOB_VERSION,
     STATUS,
     CHUNK_STATUS,
+    LEDGER_VERSION,
     chunkKey,
     allChunkKeys,
+    liveChunkKeys,
+    carryableChunks,
     createJob,
+    cancel,
+    emptyLedger,
+    readLedger,
+    deliveryState,
+    isPlannable,
+    markDelivery,
+    finaliseInDoubt,
+    ledgerCounts,
     nextChunk,
     markAttempt,
     markAccepted,

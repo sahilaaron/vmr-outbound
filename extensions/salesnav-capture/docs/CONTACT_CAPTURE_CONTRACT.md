@@ -255,6 +255,19 @@ submission. What makes the division safe is what the contract already guarantees
 | a failure that is not retroactive | each submission commits or rolls back on its own |
 | the same campaign across every chunk | `campaign_id` is per submission, and filing is idempotent per contact |
 
+**`client_capture_id` uniqueness is table-wide, and the client is built around
+that.** A capture id belongs to the submission that first committed it; any later
+submission carrying it is refused with 409 `client_capture_id_conflict`, and no
+retry can clear that. So the extension keeps a durable delivery ledger and plans
+a new save from people who have **never been transmitted** — an excluded row, a
+second page of captures, or a partially failed push cannot cause it to re-offer
+an id the backend already owns. Work still owed is carried forward as the SAME
+chunk under the SAME submission id, which is a replay rather than a new claim.
+
+This is a client obligation, not a request to relax the rule. The rule is what
+makes chunked delivery safe, and `tests/test_contact_capture_intake.py` pins it
+along with the replay path it depends on.
+
 So the numbers matter to each other. **`CONTACT_CAPTURE_INTAKE_MAX_BYTES` must
 stay comfortably above the extension's 2 MB chunk ceiling**; lowering it below
 that would make an oversized request reachable for the first time, from a client

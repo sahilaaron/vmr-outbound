@@ -115,6 +115,23 @@
     MAX_RETAINED_RESULTS: 500,
     // Failed-chunk records retained. Same reasoning, much smaller numbers.
     MAX_RETAINED_FAILURES: 50,
+    // Delivery states, per `client_capture_id`. The whole point of the ledger is
+    // the difference between "never left the browser" (plannable) and
+    // "the backend may already own this id" (never plannable again).
+    //
+    //   ACCEPTED  the backend confirmed the chunk carrying it. Saved.
+    //   IN_DOUBT  it was transmitted and no success was seen. The backend may or
+    //             may not hold it; only its own frozen chunk may re-send it.
+    //   TERMINAL  it was transmitted and will not be retried. Reported, never
+    //             silently dropped and never re-planned.
+    //
+    // A capture id ABSENT from the ledger is one that never left the browser,
+    // and is the only kind a new chunk may be planned around.
+    DELIVERY: {
+      ACCEPTED: "a",
+      IN_DOUBT: "d",
+      TERMINAL: "t",
+    },
     // The alarm that resumes a push after the service worker is suspended.
     RESUME_ALARM: "vmr_push_resume",
     // How often that alarm fires while a push is unfinished (minutes). Chrome
@@ -368,8 +385,19 @@
   // holding the whole submission until the end.
   const PUSH_STORAGE = {
     JOB: "cc_push_job",
-    // `CHUNK_PREFIX + jobId + ":" + chunkIndex`.
+    // `CHUNK_PREFIX + clientSubmissionId`.
+    //
+    // Keyed by the chunk's OWN idempotency key rather than by its position in a
+    // job, because a chunk outlives the job that planned it. When a later Save
+    // carries an undelivered chunk forward, the chunk keeps its submission id —
+    // that is the whole of its identity to the backend — and therefore keeps its
+    // storage key too. Re-keying it would mean copying megabytes of captured
+    // personal data to say the same thing.
     CHUNK_PREFIX: "cc_push_chunk:",
+    // The delivery ledger: what has happened to each captured person, by
+    // `client_capture_id`. See `common/push-job.js` — it is what stops a capture
+    // the backend already owns from being planned into a new submission.
+    LEDGER: "cc_push_ledger",
   };
 
   // ---- Local export (operator-controlled, backend-independent) ---------------

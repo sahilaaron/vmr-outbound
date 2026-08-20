@@ -55,6 +55,10 @@ function createWorker(options) {
         for (const k of Array.isArray(keys) ? keys : [keys]) delete backing[k];
         return Promise.resolve();
       },
+      // Chrome 130+. The extension prefers it because it enumerates keys without
+      // reading megabytes of values; a test can delete it to exercise the
+      // older-browser fallback the manifest's minimum version still allows.
+      getKeys: () => Promise.resolve(Object.keys(backing)),
       setAccessLevel: () => Promise.resolve(),
     };
   }

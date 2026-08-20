@@ -346,6 +346,9 @@
   // nothing else — which is the point.
 
   let pushPoll = null;
+  // The last push view the panel painted. Cancel needs its counts to tell the
+  // operator what stopping will and will not do.
+  let currentPush = null;
 
   function stopPushPolling() {
     if (pushPoll === null) return;
@@ -377,12 +380,23 @@
         return done === 1 ? "1 contact saved" : `${done} contacts saved`;
       case "completed_with_failures":
         return `${done} of ${total} saved — ${total - done} not saved`;
+      case "cancelled":
+        // Deliberately two numbers and the word "cancelled", never one number
+        // that could read as a rollback. Nothing was undone.
+        return `${done} contact(s) saved · ${total - done} not sent · push cancelled`;
       default:
         return `Saving ${total} contacts…`;
     }
   }
 
   function pushDetail(view) {
+    if (view.status === "cancelled") {
+      return (
+        `${view.contactsAccepted} contact(s) were saved before it was stopped. ` +
+        `${view.contactsCancelled} were not sent, and are not saved. ` +
+        "Nothing that had already been saved was undone."
+      );
+    }
     const parts = [`${view.completedChunks} of ${view.totalChunks} batches delivered`];
     if (view.contactsPending) parts.push(`${view.contactsPending} still to send`);
     if (view.failedChunks) parts.push(`${view.contactsFailed} in ${view.failedChunks} failed batch(es)`);
@@ -395,6 +409,7 @@
   /** Show the push card. Terminal states hand over to the outcome card. */
   function renderPush(view) {
     if (!view) return;
+    currentPush = view;
     $("save-card").hidden = true;
     $("company-result-card").hidden = true;
     $("saving-card").hidden = true;
@@ -407,7 +422,10 @@
     showView("outcome");
     // The outcome view's own actions offer a way back; while the push is live
     // the wording is about leaving it running, so the group is swapped by hand.
-    const terminal = view.status === "completed" || view.status === "completed_with_failures";
+    const terminal =
+      view.status === "completed" ||
+      view.status === "completed_with_failures" ||
+      view.status === "cancelled";
     for (const node of document.querySelectorAll("[data-actions]")) {
       node.hidden = node.getAttribute("data-actions") !== (terminal ? "outcome" : "pushing");
     }
@@ -444,6 +462,37 @@
       });
       actions.appendChild(dismiss);
     }
+  }
+
+  /**
+   * Stop a push that cannot finish.
+   *
+   * Confirmed first, because it is not reversible in the direction the wording
+   * might suggest: the contacts already delivered stay delivered, and the ones
+   * still owed are simply never offered. Both halves are then shown.
+   */
+  async function cancelPush() {
+    const view = currentPush;
+    const owed = view ? view.totalContacts - view.contactsAccepted : 0;
+    const saved = view ? view.contactsAccepted : 0;
+    const ok = confirm(
+      `Stop saving?\n\n${saved} contact(s) have already been saved and will stay saved. ` +
+        `${owed} have not been sent and will not be saved.\n\nThis does not undo anything.`
+    );
+    if (!ok) return;
+    $("push-cancel").disabled = true;
+    const r = await send({ type: "CANCEL_PUSH" });
+    $("push-cancel").disabled = false;
+    if (r && r.ok) {
+      stopPushPolling();
+      renderPush(r.push);
+      void finishPush();
+      return;
+    }
+    // The only ways this fails are "already finished" and "there is no push",
+    // both of which the next state read will show correctly anyway.
+    const state = await send({ type: "PUSH_STATE" });
+    if (state && state.push) renderPush(state.push);
   }
 
   /** Poll while the panel is open. The push does not depend on this running. */
@@ -520,18 +569,32 @@
     }
   }
 
+  /**
+   * Hand the file to Chrome.
+   *
+   * WHY `chrome.downloads` AND NOT `<a download>`. An anchor download is
+   * possible and would need no permission — but it lands the file wherever the
+   * browser's default is, with no dialog unless the operator happens to have
+   * "ask where to save" switched on. `saveAs: true` asks every time, whatever
+   * that setting says.
+   *
+   * That matters here specifically. This file is the operator's own backup of a
+   * capture that may have taken hours to assemble, and it is the thing they
+   * reach for when VMR Outbound is unreachable. Where it lands is a decision
+   * they should get to make, not one silently made for them — so the permission
+   * buys a real, stated, user-facing behaviour rather than convenience.
+   *
+   * There is no silent fallback. A missing API is reported, because a download
+   * the operator asked for and did not get must not look like one that happened.
+   */
   async function saveTextFile(file) {
+    if (!chrome.downloads || !chrome.downloads.download) {
+      return { ok: false, message: "This browser cannot save the file." };
+    }
     const blob = new Blob([file.text], { type: file.mime + ";charset=utf-8" });
     const url = URL.createObjectURL(blob);
     try {
-      if (chrome.downloads && chrome.downloads.download) {
-        await chrome.downloads.download({ url, filename: file.filename, saveAs: true });
-      } else {
-        const anchor = document.createElement("a");
-        anchor.href = url;
-        anchor.download = file.filename;
-        anchor.click();
-      }
+      await chrome.downloads.download({ url, filename: file.filename, saveAs: true });
       return { ok: true };
     } catch (e) {
       return { ok: false, message: String(e && e.message) };
@@ -620,13 +683,23 @@
           ? "Already saved (idempotent)"
           : "Prospect saved";
 
+    // A cancelled push processed everything it is ever going to. Reporting only
+    // that half as a success would let "100 of 100 saved" stand for a save the
+    // operator stopped with 300 people still unsent.
+    const cancelled = result.push && result.push.status === "cancelled";
     state.appendChild(
       callout(
-        "success",
-        headline,
-        result.alreadyReceived
-          ? "This submission had already been received — it was replayed, not duplicated."
-          : "Saved to the VM Prospector workflow."
+        cancelled ? "warning" : "success",
+        cancelled
+          ? `${result.push.contactsAccepted} contact(s) saved · ` +
+            `${result.push.contactsCancelled || 0} not sent · push cancelled`
+          : headline,
+        cancelled
+          ? "Saving was stopped. What had already been saved was kept; the rest was not sent " +
+            "and is not saved."
+          : result.alreadyReceived
+            ? "This submission had already been received — it was replayed, not duplicated."
+            : "Saved to the VM Prospector workflow."
       )
     );
 
@@ -1883,6 +1956,7 @@
     $("select-all").addEventListener("change", (e) => setAllSelected(e.target.checked));
     $("only-issues").addEventListener("change", renderRecords);
     $("save-btn").addEventListener("click", doSave);
+    $("push-cancel").addEventListener("click", cancelPush);
     $("export-csv").addEventListener("click", () => downloadCapture("csv"));
     $("export-json").addEventListener("click", () => downloadCapture("json"));
     $("push-back").addEventListener("click", () => showView(returnView || "listings-select"));

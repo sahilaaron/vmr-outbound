@@ -30,179 +30,14 @@ const chunking = require("../src/common/chunking.js");
 const contactSchema = require("../src/common/contact-schema.js");
 
 const { LIMITS, PUSH, PUSH_STORAGE, STORAGE, CAPTURE_STATUS } = constants;
-
-// ---- fixtures ---------------------------------------------------------------
-
-/**
- * One Sales Navigator result row, shaped exactly as `extraction.extractPage`
- * emits it. `padding` inflates the row's visible metadata, which is how a
- * genuinely byte-heavy capture is modelled without inventing a new record shape.
- */
-function row(i, padding) {
-  const meta = [
-    "Northwind Logistics International Holdings GmbH",
-    "501-1,000 employees",
-    "Logistics and Supply Chain",
-  ];
-  if (padding) meta.push("x".repeat(padding));
-  return {
-    firstName: "Alexandra",
-    lastName: "Featherstonehaugh" + i,
-    rawFullName: "Alexandra Featherstonehaugh" + i,
-    title: "Senior Director of Revenue Operations and Strategic Partnerships, EMEA",
-    companyName: "Northwind Logistics International Holdings GmbH",
-    location: "Greater Munich Metropolitan Area, Bavaria, Germany",
-    linkedinProfileUrl: "https://www.linkedin.com/in/alexandra-featherstonehaugh" + i,
-    linkedinProfileUrlSource: "observed",
-    linkedinMemberId: "ACwAAAB1x9k" + i,
-    linkedinAliasUrl: "https://www.linkedin.com/in/ACwAAAB1x9k" + i,
-    salesNavLeadUrl: "https://www.linkedin.com/sales/lead/ACwAAAB1x9k" + i + ",NAME_SEARCH,ab12",
-    companyLinkedInUrl: "https://www.linkedin.com/company/northwind-logistics",
-    salesNavCompanyUrl: "https://www.linkedin.com/sales/company/123456",
-    visibleCompanyMetadata: meta,
-    sourceSearchUrl: "https://www.linkedin.com/sales/search/people?keywords=ops&page=1",
-    sourcePageNumber: 1,
-    sourcePosition: i + 1,
-    capturedAt: "2026-08-20T09:15:04.000Z",
-    _stableKey: "https://www.linkedin.com/sales/lead/ACwAAAB1x9k" + i,
-    warnings: [],
-  };
-}
-
-function capturePage(count, padding, offset) {
-  const start = offset || 0;
-  const records = [];
-  for (let i = 0; i < count; i += 1) records.push(row(start + i, padding));
-  return {
-    status: CAPTURE_STATUS.OK,
-    records,
-    pageWarnings: [],
-    sourcePageNumber: 1,
-    sourceSearchUrl: "https://www.linkedin.com/sales/search/people?keywords=ops&page=1",
-    capturedAt: "2026-08-20T09:15:04.000Z",
-    count,
-    visibleCount: count,
-    skipped: [],
-    skippedCount: 0,
-    scroll: null,
-  };
-}
-
-/**
- * A recording backend.
- *
- * Records every request, every `client_submission_id` and every
- * `client_capture_id` it has ever seen, and replays an identical resubmission
- * the way the real intake does. `onRequest` lets a test fail, stall or drop a
- * response for a chosen chunk.
- */
-function recordingBackend(options) {
-  const o = options || {};
-  const requests = [];
-  const submissions = new Map();
-  const captureIds = [];
-  async function fetchImpl(url, init) {
-    const payload = JSON.parse(init.body);
-    const entry = {
-      url,
-      bytes: Buffer.byteLength(init.body, "utf8"),
-      contacts: payload.contacts.length,
-      clientSubmissionId: payload.client_submission_id,
-      campaignId: payload.campaign_id,
-      captureIds: payload.contacts.map((c) => c.client_capture_id),
-    };
-    requests.push(entry);
-    const decision = o.onRequest ? o.onRequest(entry, requests.length) : null;
-    if (decision && decision.throw) throw new Error(decision.throw);
-
-    const replay = submissions.has(payload.client_submission_id);
-    if (!replay) {
-      // The commit happens whether or not the caller ever sees the response —
-      // which is the whole point of the "lost response" case.
-      submissions.set(payload.client_submission_id, entry);
-      for (const id of entry.captureIds) captureIds.push(id);
-    }
-    if (decision && decision.dropResponse) throw new Error("network dropped the response");
-    if (decision && decision.status) {
-      return response(decision.status, decision.body || { error: "internal_error" });
-    }
-    return response(replay ? 200 : 201, {
-      submission_id: "sub_" + payload.client_submission_id.slice(0, 8),
-      client_submission_id: payload.client_submission_id,
-      received_at: "2026-08-20T09:20:00.000Z",
-      already_received: replay,
-      counts: {
-        submitted: payload.contacts.length,
-        created: payload.contacts.length,
-        campaign_filings_applied: payload.campaign_id ? payload.contacts.length : 0,
-      },
-      results: payload.contacts.map((c) => ({
-        client_capture_id: c.client_capture_id,
-        outcome: "created",
-        capture_url: "https://srv1885453.hstgr.cloud/contact-captures/submissions/x",
-        contact_url: "https://srv1885453.hstgr.cloud/contacts/" + c.client_capture_id.slice(0, 8),
-        review_candidate_count: 0,
-        labels_applied: [],
-      })),
-      operator_workbench_url: "https://srv1885453.hstgr.cloud/contact-captures/submissions/x",
-    });
-  }
-  function response(status, body) {
-    return {
-      ok: status < 400,
-      status,
-      text: () => Promise.resolve(JSON.stringify(body)),
-    };
-  }
-  return { fetchImpl, requests, submissions, captureIds };
-}
-
-/** A worker with a linked account, an open Sales Navigator tab, and a backend. */
-function worker(backend, storage) {
-  const account = linkedAccount();
-  return createWorker({
-    tabs: [SALES_TAB],
-    storage: Object.assign({}, account.local, storage || {}),
-    sessionStorage: account.session,
-    fetch: backend.fetchImpl,
-    onTabMessage: () => {
-      throw new Error("no capture in this test");
-    },
-  });
-}
-
-/** Capture `count` rows into the reviewed batch, then start the push. */
-async function captureAndPush(w, count, padding) {
-  // Pages of at most 500 so the harness's synthetic capture stays realistic.
-  let done = 0;
-  while (done < count) {
-    const size = Math.min(500, count - done);
-    w.sandbox.chrome.tabs.sendMessage = () => Promise.resolve(capturePage(size, padding, done));
-    const r = await w.dispatch({ type: "CAPTURE_ACTIVE_PAGE" });
-    assert.equal(r.ok, true, "capture failed: " + JSON.stringify(r).slice(0, 200));
-    done += size;
-  }
-  return w.dispatch({ type: "SAVE_INCLUDED_CONTACTS" });
-}
-
-/** Wait until the push settles (or the deadline passes). No real clock waits. */
-async function drain(w, options) {
-  const o = options || {};
-  const limit = o.turns || 400;
-  for (let i = 0; i < limit; i += 1) {
-    await w.settle(20);
-    const state = await w.dispatch({ type: "PUSH_STATE" });
-    if (!state.push) return state;
-    if (!state.pushActive) return state;
-    if (o.stopWhen && o.stopWhen(state)) return state;
-  }
-  return w.dispatch({ type: "PUSH_STATE" });
-}
-
-function makeWorkerWithBatch(backend, count, padding) {
-  const w = worker(backend);
-  return { w, ready: captureAndPush(w, count, padding) };
-}
+const {
+  row,
+  capturePage,
+  recordingBackend,
+  worker,
+  captureAndPush,
+  drain,
+} = require("./push-fixtures.js");
 
 // ---- 1. the small push still behaves exactly as it did ----------------------
 
@@ -506,8 +341,10 @@ test("a commit whose response never arrived is replayed, never duplicated", asyn
   const w = worker(backend);
   await captureAndPush(w, 150);
   await drain(w, { turns: 400, stopWhen: (s) => s.push.status === "retrying" });
-  // The retry is scheduled rather than immediate. Move the clock, not the code.
+  // The retry is scheduled rather than immediate. Move the clock, not the code,
+  // and let the ALARM bring the push back — which is what happens in a browser.
   w.advanceClock(30000);
+  await w.fireAlarm(PUSH.RESUME_ALARM);
   const state = await drain(w, { turns: 400 });
 
   assert.equal(dropped, true);
@@ -740,8 +577,14 @@ test("a settled push is not re-sent when the reviewed content has not changed", 
   await drain(w, { turns: 200 });
   const again = await w.dispatch({ type: "SAVE_INCLUDED_CONTACTS" });
   assert.equal(again.ok, false);
-  assert.equal(again.error, "already_pushed");
+  // The refusal is now per contact rather than per batch, because that is the
+  // unit the backend enforces: these twenty capture ids are saved, so there is
+  // nothing left to send. Re-offering them would be a 409, not a no-op.
+  assert.equal(again.error, "nothing_to_send");
+  assert.equal(again.alreadySaved, 20);
+  assert.match(again.message, /already been saved/i);
   assert.equal(backend.requests.length, 1);
+  assert.deepEqual(backend.conflicts, []);
 });
 
 test("the planner and the contract agree on what one request may carry", () => {
@@ -777,25 +620,28 @@ test("the planner and the contract agree on what one request may carry", () => {
   assert.equal(contactSchema.serializePayload(payload).withinLimit, true);
 });
 
-// Keep the unused helper honest rather than deleting it mid-review.
-void makeWorkerWithBatch;
-void STORAGE;
-
 test("a sign-in that has lapsed pauses the push instead of failing every chunk", async () => {
   // The refusal is about the PUSH, not about the chunk that met it. Burning
   // five attempts on each of fifty chunks against a condition only the operator
   // can clear would turn one sign-in into fifty failed batches.
-  const backend = recordingBackend();
+  // Two chunks land, then the network stops, so the push parks in backoff with
+  // work still owed. Parking it first is what makes the assertion below about
+  // authorization rather than about how far a live loop happened to get.
+  const backend = recordingBackend({
+    onRequest: (_e, n) => (n > 2 ? { throw: "network down" } : null),
+  });
   const w = worker(backend);
   await captureAndPush(w, 500);
-  await drain(w, { turns: 100, stopWhen: (s) => s.push.contactsAccepted >= 100 });
+  await drain(w, { turns: 400, stopWhen: (s) => s.push.status === "retrying" });
+  assert.ok((await w.dispatch({ type: "PUSH_STATE" })).push.contactsAccepted >= 200);
 
   // The account link goes away mid-push, exactly as an expiry or a revocation
   // does: no token in session storage, and the refresh is refused.
   delete w.sessionStore[constants.ACCOUNT_STORAGE.ACCESS_TOKEN];
   delete w.store[constants.ACCOUNT_STORAGE.ACCOUNT_LINK];
   const before = backend.requests.length;
-  await w.dispatch({ type: "RESUME_PUSH" });
+  w.advanceClock(300000);
+  await w.fireAlarm(PUSH.RESUME_ALARM);
   await w.settle(50);
 
   assert.equal(backend.requests.length, before, "nothing may be sent without authorization");

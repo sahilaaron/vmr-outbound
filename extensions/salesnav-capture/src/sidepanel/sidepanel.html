@@ -491,6 +491,9 @@
 
         <div class="actions-group" data-actions="pushing" hidden>
           <button id="push-back" class="btn full" type="button">Back to this page</button>
+          <!-- The way out of a save that cannot finish. Stopping is not undoing:
+               contacts already saved stay saved, and the summary says so. -->
+          <button id="push-cancel" class="linkbtn muted" type="button">Cancel push</button>
           <p class="app-note">
             The save carries on without this panel. Reopen it any time to see where it got to.
           </p>

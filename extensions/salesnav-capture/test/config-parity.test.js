@@ -310,6 +310,17 @@ test("the download permission is used by the panel only, and only on a click", (
     "the service worker must not call chrome.downloads"
   );
   assert.ok(/chrome\.downloads/.test(panel), "the panel is what saves the file");
+  // The permission is kept for ONE user-facing reason, and the code has to keep
+  // using it or the permission should go. `saveAs` is that reason: the export is
+  // the operator's own backup and where it lands is their decision, which an
+  // `<a download>` cannot ask about unless the browser is already configured to.
+  assert.match(panel, /saveAs: true/, "saveAs is why the permission is held");
+  // No silent fallback: a download the operator asked for and did not get must
+  // not look like one that happened.
+  assert.ok(
+    !/anchor\.download/.test(panel),
+    "an unreachable fallback path implies the permission is optional when it is not"
+  );
   // And nothing downloads by itself: both entry points are click handlers.
   assert.match(panel, /\$\("export-csv"\)\.addEventListener\("click"/);
   assert.match(panel, /\$\("export-json"\)\.addEventListener\("click"/);

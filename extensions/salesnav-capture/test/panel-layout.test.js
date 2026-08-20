@@ -168,6 +168,20 @@ test("the push progress card reports where a large save actually got to", () => 
     PANEL_DOC.querySelector('[data-actions="pushing"]'),
     "the operator needs a way out of the screen while the save continues"
   );
+  // And a way out of the SAVE, not merely out of the screen. A push that cannot
+  // finish holds the reviewed set; without this the extension is wedged by a
+  // condition the operator has no control over.
+  const cancel = PANEL_DOC.getElementById("push-cancel");
+  assert.ok(cancel, "an unfinishable push needs an operator escape");
+  assert.match(cancel.textContent, /cancel/i);
+  assert.ok(PANEL_JS.includes("CANCEL_PUSH"), "and the panel must actually send it");
+  // Stopping is not undoing, and the operator is told so BEFORE they confirm:
+  // both halves named, and the sentence that rules out a rollback.
+  const cancelSource = PANEL_JS.match(/async function cancelPush[\s\S]{0,1200}/)[0];
+  assert.match(cancelSource, /confirm\(/, "cancelling is confirmed, not instant");
+  assert.match(cancelSource, /already been saved and will stay saved/i);
+  assert.match(cancelSource, /have not been sent and will not be saved/i);
+  assert.match(cancelSource, /does not undo anything/i);
   // The old copy told the operator to stay put. It must not survive.
   assert.ok(!/Keep\s+this panel open/i.test(PANEL_HTML));
 });
