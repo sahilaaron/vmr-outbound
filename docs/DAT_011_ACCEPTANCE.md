@@ -1,5 +1,16 @@
 # DAT-011 — authenticated acquisition-path trial (#131)
 
+> **Historical record — superseded behaviour.** This document reports the
+> DAT-011 trial as it ran. Its acceptance rows describe a capture rule that no
+> longer exists: at the time, a visible row with no readable Company Name was
+> withheld and reported under *N skipped — no company name*. That eligibility
+> gate was removed once production showed it was discarding a large share of
+> otherwise valid contacts, because a plain-text employer read as no employer at
+> all. Capture is now decided by person identity alone, and an absent company is
+> recorded as absent rather than costing the contact. See
+> `extensions/salesnav-capture/docs/SELECTORS.md` § *Capture eligibility* for the
+> rule in force. Nothing below has been rewritten: it is what was observed then.
+
 Acceptance and evidence record for the real, operator-controlled acquisition
 path. This is **not** a feature-development task: nothing here authorizes new
 capability, and no defect found during the trial is fixed by broadening it.

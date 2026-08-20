@@ -287,3 +287,151 @@ test("two different people at the same unlinked company stay two people", () => 
   assert.equal(merged.records.length, 2);
   assert.equal(merged.collapsed, 0);
 });
+
+
+// =============================================================================
+// UCR-001/002/003 — the fallback must not invent an employer
+//
+// Retaining a person whose employer is not linked was the point of this change.
+// Reading "whatever is rendered next to the title" as that employer was not: an
+// external review reproduced `3rd degree connection`, `Munich, Germany` and
+// `University of Somewhere` arriving as company names, an employer stored
+// together with the metadata beside it, and a real company called `At Home
+// Group` truncated to `Home Group` because its first word looked like the
+// connective.
+//
+// Every case below is one of those reproductions. The rule they pin down: the
+// company field is bounded to evidence that can genuinely name an employer, and
+// where it cannot, the answer is null — while the PERSON is captured either way.
+// =============================================================================
+
+function contamination() {
+  return byName(capture("results-company-contamination.html"));
+}
+
+test("UCR-001 relationship text is never read as an employer", () => {
+  const rows = contamination();
+  assert.equal(rows["Degree Row"].companyName, null);
+  assert.equal(rows["Degree Row"].title, "CFO");
+  // Furniture on its own line is refused by its shape, not by its position.
+  assert.equal(rows["Furniture Only"].companyName, null);
+  assert.equal(rows["Furniture Only"].title, "Director");
+});
+
+test("UCR-001 a location is never read as an employer", () => {
+  const rows = contamination();
+  assert.equal(rows["Location Row"].companyName, null);
+  assert.equal(rows["Location Row"].title, "CFO");
+  // The location is still captured as a location — it was refused as a company,
+  // not discarded as evidence.
+  assert.equal(rows["Location Row"].location, "Munich, Germany");
+});
+
+test("UCR-001 a school is never read as an employer, hooked or not", () => {
+  const rows = contamination();
+  // With the durable `data-anonymize="school"` hook it is refused by node type.
+  assert.equal(rows["School Row"].companyName, null);
+  // Without any hook it is not reached at all: the broad
+  // `[class*="entity-lockup__subtitle"]` fallback that used to find it is gone.
+  assert.equal(rows["Unhooked School Row"].companyName, null);
+});
+
+test("UCR-001 every contaminated row still captures the PERSON", () => {
+  const r = capture("results-company-contamination.html");
+  assert.equal(r.status, CAPTURE_STATUS.OK);
+  assert.equal(r.count, 11, "bounding the company must never cost a contact");
+  assert.equal(r.visibleCount, 11);
+  assert.ok(r.records.every((x) => x.salesNavLeadUrl), "identity intact on every row");
+});
+
+test("UCR-002 a connection count hanging off the employer line is not the employer", () => {
+  const rows = contamination();
+  assert.equal(rows["Connections Suffix"].companyName, "Acme Ltd");
+  assert.ok(!hasMissing(rows["Connections Suffix"], "companyName"));
+});
+
+test("UCR-002 other metadata beside the employer is trimmed, as text or as a node", () => {
+  const rows = contamination();
+  assert.equal(rows["Metadata Suffix"].companyName, "Acme Ltd");
+  // The same suffix as a recognised METADATA NODE rather than as text: the node
+  // ends the employer instead of joining it.
+  assert.equal(rows["Metadata Node Suffix"].companyName, "Acme Ltd");
+});
+
+test("UCR-002 only true list separators cut the employer, never ordinary punctuation", () => {
+  // A company name containing a comma or a hyphen must survive whole: `,` and
+  // `-` are punctuation inside real names, not metadata separators.
+  const { employerFromText } = ex._internals;
+  assert.equal(employerFromText("Cliffside Software, Inc."), "Cliffside Software, Inc.");
+  assert.equal(employerFromText("Harbor-Freight Collective"), "Harbor-Freight Collective");
+  assert.equal(employerFromText("Acme Ltd · 500+ connections"), "Acme Ltd");
+  assert.equal(employerFromText("Acme Ltd • Logistics"), "Acme Ltd");
+  // A pipe is not a LinkedIn list separator on this line, and the KATAKANA
+  // MIDDLE DOT is part of the name itself. Cutting on either would truncate a
+  // real employer — the same failure, inverted.
+  assert.equal(employerFromText("A|B Corp"), "A|B Corp");
+  assert.equal(employerFromText("株式会社エース・システム"), "株式会社エース・システム");
+  // Furniture with nothing else on the line is refused outright.
+  assert.equal(employerFromText("3rd degree connection"), null);
+  assert.equal(employerFromText("500+ connections"), null);
+  assert.equal(employerFromText("12 shared connections"), null);
+});
+
+test("UCR-003 an employer beginning with the connective word survives intact", () => {
+  const rows = contamination();
+  // Introduced BY a connective: one connective is removed, and only one.
+  assert.equal(rows["Connective Then At"].companyName, "At Home Group");
+  // No connective at all, element-sourced: nothing is stripped.
+  assert.equal(rows["No Connective At"].companyName, "At Home Group");
+});
+
+test("UCR-003 the connective is only ever removed from the run abutting the title", () => {
+  const { employerFromText } = ex._internals;
+  // `employerFromText` never strips a connective — that decision belongs to the
+  // node walk, which is the only place with the structure to make it.
+  assert.equal(employerFromText("At Home Group"), "At Home Group");
+  assert.equal(employerFromText("@Home Networks"), "@Home Networks");
+});
+
+test("UCR-001/002/003 a real unlinked employer between contaminated rows is unaffected", () => {
+  const rows = contamination();
+  // The control. Bounding the fallback must not have quietly switched it off,
+  // and nothing may cross a row boundary in either direction.
+  assert.equal(rows["Honest Unlinked"].companyName, "Novaline Freight");
+  assert.equal(rows["Honest Unlinked"].companyLinkedInUrl, null);
+  assert.equal(rows["Honest Unlinked"].salesNavCompanyUrl, null);
+  assert.equal(rows["Honest Unlinked"].location, "Leeds, United Kingdom");
+  // Its neighbours on both sides stay empty.
+  assert.equal(rows["No Connective At"].companyName, "At Home Group");
+  assert.equal(rows["Furniture Only"].companyName, null);
+});
+
+test("UCR regression: the original mixed page still captures all seven", () => {
+  // The behaviour the repair must not cost. Three linked employers and four
+  // unlinked ones, every person captured, every company read correctly, and no
+  // company URL invented for the four that have no company page.
+  const r = capture("results-unlinked-company.html");
+  assert.equal(r.count, 7);
+  assert.equal(r.visibleCount, 7);
+  assert.deepEqual(
+    r.records.map((x) => [x.rawFullName, x.companyName, x.salesNavCompanyUrl]),
+    [
+      ["Jane Doe", "Acme Corporation", "https://www.linkedin.com/sales/company/1234567"],
+      ["John Smith", "Example Industries", null],
+      [
+        "Priya Raghunathan",
+        "Harbor Freight Collective",
+        "https://www.linkedin.com/sales/company/2468013",
+      ],
+      ["Lena Fischer", "Novaline Freight", null],
+      ["Samuel Adeyemi", "Harbor Analytics", null],
+      [
+        "Marcus O’Neill",
+        "Cliffside Software, Inc.",
+        "https://www.linkedin.com/sales/company/7654321",
+      ],
+      ["Amara Okafor", "Southgate Haulage", null],
+    ]
+  );
+  assert.equal(r.records.filter((x) => x.companyLinkedInUrl).length, 0);
+});

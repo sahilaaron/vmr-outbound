@@ -106,25 +106,81 @@ employer read as *no employer*, which the eligibility rule below then turned
 into *no person*. In production that cost a very large share of otherwise valid
 contacts.
 
-Two further strategies run only when all four above fail, both anchored on the
-element the **title** was read from, and both scoped to the one row:
+Two further strategies run only when all four above fail. Both are anchored on
+the element the **title** was read from, both are scoped to the one row, and
+both are **bounded**: they may only read evidence that can genuinely name an
+employer.
 
-1. **The subtitle line that holds the title, minus the title itself.**
-   `<span data-anonymize="title">VP Sales</span> at Example Industries` yields
-   `Example Industries`. The title is removed as a **node**, never by splitting
-   the sentence, so a title that merely contains a connective
-   (`Operations Manager at scale`, with no separate company node) leaves no
-   remainder and yields nothing.
-2. **A separate subtitle line that is not the title's own** — the unlinked twin
-   of `.artdeco-entity-lockup__subtitle a`.
+1. **The subtitle line that holds the title, after the title itself.** Read
+   node by node rather than as one flattened string, because two questions have
+   to be answered per node — *is this text the connective?* and *may this node be
+   an employer?*
+2. **A separate `.artdeco-entity-lockup__subtitle` line that is not the title's
+   own** — the unlinked twin of `.artdeco-entity-lockup__subtitle a`.
 
-A leading connective (`at`, `@`, `·`, `•`, `,`, `-`, `–`, `—`) is stripped only
-from the boundary between two distinct pieces of DOM text. A connective with
-nothing after it leaves nothing: a dangling `at` is not a company name.
+### What may never be the employer
+
+Structural first. A node that is, or contains, any of these is refused wherever
+it sits, and in strategy 1 it also **ends** the employer — whatever follows
+belongs to the thing that node introduced:
+
+`[data-anonymize="location"]` · `[data-anonymize="industry"]` ·
+`[data-anonymize="school"]` · `[data-anonymize="degree"]` ·
+`[data-anonymize="person-name"]` · `[data-anonymize="title"]` ·
+`[class*="entity-lockup__caption"]` · `[class*="entity-lockup__metadata"]` ·
+`[class*="entity-lockup__degree"]` · `[class*="entity-lockup__badge"]` ·
+`[class*="member-insights"]` · `[class*="shared-connections"]`
+
+Then a **closed** list of interface furniture that is never a company name:
+`3rd degree connection`, a bare `1st`/`2nd`/`3rd`, `500+ connections`,
+`29,777 followers`, `12 shared connections`. A string that is not on that list
+is left exactly alone — nothing here interprets arbitrary text.
+
+There is deliberately **no** `[class*="entity-lockup__subtitle"]` fallback. That
+pattern matches whatever LinkedIn hangs a subtitle-ish class on, and a strategy
+that reads "the next subtitle-shaped thing" is not reading the employer. It
+produced `3rd degree connection`, `Munich, Germany` and `University of Somewhere`
+as company names (UCR-001).
+
+### The metadata beside the employer
+
+LinkedIn hangs extra facts off one line with a list separator, so the employer is
+trimmed at the first `·` or `•`: `Acme Ltd · 500+ connections` names a company
+**and** a connection count, and storing both as the company is contaminated
+evidence (UCR-002).
+
+Only those two cut. `,` and `-` are ordinary punctuation inside real names
+(`Cliffside Software, Inc.`, `Harbor-Freight`), `|` can appear inside a name, and
+the KATAKANA MIDDLE DOT `・` is a letter-level separator in Japanese names
+(`株式会社エース・システム`). Cutting on any of them would truncate the employer —
+the same failure as UCR-002, inverted.
+
+### The connective
+
+`at`, `@`, `·`, `•`, `|`, `,`, `-`, `–`, `—` are removed **only** from the text
+run that directly abuts the title element, and only once. That is the only place
+a connective can structurally be, which is what keeps a real employer whose name
+begins with the same word intact (UCR-003):
+
+| markup | company |
+| --- | --- |
+| `<span title>Buyer</span> at At Home Group` | `At Home Group` |
+| `<span title>Buyer</span><span> At Home Group</span>` | `At Home Group` |
+| `<span title>Operations Manager at scale</span>` (no company node) | `null` |
+| `<span title>Logistics Lead</span> at` | `null` |
+
+An element-sourced remainder is never stripped: it did not abut the title, so
+nothing in it can be the connective.
+
+When the evidence does not clearly name an employer the answer is `null`. An
+absent company stays absent.
 
 Fixtures: `test/fixtures/results-unlinked-company.html` (three linked and four
-unlinked rows interleaved) and `results-company-connective-only.html` (the
-traps). Tests: `test/unlinked-company.test.js`.
+unlinked rows interleaved), `results-company-connective-only.html` (the
+connective traps) and `results-company-contamination.html` (the hostile page —
+relationship text, location, school, metadata suffixes, and a real employer
+called `At Home Group`, with a genuine unlinked employer between them as the
+control). Tests: `test/unlinked-company.test.js`.
 
 ## Capture eligibility
 

@@ -264,21 +264,35 @@ identifying — redact it as `<member-id>` in anything you paste back.**
   row that shows no public profile link on the page. It must resolve to the
   right person. Confirm the *lead* link is still present and unchanged beside
   it. Record the outcome as pass/fail — **do not paste the URLs**.
-- **S8 — company-name skipping.** Find or construct a search where at least one
-  visible row has no company (a stealth/self-employed row often works). After
-  capture, confirm the panel reports *N skipped — no company name*, that those
-  people are absent from the review list, and that every other row on the page
-  was still captured.
-- **S9 — no invention.** For one skipped row, confirm the panel did not populate
-  a company from the person's headline, school or location, and that no company
-  was borrowed from the row above or below.
+- **S8 — the company never decides the contact.** Find or construct a search
+  containing all three: a row whose employer is a link, a row whose employer is
+  plain text with no company page, and a row with no readable company at all (a
+  stealth/self-employed row often works). After capture, confirm **every one of
+  them is in the review list** and that the captured count equals the visible
+  count. The linked row must show its company and its company link; the
+  plain-text row must show its company name and no company link; the third must
+  show the company as not shown. No row is withheld for want of a company.
+- **S9 — no invention.** For the row with no readable company, confirm the panel
+  did not populate a company from the person's headline, school, location,
+  degree or connection count, and that no company was borrowed from the row
+  above or below. For the plain-text row, confirm the company reads as the
+  employer alone — not the employer plus a connection count or an industry that
+  sits beside it on the same line.
 - **S10 — send.** Save the reviewed batch to the local backend and confirm the
-  submitted count equals the reviewed count, with skipped rows absent.
+  submitted count equals the reviewed count. A contact with no company must be
+  accepted, not refused.
 - **S11 — challenge.** If LinkedIn shows a checkpoint at any point, confirm the
   panel switches to *Login required* and captures nothing until you clear it.
 
 Record PASS/FAIL per step. S7 and S8 are the two findings that motivated this
 issue; both must pass before DAT-011 / #131 can be accepted.
+
+> S8-S10 were rewritten when the company-name eligibility gate was removed. They
+> previously asked the operator to confirm that rows with no company were
+> *skipped*, which is the behaviour that production showed was discarding a
+> large share of otherwise valid contacts. The trial record that ran against the
+> old wording is preserved, and labelled, in
+> [`DAT_011_ACCEPTANCE.md`](./DAT_011_ACCEPTANCE.md).
 
 **Known item for review, not a step:** if a Sales Navigator member id is an
 opaque URN rather than a vanity handle, the derived `/in/<member-id>` URL will
