@@ -35,7 +35,7 @@ present) — never a successful empty capture.
 | --- | --- |
 | name | `[data-anonymize="person-name"]` → `a[href*="/sales/lead/"] span[dir="ltr"]` → `.artdeco-entity-lockup__title a` → `.artdeco-entity-lockup__title` |
 | title | `[data-anonymize="title"]` → `.artdeco-entity-lockup__subtitle` → `[class*="entity-lockup__subtitle"]` |
-| companyName | `a[data-anonymize="company-name"]` → `[data-anonymize="company-name"]` → `a[data-control-name="view_company_via_result_name"]` → `.artdeco-entity-lockup__subtitle a` |
+| companyName | `a[data-anonymize="company-name"]` → `[data-anonymize="company-name"]` → `a[data-control-name="view_company_via_result_name"]` → `.artdeco-entity-lockup__subtitle a` → **unlinked strategies** (below) |
 | location | `[data-anonymize="location"]` → `[class*="entity-lockup__caption"]` |
 | lead URL | `a[data-anonymize="person-name"]` → `a[href*="/sales/lead/"]` → `a[href*="/sales/people/"]` → `.artdeco-entity-lockup__title a` |
 | company URL | `a[data-anonymize="company-name"]` → `a[data-control-name="view_company_via_result_name"]` → `a[href*="/sales/company/"]` → `a[href*="/company/"]` |
@@ -96,14 +96,55 @@ convenience for the operator, never an identity.
 - Anglicized/ASCII-folded names (raw Unicode is preserved; normalization is a
   backend concern).
 
-## Capture eligibility (DAT-018)
+## The company name without a company link
 
-A visible row with no Company Name — absent, empty, or whitespace-only — is
-**not** offered as capturable: the downstream flow is company-first, so such a
-row cannot be used. The company is never inferred from the headline, a school, a
-location, or a neighbouring row. Skipped rows are reported truthfully
-(`skipped`, `skippedCount`, and a `rows_skipped` page warning carrying the
-count), never silently dropped, and skipping one row never aborts the others.
+The first four companyName strategies all require either a company anchor or a
+`data-anonymize="company-name"` node. Sales Navigator produces neither when the
+employer has no company page to link to, and the last strategy in the ordered
+list — `.artdeco-entity-lockup__subtitle a` — is an **anchor**. So a plain-text
+employer read as *no employer*, which the eligibility rule below then turned
+into *no person*. In production that cost a very large share of otherwise valid
+contacts.
+
+Two further strategies run only when all four above fail, both anchored on the
+element the **title** was read from, and both scoped to the one row:
+
+1. **The subtitle line that holds the title, minus the title itself.**
+   `<span data-anonymize="title">VP Sales</span> at Example Industries` yields
+   `Example Industries`. The title is removed as a **node**, never by splitting
+   the sentence, so a title that merely contains a connective
+   (`Operations Manager at scale`, with no separate company node) leaves no
+   remainder and yields nothing.
+2. **A separate subtitle line that is not the title's own** — the unlinked twin
+   of `.artdeco-entity-lockup__subtitle a`.
+
+A leading connective (`at`, `@`, `·`, `•`, `,`, `-`, `–`, `—`) is stripped only
+from the boundary between two distinct pieces of DOM text. A connective with
+nothing after it leaves nothing: a dangling `at` is not a company name.
+
+Fixtures: `test/fixtures/results-unlinked-company.html` (three linked and four
+unlinked rows interleaved) and `results-company-connective-only.html` (the
+traps). Tests: `test/unlinked-company.test.js`.
+
+## Capture eligibility
+
+**Person identity decides whether a Contact exists. The company does not.**
+
+A company page URL is optional enrichment and a company name is best-effort.
+Neither gates the other, and neither gates the person: a row with a known person,
+a known company and no company URL is captured, and so is a row whose company
+cannot be read at all.
+
+DAT-018 B originally withheld any row whose Company Name could not be read, on
+the reasoning that the downstream flow is company-first. That gate is gone —
+capturing a person and resolving their employer are separate concerns, and the
+backend already stages a capture whose company is unknown rather than refusing
+it. `skipped`, `skippedCount` and the `rows_skipped` page warning went with it.
+
+What survives from DAT-018 B is the half that mattered: an absent company is
+reported as absent (`missing_field: companyName`) and is **never** inferred from
+the headline, a school, a location or a neighbouring row, and a company URL is
+never synthesised from a company name.
 
 Update this table and the constants in `extraction.js` together with their tests
 in `test/extraction.test.js`, `test/salesnav-identity.test.js` and

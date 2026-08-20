@@ -1,11 +1,17 @@
 /**
  * DAT-018 A — canonical LinkedIn profile URL derived from a Sales Navigator
- * lead URL, and B — Company Name capture eligibility.
+ * lead URL, and B — what an unreadable Company Name does to the person.
  *
  * The rule being protected: a derivation must be conservative and marked. A
  * supported lead URL yields the canonical `/in/<member-id>`; anything else
  * yields null with a reason. The original Sales Navigator URL is preserved as
  * source evidence in every case.
+ *
+ * DAT-018 B originally WITHHELD a row whose Company Name could not be read.
+ * That gate is gone: the company is enrichment, the person is the record. What
+ * survives from B is the half that mattered — an absent company is reported as
+ * absent and is never inferred from a headline, a school, a location or a
+ * neighbouring row.
  */
 
 const test = require("node:test");
@@ -19,7 +25,7 @@ const constants = require("../src/common/constants.js");
 const normalize = require("../src/common/normalize.js");
 const extraction = require("../src/common/extraction.js");
 
-const { WARNINGS, SKIP_REASONS } = constants;
+const { WARNINGS } = constants;
 const FIXTURES = path.join(__dirname, "fixtures");
 
 function capture(name) {
@@ -129,69 +135,61 @@ test("with no visible link there is no profile URL, only the member id", () => {
   );
 });
 
-// --- B. company-name eligibility ----------------------------------------------
+// --- B. an unreadable company never costs the person ---------------------------
 
-test("rows with no company name are withheld, with a truthful reason", () => {
+test("rows with no company name are still captured, with the gap reported", () => {
   const r = capture("results-missing-company.html");
   assert.equal(r.status, constants.CAPTURE_STATUS.OK);
   assert.equal(r.visibleCount, 4);
-  assert.equal(r.count, 1);
-  assert.equal(r.skippedCount, 3);
-  assert.deepEqual(
-    r.skipped.map((x) => x.reason),
-    [
-      SKIP_REASONS.MISSING_COMPANY_NAME,
-      SKIP_REASONS.MISSING_COMPANY_NAME,
-      SKIP_REASONS.MISSING_COMPANY_NAME,
-    ]
-  );
-  assert.deepEqual(r.pageWarnings, [
-    { code: "rows_skipped", reason: SKIP_REASONS.MISSING_COMPANY_NAME, count: 3 },
-  ]);
+  // All four visible people are captured. Three of them have no readable
+  // company; that is a gap in the evidence, not grounds to delete a person.
+  assert.equal(r.count, 4);
+  assert.deepEqual(r.pageWarnings, []);
+  const withoutCompany = r.records.filter((x) => x.companyName === null);
+  assert.equal(withoutCompany.length, 3);
+  for (const rec of withoutCompany) {
+    assert.ok(
+      rec.warnings.some((w) => w.code === WARNINGS.MISSING_FIELD && w.field === "companyName"),
+      "the absent company is named as a missing field"
+    );
+  }
 });
 
-test("blank and whitespace-only company names count as missing", () => {
+test("blank and whitespace-only company names read as absent, not as values", () => {
   const r = capture("results-missing-company.html");
-  const skippedNames = r.skipped.map((x) => x.rawFullName);
-  assert.ok(skippedNames.includes("Absent Company"), "no company element at all");
-  assert.ok(skippedNames.includes("Empty Company"), "empty company element");
-  assert.ok(skippedNames.includes("Whitespace Company"), "whitespace-only company");
+  const byName = Object.fromEntries(r.records.map((x) => [x.rawFullName, x]));
+  assert.equal(byName["Absent Company"].companyName, null, "no company element at all");
+  assert.equal(byName["Empty Company"].companyName, null, "empty company element");
+  assert.equal(byName["Whitespace Company"].companyName, null, "whitespace-only company");
+  // The one row that does have a company is untouched by their absence.
+  assert.equal(byName["Valid Person"].companyName, "Northwind Freight");
 });
 
-test("skipping unusable rows does not abort the rest of the page", () => {
+test("an unreadable company is never repaired by inference", () => {
   const r = capture("results-missing-company.html");
-  assert.equal(r.records.length, 1);
-  const kept = r.records[0];
-  assert.equal(kept.rawFullName, "Valid Person");
-  assert.equal(kept.companyName, "Northwind Freight");
-  assert.equal(kept.title, "Head of Operations");
-  // The surviving row is fully formed. Its identity is the member id; no
+  // "Absent Company" shows the headline "Operations Manager at Somewhere" and
+  // no company node. The headline is not a company, and "Somewhere" must never
+  // be lifted out of it — nor may "Northwind Freight" arrive from the row above.
+  const absent = r.records.find((x) => x.rawFullName === "Absent Company");
+  assert.equal(absent.companyName, null);
+  assert.equal(absent.title, "Operations Manager at Somewhere");
+  assert.equal(absent.companyLinkedInUrl, null);
+  assert.equal(absent.salesNavCompanyUrl, null);
+  // The surviving evidence is unchanged: identity is the member id, and no
   // profile URL was visible, so none is claimed (DAT-019).
+  const kept = r.records.find((x) => x.rawFullName === "Valid Person");
   assert.equal(kept.linkedinProfileUrl, null);
   assert.equal(kept.linkedinMemberId, "ACwAAAV4ddd");
 });
 
-test("a skipped row is never turned into a record by inference", () => {
-  const r = capture("results-missing-company.html");
-  // Nothing in the skipped set leaked into records, and no company was invented
-  // from headline, location or a neighbouring row.
-  const keptNames = r.records.map((x) => x.rawFullName);
-  for (const s of r.skipped) assert.ok(!keptNames.includes(s.rawFullName));
-  assert.ok(r.records.every((x) => x.companyName && x.companyName.trim()));
-});
-
-test("skipped entries carry only position, reason and the visible name", () => {
-  const r = capture("results-missing-company.html");
-  for (const s of r.skipped) {
-    assert.deepEqual(Object.keys(s).sort(), ["rawFullName", "reason", "sourcePosition"]);
-    assert.equal(typeof s.sourcePosition, "number");
-  }
-});
-
-test("a page where every row lacks a company is OK with zero records", () => {
+test("a page where no row shows a company still captures every person", () => {
   const r = capture("results-alternate-selectors.html");
   assert.equal(r.status, constants.CAPTURE_STATUS.OK);
-  assert.equal(r.count, 0);
-  assert.equal(r.records.length, 0);
-  assert.equal(r.skippedCount, 2);
+  assert.equal(r.count, 2);
+  assert.deepEqual(
+    r.records.map((x) => x.rawFullName),
+    ["Lena Fischer", "Samuel Adeyemi"]
+  );
+  assert.ok(r.records.every((x) => x.companyName === null));
+  assert.ok(r.records.every((x) => x.salesNavLeadUrl));
 });

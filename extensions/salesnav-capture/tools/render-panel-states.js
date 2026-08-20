@@ -93,33 +93,6 @@ const STATES = [
     },
   },
   {
-    name: "A1b-listings-skipped-rows",
-    async build() {
-      const p = await createPanel({
-        responses: Object.assign({}, BASE, {
-          DETECT_SURFACE: { ok: true, surface: SURFACES.SALESNAV_PEOPLE_RESULTS, url: LISTING_PAGE.page.url },
-          DETECT_ACTIVE_PAGE: LISTING_PAGE,
-          CAPTURE_ACTIVE_PAGE: {
-            ok: true,
-            captureStatus: "ok",
-            added: 4,
-            collapsed: 1,
-            uncertain: 0,
-            skippedCount: 2,
-            skipped: [
-              { sourcePosition: 3, rawFullName: "Alex Moreau", reason: "no_company_name" },
-              { sourcePosition: 7, rawFullName: null, reason: "no_company_name" },
-            ],
-            batchView: fixtures.batchView(rows()),
-          },
-        }),
-      });
-      await p.flush();
-      await p.click("capture-btn");
-      return p;
-    },
-  },
-  {
     name: "A1c-listings-reading-cancellable",
     async build() {
       // Held mid-pass: the read never resolves, which is the frame in which the

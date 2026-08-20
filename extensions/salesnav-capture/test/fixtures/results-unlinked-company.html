@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<!-- The production case: an employer that Sales Navigator shows as PLAIN TEXT
+     because the company has no LinkedIn/Sales Navigator page to link to.
+
+     Three linked rows and four unlinked ones, in the unlinked shapes the
+     surface actually produces:
+
+       * the company sits on the SAME subtitle line as the title, after a
+         connective ("Head of Procurement at Example Industries");
+       * the company sits on its OWN subtitle line — exactly like the linked
+         variant in results-alternate-company.html, but without the anchor;
+       * the company has its own node but no anchor.
+
+     All seven people must be captured. The four unlinked ones keep their
+     company NAME and carry no company URL. All names/companies fictitious. -->
+<html lang="en">
+  <head><meta charset="UTF-8" /><title>Sales Navigator &mdash; Results</title></head>
+  <body>
+    <main>
+      <ol class="artdeco-list search-results-container">
+
+        <!-- 1. linked: the anchor carries both the name and the URL -->
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <a href="/sales/lead/ACwAAAB1x9k,NAME_SEARCH,3xY2">
+                <span data-anonymize="person-name">Jane Doe</span>
+              </a>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="title">VP Marketing</span>
+              at
+              <a data-anonymize="company-name" href="/sales/company/1234567">Acme Corporation</a>
+            </div>
+            <div class="artdeco-entity-lockup__caption">
+              <span data-anonymize="location">Greater Chicago Area</span>
+            </div>
+          </div>
+        </li>
+
+        <!-- 2. UNLINKED, same line: no anchor and no company-name hook -->
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <a href="/sales/lead/ACwAAAC5abc,NAME_SEARCH,9zZ1">
+                <span data-anonymize="person-name">John Smith</span>
+              </a>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="title">Head of Procurement</span>
+              at Example Industries
+            </div>
+            <div class="artdeco-entity-lockup__caption">
+              <span data-anonymize="location">Leeds, United Kingdom</span>
+            </div>
+          </div>
+        </li>
+
+        <!-- 3. linked -->
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <a href="/sales/lead/ACwAAAD7def,NAME_SEARCH,1aA2">
+                <span data-anonymize="person-name">Priya Raghunathan</span>
+              </a>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="title">Director of Procurement</span>
+              at
+              <a data-anonymize="company-name" href="/sales/company/2468013">Harbor Freight Collective</a>
+            </div>
+            <div class="artdeco-entity-lockup__caption">
+              <span data-anonymize="location">London, England, United Kingdom</span>
+            </div>
+          </div>
+        </li>
+
+        <!-- 4. UNLINKED, on its own subtitle line -->
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <a href="/sales/lead/ACwAAAE1nom,NAME_SEARCH,aa">
+                <span data-anonymize="person-name">Lena Fischer</span>
+              </a>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="title">Chief Financial Officer</span>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">Novaline Freight</div>
+            <div class="artdeco-entity-lockup__caption">
+              <span data-anonymize="location">Munich, Bavaria, Germany</span>
+            </div>
+          </div>
+        </li>
+
+        <!-- 5. UNLINKED, same line, middot connective -->
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <a href="/sales/lead/ACwAAAF9ghi,NAME_SEARCH,cc">
+                <span data-anonymize="person-name">Samuel Adeyemi</span>
+              </a>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="title">Operations Lead</span>
+              &middot; Harbor Analytics
+            </div>
+            <div class="artdeco-entity-lockup__caption">
+              <span data-anonymize="location">Lagos, Nigeria</span>
+            </div>
+          </div>
+        </li>
+
+        <!-- 6. linked -->
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <a href="/sales/lead/ACwAAAG0jkl,NAME_SEARCH,dd">
+                <span data-anonymize="person-name">Marcus O&rsquo;Neill</span>
+              </a>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="title">VP, Revenue Operations</span>
+              at
+              <a data-anonymize="company-name" href="/sales/company/7654321">Cliffside Software, Inc.</a>
+            </div>
+            <div class="artdeco-entity-lockup__caption">
+              <span data-anonymize="location">Austin, Texas, United States</span>
+            </div>
+          </div>
+        </li>
+
+        <!-- 7. UNLINKED, dedicated company node with no anchor -->
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <a href="/sales/lead/ACwAAAH1mno,NAME_SEARCH,ee">
+                <span data-anonymize="person-name">Amara Okafor</span>
+              </a>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="title">Fleet Coordinator</span>
+              at
+              <span data-anonymize="company-name">Southgate Haulage</span>
+            </div>
+            <div class="artdeco-entity-lockup__caption">
+              <span data-anonymize="location">Dublin, Ireland</span>
+            </div>
+          </div>
+        </li>
+
+      </ol>
+    </main>
+  </body>
+</html>

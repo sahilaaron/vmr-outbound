@@ -642,10 +642,6 @@ async function captureActivePage() {
     collapsed: merged.collapsed,
     uncertain: merged.uncertain,
     overLimit,
-    // DAT-018 B: rows the page showed but that carry no Company Name. They are
-    // reported truthfully and never entered the batch, so they cannot be sent.
-    skipped: result.skipped || [],
-    skippedCount: result.skippedCount || 0,
     visibleCount: result.visibleCount != null ? result.visibleCount : null,
     scroll: result.scroll || null,
     batchView: buildBatchView(batch),

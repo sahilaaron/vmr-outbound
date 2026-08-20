@@ -192,11 +192,58 @@ test("an already-saved person is told so, and the action becomes Refresh", async
   assert.equal(p.contextBadge(), "Already saved");
 });
 
-test("skipped rows are reported with their reason and never counted as captured", async () => {
+test("a row whose company has no page is offered like any other", async () => {
+  // The production regression, at the panel: a contact whose employer is plain
+  // text is a normal capturable row. It is counted, selectable, and nothing on
+  // screen calls it skipped, invalid or missing.
+  const unlinked = fixtures.record({
+    rawFullName: "John Smith",
+    firstName: "John",
+    lastName: "Smith",
+    title: "Head of Procurement",
+    companyName: "Example Industries",
+    companyLinkedInUrl: null,
+    _stableKey: "https://www.linkedin.com/sales/lead/ACwAAAC5abc",
+  });
   const p = await panelOn(SURFACES.SALESNAV_PEOPLE_RESULTS, {
     DETECT_ACTIVE_PAGE: {
       ok: true,
-      page: { supported: true, url: "https://www.linkedin.com/sales/search/people", visibleCount: 3 },
+      page: { supported: true, url: "https://www.linkedin.com/sales/search/people", visibleCount: 2 },
+    },
+    CAPTURE_ACTIVE_PAGE: {
+      ok: true,
+      captureStatus: "ok",
+      added: 2,
+      collapsed: 0,
+      uncertain: 0,
+      visibleCount: 2,
+      batchView: fixtures.batchView([fixtures.record(), unlinked]),
+    },
+  });
+  await p.flush();
+  await p.click("capture-btn");
+  assert.match(p.$("capture-feedback").textContent, /\+2 added/);
+  assert.doesNotMatch(p.$("capture-feedback").textContent, /skipped/);
+  assert.equal(p.document.querySelectorAll("#records input[type=checkbox]").length, 2);
+  assert.match(p.viewText(), /Example Industries/);
+  assert.doesNotMatch(p.viewText(), /no company name/i);
+});
+
+test("a row whose company is not shown at all is still captured and selectable", async () => {
+  const noCompany = fixtures.record({
+    rawFullName: "Alice Brown",
+    firstName: "Alice",
+    lastName: "Brown",
+    title: "Director",
+    companyName: null,
+    companyLinkedInUrl: null,
+    warnings: [{ code: "missing_field", field: "companyName" }],
+    _stableKey: "https://www.linkedin.com/sales/lead/ACwAAAY7ggg",
+  });
+  const p = await panelOn(SURFACES.SALESNAV_PEOPLE_RESULTS, {
+    DETECT_ACTIVE_PAGE: {
+      ok: true,
+      page: { supported: true, url: "https://www.linkedin.com/sales/search/people", visibleCount: 1 },
     },
     CAPTURE_ACTIVE_PAGE: {
       ok: true,
@@ -204,24 +251,16 @@ test("skipped rows are reported with their reason and never counted as captured"
       added: 1,
       collapsed: 0,
       uncertain: 0,
-      skippedCount: 2,
-      skipped: [
-        { sourcePosition: 2, rawFullName: "Priya Raghunathan", reason: "no_company_name" },
-        { sourcePosition: 5, rawFullName: null, reason: "no_company_name" },
-      ],
-      batchView: fixtures.batchView([fixtures.record()]),
+      visibleCount: 1,
+      batchView: fixtures.batchView([noCompany]),
     },
   });
   await p.flush();
   await p.click("capture-btn");
-  assert.equal(p.$("skipped-card").hidden, false);
-  assert.match(p.$("skipped-summary").textContent, /2 visible rows skipped/);
-  assert.match(p.$("skipped-summary").textContent, /Nothing was guessed/);
-  assert.match(p.$("skipped-list").textContent, /Priya Raghunathan/);
-  assert.match(p.$("skipped-list").textContent, /no_company_name/);
-  assert.match(p.$("capture-feedback").textContent, /2 skipped — no company name/);
-  // The skipped rows are not in the batch and cannot be selected.
   assert.equal(p.document.querySelectorAll("#records input[type=checkbox]").length, 1);
+  // The gap is stated plainly, and it does not read as a rejection.
+  assert.match(p.viewText(), /company not shown/i);
+  assert.doesNotMatch(p.viewText(), /skipped/i);
 });
 
 // --- saving, outcome, failure -------------------------------------------------

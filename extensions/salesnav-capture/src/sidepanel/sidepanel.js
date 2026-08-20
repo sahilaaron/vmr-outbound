@@ -842,7 +842,6 @@
       const message = wasCancelled
         ? "Stopped before any rows loaded. Nothing was captured, and nothing was sent."
         : map[r.captureStatus] || w.message || "Nothing captured.";
-      renderSkipped(r.skipped, r.skippedCount);
       renderBatch(r.batchView);
       if (!currentBatch || !currentBatch.records.length) {
         $("listings-empty-detail").textContent = message;
@@ -859,53 +858,12 @@
     parts.push(`+${r.added} added`);
     if (r.collapsed) parts.push(`${r.collapsed} duplicate(s) collapsed`);
     if (r.uncertain) parts.push(`${r.uncertain} uncertain identity`);
-    if (r.skippedCount) {
-      parts.push(`${r.skippedCount} skipped — no company name`);
-    }
     if (r.overLimit) parts.push("batch limit reached — extra rows skipped");
     if (wasCancelled) parts.push("read the page again to load more");
     setFeedback(fb, parts.join(" · "));
-    renderSkipped(r.skipped, r.skippedCount);
     renderBatch(r.batchView);
     showView("listings-select");
     refreshDetect();
-  }
-
-  /**
-   * List the rows this page showed but did not offer, and why (DAT-018 B).
-   * A skipped row is never added to the batch and can never be submitted; the
-   * company is never inferred from headline, school, location or nearby text.
-   *
-   * Presented as a warning box rather than hidden behind the row list: a
-   * skipped row is information the operator needs to trust the count, so it is
-   * never collapsed away and never rolled into the "captured" total.
-   */
-  function renderSkipped(skipped, count) {
-    const card = $("skipped-card");
-    const list = $("skipped-list");
-    if (!card || !list) return;
-    const rows = skipped || [];
-    if (!count) {
-      card.hidden = true;
-      list.textContent = "";
-      return;
-    }
-    card.hidden = false;
-    list.textContent = "";
-    $("skipped-summary").textContent =
-      `${count} visible row${count === 1 ? "" : "s"} skipped: no Company Name on the page. ` +
-      "Nothing was guessed and nothing was submitted for them.";
-    for (const row of rows) {
-      list.appendChild(
-        el("div", { class: "line" }, [
-          el("span", { class: "t" }, [
-            el("span", { class: "mono", text: `row ${row.sourcePosition} · ` }),
-            el("span", { text: row.rawFullName || "(no name read)" }),
-          ]),
-          badge(row.reason, { tone: "warning" }),
-        ])
-      );
-    }
   }
 
   // ---- batch rendering ----------------------------------------------------
@@ -1200,7 +1158,10 @@
               })
             : badge("Ready", { tone: "success" }),
         ]),
-        kv("Company", rec.companyName, { missing: !rec.companyName, emptyText: "Missing company" }),
+        // A company the page did not show is a gap in the evidence, not a
+        // fault in the capture: the person is captured either way, and the
+        // absence of a company PAGE is not reported at all.
+        kv("Company", rec.companyName, { missing: !rec.companyName, emptyText: "Not shown" }),
         rec.title ? kv("Role", rec.title) : null,
       ]);
       // Every warning is rendered, whatever its class — UI-013 changes how they
@@ -1675,7 +1636,6 @@
       if (!confirm("Clear the entire capture batch? This cannot be undone.")) return;
       const r = await send({ type: "CLEAR_BATCH" });
       if (r && r.ok) {
-        renderSkipped(null, 0);
         renderBatch(r.batchView);
         showView("listings-select");
       }

@@ -400,6 +400,64 @@ def test_salesnav_rows_are_saved_without_a_campaign_and_keep_uncertain_identity(
     assert all(s.capture_mode == cc.CAPTURE_MODE_SALESNAV for s in snapshots.values())
 
 
+def test_a_company_without_a_linkedin_page_is_accepted(
+    client: TestClient, enable_contact_capture: None, db_session: Session
+) -> None:
+    """A company page URL is enrichment, never a condition of intake.
+
+    Most Sales Navigator rows show an employer that has no company page to link
+    to. The extension used to withhold those people entirely; now it sends them,
+    and the contract has to say plainly that it accepts them.
+    """
+
+    payload = _fresh(SALESNAV_SUBMISSION)
+    payload["contacts"] = payload["contacts"][:1]
+    hint = payload["contacts"][0]["current_employment_hint"]
+    hint["company_name"] = "Example Industries"
+    hint["company_linkedin_url"] = None
+    hint["company_linkedin_id"] = None
+
+    response = _post(client, payload)
+    assert response.status_code == 201
+    assert response.json()["counts"]["submitted"] == 1
+    assert _snapshot_count(db_session) == 1
+
+    snapshot = db_session.scalars(select(LinkedInProfileSnapshot)).one()
+    stored = snapshot.payload["current_employment_hint"]
+    # The name survives exactly; the absent URL stays explicitly absent and is
+    # never reconstructed from the name.
+    assert stored["company_name"] == "Example Industries"
+    assert stored["company_linkedin_url"] is None
+    assert stored["company_linkedin_id"] is None
+
+
+def test_a_capture_with_no_company_information_is_accepted(
+    client: TestClient, enable_contact_capture: None, db_session: Session
+) -> None:
+    """No readable employer is a gap in the evidence, not a reason to refuse.
+
+    Identity is what intake requires, and this capture still has one. The
+    employer stays null rather than being invented, and promotion is what stalls
+    on it later — not the capture.
+    """
+
+    payload = _fresh(SALESNAV_SUBMISSION)
+    payload["contacts"] = payload["contacts"][:1]
+    hint = payload["contacts"][0]["current_employment_hint"]
+    hint["company_name"] = None
+    hint["company_linkedin_url"] = None
+    hint["company_linkedin_id"] = None
+
+    response = _post(client, payload)
+    assert response.status_code == 201
+    assert response.json()["counts"]["submitted"] == 1
+
+    snapshot = db_session.scalars(select(LinkedInProfileSnapshot)).one()
+    assert snapshot.payload["current_employment_hint"]["company_name"] is None
+    assert snapshot.payload["person"]["full_name"] == "Dana Whitfield"
+    assert snapshot.salesnav_lead_url == "https://www.linkedin.com/sales/lead/ACwAAAB1x9k"
+
+
 def test_operator_can_exclude_rows_by_simply_not_submitting_them(
     client: TestClient, enable_contact_capture: None, db_session: Session
 ) -> None:

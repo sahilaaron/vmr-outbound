@@ -217,12 +217,6 @@
     UNSUPPORTED: "unsupported_page",
   };
 
-  // Why a visible Sales Navigator row was not offered as capturable (DAT-018).
-  // A skipped row is reported truthfully and never repaired by inference.
-  const SKIP_REASONS = {
-    MISSING_COMPANY_NAME: "missing_company_name",
-  };
-
   // Operator-controlled scrolling over the ALREADY OPEN results page (DAT-018).
   // Smooth and incremental so rows have time to render and the operator can
   // watch what is happening. Bounded and cancellable by construction: there is
@@ -328,7 +322,6 @@
     CAPTURE_MODES,
     LIMITS,
     SCROLL,
-    SKIP_REASONS,
     STORAGE,
     PROFILE_STORAGE,
     CONTACT_STORAGE,

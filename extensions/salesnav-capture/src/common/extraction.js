@@ -33,7 +33,7 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function (normalize, constants) {
   "use strict";
 
-  const { WARNINGS, CAPTURE_STATUS, SKIP_REASONS } = constants;
+  const { WARNINGS, CAPTURE_STATUS } = constants;
 
   // ---- Page classification ------------------------------------------------
 
@@ -219,10 +219,10 @@
       const el = container.querySelector(sel);
       if (el) {
         const t = normalize.cleanText(el.textContent);
-        if (t) return { value: t, selector: sel };
+        if (t) return { value: t, selector: sel, el };
       }
     }
-    return { value: null, selector: null };
+    return { value: null, selector: null, el: null };
   }
 
   function firstHref(container, selectors) {
@@ -272,6 +272,112 @@
   const PUBLIC_PROFILE_SELECTORS = ['a[href*="/in/"]'];
   const PUBLIC_COMPANY_SELECTORS = ['a[href*="linkedin.com/company/"]'];
 
+  // The visible subtitle line(s) of a row. Sales Navigator puts the title and the
+  // employer on these lines, sometimes together and sometimes one per line.
+  const SUBTITLE_BLOCK_SELECTORS = [
+    ".artdeco-entity-lockup__subtitle",
+    '[class*="entity-lockup__subtitle"]',
+  ];
+
+  // What visibly joins a title to its employer on one subtitle line: "VP Sales
+  // AT Acme", "VP Sales · Acme", "VP Sales — Acme". Only ever stripped from the
+  // boundary between two separate pieces of DOM text, never from a sentence.
+  // A connective with nothing after it leaves nothing, which is the point: a
+  // dangling "at" is not a company name.
+  const COMPANY_CONNECTOR_RE = /^(?:at|@)(?:\s+|$)|^[·•|,\-–—]\s*/i;
+
+  /** The text of `root` with `excluded`'s subtree left out. */
+  function textOutside(root, excluded) {
+    let out = "";
+    const walk = (node) => {
+      if (node === excluded) return;
+      if (node.nodeType === 3) {
+        out += node.nodeValue;
+        return;
+      }
+      if (node.nodeType !== 1) return;
+      for (const child of Array.from(node.childNodes)) walk(child);
+    };
+    walk(root);
+    return normalize.cleanText(out);
+  }
+
+  function stripConnector(text) {
+    if (!text) return null;
+    return normalize.cleanText(String(text).replace(COMPANY_CONNECTOR_RE, "")) || null;
+  }
+
+  /** The row's subtitle blocks, document-ordered and de-duplicated. */
+  function subtitleBlocks(container) {
+    const seen = new Set();
+    const blocks = [];
+    for (const sel of SUBTITLE_BLOCK_SELECTORS) {
+      container.querySelectorAll(sel).forEach((el) => {
+        if (!seen.has(el)) {
+          seen.add(el);
+          blocks.push({ el, selector: sel });
+        }
+      });
+    }
+    return blocks;
+  }
+
+  /**
+   * The visible company NAME, whether or not the company is a link.
+   *
+   * A company page URL is enrichment. The employer's name is what the row shows,
+   * and Sales Navigator shows it in three forms: as a company anchor, as a
+   * dedicated unlinked node, and as plain text sitting beside the title on one
+   * subtitle line. Only the first two had a strategy, and the ordered list ended
+   * at `.artdeco-entity-lockup__subtitle a` — an ANCHOR. So an employer that
+   * happened not to be linked read as no employer at all, and (before this
+   * change) took the whole person down with it.
+   *
+   * Every strategy below is scoped to this one row's container and reads only
+   * text already on screen. Nothing is taken from a neighbouring row, from the
+   * location, or from a school, and nothing is inferred.
+   *
+   * @param {Element} container the row
+   * @param {Element|null} titleEl the element the title was read from, if any
+   */
+  function extractCompanyName(container, titleEl) {
+    // 1. A dedicated company node — linked or not. Unchanged behaviour.
+    const direct = firstText(container, COMPANY_NAME_SELECTORS);
+    if (direct.value) return direct;
+
+    // The remaining strategies are anchored on the TITLE element: they read what
+    // the same visible line shows around it. With no title element there is no
+    // anchor, and no company is read.
+    if (!titleEl) return { value: null, selector: null };
+    const titleText = normalize.cleanText(titleEl.textContent);
+    const blocks = subtitleBlocks(container);
+
+    // 2. The subtitle line that HOLDS the title, minus the title itself:
+    //      "<span title>VP Sales</span> at Example Industries" -> "Example Industries"
+    //    The title is removed as a NODE, not by splitting the sentence, so a
+    //    title that merely contains " at " ("Operations Manager at Somewhere",
+    //    with no separate company node) leaves no remainder and yields nothing.
+    for (const block of blocks) {
+      if (block.el === titleEl || !block.el.contains(titleEl)) continue;
+      const value = stripConnector(textOutside(block.el, titleEl));
+      if (value) return { value, selector: block.selector + " (unlinked)" };
+    }
+
+    // 3. A SEPARATE subtitle line that is not the title's own — the unlinked
+    //    twin of `.artdeco-entity-lockup__subtitle a`.
+    for (const block of blocks) {
+      if (block.el === titleEl || block.el.contains(titleEl) || titleEl.contains(block.el)) {
+        continue;
+      }
+      const value = normalize.cleanText(block.el.textContent);
+      if (value && value !== titleText) {
+        return { value, selector: block.selector + " (unlinked)" };
+      }
+    }
+
+    return { value: null, selector: null };
+  }
+
   // Extra visible company / caption metadata lines (kept raw, never parsed into
   // authoritative fields).
   const METADATA_SELECTORS = [
@@ -305,7 +411,11 @@
     if (!titleHit.value) warnings.push({ code: WARNINGS.MISSING_FIELD, field: "title" });
     else selectorsUsed.title = titleHit.selector;
 
-    const companyHit = firstText(container, COMPANY_NAME_SELECTORS);
+    // The company NAME and the company URL are two independent facts. The name
+    // is read from whatever the row visibly shows; the URL, below, is read only
+    // if a company anchor happens to exist. Neither one gates the other, and
+    // neither one gates the person.
+    const companyHit = extractCompanyName(container, titleHit.el);
     if (!companyHit.value) warnings.push({ code: WARNINGS.MISSING_FIELD, field: "companyName" });
     else selectorsUsed.companyName = companyHit.selector;
 
@@ -552,47 +662,35 @@
     }
 
     const ctx = { sourceSearchUrl, sourcePageNumber, capturedAt };
-    const extracted = containers.map((c, i) => extractRecord(c, ctx, i));
 
-    // DAT-018 B: a row with no visible Company Name is not usable by the
-    // company-first downstream flow, so it never enters the capturable set. The
-    // company is NEVER inferred from headline, school, location or neighbouring
-    // text — an absent company stays absent and the row is skipped truthfully.
-    // Skipping one row must not abort the rest of the page.
-    const records = [];
-    const skipped = [];
-    for (const record of extracted) {
-      if (!normalize.cleanText(record.companyName)) {
-        skipped.push({
-          sourcePosition: record.sourcePosition,
-          reason: SKIP_REASONS.MISSING_COMPANY_NAME,
-          rawFullName: record.rawFullName || null,
-        });
-        continue;
-      }
-      records.push(record);
-    }
-
-    const pageWarnings = [];
-    if (skipped.length) {
-      pageWarnings.push({
-        code: "rows_skipped",
-        reason: SKIP_REASONS.MISSING_COMPANY_NAME,
-        count: skipped.length,
-      });
-    }
+    // Capturing a person and resolving their employer are separate concerns.
+    //
+    // DAT-018 B used to withhold any row whose Company Name could not be read,
+    // on the reasoning that the downstream flow is company-first. In production
+    // that gate cost a very large share of otherwise valid contacts, because an
+    // employer shown as plain text — no company page to link to — read as no
+    // employer at all. The eligibility rule and the extraction weakness
+    // compounded: one produced the null, the other deleted the person for it.
+    //
+    // A company page URL is optional enrichment and a company name is
+    // best-effort. Neither decides whether the Contact exists. What still
+    // decides that is person identity, unchanged: a row with no name and no URL
+    // carries `no_stable_identity` and is refused further down the path.
+    //
+    // Nothing here loosened the no-inference promise. An absent company is
+    // still absent — reported as `missing_field: companyName`, never filled in
+    // from a headline, a school, a location or a neighbouring row.
+    const records = containers.map((c, i) => extractRecord(c, ctx, i));
 
     return {
       status: CAPTURE_STATUS.OK,
       records,
-      skipped,
-      skippedCount: skipped.length,
-      pageWarnings,
+      pageWarnings: [],
       sourcePageNumber,
       sourceSearchUrl,
       capturedAt,
       count: records.length,
-      visibleCount: extracted.length,
+      visibleCount: records.length,
     };
   }
 
@@ -605,6 +703,7 @@
     extractRecord,
     extractPage,
     // exported for tests
-    _internals: { closestMatch, resolveUrl },
+    extractCompanyName,
+    _internals: { closestMatch, resolveUrl, textOutside, stripConnector },
   };
 });

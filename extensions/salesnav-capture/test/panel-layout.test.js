@@ -175,13 +175,13 @@ test("warning and challenge surfaces are preserved", () => {
   assert.ok(PANEL_DOC.getElementById("detect-status"));
 });
 
-test("the skipped-row report exists and starts hidden", () => {
-  const card = PANEL_DOC.getElementById("skipped-card");
-  assert.ok(card, "skipped-card is missing");
-  assert.ok(card.hasAttribute("hidden"));
-  assert.ok(PANEL_DOC.getElementById("skipped-summary"));
-  assert.ok(PANEL_DOC.getElementById("skipped-list"));
-  assert.ok(PANEL_JS.includes("renderSkipped"));
+test("no surface reports a capture as withheld for want of a company", () => {
+  // The skipped-row report existed for one rule — a row with no Company Name was
+  // not offered — and that rule is gone. Leaving the box behind would leave the
+  // panel able to say a person was refused for a reason that can no longer occur.
+  assert.equal(PANEL_DOC.getElementById("skipped-card"), null);
+  assert.ok(!PANEL_JS.includes("renderSkipped"));
+  assert.ok(!/no company name/i.test(PANEL_JS));
 });
 
 // --- the non-goals, asserted --------------------------------------------------
