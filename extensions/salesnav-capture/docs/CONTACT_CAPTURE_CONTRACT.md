@@ -237,11 +237,44 @@ outreach-eligible or lift a suppression.
 - Each note records its text, scope (`submission` / `contact`), author, capture,
   submission, matched contact when known, and creation time.
 
+## One operator save, several requests
+
+**A save and a request are not the same size.** One reviewed capture may hold up
+to **5,000 contacts**; one request carries at most **500** (`maxItems` in the
+schema) and, as the extension plans them, at most **100 contacts / 2 MB**. The
+extension divides the reviewed set once, at save time, into bounded chunks and
+posts them here one at a time.
+
+This route is unchanged by that, and deliberately so — a chunk is an ordinary
+submission. What makes the division safe is what the contract already guarantees:
+
+| The client needs | The contract provides |
+| --- | --- |
+| a retry that cannot duplicate | idempotency on `client_submission_id`, replaying the original response |
+| a person who travels in exactly one chunk | `client_capture_id_conflict` if a capture id appears in a second submission |
+| a failure that is not retroactive | each submission commits or rolls back on its own |
+| the same campaign across every chunk | `campaign_id` is per submission, and filing is idempotent per contact |
+
+So the numbers matter to each other. **`CONTACT_CAPTURE_INTAKE_MAX_BYTES` must
+stay comfortably above the extension's 2 MB chunk ceiling**; lowering it below
+that would make an oversized request reachable for the first time, from a client
+that has no way to know. `tests/test_contact_capture_intake.py` pins the
+relationship along with the chunked-delivery behaviour above.
+
+Chunking is a transport concern only. A chunk carries whole captures, verbatim,
+in reviewed order — no field is dropped, summarized or moved to make a batch fit.
+
 ## Idempotency and errors
 
 Retrying the same `client_submission_id` with identical content replays the
 original truthful response (`already_received: true`, HTTP 200). Different
 content under the same id is a conflict, not a silent overwrite.
+
+A chunked save relies on exactly this. When a request times out the client
+cannot tell "the server never saw it" from "the server committed and the
+response was lost", so it retries under the **same** `client_submission_id` —
+and the second outcome replays instead of creating a second copy of each
+person.
 
 | HTTP | `error` | When |
 | --- | --- | --- |

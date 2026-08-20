@@ -147,6 +147,16 @@
             <span>Will be submitted</span>
             <span class="total" id="review-total">0 prospects</span>
           </div>
+          <div class="row" id="export-row">
+            <button id="export-csv" class="linkbtn grow" type="button">Download CSV</button>
+            <button id="export-json" class="linkbtn grow" type="button">Download JSON</button>
+          </div>
+          <p class="p tiny muted">
+            Your own copy of the contacts below. It is written by this browser — VMR Outbound is
+            never contacted, so it works even when the app does not. Downloading changes nothing:
+            the capture stays exactly as it is and saving remains available.
+          </p>
+          <div class="feedback" id="export-feedback" aria-live="polite"></div>
         </section>
 
         <!-- ---- B1/B2/B3 · person profile: review ---- -->
@@ -209,9 +219,22 @@
             <span class="box-title" id="saving-title">Saving</span>
             <div class="progress" role="progressbar" aria-label="Saving"><i></i></div>
             <p class="p tiny muted" id="saving-note">
-              Sent as one submission — VM Prospector answers when the whole set is processed. Keep
-              this panel open.
+              One contact, one submission. VM Prospector answers when it is processed.
             </p>
+          </div>
+
+          <!-- A large save reports its own progress and does not need watching. -->
+          <div class="box" id="push-card" hidden>
+            <span class="box-title" id="push-title">Preparing…</span>
+            <div class="progress" role="progressbar" aria-label="Saving contacts">
+              <i id="push-bar"></i>
+            </div>
+            <p class="p tiny muted" id="push-detail"></p>
+            <p class="p tiny muted" id="push-note">
+              This keeps running on its own. You can close this panel, leave Sales Navigator, or
+              carry on working — nothing here has to stay open.
+            </p>
+            <div class="badge-row" id="push-actions"></div>
           </div>
 
           <section id="save-card" hidden>
@@ -314,7 +337,7 @@
           </div>
           <div class="field">
             <label class="field-label" for="max-records">Most prospects per batch</label>
-            <input id="max-records" class="input" type="number" min="1" max="500" />
+            <input id="max-records" class="input" type="number" min="1" max="5000" />
           </div>
           <div class="box sunk">
             <div class="kv">
@@ -464,6 +487,13 @@
         <div class="actions-group" data-actions="saving" hidden>
           <button class="btn btn-primary full" type="button" disabled>Saving…</button>
           <p class="app-note">Anything already saved is kept.</p>
+        </div>
+
+        <div class="actions-group" data-actions="pushing" hidden>
+          <button id="push-back" class="btn full" type="button">Back to this page</button>
+          <p class="app-note">
+            The save carries on without this panel. Reopen it any time to see where it got to.
+          </p>
         </div>
 
         <div class="actions-group" data-actions="outcome" hidden>

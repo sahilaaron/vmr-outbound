@@ -41,7 +41,10 @@
 
   const CAPTURE_ID_MIN_LENGTH = 8;
   const CAPTURE_ID_MAX_LENGTH = 128;
-  const MAX_CONTACTS = LIMITS.MAX_RECORDS_PER_BATCH;
+  // The WIRE ceiling: what one contact-capture request may carry. Deliberately
+  // not the operator's logical push ceiling — one Save of 5,000 people is
+  // delivered as a sequence of requests, each of which must satisfy this.
+  const MAX_CONTACTS = LIMITS.MAX_CONTACTS_PER_SUBMISSION;
   const MAX_EXPERIENCES = 100;
   const MAX_PAGE_TITLE = 512;
   const MAX_ABOUT = 8000;
@@ -671,14 +674,39 @@
     return { valid: errors.length === 0, errors };
   }
 
+  /** UTF-8 length of a string, in whichever runtime this module is loaded in. */
+  function byteLength(text) {
+    return typeof TextEncoder !== "undefined"
+      ? new TextEncoder().encode(text).length
+      : Buffer.byteLength(text, "utf8");
+  }
+
   /** Serialize and size-check a payload. Returns { json, bytes, withinLimit }. */
   function serializePayload(payload) {
     const json = JSON.stringify(payload);
-    const bytes =
-      typeof TextEncoder !== "undefined"
-        ? new TextEncoder().encode(json).length
-        : Buffer.byteLength(json, "utf8");
+    const bytes = byteLength(json);
     return { json, bytes, withinLimit: bytes <= LIMITS.MAX_PAYLOAD_BYTES };
+  }
+
+  /**
+   * Serialized cost of one capture, as it will appear inside a submission.
+   *
+   * The `+ 1` is the comma that joins it to the previous element. Chunk planning
+   * needs a per-record number rather than a per-payload one, and measuring it
+   * here — with the same serializer that builds the request — is what keeps the
+   * plan honest for records that are nothing like the average one.
+   */
+  function captureBytes(capture) {
+    return byteLength(JSON.stringify(capture)) + 1;
+  }
+
+  /**
+   * Bytes a submission costs BEFORE any capture is added: the envelope, its
+   * operator metadata, and the empty `contacts` array. Measured rather than
+   * estimated, so a long note or a full label list is accounted for.
+   */
+  function envelopeBytes(args) {
+    return byteLength(JSON.stringify(buildSubmission(Object.assign({}, args, { contacts: [] }))));
   }
 
   return {
@@ -691,6 +719,9 @@
     buildSubmission,
     validateSubmission,
     serializePayload,
+    captureBytes,
+    envelopeBytes,
+    byteLength,
     toRawSnapshot,
     ENVELOPE_FIELDS,
     CAPTURE_FIELDS,

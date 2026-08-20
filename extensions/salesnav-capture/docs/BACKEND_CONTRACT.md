@@ -174,5 +174,6 @@ adapter — do not re-plumb the extension:
    workbench uses.
 
 Until then the extension defaults to the **mock receiver**; nothing is sent
-anywhere without an explicit operator “Send”. The JSON/CSV export this used to
-mention alongside it was removed in #280.
+anywhere without an explicit operator “Send”. A local JSON/CSV export of the
+reviewed capture sits beside it — operator-triggered, backend-free, and not a
+transmission path: it writes a file and sends nothing.

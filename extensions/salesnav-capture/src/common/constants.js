@@ -45,11 +45,29 @@
   };
 
   // Safety limits (client-side; the backend enforces its own).
+  //
+  // TWO DIFFERENT CEILINGS, and conflating them was the whole defect. One
+  // reviewed capture set is what the OPERATOR works with; one submission is
+  // what a single HTTP request carries. They used to be the same number, so the
+  // only way to save more people was to send a bigger request — and a bigger
+  // request is a bigger thing to lose, retry, and time out.
+  //
+  //   MAX_RECORDS_PER_BATCH        the logical push: what one Save may contain
+  //   MAX_CONTACTS_PER_SUBMISSION  the wire contract: what one POST may contain
+  //
+  // The wire ceiling is unchanged and still equals `maxItems` in
+  // docs/contact-capture.schema.json and the backend's own validator;
+  // test/contact-schema-parity.test.js fails if the two drift.
   const LIMITS = {
-    // Maximum people retained in one reviewed submission. Prevents runaway
-    // captures; the operator still includes or excludes each row by hand.
-    MAX_RECORDS_PER_BATCH: 500,
-    // Reject a serialized payload larger than this before sending.
+    // Maximum people retained in one reviewed capture set — one operator Save.
+    // Delivered as several bounded requests, never as one large one. Prevents
+    // runaway captures; the operator still includes or excludes each row.
+    MAX_RECORDS_PER_BATCH: 5000,
+    // Maximum people in ONE contact-capture request. The committed contract's
+    // `maxItems`; the transport never exceeds it whatever the push contains.
+    MAX_CONTACTS_PER_SUBMISSION: 500,
+    // Reject a serialized REQUEST larger than this before sending. This is a
+    // per-request ceiling, not a per-push one.
     MAX_PAYLOAD_BYTES: 5 * 1024 * 1024, // 5 MB
     // Longest a single result-page capture pass may scroll for (ms).
     CAPTURE_SCROLL_BUDGET_MS: 20000,
@@ -57,6 +75,51 @@
     MAX_LABELS: 25,
     MAX_LABEL_LENGTH: 64,
     MAX_NOTE_LENGTH: 2000,
+  };
+
+  // ---- Chunked background push ------------------------------------------------
+  //
+  // One operator Save is a LOGICAL submission delivered as a sequence of bounded,
+  // independently idempotent requests. The numbers below are chosen from the
+  // measured contract rather than guessed:
+  //
+  //   a Sales Navigator contact serializes to ~2.9 KB (measured over the
+  //   committed fixture shape, raw snapshot included);
+  //   a person-profile contact is larger — an `about_text` alone may be 8 KB.
+  //
+  // So a 100-contact chunk is ~0.3 MB of Sales Navigator rows and stays under
+  // the byte ceiling for profile-sized records too, because the byte ceiling is
+  // enforced independently of the count. CHUNK_MAX_BYTES leaves 4x headroom
+  // under the backend's 8 MB body limit (`contact_capture_intake_max_bytes`) and
+  // sits below this extension's own 5 MB request gate, so a chunk that this
+  // planner accepts can never be refused for size at either end.
+  const PUSH = {
+    // Records per chunk, before the byte ceiling is consulted.
+    CHUNK_MAX_CONTACTS: 100,
+    // Serialized bytes per chunk request, envelope included.
+    CHUNK_MAX_BYTES: 2 * 1024 * 1024, // 2 MB
+    // A single record larger than CHUNK_MAX_BYTES travels alone rather than
+    // being dropped. Only a record that cannot fit even a request of its own is
+    // refused — deterministically, at plan time, so it can never become a chunk
+    // that retries for ever.
+    RECORD_MAX_BYTES: 5 * 1024 * 1024, // 5 MB, == MAX_PAYLOAD_BYTES
+    // Attempts per chunk before it is parked as failed-but-retryable-by-hand.
+    MAX_ATTEMPTS: 5,
+    // Backoff before attempt 2, 3, 4, 5 (ms). Bounded and fixed: a push that is
+    // failing should get slower, not disappear.
+    RETRY_BACKOFF_MS: [5000, 15000, 45000, 120000],
+    // Detailed per-contact result entries retained for display. A push of 5,000
+    // people is still 5,000 people processed — this bounds what is STORED for
+    // the outcome card, and the job records how many were dropped so the panel
+    // can say so instead of implying the rest never happened.
+    MAX_RETAINED_RESULTS: 500,
+    // Failed-chunk records retained. Same reasoning, much smaller numbers.
+    MAX_RETAINED_FAILURES: 50,
+    // The alarm that resumes a push after the service worker is suspended.
+    RESUME_ALARM: "vmr_push_resume",
+    // How often that alarm fires while a push is unfinished (minutes). Chrome
+    // clamps periodic alarms to one minute; asking for less would be ignored.
+    RESUME_PERIOD_MINUTES: 1,
   };
 
   // Chrome storage keys (non-secret preferences + recoverable draft batch +
@@ -113,7 +176,7 @@
     // Development-only receiver (tools/mock-receiver.js). Never used unless a
     // development override switches `sendTarget` to "mock".
     mockReceiverUrl: "http://127.0.0.1:8787/api/intake/contact-captures",
-    maxRecordsPerBatch: 500,
+    maxRecordsPerBatch: 5000,
     // Labels the operator most recently applied, offered again next time. Plain
     // names only — the backend owns the canonical label registry.
     recentLabels: [],
@@ -296,13 +359,45 @@
     LAST_COMPANY_RESULT: "li_last_company_result",
   };
 
+  // Durable background push (chunked delivery of one logical Save).
+  //
+  // The job record is small and rewritten after every state transition, so it is
+  // held apart from the chunk payloads it plans. Each chunk's contacts live
+  // under their own key and are DELETED the moment the backend accepts that
+  // chunk, so a running push consumes less storage as it progresses instead of
+  // holding the whole submission until the end.
+  const PUSH_STORAGE = {
+    JOB: "cc_push_job",
+    // `CHUNK_PREFIX + jobId + ":" + chunkIndex`.
+    CHUNK_PREFIX: "cc_push_chunk:",
+  };
+
+  // ---- Local export (operator-controlled, backend-independent) ---------------
+  //
+  // Restored in this slice. It was removed with the campaign-era archive on the
+  // reasoning that a reviewed contact is saved into VMR Outbound or not saved at
+  // all — which is true of ACQUISITION and says nothing about the operator's own
+  // copy of what they just reviewed. A 5,000-row capture is hours of work, and
+  // the operator gets to keep a backup of it without asking a server first.
+  //
+  // Downloading is not clearing and not sending: the reviewed set is untouched
+  // and remains pushable afterwards.
+  const EXPORT = {
+    FORMATS: ["csv", "json"],
+    FILENAME_PREFIX: "vmr_captured_contacts",
+    CSV_MIME: "text/csv",
+    JSON_MIME: "application/json",
+  };
+
   // Contact-first storage: the operator metadata attached to the next
   // submission, plus two keys nothing writes any more.
   //
   // `LEGACY_ARCHIVE` and `MIGRATION_NOTICE` are named here only so
   // `common/migration.js` can CLEAR them from installs that ran an earlier
-  // version. They existed to feed the archived-draft download, which no longer
-  // exists; see that module for why the clearing branch cannot go yet.
+  // version. They fed the CAMPAIGN-ERA archived-draft download, which is a
+  // different thing from the reviewed-capture export restored above: that
+  // archive holds drafts reviewed under a contract this extension no longer
+  // speaks, so it is still cleared rather than resurrected. See that module.
   const CONTACT_STORAGE = {
     OPERATOR_METADATA: "cc_operator_metadata",
     FILING_CONTEXT: "cc_filing_context",
@@ -325,6 +420,9 @@
     STORAGE,
     PROFILE_STORAGE,
     CONTACT_STORAGE,
+    PUSH_STORAGE,
+    PUSH,
+    EXPORT,
     ACCOUNT_STORAGE,
     ACCOUNT_LINK,
     ACCOUNT_LINK_PATHS,

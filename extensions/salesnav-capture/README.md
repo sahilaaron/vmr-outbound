@@ -70,7 +70,10 @@ Minimum Chrome version: 116 (side panel API).
 
 | Permission | Why |
 | --- | --- |
-| `storage` | Persist non-secret preferences and the recoverable draft batch |
+| `storage` | Persist non-secret preferences, the recoverable draft batch, and the durable push job |
+| `unlimitedStorage` | A reviewed set of 5,000 contacts plus the chunk copies that make a save recoverable is tens of megabytes; `storage.local` is capped at 10 MB without it |
+| `alarms` | The only unattended wake-up a Manifest V3 service worker has. A save whose next chunk is waiting out a backoff must resume without anybody doing anything |
+| `downloads` | The local export — saves the file the operator explicitly asked for. Reaches no network |
 | `sidePanel` | The review/controls UI |
 | `activeTab` + `scripting` | Inject the reader into the current tab if needed |
 | `identity` | `launchWebAuthFlow` for the one-click VMR Outbound sign-in that links this install to the operator's own account (see below) |
@@ -80,8 +83,11 @@ Minimum Chrome version: 116 (side panel API).
 | host the named hosted VMR deployment (**required**) | POST the submission to the product's hosted backend and read the label list, campaigns and the existence-only lookup, under the account link |
 | host `http://127.0.0.1/*`, `http://localhost/*` (**optional**) | The same four routes against a local VMR backend / mock receiver, for development |
 
-`downloads` is **not** requested. It existed for the JSON/CSV export, which is
-gone.
+None of the three permissions added for the large-capture save and the restored
+export widens what the extension can READ, where it can SEND, or who it can talk
+to — the host permissions below are unchanged. `alarms` fires only while a save
+is unfinished and is released the moment one settles; `downloads` is reachable
+only from an explicit click on the review screen.
 
 ### Required vs optional, and why the hosted origin moved
 
@@ -283,6 +289,64 @@ not silently processed.
 The draft batch is persisted in `chrome.storage.local`, so it survives closing
 the side panel or refreshing the page. Use *Clear batch* to start over.
 
+#### One save, up to 5,000 contacts
+
+**Maximum contacts in one save: 5,000.** A capture beyond that is refused at
+capture time, and a reviewed set beyond it is refused before anything is sent —
+by number, naming the limit, not as a size error.
+
+Pressing *Capture N prospects* does not send a single large request. The save is
+planned into bounded chunks (**at most 100 contacts and 2 MB each**), written to
+local storage, and delivered one chunk at a time by the service worker:
+
+```
+reviewed set -> durable job + chunk copies -> chunk 1 -> chunk 2 -> ... -> done
+                                  progress written down after every chunk
+```
+
+What that buys the operator:
+
+* **Save returns immediately.** The panel shows progress; it does not hold the
+  operation. Close the side panel, leave Sales Navigator, close the LinkedIn
+  tab, carry on working — the save continues without any of them.
+* **It survives suspension.** Chrome may stop the service worker at any moment.
+  Progress is on disk, so the worker resumes from the remaining contacts rather
+  than starting over, woken by its own alarm or by the panel opening.
+* **Retries cannot duplicate.** Each chunk keeps one idempotency key for its
+  whole life, so a request whose response was lost is replayed by the backend
+  rather than committed twice.
+* **Partial failure is survivable.** A failed chunk does not undo the accepted
+  ones or stop the later ones; it stays retryable and the panel offers *Retry
+  what failed*, which re-sends only the gaps.
+* **Nothing is thrown away early.** The reviewed capture is never cleared by
+  starting a save, and while a save is unfinished it cannot be cleared, changed
+  or added to — the rows are still being delivered. Each chunk's copy is deleted
+  as the backend accepts it, so a long save uses less storage as it goes.
+
+Reopening the panel reports where the save actually got to — *Saving 650 of
+2,843…*, *Retrying…*, *2,843 contacts saved* — never "done" because the first
+chunk landed. For a large save the outcome card separates the two numbers that
+are easy to confuse: every contact is processed, while a bounded number of
+per-contact detail rows is retained for display.
+
+### Download your captured contacts
+
+On the review screen, *Download CSV* and *Download JSON* write the contacts you
+have captured to a file. This is a **local** action:
+
+* it never contacts VMR Outbound, so it works when the app does not;
+* it never clears or changes the capture — the same rows are still there and
+  still saveable afterwards, and both paths can be used on the same batch;
+* it exports the rows you have **included**, matching what excluding a row means
+  for the save;
+* it happens only on your click. Nothing downloads by itself.
+
+CSV is the flat review sheet, in the column contract this extension has always
+used, with `linkedin_member_id` and `linkedin_alias_url` appended for the two
+identifiers capture gained since. JSON is the exact submission body a save would
+send. Both are written from what the page actually showed — an empty column is a
+value LinkedIn did not display, never a guess.
+
 ### Upgrading from the campaign-era extension
 
 On install and on browser start, campaign-era local state is retired
@@ -295,12 +359,18 @@ in two. Capture again to save those people contact-first.
 
 Earlier versions also *archived* each v1 draft verbatim under
 `cc_legacy_v1_archive` and showed an "Archived drafts can still be downloaded"
-card. That card was the archive's only reader, and it is gone with the rest of
-the download capability — so the migration no longer writes an archive, and it
-**clears** `cc_legacy_v1_archive` and `cc_migration_notice` from any install
-that still carries them rather than stranding captured personal data under keys
-nothing can show or remove. That clearing branch is the only legacy handling
-retained, and it goes when no install can still be carrying those keys.
+card. That card was the archive's only reader and it is gone — so the migration
+no longer writes an archive, and it **clears** `cc_legacy_v1_archive` and
+`cc_migration_notice` from any install that still carries them rather than
+stranding captured personal data under keys nothing can show or remove. That
+clearing branch is the only legacy handling retained, and it goes when no
+install can still be carrying those keys.
+
+The reviewed-capture export above does **not** bring that archive back, and the
+distinction is the point: the export writes the capture you are looking at right
+now, under the current contract. The archive holds drafts reviewed under a
+contract this extension no longer speaks, which is exactly why it is cleared
+rather than offered.
 
 ## Mock receiver
 

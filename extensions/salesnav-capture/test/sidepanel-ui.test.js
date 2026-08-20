@@ -328,9 +328,10 @@ test("an unreachable backend says nothing was saved and keeps the draft", async 
   assert.equal(p.connection(), "Not connected");
   assert.equal(p.$("outcome-primary").hidden, false);
   assert.equal(p.$("outcome-primary").textContent.trim(), "Try again");
-  // #280: there is no file fallback any more. The reviewed draft is kept and
-  // retried against the backend; it is never written to disk.
-  assert.equal(p.$("export-row"), null);
+  // The reviewed draft is kept and retried against the backend. The local
+  // export exists beside it and is the operator's own copy — not a fallback the
+  // panel reaches for on their behalf, and never automatic.
+  assert.ok(p.$("export-row"), "the operator's own backup stays available");
 });
 
 test("a rejected submission is not offered a pointless retry", async () => {

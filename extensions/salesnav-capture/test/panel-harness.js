@@ -113,8 +113,42 @@ async function createPanel(options) {
     },
     tabs: { onUpdated: noopEvent, onActivated: noopEvent, onRemoved: noopEvent },
     webNavigation: { onHistoryStateUpdated: noopEvent, onCompleted: noopEvent },
+    // The restored local export. Recorded rather than performed, and the blob
+    // behind each URL is kept so a test can read what would have hit the disk —
+    // the file's CONTENT is the contract, not the fact that a call was made.
+    downloads: {
+      download: (options) => {
+        downloads.push(options);
+        return Promise.resolve(downloads.length);
+      },
+    },
   };
   window.confirm = () => true;
+
+  const downloads = [];
+  const blobs = new Map();
+  window.URL.createObjectURL = (blob) => {
+    const url = "blob:https://panel.test/" + (blobs.size + 1);
+    blobs.set(url, blob);
+    return url;
+  };
+  window.URL.revokeObjectURL = () => {};
+  /** The text of the file the panel handed to Chrome, exactly as saved. */
+  async function downloadedText(index) {
+    const entry = downloads[index || 0];
+    if (!entry) return null;
+    const blob = blobs.get(entry.url);
+    if (!blob) return null;
+    if (typeof blob.text === "function") return blob.text();
+    // Older jsdom Blobs have no `text()`. FileReader is the portable route and
+    // reads the same bytes Chrome would have written.
+    return new Promise((resolve, reject) => {
+      const reader = new window.FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsText(blob);
+    });
+  }
 
   // jsdom fires its OWN DOMContentLoaded a tick after construction. Wait for
   // it before loading the controllers, so their listeners see exactly one
@@ -144,6 +178,12 @@ async function createPanel(options) {
     permission,
     permissionCalls,
     responses,
+    downloads,
+    downloadedText,
+    /** Tear the panel down. A panel with a live poll keeps the loop alive. */
+    close() {
+      window.close();
+    },
     flush,
     /** The view currently on screen. */
     view() {

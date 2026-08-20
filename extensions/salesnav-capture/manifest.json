@@ -1,11 +1,14 @@
 {
   "manifest_version": 3,
   "name": "VM Prospector",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "VM Prospector — operator-driven acquisition of LinkedIn and Sales Navigator contacts. Saves permanent contacts with optional Campaign filing; no scraping automation or credentials stored.",
   "minimum_chrome_version": "116",
   "permissions": [
     "storage",
+    "unlimitedStorage",
+    "alarms",
+    "downloads",
     "sidePanel",
     "activeTab",
     "scripting",

@@ -117,7 +117,10 @@
 
     if (Array.isArray(payload.records)) {
       req(payload.records.length > 0, "records must not be empty");
-      req(payload.records.length <= LIMITS.MAX_RECORDS_PER_BATCH, `records must not exceed ${LIMITS.MAX_RECORDS_PER_BATCH}`);
+      // The legacy campaign-era wire ceiling, which is the per-REQUEST one. It
+      // never followed the operator's reviewed-set ceiling and must not start
+      // now that the two are different numbers.
+      req(payload.records.length <= LIMITS.MAX_CONTACTS_PER_SUBMISSION, `records must not exceed ${LIMITS.MAX_CONTACTS_PER_SUBMISSION}`);
       payload.records.forEach((r, i) => {
         const at = `records[${i}]`;
         req(r && typeof r === "object", `${at} must be an object`);
@@ -151,11 +154,71 @@
     return Buffer.byteLength(str, "utf8");
   }
 
-  // The CSV writer that used to live here (`toCsv`, `csvCell`, `CSV_COLUMNS`)
-  // existed for one caller: the panel's "Download CSV" button. That button, its
-  // JSON twin and the `downloads` permission are gone, so the writer went with
-  // them rather than staying as an unreachable second serializer of captured
-  // personal data.
+  // ---- CSV export ---------------------------------------------------------
+  //
+  // RESTORED, and deliberately the SAME format it was before it was removed.
+  // The first sixteen columns are byte-for-byte the historical contract — same
+  // header names, same order — so a spreadsheet, script or saved import mapping
+  // written against the old export still reads a file produced today.
+  //
+  // Two columns are APPENDED at the end, and appended is the operative word: an
+  // existing reader keyed on the old headers is unaffected, while an operator
+  // exporting today does not silently lose two identifiers the extension
+  // genuinely observed. They arrived with the Sales Navigator identity work
+  // after the export was removed:
+  //
+  //   linkedin_member_id   the opaque member identifier, verbatim. NOT a URL and
+  //                        NOT the public handle.
+  //   linkedin_alias_url   LinkedIn's resolving alias for that member id.
+  //                        Navigation and evidence only; never the handle.
+  //
+  // Nothing here is inferred, enriched or repaired. A column is empty when the
+  // page did not show the value, which is the same rule the capture itself
+  // follows — an export that quietly filled a gap would be a worse record of
+  // what was captured than the capture is.
+  const CSV_COLUMNS = [
+    ["rawFullName", "raw_full_name"],
+    ["firstName", "first_name"],
+    ["lastName", "last_name"],
+    ["title", "title"],
+    ["companyName", "company_name"],
+    ["location", "location"],
+    ["linkedinProfileUrl", "linkedin_profile_url"],
+    ["salesNavLeadUrl", "sales_nav_lead_url"],
+    ["companyLinkedInUrl", "company_linkedin_url"],
+    ["salesNavCompanyUrl", "sales_nav_company_url"],
+    ["visibleCompanyMetadata", "visible_company_metadata"],
+    ["sourceSearchUrl", "source_search_url"],
+    ["sourcePageNumber", "source_page_number"],
+    ["sourcePosition", "source_position"],
+    ["capturedAt", "captured_at"],
+    ["warnings", "warnings"],
+    ["linkedinMemberId", "linkedin_member_id"],
+    ["linkedinAliasUrl", "linkedin_alias_url"],
+  ];
+
+  function csvCell(value) {
+    let s;
+    if (value == null) s = "";
+    else if (Array.isArray(value)) {
+      s = value
+        .map((v) => (v && typeof v === "object" ? JSON.stringify(v) : String(v)))
+        .join(" | ");
+    } else if (typeof value === "object") s = JSON.stringify(value);
+    else s = String(value);
+    // RFC-4180 quoting; also neutralize spreadsheet formula injection.
+    if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+    if (/[",\n\r]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
+    return s;
+  }
+
+  function toCsv(records) {
+    const header = CSV_COLUMNS.map(([, h]) => h).join(",");
+    const rows = (records || []).map((r) =>
+      CSV_COLUMNS.map(([k]) => csvCell(r[k])).join(",")
+    );
+    return [header, ...rows].join("\r\n");
+  }
 
   return {
     newBatchId,
@@ -164,6 +227,9 @@
     validatePayload,
     serializePayload,
     byteLength,
+    toCsv,
+    csvCell,
     RECORD_FIELDS,
+    CSV_COLUMNS,
   };
 });

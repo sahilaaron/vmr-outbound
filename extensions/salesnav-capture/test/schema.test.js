@@ -69,13 +69,38 @@ test("committed example payload fixture validates against the validator", () => 
   assert.equal(v.valid, true, v.errors.join("; "));
 });
 
-test("the CSV writer is gone with the export it existed for (#280)", () => {
-  // `toCsv`/`CSV_COLUMNS` had exactly one caller: the panel's "Download CSV"
-  // button. With the button, its JSON twin and the `downloads` permission
-  // removed, a second serializer of captured personal data with no caller is
-  // not something to keep.
-  assert.equal(typeof sc.toCsv, "undefined");
-  assert.equal(typeof sc.CSV_COLUMNS, "undefined");
+test("the CSV writer is back, with the column contract it had before", () => {
+  // Restored with the export. The first sixteen columns are the historical
+  // contract, unchanged in name and order, so anything written against the old
+  // file still reads a new one.
+  assert.equal(typeof sc.toCsv, "function");
+  assert.deepEqual(
+    sc.CSV_COLUMNS.slice(0, 16).map(([, header]) => header),
+    [
+      "raw_full_name",
+      "first_name",
+      "last_name",
+      "title",
+      "company_name",
+      "location",
+      "linkedin_profile_url",
+      "sales_nav_lead_url",
+      "company_linkedin_url",
+      "sales_nav_company_url",
+      "visible_company_metadata",
+      "source_search_url",
+      "source_page_number",
+      "source_position",
+      "captured_at",
+      "warnings",
+    ]
+  );
+  // Two identifiers the capture gained after the export was removed. APPENDED,
+  // so an existing reader keyed on the old headers is unaffected.
+  assert.deepEqual(
+    sc.CSV_COLUMNS.slice(16).map(([, header]) => header),
+    ["linkedin_member_id", "linkedin_alias_url"]
+  );
 });
 
 test("serializePayload flags oversize payloads", () => {
