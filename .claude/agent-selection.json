@@ -1,0 +1,301 @@
+{
+  "library_root": "~/.claude-agent-library/agency-agents",
+  "library_agent_count": 255,
+  "note": "Project copies are upstream files with only the frontmatter `description:` line replaced. Bodies are byte-identical to the library source.",
+  "agents": [
+    {
+      "name": "design-ui-designer",
+      "category": "frontend",
+      "source": "design/design-ui-designer.md",
+      "description": "Visual design systems, component libraries, pixel-perfect UI. Use for interface visual design and design-system work.",
+      "rationale": "Visual design of operator workbench screens"
+    },
+    {
+      "name": "design-ux-architect",
+      "category": "frontend",
+      "source": "design/design-ux-architect.md",
+      "description": "UX architecture, CSS systems, implementation guidance for developers. Use to structure a frontend's UX foundations.",
+      "rationale": "CSS system and UX foundations for the operator workbench"
+    },
+    {
+      "name": "engineering-ai-engineer",
+      "category": "ai",
+      "source": "engineering/engineering-ai-engineer.md",
+      "description": "ML model development, deployment, and integration into production features. Use for AI/ML feature and pipeline work.",
+      "rationale": "LLM feature integration across research, insights and personalization"
+    },
+    {
+      "name": "engineering-api-platform-engineer",
+      "category": "backend",
+      "source": "engineering/engineering-api-platform-engineer.md",
+      "description": "Public/partner API design: OpenAPI/gRPC contracts, versioning, SDKs, gateways. Use for external API platform work.",
+      "rationale": "API contracts and versioning, incl. the committed capture intake JSON Schema"
+    },
+    {
+      "name": "engineering-backend-architect",
+      "category": "backend",
+      "source": "engineering/engineering-backend-architect.md",
+      "description": "Scalable backend and system design, database architecture, APIs, cloud infra. Use for server-side architecture decisions.",
+      "rationale": "FastAPI service and system architecture for app/api and app/services"
+    },
+    {
+      "name": "engineering-code-reviewer",
+      "category": "quality",
+      "source": "engineering/engineering-code-reviewer.md",
+      "description": "Reviews code for correctness, maintainability, security, and performance. Use for constructive review of a change.",
+      "rationale": "Correctness, maintainability and security review of a change"
+    },
+    {
+      "name": "engineering-codebase-onboarding-engineer",
+      "category": "quality",
+      "source": "engineering/engineering-codebase-onboarding-engineer.md",
+      "description": "Explains unfamiliar codebases by tracing real code paths. Use to onboard onto a repo or map how a feature works.",
+      "rationale": "Traces real code paths when mapping an unfamiliar service"
+    },
+    {
+      "name": "engineering-data-engineer",
+      "category": "backend",
+      "source": "engineering/engineering-data-engineer.md",
+      "description": "ETL/ELT, lakehouse, Spark, dbt, streaming pipelines. Use for data infrastructure and analytics-ready datasets.",
+      "rationale": "Import, enrichment and research data pipelines (app/services/imports, enrichment)"
+    },
+    {
+      "name": "engineering-database-optimizer",
+      "category": "backend",
+      "source": "engineering/engineering-database-optimizer.md",
+      "description": "Schema design, query optimization, indexing, DB performance tuning. Use for slow queries or schema performance work.",
+      "rationale": "PostgreSQL schema, query and index work under app/models and app/db"
+    },
+    {
+      "name": "engineering-database-reliability-engineer",
+      "category": "backend",
+      "source": "engineering/engineering-database-reliability-engineer.md",
+      "description": "HA/replication, failover, backups and PITR, zero-downtime migrations. Use for database availability and recovery.",
+      "rationale": "Alembic migration safety, backup/PITR, deploy/sbin/vmr-db-backup and restore"
+    },
+    {
+      "name": "engineering-devops-automator",
+      "category": "ops",
+      "source": "engineering/engineering-devops-automator.md",
+      "description": "Infrastructure automation, CI/CD pipelines, cloud operations. Use for build, deploy, and ops automation.",
+      "rationale": "GitHub Actions CI and the deploy/sbin release scripts"
+    },
+    {
+      "name": "engineering-email-intelligence-engineer",
+      "category": "backend",
+      "source": "engineering/engineering-email-intelligence-engineer.md",
+      "description": "Extracts structured, reasoning-ready data from raw email threads. Use for email parsing and enrichment pipelines.",
+      "rationale": "Structured extraction from email threads for app/services/gmail and email"
+    },
+    {
+      "name": "engineering-frontend-developer",
+      "category": "frontend",
+      "source": "engineering/engineering-frontend-developer.md",
+      "description": "React/Vue/Angular UI implementation and frontend performance. Use for building or optimizing web interfaces.",
+      "rationale": "Jinja templates, static JS/CSS and the salesnav-capture Chrome extension"
+    },
+    {
+      "name": "engineering-git-workflow-master",
+      "category": "ops",
+      "source": "engineering/engineering-git-workflow-master.md",
+      "description": "Branching strategy, conventional commits, rebasing, worktrees, CI-friendly branches. Use for Git workflow design.",
+      "rationale": "Branching, stacked chains and frozen-base-SHA integration discipline"
+    },
+    {
+      "name": "engineering-identity-access-engineer",
+      "category": "security",
+      "source": "engineering/engineering-identity-access-engineer.md",
+      "description": "OAuth2/OIDC, enterprise SSO, SCIM, passkeys, sessions, RBAC/ABAC. Use for authentication and authorization design.",
+      "rationale": "Hosted auth, sessions, Argon2id passwords, Gmail OAuth, RBAC in app/core/auth"
+    },
+    {
+      "name": "engineering-incident-response-commander",
+      "category": "ops",
+      "source": "engineering/engineering-incident-response-commander.md",
+      "description": "Production incident command, post-mortems, SLO/SLI tracking, on-call design. Use during or after an outage.",
+      "rationale": "Production incident command and post-mortems"
+    },
+    {
+      "name": "engineering-minimal-change-engineer",
+      "category": "quality",
+      "source": "engineering/engineering-minimal-change-engineer.md",
+      "description": "Minimum-viable diffs; fixes only what was asked. Use to keep a bug fix from becoming a refactor.",
+      "rationale": "Enforces the smallest complete vertical slice; refuses opportunistic scope"
+    },
+    {
+      "name": "engineering-multi-agent-systems-architect",
+      "category": "ai",
+      "source": "engineering/engineering-multi-agent-systems-architect.md",
+      "description": "Multi-agent topology, context management, failure recovery, human-in-the-loop gating. Use to design agent pipelines.",
+      "rationale": "app/services/agents, agent_studio and workbench_agents pipeline design"
+    },
+    {
+      "name": "engineering-privacy-engineer",
+      "category": "security",
+      "source": "engineering/engineering-privacy-engineer.md",
+      "description": "PII discovery, data minimization, consent enforcement, automated DSAR/deletion. Use to implement privacy in code.",
+      "rationale": "Contact PII handling, suppression, retention and deletion in code"
+    },
+    {
+      "name": "engineering-prompt-engineer",
+      "category": "ai",
+      "source": "engineering/engineering-prompt-engineer.md",
+      "description": "Crafts, tests, and optimizes LLM prompts for reliable production behavior. Use to harden a prompt or fix flaky output.",
+      "rationale": "Hardening the prompts behind the research, insight and draft contracts"
+    },
+    {
+      "name": "engineering-rag-pipeline-engineer",
+      "category": "ai",
+      "source": "engineering/engineering-rag-pipeline-engineer.md",
+      "description": "Chunking, retrieval quality, hybrid search, re-ranking, eval-driven iteration. Use for production RAG pipelines.",
+      "rationale": "Retrieval quality where Insights reads current eligible Research state"
+    },
+    {
+      "name": "engineering-software-architect",
+      "category": "backend",
+      "source": "engineering/engineering-software-architect.md",
+      "description": "System design, DDD, architectural patterns, technical decision records. Use for architecture-level decisions.",
+      "rationale": "Architecture-level decisions, DDD boundaries, ADRs across app/"
+    },
+    {
+      "name": "engineering-sre",
+      "category": "ops",
+      "source": "engineering/engineering-sre.md",
+      "description": "SLOs, error budgets, observability, chaos engineering, toil reduction. Use for production reliability engineering.",
+      "rationale": "Reliability, observability and toil reduction on the staging VPS"
+    },
+    {
+      "name": "engineering-technical-writer",
+      "category": "ai",
+      "source": "engineering/engineering-technical-writer.md",
+      "description": "Developer docs, API references, READMEs, tutorials. Use to write or restructure technical documentation.",
+      "rationale": "The docs/ set and handoff documents"
+    },
+    {
+      "name": "marketing-email-strategist",
+      "category": "domain",
+      "source": "marketing/marketing-email-strategist.md",
+      "description": "Lifecycle email automation, segmentation, deliverability, post-MPP measurement. Use for CRM email programs.",
+      "rationale": "Email cadence, deliverability and lifecycle design behind the 7-message sequence"
+    },
+    {
+      "name": "product-manager",
+      "category": "product",
+      "source": "product/product-manager.md",
+      "description": "Full product lifecycle: discovery, strategy, roadmap, GTM, outcome measurement. Use for product leadership.",
+      "rationale": "Product lifecycle and scope decisions inside the authorized milestone"
+    },
+    {
+      "name": "sales-outbound-strategist",
+      "category": "domain",
+      "source": "sales/sales-outbound-strategist.md",
+      "description": "ICP definition, signal-based multi-channel prospecting sequences, research-driven personalization. Use for outbound.",
+      "rationale": "ICP definition and outbound sequence strategy — the product's own domain"
+    },
+    {
+      "name": "security-ai-generated-code-auditor",
+      "category": "security",
+      "source": "security/security-ai-generated-code-auditor.md",
+      "description": "Finds hardcoded secrets, broken row-level security, and prompt-injection sinks. Use to audit AI-generated code.",
+      "rationale": "Audits AI-generated code for secrets, broken access control and injection sinks"
+    },
+    {
+      "name": "security-appsec-engineer",
+      "category": "security",
+      "source": "security/security-appsec-engineer.md",
+      "description": "Threat modeling, secure code review, SAST/DAST in CI, developer security education. Use to secure the SDLC.",
+      "rationale": "Secure code review and SAST/DAST in the GitHub Actions pipeline"
+    },
+    {
+      "name": "security-architect",
+      "category": "security",
+      "source": "security/security-architect.md",
+      "description": "Threat modeling, secure-by-design architecture, trust boundaries, defense in depth. Use for security design reviews.",
+      "rationale": "Threat modeling and trust boundaries for the hosted app"
+    },
+    {
+      "name": "security-secrets-credential-engineer",
+      "category": "security",
+      "source": "security/security-secrets-credential-engineer.md",
+      "description": "Secret detection, prevention, vaulting, rotation, and leak response. Use for credential lifecycle hygiene.",
+      "rationale": "Secret detection, vaulting and rotation; secrets never in source, logs or history"
+    },
+    {
+      "name": "security-senior-secops",
+      "category": "security",
+      "source": "security/security-senior-secops.md",
+      "description": "Scans for exposed secrets, then audits auth, tokens, cookies, headers, CORS, CSP, logging. Use for appsec controls.",
+      "rationale": "Headers, CORS, cookies, CSP, rate limiting, secure logging across FastAPI and nginx"
+    },
+    {
+      "name": "specialized-codebase-archaeologist",
+      "category": "quality",
+      "source": "specialized/specialized-codebase-archaeologist.md",
+      "description": "Detects drift, dead code, and doc-vs-code divergence from many AI coding sessions. Use for multi-tool codebase audits.",
+      "rationale": "Finds drift and doc-vs-code divergence left by many AI build sessions"
+    },
+    {
+      "name": "specialized-workflow-architect",
+      "category": "product",
+      "source": "specialized/specialized-workflow-architect.md",
+      "description": "Maps workflow trees: happy paths, branches, failure modes, recovery, handoffs. Use for build-ready specs.",
+      "rationale": "Campaign, sequence and approval state machines with failure and recovery paths"
+    },
+    {
+      "name": "support-legal-compliance-checker",
+      "category": "domain",
+      "source": "support/support-legal-compliance-checker.md",
+      "description": "Checks operations, data handling, and content against laws across jurisdictions. Use for compliance review.",
+      "rationale": "Outreach compliance (CAN-SPAM, GDPR) for contact and sending rules"
+    },
+    {
+      "name": "testing-accessibility-auditor",
+      "category": "quality",
+      "source": "testing/testing-accessibility-auditor.md",
+      "description": "WCAG audits, assistive technology testing, inclusive design review. Use to find accessibility barriers.",
+      "rationale": "WCAG review of the server-rendered operator workbench"
+    },
+    {
+      "name": "testing-api-tester",
+      "category": "quality",
+      "source": "testing/testing-api-tester.md",
+      "description": "API validation, contract checks, performance testing, integration QA. Use to test an API surface.",
+      "rationale": "Validates FastAPI route contracts and integrations"
+    },
+    {
+      "name": "testing-evidence-collector",
+      "category": "quality",
+      "source": "testing/testing-evidence-collector.md",
+      "description": "Screenshot-backed QA that demands visual proof of every claim. Use for evidence-based QA passes.",
+      "rationale": "Evidence-backed QA; aligns with the never-fabricate-evidence rule"
+    },
+    {
+      "name": "testing-performance-benchmarker",
+      "category": "quality",
+      "source": "testing/testing-performance-benchmarker.md",
+      "description": "Measures, analyzes, and improves system and application performance. Use for benchmarking and profiling.",
+      "rationale": "Measures and profiles app and worker performance"
+    },
+    {
+      "name": "testing-reality-checker",
+      "category": "quality",
+      "source": "testing/testing-reality-checker.md",
+      "description": "Evidence-based production-readiness certification; defaults to NEEDS WORK. Use to stop premature sign-off.",
+      "rationale": "Blocks premature production/UAT sign-off without proof"
+    },
+    {
+      "name": "testing-test-automation-engineer",
+      "category": "quality",
+      "source": "testing/testing-test-automation-engineer.md",
+      "description": "Playwright and Cypress E2E: resilient selectors, flake elimination, CI parallelization. Use for E2E automation.",
+      "rationale": "pytest and extension E2E suites, flake elimination, CI parallelization"
+    },
+    {
+      "name": "testing-test-results-analyzer",
+      "category": "quality",
+      "source": "testing/testing-test-results-analyzer.md",
+      "description": "Evaluates test results and quality metrics into actionable insight. Use to interpret a test run.",
+      "rationale": "Interprets a CI or pytest run into actionable signal"
+    }
+  ]
+}

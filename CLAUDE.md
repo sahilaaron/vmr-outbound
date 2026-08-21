@@ -93,3 +93,11 @@ represents an unpushed local commit as present on GitHub.
   can simply be pushed and CI can run.
 - Out-of-scope ideas and non-blocking review findings go to the deferred backlog,
   not into the active UAT path.
+
+## Claude Code configuration
+
+- Subsystem rules live in `.claude/rules/*.md` and load only when matching files are
+  touched. Put path-specific instructions there, not in this file.
+- `.claude/agents/` carries a curated subset of a larger agent library that is kept
+  outside `~/.claude/agents/` on purpose. See `.claude/AGENT_SELECTION.md`; never
+  reinstall the full library at the global path.

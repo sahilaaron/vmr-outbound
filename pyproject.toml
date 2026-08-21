@@ -62,8 +62,10 @@ line-length = 100
 src = ["app", "tests"]
 # Vendored from the standalone company-website-researcher prototype (#173).
 # Reformatting it in place would make re-vendoring an upstream fix a manual
-# merge every time. Fix defects upstream and re-vendor instead.
-extend-exclude = ["app/services/research/workers/_website"]
+# merge every time. Projected Claude agent files follow the same rule: their
+# bodies stay byte-identical to the preserved source library so refreshes remain
+# deterministic and must not be rewritten by the application's formatter.
+extend-exclude = ["app/services/research/workers/_website", ".claude/agents"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "W"]
