@@ -5,15 +5,24 @@
  *  - Own the recoverable reviewed drafts in chrome.storage.local.
  *  - Relay capture/detect requests to the active tab's content script and merge
  *    result rows (dedupe) into the reviewed batch.
- *  - Build the CONTACT-FIRST submission and POST it — ONLY on explicit operator
- *    action — to the local backend or the dev mock receiver.
+ *  - Turn one explicit operator Save into a DURABLE PUSH JOB and deliver it as
+ *    a sequence of bounded, independently idempotent contact-capture requests.
  *  - Persist optional Campaign filing context independently from Contact capture.
+ *  - Produce a local CSV/JSON export of the reviewed capture on operator action.
  *  - Clear superseded campaign-bound local state explicitly.
  *
- * There is no export or download path. JSON/CSV downloads and the archived
- * campaign-era drafts were an offline fallback from before hosted capture, and
- * the `downloads` permission went with them: a reviewed contact is saved into
- * the operator's VMR Outbound account or it is not saved at all.
+ * ONE SAVE IS NOT ONE REQUEST. The reviewed set may hold up to
+ * `LIMITS.MAX_RECORDS_PER_BATCH` people; a request carries at most
+ * `LIMITS.MAX_CONTACTS_PER_SUBMISSION` of them and at most
+ * `PUSH.CHUNK_MAX_BYTES`. The push is planned once, written down, and resumed
+ * from storage — so it survives the side panel closing, the Sales Navigator tab
+ * going away, and the Manifest V3 service worker being suspended mid-flight.
+ * See `common/push-job.js` for why every chunk's idempotency key is minted once.
+ *
+ * The local export is the operator's own copy of what they reviewed. It is
+ * produced entirely in the browser, works with the backend unreachable, and
+ * never removes or alters the reviewed capture — downloading is not saving and
+ * not clearing.
  *
  * Campaign filing is optional and additive: acquisition always saves the person
  * first. Never posts to LinkedIn. Nothing is ever sent without an explicit
@@ -35,6 +44,8 @@ importScripts(
   "../common/schema.js",
   "../common/profile-schema.js",
   "../common/contact-schema.js",
+  "../common/chunking.js",
+  "../common/push-job.js",
   "../common/migration.js",
   "../common/permissions.js",
   "../common/account-link.js",
@@ -47,6 +58,8 @@ const {
   schema,
   profileSchema,
   contactSchema,
+  chunking,
+  pushJob,
   migration,
   normalize,
   permissions,
@@ -58,6 +71,9 @@ const {
   STORAGE,
   PROFILE_STORAGE,
   CONTACT_STORAGE,
+  PUSH_STORAGE,
+  PUSH,
+  EXPORT,
   ACCOUNT_STORAGE,
   CREDENTIAL_STORAGE,
   CREDENTIAL_PATTERN,
@@ -121,8 +137,35 @@ chrome.runtime.onInstalled.addListener(() => {
     chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
   }
   migrateLegacyState();
+  // Chunk payloads left by a push that was replaced, cancelled or interrupted
+  // before this build existed. They are captured personal data with no reader.
+  sweepOrphanChunks();
+  // An unfinished push is the operator's work, not this worker instance's. Every
+  // way the worker can come back is a way the push must come back with it.
+  resumePush();
 });
-if (chrome.runtime.onStartup) chrome.runtime.onStartup.addListener(migrateLegacyState);
+if (chrome.runtime.onStartup) {
+  chrome.runtime.onStartup.addListener(() => {
+    migrateLegacyState();
+    sweepOrphanChunks();
+    resumePush();
+  });
+}
+
+// The ONLY reason `alarms` is in the manifest.
+//
+// A Manifest V3 service worker is suspended when it goes idle, and an in-memory
+// `await` loop is not background execution — it is a promise that stops existing.
+// Every other wake-up this extension has (the panel opening, a message arriving,
+// the browser starting) depends on somebody doing something. A push whose next
+// chunk is waiting out a backoff needs a wake-up that depends on nobody, and a
+// periodic alarm is the narrowest mechanism Chrome offers for it. It fires only
+// while a push is unfinished and is cleared the moment one settles.
+if (chrome.alarms && chrome.alarms.onAlarm) {
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm && alarm.name === PUSH.RESUME_ALARM) resumePush();
+  });
+}
 
 // ---- account link -----------------------------------------------------------
 //
@@ -642,10 +685,6 @@ async function captureActivePage() {
     collapsed: merged.collapsed,
     uncertain: merged.uncertain,
     overLimit,
-    // DAT-018 B: rows the page showed but that carry no Company Name. They are
-    // reported truthfully and never entered the batch, so they cannot be sent.
-    skipped: result.skipped || [],
-    skippedCount: result.skippedCount || 0,
     visibleCount: result.visibleCount != null ? result.visibleCount : null,
     scroll: result.scroll || null,
     batchView: buildBatchView(batch),
@@ -687,8 +726,14 @@ async function toggleExclude(stableKey, index) {
 async function clearBatch() {
   await chrome.storage.local.remove(STORAGE.DRAFT_BATCH);
   // Clearing the reviewed batch also discards the last staging result: the
-  // staged batch is only meaningful while its reviewed source exists.
+  // staged batch is only meaningful while its reviewed source exists. The same
+  // is true of a settled push — it describes rows that no longer exist here.
+  // An UNFINISHED push is not reached: the caller refuses the clear first.
   await clearLastResult();
+  await clearPushJob();
+  // The ledger describes capture ids that existed only in the set just cleared.
+  // Keeping it would grow for ever and could never match anything again.
+  await chrome.storage.local.remove(PUSH_STORAGE.LEDGER);
   const fresh = await ensureBatch();
   return buildBatchView(fresh);
 }
@@ -771,13 +816,18 @@ async function rememberLabels(labels) {
  * rows the operator left included are ever sent; excluded rows never leave the
  * browser.
  */
-async function buildBatchSubmission() {
+async function buildBatchSubmission(options) {
+  // `persist: false` is the EXPORT path. Building a submission normally pins the
+  // reviewed set's submission id so a retry re-sends the same one; an export is
+  // a local copy that sends nothing, and pinning an id it will never use would
+  // make a download look like the start of a save in the stored state.
+  const persist = !options || options.persist !== false;
   const batch = await ensureBatch();
   const records = includedRecords(batch);
   const metadata = await getOperatorMetadata();
   const filing = await getFilingContext();
   const submissionId = batch.clientSubmissionId || contactSchema.newId();
-  if (!batch.clientSubmissionId) {
+  if (!batch.clientSubmissionId && persist) {
     batch.clientSubmissionId = submissionId;
     await setBatch(batch);
   }
@@ -843,7 +893,17 @@ async function contactCaptureUrl(explicitTarget) {
  * validation, loopback, permission, timeout, and idempotency behaviour cannot
  * drift between saving one profile and saving a page of results.
  */
-async function postSubmission(payload, explicitTarget) {
+/**
+ * Everything that can refuse a submission BEFORE it reaches the network.
+ *
+ * Split out from the send for one reason: the delivery ledger. A capture is
+ * marked as having left the browser immediately before the request goes out,
+ * because a worker killed mid-`fetch` must come back knowing the backend might
+ * hold it. That marking must NOT happen for a refusal that never reached the
+ * network — an unsigned-in install, a declined permission, a bad target — or a
+ * push that was never transmitted would strand its contacts as unsendable.
+ */
+async function prepareSubmission(payload, explicitTarget) {
   if (!payload.contacts.length) {
     return { ok: false, error: "empty_batch", message: "No included contacts to save." };
   }
@@ -883,13 +943,19 @@ async function postSubmission(payload, explicitTarget) {
   });
   if (!auth.ok) return { ok: false, error: auth.error, message: auth.message };
 
+  return { ok: true, target, url, headers: auth.headers, body: serialized.json };
+}
+
+/** Send a prepared submission. From here on the backend may hold the captures. */
+async function dispatchSubmission(prepared) {
+  const { target, url, headers, body } = prepared;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), CONTACT_CAPTURE_TIMEOUT_MS);
   try {
     const resp = await fetch(url, {
       method: "POST",
-      headers: auth.headers,
-      body: serialized.json,
+      headers,
+      body,
       // The capture credential is the only thing that authorises this request.
       // Omitting ambient cookies keeps that true even if the operator is signed
       // in to the same hosted deployment in this browser.
@@ -898,14 +964,20 @@ async function postSubmission(payload, explicitTarget) {
     });
     clearTimeout(timer);
     const text = await resp.text();
-    let body = null;
-    try { body = text ? JSON.parse(text) : null; } catch (_e) { body = { raw: text }; }
+    // NOT `body`: that name belongs to the request payload destructured above,
+    // and shadowing it here put the request body in a temporal dead zone.
+    let responseBody = null;
+    try {
+      responseBody = text ? JSON.parse(text) : null;
+    } catch (_e) {
+      responseBody = { raw: text };
+    }
     if (!resp.ok) {
       // The reviewed draft is preserved so a recoverable failure can be retried
       // with the SAME client_submission_id (idempotent).
-      return { ok: false, error: "receiver_rejected", status: resp.status, body };
+      return { ok: false, error: "receiver_rejected", status: resp.status, body: responseBody };
     }
-    const result = handoff.sanitizeContactSubmissionResult(body, {
+    const result = handoff.sanitizeContactSubmissionResult(responseBody, {
       submittedAt: new Date().toISOString(),
     });
     return { ok: true, status: resp.status, target, url, result };
@@ -922,19 +994,789 @@ async function postSubmission(payload, explicitTarget) {
   }
 }
 
-/** Save the included rows of the reviewed results batch as contacts. */
-async function saveIncludedContacts(explicitTarget) {
-  const { payload, metadata } = await buildBatchSubmission();
-  const response = await postSubmission(payload, explicitTarget);
-  if (response.ok) {
-    await setLastResult(response.result, LISTINGS_CONTEXT);
-    await rememberLabels(metadata.labels);
-    // The panel paints this outcome now and may restore it later. Both paths
-    // are handed the same context, so a live outcome and a restored one are
-    // placed by identical rules.
-    response.resultContext = LISTINGS_CONTEXT;
+/** Prepare and send in one step. The profile workflow saves exactly one person. */
+async function postSubmission(payload, explicitTarget) {
+  const prepared = await prepareSubmission(payload, explicitTarget);
+  if (!prepared.ok) return prepared;
+  return dispatchSubmission(prepared);
+}
+
+// The one-shot listings save that used to live here is gone. Every listings
+// save — ten rows or five thousand — is now a durable push (see below), so
+// there is exactly one delivery path to reason about and a small capture cannot
+// quietly behave differently from a large one. `saveProfileContact` keeps its
+// direct send: one person is one contact, and a job for it would be ceremony.
+
+
+// ---- durable background push ------------------------------------------------
+//
+// The lifecycle, in one place:
+//
+//   reviewed set  -> planned into bounded chunks (chunking.js)
+//                 -> chunk payloads written to storage
+//                 -> job record written to storage
+//                 -> Save returns; the panel is free
+//                 -> chunks POSTed one at a time, job rewritten after each
+//                 -> accepted chunk's payload deleted
+//                 -> settled: alarm cleared, outcome retained
+//
+// Everything after "Save returns" happens in this worker with nobody watching,
+// and every step of it is recoverable from `chrome.storage.local` alone.
+
+/** Structured, PII-FREE progress logging.
+ *
+ * Ids, counts, byte totals, statuses and error CODES only. No name, no profile
+ * URL, no company, no label, no note, no snapshot, no token, and no response
+ * body — a log line about a capture must never become a copy of it.
+ */
+function logPush(event, fields) {
+  try {
+    console.info(
+      JSON.stringify(Object.assign({ event: "vmr_push_" + event }, fields || {}))
+    );
+  } catch (_e) {
+    // Logging must never be the thing that breaks a push.
   }
-  return response;
+}
+
+async function getPushJob() {
+  const data = await chrome.storage.local.get(PUSH_STORAGE.JOB);
+  const raw = data[PUSH_STORAGE.JOB];
+  return raw && raw.v === pushJob.JOB_VERSION ? raw : null;
+}
+
+async function setPushJob(job) {
+  await chrome.storage.local.set({ [PUSH_STORAGE.JOB]: job });
+  return job;
+}
+
+/** Remove the job AND every chunk payload it could still own. */
+async function clearPushJob() {
+  const job = await getPushJob();
+  const keys = pushJob.allChunkKeys(job);
+  if (keys.length) await chrome.storage.local.remove(keys);
+  await chrome.storage.local.remove(PUSH_STORAGE.JOB);
+  await clearResumeAlarm();
+  await sweepOrphanChunks();
+  return { ok: true };
+}
+
+async function readChunkContacts(job, index) {
+  const chunk = job.chunks[index];
+  if (!chunk) return null;
+  const key = pushJob.chunkKey(chunk.clientSubmissionId);
+  const data = await chrome.storage.local.get(key);
+  const contacts = data[key];
+  return Array.isArray(contacts) && contacts.length ? contacts : null;
+}
+
+// ---- the delivery ledger ------------------------------------------------------
+//
+// What has happened to each captured person, by `client_capture_id`. The module
+// that reasons about it is `common/push-job.js`; this is only its storage.
+
+async function getLedger() {
+  const data = await chrome.storage.local.get(PUSH_STORAGE.LEDGER);
+  return pushJob.readLedger(data[PUSH_STORAGE.LEDGER]);
+}
+
+async function setLedger(ledger) {
+  await chrome.storage.local.set({ [PUSH_STORAGE.LEDGER]: ledger });
+  return ledger;
+}
+
+async function markDelivery(captureIds, state) {
+  if (!captureIds || !captureIds.length) return null;
+  return setLedger(pushJob.markDelivery(await getLedger(), captureIds, state));
+}
+
+/**
+ * Close the book on everything transmitted but never confirmed.
+ *
+ * Called when a job is cancelled or dismissed: nothing is going to retry those
+ * people now, so they stop being "in doubt, awaiting a retry" and become
+ * "transmitted, unconfirmed, not retried". They are still never re-planned — the
+ * backend may hold them, and only their own frozen chunk could have proved it.
+ */
+async function finaliseLedger() {
+  return setLedger(pushJob.finaliseInDoubt(await getLedger()));
+}
+
+/**
+ * Reclaim chunk payloads that nothing can ever send.
+ *
+ * A chunk payload is captured personal data. Before this existed, replacing a
+ * job simply overwrote the job pointer and left the previous job's chunk keys
+ * behind — unreachable by any code path, unbounded across repeated pushes, and
+ * holding the reviewed contacts of every abandoned attempt.
+ *
+ * Ownership is decided by the CURRENT job and nothing else: a key survives only
+ * while it names a chunk that job still has to send. Accepted chunks have
+ * already done their work, cancelled chunks will not be attempted again, and a
+ * key belonging to no current job is reachable by nothing.
+ *
+ * Enumerating storage is the point — an index would only ever find keys it was
+ * told about, and a key left by an interrupted write is exactly the kind this
+ * has to find. `getKeys` avoids reading the values; where Chrome is too old for
+ * it (the manifest allows 116) the fallback reads them and throws them away.
+ */
+async function sweepOrphanChunks() {
+  const job = await getPushJob();
+  const live = new Set(pushJob.liveChunkKeys(job));
+  let keys;
+  try {
+    keys = chrome.storage.local.getKeys
+      ? await chrome.storage.local.getKeys()
+      : Object.keys(await chrome.storage.local.get(null));
+  } catch (_e) {
+    return { ok: true, removed: 0 };
+  }
+  const orphaned = keys.filter(
+    (key) => key.startsWith(PUSH_STORAGE.CHUNK_PREFIX) && !live.has(key)
+  );
+  if (orphaned.length) {
+    await chrome.storage.local.remove(orphaned);
+    logPush("chunks_reclaimed", { count: orphaned.length, live: live.size });
+  }
+  return { ok: true, removed: orphaned.length };
+}
+
+async function ensureResumeAlarm() {
+  if (!chrome.alarms) return;
+  try {
+    await chrome.alarms.create(PUSH.RESUME_ALARM, {
+      periodInMinutes: PUSH.RESUME_PERIOD_MINUTES,
+    });
+  } catch (_e) {
+    // Without the alarm a push still runs and still resumes whenever the panel
+    // is opened or a message arrives. It just loses its unattended wake-up.
+  }
+}
+
+async function clearResumeAlarm() {
+  if (!chrome.alarms) return;
+  try {
+    await chrome.alarms.clear(PUSH.RESUME_ALARM);
+  } catch (_e) {
+    // Nothing to do: a stale alarm only causes a no-op resume.
+  }
+}
+
+/** The panel's view of the push, or null when there has never been one. */
+async function pushState() {
+  const job = await getPushJob();
+  return {
+    ok: true,
+    push: pushJob.jobView(job),
+    pushActive: job ? !pushJob.isTerminal(job) : false,
+  };
+}
+
+/**
+ * Whether the reviewed batch may be changed right now.
+ *
+ * While a push is unfinished the reviewed set is the thing being delivered.
+ * Capturing more rows, changing inclusion, or clearing it would either strand
+ * the operator's work or produce a second push whose people the backend has
+ * already accepted under the same capture ids. So those actions are refused
+ * with a reason, not silently ignored, and nothing about the running push
+ * changes.
+ */
+async function pushBlocking() {
+  const job = await getPushJob();
+  if (!job || pushJob.isTerminal(job)) return null;
+  return {
+    ok: false,
+    error: "push_in_progress",
+    message:
+      "A save of this capture is still running. Wait for it to finish, or open " +
+      "the panel to watch it.",
+    push: pushJob.jobView(job),
+  };
+}
+
+/**
+ * Start one logical push.
+ *
+ * Does the smallest amount of work that makes the operation recoverable — plan,
+ * write the chunks, write the job — and then returns. Delivery is deliberately
+ * NOT awaited: tying it to this promise is what used to tie a five-thousand
+ * person save to the lifetime of a side panel.
+ */
+async function startPush() {
+  const blocking = await pushBlocking();
+  if (blocking) return blocking;
+
+  const existing = await getPushJob();
+  const { batch, payload, metadata } = await buildBatchSubmission();
+
+  const size = chunking.checkPushSize(payload.contacts.length, LIMITS.MAX_RECORDS_PER_BATCH);
+  if (!size.ok) {
+    if (size.code === "empty_batch") {
+      return { ok: false, error: "empty_batch", message: "No included contacts to save." };
+    }
+    // The refusal names the real ceiling. Nothing is transmitted, and the
+    // reviewed set is untouched, so the operator can exclude rows and save.
+    return {
+      ok: false,
+      error: "push_limit_exceeded",
+      limit: size.limit,
+      count: size.count,
+      message:
+        `One save may contain up to ${size.limit} contacts. This capture has ` +
+        `${size.count}. Exclude ${size.count - size.limit} or clear and capture again.`,
+    };
+  }
+
+  // WHAT THIS SAVE MAY CONTAIN.
+  //
+  // A `client_capture_id` is unique across the backend's whole capture table.
+  // Once a person has been transmitted, the backend may already own their id,
+  // and offering it again under a NEW submission id is refused with
+  // `client_capture_id_conflict` — permanently, on an operation the operator is
+  // entitled to perform (exclude a row, capture more, save again).
+  //
+  // So a new Save plans ONLY people who have never left the browser. Everyone
+  // else is either already saved, or belongs to a chunk that is carried forward
+  // below and can only ever be replayed under its own original submission id.
+  const ledger = await getLedger();
+  const allIds = payload.contacts.map((c) => c.client_capture_id);
+  const ledgerState = pushJob.ledgerCounts(ledger, allIds);
+  const unsent = payload.contacts.filter((c) => pushJob.isPlannable(ledger, c.client_capture_id));
+
+  // Work the previous job never finished. It keeps its submission ids and its
+  // stored payloads: that is what makes carrying it forward safe rather than a
+  // second attempt at the same people under new identities.
+  const carried = pushJob.carryableChunks(existing);
+
+  if (!unsent.length && !carried.length) {
+    return {
+      ok: false,
+      error: "nothing_to_send",
+      alreadySaved: ledgerState.accepted,
+      notRetried: ledgerState.inDoubt + ledgerState.terminal,
+      message: describeNothingToSend(ledgerState),
+      push: existing ? pushJob.jobView(existing) : null,
+    };
+  }
+
+  const envelopeBytes = contactSchema.envelopeBytes({
+    clientSubmissionId: batch.clientSubmissionId,
+    captureMode: CAPTURE_MODES.SALESNAV_PEOPLE_SEARCH,
+    submittedAt: batch.createdAt,
+    extensionVersion: EXTENSION_VERSION,
+    metadata,
+    campaignId: payload.campaign_id,
+  });
+  const plan = chunking.planChunks(unsent, {
+    measure: contactSchema.captureBytes,
+    envelopeBytes,
+    maxContacts: Math.min(PUSH.CHUNK_MAX_CONTACTS, LIMITS.MAX_CONTACTS_PER_SUBMISSION),
+    maxBytes: Math.min(PUSH.CHUNK_MAX_BYTES, LIMITS.MAX_PAYLOAD_BYTES),
+    recordMaxBytes: Math.min(PUSH.RECORD_MAX_BYTES, LIMITS.MAX_PAYLOAD_BYTES),
+  });
+  if (!plan.chunks.length && !carried.length) {
+    return {
+      ok: false,
+      error: "invalid_payload",
+      message:
+        "None of the reviewed contacts could be prepared for sending. Nothing was sent.",
+      oversized: plan.oversized.length,
+    };
+  }
+
+  const now = new Date().toISOString();
+  const job = pushJob.createJob({
+    jobId: contactSchema.newId(),
+    logicalSubmissionId: batch.clientSubmissionId,
+    createdAt: now,
+    plan,
+    carried,
+    mintId: () => contactSchema.newId(),
+    campaignId: payload.campaign_id,
+    captureMode: CAPTURE_MODES.SALESNAV_PEOPLE_SEARCH,
+    submittedAt: batch.createdAt,
+    metadata,
+    extensionVersion: EXTENSION_VERSION,
+  });
+
+  // The chunk payloads go down BEFORE the job does. A job that names a chunk
+  // whose contacts were never written would resume into a hole; a chunk written
+  // with no job pointing at it is inert and is reclaimed by the next sweep.
+  // Carried chunks are not rewritten — their payloads are already on disk under
+  // the same key, and that key is their submission id.
+  const writes = {};
+  for (const chunk of job.chunks) {
+    if (chunk.carried) continue;
+    const planned = plan.chunks[chunk.index - carried.length];
+    writes[pushJob.chunkKey(chunk.clientSubmissionId)] = planned.indexes.map(
+      (i) => unsent[i]
+    );
+  }
+  if (Object.keys(writes).length) await chrome.storage.local.set(writes);
+  await setPushJob(job);
+  // A push in flight has no outcome yet, and an older one must not stand in
+  // front of it.
+  await clearLastResult();
+  // The job that just went out of scope may have left chunk payloads behind.
+  // They are captured personal data and nothing can send them now.
+  await sweepOrphanChunks();
+  await ensureResumeAlarm();
+  logPush("planned", {
+    job_id: job.jobId,
+    contacts: job.totalContacts,
+    planned_contacts: job.plannedContacts,
+    chunks: job.totalChunks,
+    carried_chunks: carried.length,
+    already_saved: ledgerState.accepted,
+    not_retried: ledgerState.inDoubt + ledgerState.terminal,
+    envelope_bytes: envelopeBytes,
+    oversized: plan.oversized.length,
+  });
+
+  // Deliberately not awaited. The operator's Save is finished the moment the
+  // job is durable; the transfer is this worker's problem from here.
+  drivePush();
+  return {
+    ok: true,
+    push: pushJob.jobView(job),
+    // What this Save deliberately left out, so the panel can say so rather than
+    // let the operator wonder why 350 reviewed contacts became a 100-row save.
+    alreadySaved: ledgerState.accepted,
+    notRetried: ledgerState.inDoubt + ledgerState.terminal,
+  };
+}
+
+/** Why a Save had nothing to do. Every branch is a different true sentence. */
+function describeNothingToSend(state) {
+  if (state.accepted && !state.inDoubt && !state.terminal) {
+    return state.accepted === 1
+      ? "This contact has already been saved."
+      : `All ${state.accepted} of these contacts have already been saved.`;
+  }
+  if (!state.accepted && (state.inDoubt || state.terminal)) {
+    return (
+      `${state.inDoubt + state.terminal} contact(s) were already sent and never confirmed. ` +
+      "Check VMR Outbound before capturing them again."
+    );
+  }
+  return (
+    `${state.accepted} contact(s) are saved and ${state.inDoubt + state.terminal} were sent ` +
+    "without confirmation. There is nothing new here to send."
+  );
+}
+
+// One delivery loop per worker instance. Two loops would race for the same
+// chunk, and while the backend would deduplicate the result the attempt counter
+// would not.
+let pushDriveInFlight = false;
+
+// Failures that are about the PUSH, not about the chunk that happened to hit
+// them. A revoked account link or a declined host permission will refuse chunk
+// 2 exactly as it refused chunk 1, so carrying on would burn every chunk's
+// attempts against a condition only the operator can clear. The loop stops
+// instead, leaving the remaining chunks pending and retryable, and the alarm
+// picks the push up again once the operator has fixed it.
+const PUSH_BLOCKING_ERRORS = new Set([
+  "account_link_required",
+  "account_link_unavailable",
+  "account_link_revoked",
+  "credential_missing",
+  "credential_rejected",
+  "extension_not_approved",
+  "permission_denied",
+  "origin_not_allowed",
+  "rate_limited",
+]);
+
+/** Deliver whatever of the current job can be delivered right now. */
+async function drivePush() {
+  if (pushDriveInFlight) return { ok: true, busy: true };
+  pushDriveInFlight = true;
+  try {
+    for (;;) {
+      let job = await getPushJob();
+      if (!job) return { ok: true, push: null };
+      if (pushJob.isTerminal(job)) {
+        await settlePush(job);
+        return { ok: true, push: pushJob.jobView(job) };
+      }
+
+      const next = pushJob.nextChunk(job, Date.now());
+      if (!next.chunk) {
+        if (next.reason === "waiting") {
+          // Everything left is in backoff. The alarm brings us back.
+          await ensureResumeAlarm();
+          return { ok: true, push: pushJob.jobView(job), waiting: true };
+        }
+        job = pushJob.settle(job, Date.now());
+        await setPushJob(job);
+        await settlePush(job);
+        return { ok: true, push: pushJob.jobView(job) };
+      }
+
+      const index = next.chunk.index;
+      const contacts = await readChunkContacts(job, index);
+      if (!contacts) {
+        // The payload is gone but the job still names it. That is not a network
+        // problem and retrying cannot fix it, so it is recorded as what it is.
+        pushJob.markFailed(job, index, { code: "chunk_payload_missing", retryable: false }, Date.now());
+        await setPushJob(job);
+        logPush("chunk_missing", { job_id: job.jobId, chunk: index });
+        continue;
+      }
+
+      // Counted and written down BEFORE the request. A worker that dies inside
+      // the request comes back having spent an attempt.
+      pushJob.markAttempt(job, index, Date.now());
+      await setPushJob(job);
+
+      const chunk = job.chunks[index];
+      const jobId = job.jobId;
+      const captureIds = contacts.map((c) => c.client_capture_id);
+      const chunkPayload = contactSchema.buildSubmission({
+        clientSubmissionId: chunk.clientSubmissionId,
+        captureMode: job.captureMode,
+        submittedAt: job.submittedAt,
+        extensionVersion: job.extensionVersion,
+        metadata: job.metadata,
+        campaignId: job.campaignId,
+        contacts,
+      });
+      logPush("chunk_attempt", {
+        job_id: job.jobId,
+        chunk: index,
+        chunks: job.totalChunks,
+        records: contacts.length,
+        bytes: chunk.bytes,
+        attempt: chunk.attempts,
+        carried: chunk.carried === true,
+      });
+
+      // Refusals that never reach the network are handled first, precisely so
+      // that nothing is recorded as transmitted when nothing was.
+      const prepared = await prepareSubmission(chunkPayload);
+      let response;
+      if (!prepared.ok) {
+        response = prepared;
+      } else {
+        // The point of no return. From here the backend may hold these capture
+        // ids whatever happens next — including this worker being killed inside
+        // the request — so they stop being plannable BEFORE the request goes.
+        await markDelivery(captureIds, PUSH.DELIVERY.IN_DOUBT);
+        response = await dispatchSubmission(prepared);
+      }
+
+      // Re-read: storage is the authority, and this await is long enough for the
+      // job to have been dismissed or replaced underneath us. Folding a response
+      // into a job it does not belong to would be worse than losing it.
+      job = await getPushJob();
+      if (!job || job.jobId !== jobId || !job.chunks[index]) {
+        logPush("chunk_orphaned", { job_id: jobId, chunk: index });
+        return { ok: true, push: pushJob.jobView(job) };
+      }
+
+      if (response.ok) {
+        // Proof, and it outranks everything: these people are saved.
+        await markDelivery(captureIds, PUSH.DELIVERY.ACCEPTED);
+        pushJob.markAccepted(job, index, response.result, Date.now());
+        await setPushJob(job);
+        // The copy has served its purpose. Deleting it here is what makes a
+        // long push consume LESS storage as it goes rather than more.
+        await chrome.storage.local.remove(pushJob.chunkKey(chunk.clientSubmissionId));
+        logPush("chunk_accepted", {
+          job_id: job.jobId,
+          chunk: index,
+          records: contacts.length,
+          replayed: response.result && response.result.alreadyReceived === true,
+        });
+        // A response that arrived after the operator pressed Cancel is recorded
+        // — it is true — but it does not restart a cancelled push.
+        if (job.status === pushJob.STATUS.CANCELLED) {
+          await settlePush(job);
+          return { ok: true, push: pushJob.jobView(job), cancelled: true };
+        }
+        continue;
+      }
+
+      const detail = handoff.describeSendError(response);
+      // The operator pressed Cancel while this request was in the air. Recording
+      // a retryable failure now would put the chunk back into PENDING — which
+      // is a live, unsweepable, unsendable chunk and a job that says cancelled
+      // while behaving as though it were not.
+      if (job.status === pushJob.STATUS.CANCELLED) {
+        logPush("chunk_failed_after_cancel", {
+          job_id: job.jobId,
+          chunk: index,
+          error: detail.code,
+        });
+        return { ok: true, push: pushJob.jobView(job), cancelled: true };
+      }
+      pushJob.markFailed(
+        job,
+        index,
+        { code: detail.code, retryable: detail.canRetry !== false },
+        Date.now()
+      );
+      await setPushJob(job);
+      logPush("chunk_failed", {
+        job_id: job.jobId,
+        chunk: index,
+        records: contacts.length,
+        attempt: job.chunks[index].attempts,
+        error: detail.code,
+        status: response.status || null,
+        retryable: job.chunks[index].status === pushJob.CHUNK_STATUS.PENDING,
+      });
+      await ensureResumeAlarm();
+      if (PUSH_BLOCKING_ERRORS.has(detail.code)) {
+        logPush("blocked", { job_id: job.jobId, error: detail.code });
+        return { ok: true, push: pushJob.jobView(job), blocked: detail.code };
+      }
+      // Otherwise the loop continues: a chunk in backoff is skipped, a failed
+      // chunk is finished with, and the chunks after it are still owed delivery.
+    }
+  } finally {
+    pushDriveInFlight = false;
+  }
+}
+
+// Whether this worker instance has already reclaimed orphaned chunk storage.
+// A restarted worker sweeps again — that IS the recovery path — but the alarm
+// firing once a minute through a long push does not re-enumerate storage.
+let sweptThisSession = false;
+
+async function sweepOnce() {
+  if (sweptThisSession) return { ok: true, removed: 0, skipped: true };
+  sweptThisSession = true;
+  return sweepOrphanChunks();
+}
+
+/** Resume after suspension, restart, or a panel opening. */
+async function resumePush() {
+  // Recovery is exactly when a payload nothing owns comes to light: a job that
+  // was replaced or interrupted before it could tidy up leaves keys that only a
+  // sweep can find.
+  await sweepOnce();
+  const job = await getPushJob();
+  if (!job) {
+    await clearResumeAlarm();
+    return { ok: true, push: null };
+  }
+  if (pushJob.isTerminal(job)) {
+    await clearResumeAlarm();
+    return { ok: true, push: pushJob.jobView(job) };
+  }
+  logPush("resume", {
+    job_id: job.jobId,
+    chunks: job.totalChunks,
+    accepted: pushJob.contactsAccepted(job),
+    contacts: job.totalContacts,
+  });
+  return drivePush();
+}
+
+/**
+ * A settled push: stop the alarm, drop any chunk payload still on disk, and
+ * retain the outcome so reopening the panel shows it.
+ *
+ * WHAT IS NOT DONE HERE: the reviewed capture is not cleared. Delivery finishing
+ * is not the operator deciding they are done with the rows, and a batch that
+ * vanishes on completion is a batch that cannot be re-examined against the
+ * outcome. Clearing stays an explicit operator action, and it is refused while a
+ * push is unfinished — which is the whole of the rule about when captured data
+ * becomes safe to remove.
+ */
+async function settlePush(job) {
+  await clearResumeAlarm();
+  // Anything transmitted and never confirmed stops waiting for a retry that is
+  // not coming, and is reported as what it is. It is still never re-planned.
+  await finaliseLedger();
+  // Every chunk this job will not send again is captured personal data with no
+  // remaining reader.
+  await sweepOrphanChunks();
+  // Offer the labels again next time, but only once some of this push actually
+  // landed — the old one-shot save remembered them on success and nothing about
+  // chunking changes when a label counts as used.
+  if (pushJob.contactsAccepted(job) > 0) {
+    await rememberLabels((job.metadata && job.metadata.labels) || []);
+  }
+  await setLastResult(pushResultSummary(job), LISTINGS_CONTEXT);
+  logPush("settled", {
+    job_id: job.jobId,
+    status: job.status,
+    contacts: job.totalContacts,
+    accepted: pushJob.contactsAccepted(job),
+    failed_chunks: job.chunks.filter((c) => c.status === pushJob.CHUNK_STATUS.FAILED).length,
+  });
+  return job;
+}
+
+/**
+ * The retained outcome of a whole push.
+ *
+ * `counts` are summed over every accepted chunk, so they describe the operation
+ * the operator performed rather than the last request that happened to run.
+ * `resultsSeen` and `resultsRetained` are kept apart on purpose: a 5,000-contact
+ * push processes 5,000 people and stores a bounded number of detail rows, and
+ * the panel must be able to say both.
+ */
+function pushResultSummary(job) {
+  const view = pushJob.jobView(job);
+  return {
+    submissionId: null,
+    clientSubmissionId: job.logicalSubmissionId,
+    alreadyReceived: false,
+    receivedAt: job.updatedAt,
+    counts: view.counts,
+    results: view.results,
+    resultsSeen: view.resultsSeen,
+    resultsRetained: view.resultsRetained,
+    resultsTruncated: view.resultsTruncated,
+    workbenchUrl: job.workbenchUrl,
+    submittedAt: job.createdAt,
+    push: {
+      jobId: view.jobId,
+      status: view.status,
+      totalContacts: view.totalContacts,
+      contactsAccepted: view.contactsAccepted,
+      contactsFailed: view.contactsFailed,
+      contactsCancelled: view.contactsCancelled,
+      totalChunks: view.totalChunks,
+      failedChunks: view.failedChunks,
+      retryableChunks: view.retryableChunks,
+      failures: view.failures,
+      oversized: view.oversized,
+    },
+  };
+}
+
+/** Re-arm the failed chunks of a settled push. Same ids, so no duplicates. */
+async function retryPush() {
+  const job = await getPushJob();
+  if (!job) return { ok: false, error: "no_push" };
+  const { armed } = pushJob.retryFailed(job, Date.now());
+  if (!armed) return { ok: false, error: "nothing_to_retry", push: pushJob.jobView(job) };
+  await setPushJob(job);
+  await ensureResumeAlarm();
+  logPush("retry", { job_id: job.jobId, chunks: armed });
+  drivePush();
+  return { ok: true, push: pushJob.jobView(job) };
+}
+
+/**
+ * Stop an unfinished push. The operator's escape hatch, and NOT a rollback.
+ *
+ * Without this an unrecoverable push was a dead end: a revoked account link
+ * meant every resume refused, the job stayed unfinished for ever, and because an
+ * unfinished push holds the reviewed set, capture, exclude, clear and dismiss
+ * were all refused. The extension could be wedged by a condition the operator
+ * had no control over and no way to acknowledge.
+ *
+ * What cancelling does NOT do is undo anything. Contacts the backend accepted
+ * stay accepted — nothing here can reach across and un-commit them, and
+ * pretending otherwise would be a lie about somebody's data. What it does is
+ * stop offering the rest, release the reviewed set, and say plainly how the two
+ * halves ended up.
+ */
+async function cancelPush() {
+  const job = await getPushJob();
+  if (!job) return { ok: false, error: "no_push" };
+  if (pushJob.isTerminal(job)) {
+    return { ok: false, error: "push_not_running", push: pushJob.jobView(job) };
+  }
+  const outcome = pushJob.cancel(job, new Date().toISOString());
+  await setPushJob(job);
+  await clearResumeAlarm();
+  // Transmitted-but-unconfirmed people stop being "awaiting a retry". They are
+  // still never re-planned: the backend may hold them.
+  await finaliseLedger();
+  // Every cancelled chunk's payload is now unreachable by any code path.
+  await sweepOrphanChunks();
+  await setLastResult(pushResultSummary(job), LISTINGS_CONTEXT);
+  logPush("cancelled", {
+    job_id: job.jobId,
+    accepted: outcome.accepted,
+    not_sent: outcome.notSent,
+    transmitted_unconfirmed: outcome.transmitted,
+  });
+  return {
+    ok: true,
+    push: pushJob.jobView(job),
+    accepted: outcome.accepted,
+    notSent: outcome.notSent,
+    transmitted: outcome.transmitted,
+  };
+}
+
+/** Dismiss a SETTLED push. An unfinished one is never thrown away by accident. */
+async function dismissPush() {
+  const job = await getPushJob();
+  if (job && !pushJob.isTerminal(job)) {
+    return {
+      ok: false,
+      error: "push_in_progress",
+      push: pushJob.jobView(job),
+    };
+  }
+  await finaliseLedger();
+  await clearPushJob();
+  return { ok: true, push: null };
+}
+
+// ---- local export -----------------------------------------------------------
+//
+// The operator's own copy of the capture they just reviewed. Entirely local: it
+// reads the reviewed batch, formats it here, and hands the text to the panel to
+// save. No request is made, so it works with VMR Outbound unreachable, and it
+// is only ever produced in response to an explicit operator action.
+//
+// Downloading changes nothing. The reviewed set is not marked, not consumed and
+// not cleared, and the push that would save it is exactly as available
+// afterwards as it was before.
+
+function sanitizeFilename(name) {
+  return (
+    String(name)
+      .replace(/[^a-zA-Z0-9._-]+/g, "_")
+      .replace(/_{2,}/g, "_")
+      .replace(/^[_.]+|[_.]+$/g, "")
+      .slice(0, 120) || "capture"
+  );
+}
+
+/**
+ * Build the export text for the INCLUDED rows of the reviewed capture.
+ *
+ * Included, not everything: an excluded row is one the operator decided is not
+ * part of this capture, and that decision means the same thing for the file as
+ * it does for the save. This is the behaviour the export had before it was
+ * removed, and it is preserved rather than reconsidered here.
+ *
+ *   csv   the flat review sheet — one row per contact, the historical column
+ *         contract (src/common/schema.js CSV_COLUMNS)
+ *   json  the exact contact-first submission body, pretty-printed, so what was
+ *         exported and what would be sent are the same thing
+ */
+async function buildCapturedExport(format) {
+  const wanted = EXPORT.FORMATS.includes(format) ? format : "csv";
+  const { payload, records, batch } = await buildBatchSubmission({ persist: false });
+  if (!records.length) {
+    return { ok: false, error: "empty_batch", message: "No included contacts to export." };
+  }
+  const stamp = String(batch.createdAt || "").replace(/[:.]/g, "-");
+  const base = sanitizeFilename(`${EXPORT.FILENAME_PREFIX}_${stamp}`);
+  const text = wanted === "csv" ? schema.toCsv(records) : JSON.stringify(payload, null, 2);
+  const mime = wanted === "csv" ? EXPORT.CSV_MIME : EXPORT.JSON_MIME;
+  logPush("export", { format: wanted, records: records.length, bytes: text.length });
+  return {
+    ok: true,
+    format: wanted,
+    filename: `${base}.${wanted}`,
+    mime,
+    text,
+    records: records.length,
+  };
 }
 
 // ---- label registry + save-vs-refresh lookup --------------------------------
@@ -1516,6 +2358,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         const batch = await ensureBatch();
         const prefs = await getPrefs();
         const retained = await getLastResult();
+        const push = await pushState();
+        // Opening the panel is one of the ways an interrupted push comes back.
+        // Not awaited: the panel gets the state as it stands, and the delivery
+        // it just restarted reports itself through the same state next time.
+        resumePush();
         sendResponse({
           ok: true,
           prefs,
@@ -1526,6 +2373,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           filingContext: await getFilingContext(),
           credential: await credentialState(),
           account: await accountState(),
+          push: push.push,
+          pushActive: push.pushActive,
           dev: { enabled: await devModeEnabled() },
         });
         break;
@@ -1533,21 +2382,30 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case "DETECT_ACTIVE_PAGE":
         sendResponse(await detectActivePage());
         break;
-      case "CAPTURE_ACTIVE_PAGE":
-        sendResponse(await captureActivePage());
+      case "CAPTURE_ACTIVE_PAGE": {
+        const blocked = await pushBlocking();
+        sendResponse(blocked || (await captureActivePage()));
         break;
+      }
       case "CANCEL_CAPTURE":
         sendResponse(await cancelActiveCapture());
         break;
       case "SET_PREFS":
         sendResponse({ ok: true, prefs: await setPrefs(msg.prefs) });
         break;
-      case "TOGGLE_EXCLUDE":
-        sendResponse({ ok: true, batchView: await toggleExclude(msg.stableKey, msg.index) });
+      case "TOGGLE_EXCLUDE": {
+        const blocked = await pushBlocking();
+        sendResponse(
+          blocked || { ok: true, batchView: await toggleExclude(msg.stableKey, msg.index) }
+        );
         break;
-      case "CLEAR_BATCH":
-        sendResponse({ ok: true, batchView: await clearBatch() });
+      }
+      case "CLEAR_BATCH": {
+        // The one action that could destroy work a running push still needs.
+        const blocked = await pushBlocking();
+        sendResponse(blocked || { ok: true, batchView: await clearBatch() });
         break;
+      }
       case "PREVIEW_PAYLOAD": {
         const { payload } = await buildBatchSubmission();
         const validation = contactSchema.validateSubmission(payload);
@@ -1555,8 +2413,29 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         sendResponse({ ok: true, payload, validation, bytes: serialized.bytes });
         break;
       }
+      // One operator Save. Returns as soon as the push is durable; delivery
+      // continues in this worker and is reported through PUSH_STATE.
       case "SAVE_INCLUDED_CONTACTS":
-        sendResponse(await saveIncludedContacts(msg.target));
+        sendResponse(await startPush());
+        break;
+      case "PUSH_STATE":
+        sendResponse(await pushState());
+        break;
+      case "RESUME_PUSH":
+        sendResponse(await resumePush());
+        break;
+      case "RETRY_PUSH":
+        sendResponse(await retryPush());
+        break;
+      case "CANCEL_PUSH":
+        sendResponse(await cancelPush());
+        break;
+      case "DISMISS_PUSH":
+        sendResponse(await dismissPush());
+        break;
+      // Local, backend-free, explicit. Never clears or alters the capture.
+      case "EXPORT_CAPTURED_CONTACTS":
+        sendResponse(await buildCapturedExport(msg.format));
         break;
       case "GET_OPERATOR_METADATA":
         sendResponse({ ok: true, metadata: await getOperatorMetadata() });

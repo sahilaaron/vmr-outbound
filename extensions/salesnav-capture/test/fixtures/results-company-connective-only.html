@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<!-- Two traps for the unlinked-company strategies, plus a row with no company
+     information at all.
+
+     Row 1: the TITLE itself contains the word "at". There is no separate
+       company node and no remainder on the subtitle line, so no company may be
+       read out of it — a title is never split on a connective.
+     Row 2: the subtitle holds a connective and nothing else. A connective is
+       not a company name.
+     Row 3: no company information whatsoever.
+
+     All three people must still be captured, with null company fields.
+     All names fictitious. -->
+<html lang="en">
+  <head><meta charset="UTF-8" /><title>Sales Navigator &mdash; Results</title></head>
+  <body>
+    <main>
+      <ol class="artdeco-list search-results-container">
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <a href="/sales/lead/ACwAAAW5eee,NAME_SEARCH,bb">
+                <span data-anonymize="person-name">Rosa Iglesias</span>
+              </a>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="title">Operations Manager at scale</span>
+            </div>
+            <div class="artdeco-entity-lockup__caption">
+              <span data-anonymize="location">Leeds, United Kingdom</span>
+            </div>
+          </div>
+        </li>
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <a href="/sales/lead/ACwAAAX6fff,NAME_SEARCH,cc">
+                <span data-anonymize="person-name">Tomas Berg</span>
+              </a>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="title">Logistics Lead</span>
+              at
+            </div>
+            <div class="artdeco-entity-lockup__caption">
+              <span data-anonymize="location">Oslo, Norway</span>
+            </div>
+          </div>
+        </li>
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <a href="/sales/lead/ACwAAAY7ggg,NAME_SEARCH,dd">
+                <span data-anonymize="person-name">Alice Brown</span>
+              </a>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="title">Director</span>
+            </div>
+          </div>
+        </li>
+      </ol>
+    </main>
+  </body>
+</html>

@@ -33,7 +33,7 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function (normalize, constants) {
   "use strict";
 
-  const { WARNINGS, CAPTURE_STATUS, SKIP_REASONS } = constants;
+  const { WARNINGS, CAPTURE_STATUS } = constants;
 
   // ---- Page classification ------------------------------------------------
 
@@ -219,10 +219,10 @@
       const el = container.querySelector(sel);
       if (el) {
         const t = normalize.cleanText(el.textContent);
-        if (t) return { value: t, selector: sel };
+        if (t) return { value: t, selector: sel, el };
       }
     }
-    return { value: null, selector: null };
+    return { value: null, selector: null, el: null };
   }
 
   function firstHref(container, selectors) {
@@ -272,6 +272,214 @@
   const PUBLIC_PROFILE_SELECTORS = ['a[href*="/in/"]'];
   const PUBLIC_COMPANY_SELECTORS = ['a[href*="linkedin.com/company/"]'];
 
+  // The subtitle line(s) of a row that may carry an employer.
+  //
+  // Deliberately NOT `[class*="entity-lockup__subtitle"]`. That pattern matches
+  // whatever LinkedIn happens to hang a subtitle-ish class on — a degree badge,
+  // a school row, an insight line — and a fallback that reads "the next
+  // subtitle-shaped thing" is not reading the employer, it is reading the next
+  // thing. UCR-001: it produced `3rd degree connection`, `Munich, Germany` and
+  // `University of Somewhere` as company names.
+  const SUBTITLE_BLOCK_SELECTORS = [".artdeco-entity-lockup__subtitle"];
+
+  // Nodes that can NEVER be the employer, however they are laid out. Structural
+  // (attribute/class), not semantic: the durable `data-anonymize` hooks say what
+  // a node IS, and a location is not an employer no matter what it reads like.
+  const NOT_EMPLOYER_SELECTOR = [
+    '[data-anonymize="location"]',
+    '[data-anonymize="industry"]',
+    '[data-anonymize="school"]',
+    '[data-anonymize="degree"]',
+    '[data-anonymize="person-name"]',
+    '[data-anonymize="title"]',
+    '[class*="entity-lockup__caption"]',
+    '[class*="entity-lockup__metadata"]',
+    '[class*="entity-lockup__degree"]',
+    '[class*="entity-lockup__badge"]',
+    '[class*="member-insights"]',
+    '[class*="shared-connections"]',
+  ].join(", ");
+
+  // Interface furniture that is never a company name. A CLOSED list of things
+  // LinkedIn renders about a relationship, not a guess about arbitrary text: a
+  // string that is not one of these is left exactly alone, never "interpreted".
+  const NOT_EMPLOYER_TEXT_RE = [
+    /^\d+(?:st|nd|rd|th)\s+degree(?:\s+connection)?$/i,
+    /^(?:1st|2nd|3rd)$/i,
+    /^\d[\d,]*\+?\s+(?:connections?|followers?|mutual connections?)$/i,
+    /^\d[\d,]*\+?\s+shared\s+connections?$/i,
+    /^shared\s+connections?$/i,
+  ];
+
+  // The separators LinkedIn actually renders when it hangs extra facts off one
+  // line, and nothing else. `-` and `,` are ordinary punctuation inside real
+  // company names ("Cliffside Software, Inc.", "Harbor-Freight"); `|` appears
+  // inside headlines and could appear inside a name; the KATAKANA MIDDLE DOT
+  // U+30FB is a letter-level separator in Japanese names and is deliberately NOT
+  // here. Cutting on any of those would truncate the employer rather than trim
+  // the metadata, which is the failure this exists to prevent, inverted.
+  const METADATA_SEPARATOR_RE = /\s*[·•]\s*/;
+
+  // What visibly joins a title to its employer: "VP Sales AT Acme",
+  // "VP Sales · Acme". Applied ONLY to the text run that directly abuts the
+  // title element — see `employerAfterTitle`. Applying it to the whole flattened
+  // remainder is UCR-003: it cannot tell the connective "at" from the first word
+  // of "At Home Group", and turns a real employer into "Home Group".
+  const COMPANY_CONNECTOR_RE = /^(?:at|@)(?:\s+|$)|^[·•|,\-–—]\s*/i;
+
+  function isNotEmployerNode(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (typeof el.matches === "function" && el.matches(NOT_EMPLOYER_SELECTOR)) return true;
+    return typeof el.querySelector === "function" && !!el.querySelector(NOT_EMPLOYER_SELECTOR);
+  }
+
+  /**
+   * Reduce a candidate string to the employer it can honestly claim to name, or
+   * null.
+   *
+   * Trims at the first metadata separator — `Acme Ltd · 500+ connections`
+   * describes a company AND a connection count, and storing both as the company
+   * is contaminated evidence (UCR-002). Then refuses the result outright if what
+   * survives is interface furniture rather than a name.
+   */
+  function employerFromText(raw) {
+    const text = normalize.cleanText(raw);
+    if (!text) return null;
+    const head = normalize.cleanText(text.split(METADATA_SEPARATOR_RE)[0]);
+    if (!head) return null;
+    if (NOT_EMPLOYER_TEXT_RE.some((re) => re.test(head))) return null;
+    return head;
+  }
+
+  /** The row's employer-eligible subtitle blocks, document-ordered. */
+  function subtitleBlocks(container) {
+    const seen = new Set();
+    const blocks = [];
+    for (const sel of SUBTITLE_BLOCK_SELECTORS) {
+      container.querySelectorAll(sel).forEach((el) => {
+        if (!seen.has(el)) {
+          seen.add(el);
+          blocks.push({ el, selector: sel });
+        }
+      });
+    }
+    return blocks;
+  }
+
+  /** The block's own direct child that contains `el`, or null. */
+  function childHolding(block, el) {
+    for (const child of Array.from(block.childNodes)) {
+      if (child === el || (child.nodeType === 1 && child.contains && child.contains(el))) {
+        return child;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * The employer named on the SAME subtitle line as the title, after it.
+   *
+   * Read NODE BY NODE rather than as one flattened string, because the two
+   * questions "is this text the connective?" and "may this node be an employer?"
+   * can only be answered per node:
+   *
+   *   • a connective can only appear in the text run that directly abuts the
+   *     title, so that is the only place one is ever removed, and only once.
+   *     `<span title>Buyer</span> at At Home Group` yields `At Home Group`;
+   *     `<span title>Buyer</span><span> At Home Group</span>` is element-sourced,
+   *     so nothing is stripped and the name survives intact.
+   *   • a location/school/degree node is refused wherever it sits, so
+   *     `<span title>CFO</span> at <span location>Munich</span>` yields nothing
+   *     rather than a city.
+   */
+  function employerAfterTitle(block, titleEl) {
+    const holder = childHolding(block, titleEl);
+    if (!holder) return null;
+    const children = Array.from(block.childNodes);
+    const after = children.slice(children.indexOf(holder) + 1);
+    let out = "";
+    let firstContribution = true;
+    for (const node of after) {
+      if (node.nodeType === 3) {
+        let text = node.nodeValue;
+        if (firstContribution) {
+          // The one place a connective can legitimately be, and one only.
+          text = String(text).replace(/^\s+/, "").replace(COMPANY_CONNECTOR_RE, "");
+        }
+        if (normalize.cleanText(text)) firstContribution = false;
+        out += " " + text;
+        continue;
+      }
+      if (node.nodeType !== 1) continue;
+      if (isNotEmployerNode(node)) {
+        // A node that cannot be the employer ENDS the employer: whatever follows
+        // belongs to the thing that node introduced, not to the company.
+        break;
+      }
+      if (normalize.cleanText(node.textContent)) firstContribution = false;
+      out += " " + node.textContent;
+    }
+    return employerFromText(out);
+  }
+
+  /**
+   * The visible company NAME, whether or not the company is a link.
+   *
+   * A company page URL is enrichment. The employer's name is what the row shows,
+   * and Sales Navigator shows it as a company anchor, as a dedicated unlinked
+   * node, as text beside the title on one subtitle line, or on a subtitle line
+   * of its own. Only the first two had a strategy, and the ordered list ended at
+   * `.artdeco-entity-lockup__subtitle a` — an ANCHOR — so an employer that
+   * happened not to be linked read as no employer at all.
+   *
+   * Every strategy is scoped to this one row's container and reads only text
+   * already on screen. A node that is structurally something else (location,
+   * school, degree, industry, caption, metadata) is never read as the employer,
+   * and text that is recognisable interface furniture is refused rather than
+   * stored. When the evidence does not clearly name an employer the answer is
+   * `null`: an absent company stays absent, and is never inferred from whatever
+   * happened to be rendered next to it.
+   *
+   * @param {Element} container the row
+   * @param {Element|null} titleEl the element the title was read from, if any
+   */
+  function extractCompanyName(container, titleEl) {
+    // 1. A dedicated company node — linked or not. Unchanged behaviour.
+    const direct = firstText(container, COMPANY_NAME_SELECTORS);
+    if (direct.value) return direct;
+
+    // The remaining strategies are anchored on the TITLE element: they read what
+    // the same visible line shows around it. With no title element there is no
+    // anchor, and no company is read.
+    if (!titleEl) return { value: null, selector: null };
+    const titleText = normalize.cleanText(titleEl.textContent);
+    const blocks = subtitleBlocks(container);
+
+    // 2. The subtitle line that HOLDS the title, after the title itself.
+    for (const block of blocks) {
+      if (block.el === titleEl || !block.el.contains(titleEl)) continue;
+      const value = employerAfterTitle(block.el, titleEl);
+      if (value) return { value, selector: block.selector + " (unlinked)" };
+    }
+
+    // 3. A SEPARATE subtitle line that is not the title's own — the unlinked
+    //    twin of `.artdeco-entity-lockup__subtitle a`. Bounded the same way: a
+    //    block that is or contains a location, school, degree, industry or
+    //    caption is not an employer line and is skipped rather than read.
+    for (const block of blocks) {
+      if (block.el === titleEl || block.el.contains(titleEl) || titleEl.contains(block.el)) {
+        continue;
+      }
+      if (isNotEmployerNode(block.el)) continue;
+      const value = employerFromText(block.el.textContent);
+      if (value && value !== titleText) {
+        return { value, selector: block.selector + " (unlinked)" };
+      }
+    }
+
+    return { value: null, selector: null };
+  }
+
   // Extra visible company / caption metadata lines (kept raw, never parsed into
   // authoritative fields).
   const METADATA_SELECTORS = [
@@ -305,7 +513,11 @@
     if (!titleHit.value) warnings.push({ code: WARNINGS.MISSING_FIELD, field: "title" });
     else selectorsUsed.title = titleHit.selector;
 
-    const companyHit = firstText(container, COMPANY_NAME_SELECTORS);
+    // The company NAME and the company URL are two independent facts. The name
+    // is read from whatever the row visibly shows; the URL, below, is read only
+    // if a company anchor happens to exist. Neither one gates the other, and
+    // neither one gates the person.
+    const companyHit = extractCompanyName(container, titleHit.el);
     if (!companyHit.value) warnings.push({ code: WARNINGS.MISSING_FIELD, field: "companyName" });
     else selectorsUsed.companyName = companyHit.selector;
 
@@ -552,47 +764,35 @@
     }
 
     const ctx = { sourceSearchUrl, sourcePageNumber, capturedAt };
-    const extracted = containers.map((c, i) => extractRecord(c, ctx, i));
 
-    // DAT-018 B: a row with no visible Company Name is not usable by the
-    // company-first downstream flow, so it never enters the capturable set. The
-    // company is NEVER inferred from headline, school, location or neighbouring
-    // text — an absent company stays absent and the row is skipped truthfully.
-    // Skipping one row must not abort the rest of the page.
-    const records = [];
-    const skipped = [];
-    for (const record of extracted) {
-      if (!normalize.cleanText(record.companyName)) {
-        skipped.push({
-          sourcePosition: record.sourcePosition,
-          reason: SKIP_REASONS.MISSING_COMPANY_NAME,
-          rawFullName: record.rawFullName || null,
-        });
-        continue;
-      }
-      records.push(record);
-    }
-
-    const pageWarnings = [];
-    if (skipped.length) {
-      pageWarnings.push({
-        code: "rows_skipped",
-        reason: SKIP_REASONS.MISSING_COMPANY_NAME,
-        count: skipped.length,
-      });
-    }
+    // Capturing a person and resolving their employer are separate concerns.
+    //
+    // DAT-018 B used to withhold any row whose Company Name could not be read,
+    // on the reasoning that the downstream flow is company-first. In production
+    // that gate cost a very large share of otherwise valid contacts, because an
+    // employer shown as plain text — no company page to link to — read as no
+    // employer at all. The eligibility rule and the extraction weakness
+    // compounded: one produced the null, the other deleted the person for it.
+    //
+    // A company page URL is optional enrichment and a company name is
+    // best-effort. Neither decides whether the Contact exists. What still
+    // decides that is person identity, unchanged: a row with no name and no URL
+    // carries `no_stable_identity` and is refused further down the path.
+    //
+    // Nothing here loosened the no-inference promise. An absent company is
+    // still absent — reported as `missing_field: companyName`, never filled in
+    // from a headline, a school, a location or a neighbouring row.
+    const records = containers.map((c, i) => extractRecord(c, ctx, i));
 
     return {
       status: CAPTURE_STATUS.OK,
       records,
-      skipped,
-      skippedCount: skipped.length,
-      pageWarnings,
+      pageWarnings: [],
       sourcePageNumber,
       sourceSearchUrl,
       capturedAt,
       count: records.length,
-      visibleCount: extracted.length,
+      visibleCount: records.length,
     };
   }
 
@@ -605,6 +805,7 @@
     extractRecord,
     extractPage,
     // exported for tests
-    _internals: { closestMatch, resolveUrl },
+    extractCompanyName,
+    _internals: { closestMatch, resolveUrl, employerFromText, employerAfterTitle },
   };
 });

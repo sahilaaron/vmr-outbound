@@ -35,7 +35,7 @@ present) — never a successful empty capture.
 | --- | --- |
 | name | `[data-anonymize="person-name"]` → `a[href*="/sales/lead/"] span[dir="ltr"]` → `.artdeco-entity-lockup__title a` → `.artdeco-entity-lockup__title` |
 | title | `[data-anonymize="title"]` → `.artdeco-entity-lockup__subtitle` → `[class*="entity-lockup__subtitle"]` |
-| companyName | `a[data-anonymize="company-name"]` → `[data-anonymize="company-name"]` → `a[data-control-name="view_company_via_result_name"]` → `.artdeco-entity-lockup__subtitle a` |
+| companyName | `a[data-anonymize="company-name"]` → `[data-anonymize="company-name"]` → `a[data-control-name="view_company_via_result_name"]` → `.artdeco-entity-lockup__subtitle a` → **unlinked strategies** (below) |
 | location | `[data-anonymize="location"]` → `[class*="entity-lockup__caption"]` |
 | lead URL | `a[data-anonymize="person-name"]` → `a[href*="/sales/lead/"]` → `a[href*="/sales/people/"]` → `.artdeco-entity-lockup__title a` |
 | company URL | `a[data-anonymize="company-name"]` → `a[data-control-name="view_company_via_result_name"]` → `a[href*="/sales/company/"]` → `a[href*="/company/"]` |
@@ -96,14 +96,111 @@ convenience for the operator, never an identity.
 - Anglicized/ASCII-folded names (raw Unicode is preserved; normalization is a
   backend concern).
 
-## Capture eligibility (DAT-018)
+## The company name without a company link
 
-A visible row with no Company Name — absent, empty, or whitespace-only — is
-**not** offered as capturable: the downstream flow is company-first, so such a
-row cannot be used. The company is never inferred from the headline, a school, a
-location, or a neighbouring row. Skipped rows are reported truthfully
-(`skipped`, `skippedCount`, and a `rows_skipped` page warning carrying the
-count), never silently dropped, and skipping one row never aborts the others.
+The first four companyName strategies all require either a company anchor or a
+`data-anonymize="company-name"` node. Sales Navigator produces neither when the
+employer has no company page to link to, and the last strategy in the ordered
+list — `.artdeco-entity-lockup__subtitle a` — is an **anchor**. So a plain-text
+employer read as *no employer*, which the eligibility rule below then turned
+into *no person*. In production that cost a very large share of otherwise valid
+contacts.
+
+Two further strategies run only when all four above fail. Both are anchored on
+the element the **title** was read from, both are scoped to the one row, and
+both are **bounded**: they may only read evidence that can genuinely name an
+employer.
+
+1. **The subtitle line that holds the title, after the title itself.** Read
+   node by node rather than as one flattened string, because two questions have
+   to be answered per node — *is this text the connective?* and *may this node be
+   an employer?*
+2. **A separate `.artdeco-entity-lockup__subtitle` line that is not the title's
+   own** — the unlinked twin of `.artdeco-entity-lockup__subtitle a`.
+
+### What may never be the employer
+
+Structural first. A node that is, or contains, any of these is refused wherever
+it sits, and in strategy 1 it also **ends** the employer — whatever follows
+belongs to the thing that node introduced:
+
+`[data-anonymize="location"]` · `[data-anonymize="industry"]` ·
+`[data-anonymize="school"]` · `[data-anonymize="degree"]` ·
+`[data-anonymize="person-name"]` · `[data-anonymize="title"]` ·
+`[class*="entity-lockup__caption"]` · `[class*="entity-lockup__metadata"]` ·
+`[class*="entity-lockup__degree"]` · `[class*="entity-lockup__badge"]` ·
+`[class*="member-insights"]` · `[class*="shared-connections"]`
+
+Then a **closed** list of interface furniture that is never a company name:
+`3rd degree connection`, a bare `1st`/`2nd`/`3rd`, `500+ connections`,
+`29,777 followers`, `12 shared connections`. A string that is not on that list
+is left exactly alone — nothing here interprets arbitrary text.
+
+There is deliberately **no** `[class*="entity-lockup__subtitle"]` fallback. That
+pattern matches whatever LinkedIn hangs a subtitle-ish class on, and a strategy
+that reads "the next subtitle-shaped thing" is not reading the employer. It
+produced `3rd degree connection`, `Munich, Germany` and `University of Somewhere`
+as company names (UCR-001).
+
+### The metadata beside the employer
+
+LinkedIn hangs extra facts off one line with a list separator, so the employer is
+trimmed at the first `·` or `•`: `Acme Ltd · 500+ connections` names a company
+**and** a connection count, and storing both as the company is contaminated
+evidence (UCR-002).
+
+Only those two cut. `,` and `-` are ordinary punctuation inside real names
+(`Cliffside Software, Inc.`, `Harbor-Freight`), `|` can appear inside a name, and
+the KATAKANA MIDDLE DOT `・` is a letter-level separator in Japanese names
+(`株式会社エース・システム`). Cutting on any of them would truncate the employer —
+the same failure as UCR-002, inverted.
+
+### The connective
+
+`at`, `@`, `·`, `•`, `|`, `,`, `-`, `–`, `—` are removed **only** from the text
+run that directly abuts the title element, and only once. That is the only place
+a connective can structurally be, which is what keeps a real employer whose name
+begins with the same word intact (UCR-003):
+
+| markup | company |
+| --- | --- |
+| `<span title>Buyer</span> at At Home Group` | `At Home Group` |
+| `<span title>Buyer</span><span> At Home Group</span>` | `At Home Group` |
+| `<span title>Operations Manager at scale</span>` (no company node) | `null` |
+| `<span title>Logistics Lead</span> at` | `null` |
+
+An element-sourced remainder is never stripped: it did not abut the title, so
+nothing in it can be the connective.
+
+When the evidence does not clearly name an employer the answer is `null`. An
+absent company stays absent.
+
+Fixtures: `test/fixtures/results-unlinked-company.html` (three linked and four
+unlinked rows interleaved), `results-company-connective-only.html` (the
+connective traps) and `results-company-contamination.html` (the hostile page —
+relationship text, location, school, metadata suffixes, and a real employer
+called `At Home Group`, with a genuine unlinked employer between them as the
+control). Tests: `test/unlinked-company.test.js`.
+
+## Capture eligibility
+
+**Person identity decides whether a Contact exists. The company does not.**
+
+A company page URL is optional enrichment and a company name is best-effort.
+Neither gates the other, and neither gates the person: a row with a known person,
+a known company and no company URL is captured, and so is a row whose company
+cannot be read at all.
+
+DAT-018 B originally withheld any row whose Company Name could not be read, on
+the reasoning that the downstream flow is company-first. That gate is gone —
+capturing a person and resolving their employer are separate concerns, and the
+backend already stages a capture whose company is unknown rather than refusing
+it. `skipped`, `skippedCount` and the `rows_skipped` page warning went with it.
+
+What survives from DAT-018 B is the half that mattered: an absent company is
+reported as absent (`missing_field: companyName`) and is **never** inferred from
+the headline, a school, a location or a neighbouring row, and a company URL is
+never synthesised from a company name.
 
 Update this table and the constants in `extraction.js` together with their tests
 in `test/extraction.test.js`, `test/salesnav-identity.test.js` and

@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<!-- UCR-001/002/003 — the hostile page.
+
+     Every row here was reproduced against the first version of the unlinked-
+     company fallback, and every one of them produced a company name that the
+     page never showed:
+
+       1. "3rd degree connection"      relationship furniture read as an employer
+       2. "Munich, Germany"            a location read as an employer
+       3. "University of Somewhere"    a school read as an employer
+       4. "Acme Ltd · 500+ connections"  the employer plus the metadata beside it
+       5. "Acme Ltd · Logistics and Supply Chain"   same, other suffix
+       6/7. "Home Group"               a real employer whose first word, "At",
+                                       was eaten as if it were the connective
+
+     Rows 8 and 9 are the control: a genuine unlinked employer sitting directly
+     between contaminated rows, to prove the bounding did not simply switch the
+     fallback off, and that nothing crosses a row boundary in either direction.
+
+     Every person on this page must still be CAPTURED. What is being bounded is
+     the company field, never the contact. All names/companies fictitious. -->
+<html lang="en">
+  <head><meta charset="UTF-8" /><title>Sales Navigator &mdash; Results</title></head>
+  <body>
+    <main>
+      <ol class="artdeco-list search-results-container">
+
+        <!-- 1. relationship text on its own subtitle line -->
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <a href="/sales/lead/ACwAAAR1aaa,NAME_SEARCH,aa">
+                <span data-anonymize="person-name">Degree Row</span>
+              </a>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="title">CFO</span>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">3rd degree connection</div>
+          </div>
+        </li>
+
+        <!-- 2. a location node inside a subtitle-classed block -->
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <a href="/sales/lead/ACwAAAR2bbb,NAME_SEARCH,bb">
+                <span data-anonymize="person-name">Location Row</span>
+              </a>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="title">CFO</span>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="location">Munich, Germany</span>
+            </div>
+          </div>
+        </li>
+
+        <!-- 3a. a school node inside a subtitle-classed block -->
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <a href="/sales/lead/ACwAAAR3ccc,NAME_SEARCH,cc">
+                <span data-anonymize="person-name">School Row</span>
+              </a>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="title">CFO</span>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="school">University of Somewhere</span>
+            </div>
+          </div>
+        </li>
+
+        <!-- 3b. the same school with NO durable hook, on a subtitle-ISH class.
+                 The broad `[class*="entity-lockup__subtitle"]` fallback is what
+                 read this; the class is no longer matched at all. -->
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <a href="/sales/lead/ACwAAAR4ddd,NAME_SEARCH,dd">
+                <span data-anonymize="person-name">Unhooked School Row</span>
+              </a>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="title">CFO</span>
+            </div>
+            <div class="entity-lockup__subtitle">University of Somewhere</div>
+          </div>
+        </li>
+
+        <!-- 4. employer with a connection count hanging off the same line -->
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <a href="/sales/lead/ACwAAAR5eee,NAME_SEARCH,ee">
+                <span data-anonymize="person-name">Connections Suffix</span>
+              </a>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="title">VP Sales</span>
+              at Acme Ltd &middot; 500+ connections
+            </div>
+          </div>
+        </li>
+
+        <!-- 5. employer with an industry-ish suffix on the same line -->
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <a href="/sales/lead/ACwAAAR6fff,NAME_SEARCH,ff">
+                <span data-anonymize="person-name">Metadata Suffix</span>
+              </a>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="title">VP Sales</span>
+              at Acme Ltd &middot; Logistics and Supply Chain
+            </div>
+          </div>
+        </li>
+
+        <!-- 5b. employer followed by a recognised metadata NODE on the line -->
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <a href="/sales/lead/ACwAAAS1ggg,NAME_SEARCH,gg">
+                <span data-anonymize="person-name">Metadata Node Suffix</span>
+              </a>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="title">VP Sales</span>
+              at Acme Ltd
+              <span data-anonymize="industry">Logistics and Supply Chain</span>
+            </div>
+          </div>
+        </li>
+
+        <!-- 6. a real employer whose name begins with the connective word,
+                introduced BY a connective -->
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <a href="/sales/lead/ACwAAAS2hhh,NAME_SEARCH,hh">
+                <span data-anonymize="person-name">Connective Then At</span>
+              </a>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="title">Buyer</span>
+              at At Home Group
+            </div>
+          </div>
+        </li>
+
+        <!-- 7. the same employer with NO connective, in its own element -->
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <a href="/sales/lead/ACwAAAS3iii,NAME_SEARCH,ii">
+                <span data-anonymize="person-name">No Connective At</span>
+              </a>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="title">Buyer</span><span> At Home Group</span>
+            </div>
+          </div>
+        </li>
+
+        <!-- 8. the control: a genuine unlinked employer, on its own line,
+                sitting between contaminated rows -->
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <a href="/sales/lead/ACwAAAS4jjj,NAME_SEARCH,jj">
+                <span data-anonymize="person-name">Honest Unlinked</span>
+              </a>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="title">Head of Procurement</span>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">Novaline Freight</div>
+            <div class="artdeco-entity-lockup__caption">
+              <span data-anonymize="location">Leeds, United Kingdom</span>
+            </div>
+          </div>
+        </li>
+
+        <!-- 9. a row with nothing but furniture, directly after row 8, so a
+                fallback that leaked across rows would show it -->
+        <li class="artdeco-list__item pl3 pv3">
+          <div class="artdeco-entity-lockup">
+            <div class="artdeco-entity-lockup__title">
+              <a href="/sales/lead/ACwAAAS5kkk,NAME_SEARCH,kk">
+                <span data-anonymize="person-name">Furniture Only</span>
+              </a>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">
+              <span data-anonymize="title">Director</span>
+            </div>
+            <div class="artdeco-entity-lockup__subtitle">500+ connections</div>
+          </div>
+        </li>
+
+      </ol>
+    </main>
+  </body>
+</html>

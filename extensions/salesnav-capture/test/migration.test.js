@@ -161,3 +161,30 @@ test("runMigration applies the plan to a storage adapter exactly once", async ()
   const second = await migration.runMigration(adapter, { migratedAt: AT });
   assert.equal(second.needed, false);
 });
+
+// --- the reviewed-set ceiling moved, and a stored copy of the old one must not
+//     quietly outlive it -------------------------------------------------------
+
+test("an install carrying the OLD batch ceiling is lifted to the new one", () => {
+  // 500 used to be both the default and the hard maximum, so a stored 500 is
+  // the old default rather than a decision. Leaving it would cap an upgraded
+  // install at a tenth of what one save can now hold, invisibly.
+  const plan = migration.planMigration(
+    { [STORAGE.PREFERENCES]: { maxRecordsPerBatch: migration.SUPERSEDED_MAX_RECORDS } },
+    { migratedAt: AT }
+  );
+  assert.equal(plan.needed, true);
+  assert.equal(
+    plan.set[STORAGE.PREFERENCES].maxRecordsPerBatch,
+    constants.DEFAULT_PREFERENCES.maxRecordsPerBatch
+  );
+  assert.equal(constants.DEFAULT_PREFERENCES.maxRecordsPerBatch, 5000);
+});
+
+test("a ceiling the operator actually chose is left exactly as it is", () => {
+  const plan = migration.planMigration(
+    { [STORAGE.PREFERENCES]: { maxRecordsPerBatch: 120 } },
+    { migratedAt: AT }
+  );
+  assert.equal(plan.needed, false, "a deliberate smaller batch size is not ours to change");
+});

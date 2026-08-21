@@ -99,11 +99,15 @@ test("committed examples show the valid Contact-only choice", () => {
   }
 });
 
-test("the JSON and CSV export fallback is gone (#280)", () => {
-  // It was an offline fallback from before hosted capture: a reviewed contact
-  // is saved into the operator's VMR Outbound account or it is not saved at
-  // all. Removing the controls also let the `downloads` permission go — see
-  // test/config-parity.test.js and test/panel-layout.test.js.
-  assert.equal(PANEL_DOC.getElementById("export-json"), null);
-  assert.equal(PANEL_DOC.getElementById("export-csv"), null);
+test("the local export is back, and it is not a way to file into a Campaign", () => {
+  // It was removed in #280 on the reasoning that a reviewed contact is saved
+  // into VMR Outbound or not saved at all. That is true of ACQUISITION and says
+  // nothing about the operator's own backup of the rows they just reviewed, so
+  // the download is restored — as a purely local action that sends nothing.
+  assert.ok(PANEL_DOC.getElementById("export-json"));
+  assert.ok(PANEL_DOC.getElementById("export-csv"));
+  // And it stays outside the Campaign story entirely: an export names no
+  // campaign, requests no filing, and cannot enrol anybody.
+  assert.ok(!/EXPORT_CAPTURED_CONTACTS[\s\S]{0,400}campaign/i.test(PANEL_JS));
+  assert.ok(!/buildCapturedExport[\s\S]{0,600}campaign_id/i.test(WORKER_JS));
 });

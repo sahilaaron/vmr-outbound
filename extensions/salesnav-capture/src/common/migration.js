@@ -63,6 +63,13 @@
   ];
   // Preference keys the contact-first workflow has no concept of.
   const REMOVED_PREFERENCE_KEYS = ["lastCampaignId"];
+  // The reviewed-set ceiling BEFORE one save became a chunked push. It was both
+  // the default and the hard maximum, so an install carrying exactly this value
+  // is carrying the old default rather than a choice anybody made — and leaving
+  // it would silently cap an upgraded install at a tenth of what it can now
+  // save, with no visible reason and no message. A value the operator actually
+  // chose (anything else) is left alone.
+  const SUPERSEDED_MAX_RECORDS = 500;
   // Keys written by an earlier version of this module that nothing reads any
   // more. See the module docstring: they are cleared rather than left behind.
   const OBSOLETE_KEYS = [CONTACT_STORAGE.LEGACY_ARCHIVE, CONTACT_STORAGE.MIGRATION_NOTICE];
@@ -116,6 +123,11 @@
         nextPrefs.mockReceiverUrl = DEFAULT_PREFERENCES.mockReceiverUrl;
         prefsChanged = true;
       }
+      // The stored copy of a ceiling that has moved. See SUPERSEDED_MAX_RECORDS.
+      if (nextPrefs.maxRecordsPerBatch === SUPERSEDED_MAX_RECORDS) {
+        nextPrefs.maxRecordsPerBatch = DEFAULT_PREFERENCES.maxRecordsPerBatch;
+        prefsChanged = true;
+      }
     }
 
     const needed = draftCount > 0 || remove.length > 0 || prefsChanged;
@@ -151,5 +163,6 @@
     LEGACY_RESULT_KEYS,
     REMOVED_PREFERENCE_KEYS,
     OBSOLETE_KEYS,
+    SUPERSEDED_MAX_RECORDS,
   };
 });

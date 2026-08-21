@@ -138,15 +138,52 @@ test("the archived-drafts card and its download are gone entirely (#280)", () =>
   }
 });
 
-test("the JSON and CSV export controls are gone, with their handlers (#280)", () => {
+test("the export controls live on the review screen, beside what they export", () => {
   for (const id of ["export-row", "export-json", "export-csv"]) {
-    assert.equal(PANEL_DOC.getElementById(id), null, `${id} must be removed from the panel`);
+    assert.ok(PANEL_DOC.getElementById(id), `${id} must exist`);
   }
-  assert.ok(!/Download JSON|Download CSV/i.test(PANEL_HTML));
-  assert.ok(!PANEL_JS.includes("EXPORT_BATCH"), "the panel must not message an export");
-  assert.ok(!WORKER_JS.includes("EXPORT_BATCH"), "the worker must not handle an export");
-  assert.ok(!WORKER_JS.includes("chrome.downloads"), "no download call may remain");
-  assert.ok(!WORKER_JS.includes("async function exportBatch"));
+  // On the REVIEW view specifically: the file contains the rows the operator is
+  // looking at, so the control belongs next to them rather than in Settings.
+  const review = PANEL_DOC.querySelector('[data-view="listings-review"]');
+  assert.ok(review.contains(PANEL_DOC.getElementById("export-row")));
+  assert.match(PANEL_HTML, /Download CSV/);
+  assert.match(PANEL_HTML, /Download JSON/);
+  assert.ok(PANEL_JS.includes("EXPORT_CAPTURED_CONTACTS"), "the panel asks the worker for the text");
+  assert.ok(WORKER_JS.includes("EXPORT_CAPTURED_CONTACTS"), "the worker builds it");
+  // And the screen says the two things an operator would otherwise have to
+  // guess: it does not phone home, and it does not consume the capture.
+  assert.match(review.textContent, /never contacted/i);
+  assert.match(review.textContent, /Downloading changes nothing/i);
+});
+
+test("the push progress card reports where a large save actually got to", () => {
+  const card = PANEL_DOC.getElementById("push-card");
+  assert.ok(card, "a chunked save needs somewhere truthful to report itself");
+  assert.ok(PANEL_DOC.getElementById("push-title"));
+  assert.ok(PANEL_DOC.getElementById("push-detail"));
+  assert.ok(PANEL_DOC.getElementById("push-bar"));
+  // And it says the thing that makes the whole design worth having.
+  assert.match(PANEL_DOC.getElementById("push-note").textContent, /close this panel/i);
+  assert.ok(
+    PANEL_DOC.querySelector('[data-actions="pushing"]'),
+    "the operator needs a way out of the screen while the save continues"
+  );
+  // And a way out of the SAVE, not merely out of the screen. A push that cannot
+  // finish holds the reviewed set; without this the extension is wedged by a
+  // condition the operator has no control over.
+  const cancel = PANEL_DOC.getElementById("push-cancel");
+  assert.ok(cancel, "an unfinishable push needs an operator escape");
+  assert.match(cancel.textContent, /cancel/i);
+  assert.ok(PANEL_JS.includes("CANCEL_PUSH"), "and the panel must actually send it");
+  // Stopping is not undoing, and the operator is told so BEFORE they confirm:
+  // both halves named, and the sentence that rules out a rollback.
+  const cancelSource = PANEL_JS.match(/async function cancelPush[\s\S]{0,1200}/)[0];
+  assert.match(cancelSource, /confirm\(/, "cancelling is confirmed, not instant");
+  assert.match(cancelSource, /already been saved and will stay saved/i);
+  assert.match(cancelSource, /have not been sent and will not be saved/i);
+  assert.match(cancelSource, /does not undo anything/i);
+  // The old copy told the operator to stay put. It must not survive.
+  assert.ok(!/Keep\s+this panel open/i.test(PANEL_HTML));
 });
 
 test("the full active-page URL line under the detected-page strip is gone (#280)", () => {
@@ -175,13 +212,13 @@ test("warning and challenge surfaces are preserved", () => {
   assert.ok(PANEL_DOC.getElementById("detect-status"));
 });
 
-test("the skipped-row report exists and starts hidden", () => {
-  const card = PANEL_DOC.getElementById("skipped-card");
-  assert.ok(card, "skipped-card is missing");
-  assert.ok(card.hasAttribute("hidden"));
-  assert.ok(PANEL_DOC.getElementById("skipped-summary"));
-  assert.ok(PANEL_DOC.getElementById("skipped-list"));
-  assert.ok(PANEL_JS.includes("renderSkipped"));
+test("no surface reports a capture as withheld for want of a company", () => {
+  // The skipped-row report existed for one rule — a row with no Company Name was
+  // not offered — and that rule is gone. Leaving the box behind would leave the
+  // panel able to say a person was refused for a reason that can no longer occur.
+  assert.equal(PANEL_DOC.getElementById("skipped-card"), null);
+  assert.ok(!PANEL_JS.includes("renderSkipped"));
+  assert.ok(!/no company name/i.test(PANEL_JS));
 });
 
 // --- the non-goals, asserted --------------------------------------------------

@@ -336,6 +336,275 @@
     feedback.removeAttribute("data-tone");
   }
 
+
+  // ---- the durable push ----------------------------------------------------
+  //
+  // Save starts a job in the service worker and returns. From here the panel is
+  // an OBSERVER: it polls for progress while it happens to be open, and every
+  // number it prints comes from the worker's stored job rather than from
+  // anything this panel is holding. Closing the panel stops the polling and
+  // nothing else — which is the point.
+
+  let pushPoll = null;
+  // The last push view the panel painted. Cancel needs its counts to tell the
+  // operator what stopping will and will not do.
+  let currentPush = null;
+
+  function stopPushPolling() {
+    if (pushPoll === null) return;
+    clearInterval(pushPoll);
+    pushPoll = null;
+  }
+
+  async function onPanelVisibility() {
+    if (document.hidden) {
+      stopPushPolling();
+      return;
+    }
+    const r = await send({ type: "PUSH_STATE" });
+    if (r && r.push && r.pushActive) watchPush(r.push);
+  }
+
+  /** The one sentence at the top of the card. Always a fact about right now. */
+  function pushHeadline(view) {
+    const total = view.totalContacts;
+    const done = view.contactsAccepted;
+    switch (view.status) {
+      case "preparing":
+        return `Preparing ${total} contacts…`;
+      case "running":
+        return done === 0 ? `Saving ${total} contacts…` : `Saving ${done} of ${total}…`;
+      case "retrying":
+        return `Retrying — ${done} of ${total} saved so far`;
+      case "completed":
+        return done === 1 ? "1 contact saved" : `${done} contacts saved`;
+      case "completed_with_failures":
+        return `${done} of ${total} saved — ${total - done} not saved`;
+      case "cancelled":
+        // Deliberately two numbers and the word "cancelled", never one number
+        // that could read as a rollback. Nothing was undone.
+        return `${done} contact(s) saved · ${total - done} not sent · push cancelled`;
+      default:
+        return `Saving ${total} contacts…`;
+    }
+  }
+
+  function pushDetail(view) {
+    if (view.status === "cancelled") {
+      return (
+        `${view.contactsAccepted} contact(s) were saved before it was stopped. ` +
+        `${view.contactsCancelled} were not sent, and are not saved. ` +
+        "Nothing that had already been saved was undone."
+      );
+    }
+    const parts = [`${view.completedChunks} of ${view.totalChunks} batches delivered`];
+    if (view.contactsPending) parts.push(`${view.contactsPending} still to send`);
+    if (view.failedChunks) parts.push(`${view.contactsFailed} in ${view.failedChunks} failed batch(es)`);
+    if (view.oversized && view.oversized.length) {
+      parts.push(`${view.oversized.length} record(s) too large to send`);
+    }
+    return parts.join(" · ");
+  }
+
+  /** Show the push card. Terminal states hand over to the outcome card. */
+  function renderPush(view) {
+    if (!view) return;
+    currentPush = view;
+    $("save-card").hidden = true;
+    $("company-result-card").hidden = true;
+    $("saving-card").hidden = true;
+    $("push-card").hidden = false;
+    // UI-016: a running push belongs to the listings workflow, so say so. Without
+    // this the first surface detection after a cold open would paint the default
+    // view straight over the progress card — the same defect the retained
+    // outcome already solves, arriving from the other direction.
+    setRetainedContext({ kind: "listings", url: null });
+    showView("outcome");
+    // The outcome view's own actions offer a way back; while the push is live
+    // the wording is about leaving it running, so the group is swapped by hand.
+    const terminal =
+      view.status === "completed" ||
+      view.status === "completed_with_failures" ||
+      view.status === "cancelled";
+    for (const node of document.querySelectorAll("[data-actions]")) {
+      node.hidden = node.getAttribute("data-actions") !== (terminal ? "outcome" : "pushing");
+    }
+    $("push-title").textContent = pushHeadline(view);
+    $("push-detail").textContent = pushDetail(view);
+    $("push-note").hidden = terminal;
+    const pct = view.totalContacts
+      ? Math.round((view.contactsAccepted / view.totalContacts) * 100)
+      : 0;
+    const bar = $("push-bar");
+    bar.style.width = pct + "%";
+    const progress = bar.parentElement;
+    progress.setAttribute("aria-valuenow", String(pct));
+    progress.setAttribute("aria-valuemin", "0");
+    progress.setAttribute("aria-valuemax", "100");
+    setConnection(view.contactsAccepted ? "connected" : "saving");
+
+    const actions = $("push-actions");
+    actions.textContent = "";
+    if (terminal && view.retryableChunks) {
+      const retry = el("button", { class: "btn full", text: "Retry what failed" });
+      retry.addEventListener("click", async () => {
+        const r = await send({ type: "RETRY_PUSH" });
+        if (r && r.ok) watchPush(r.push);
+      });
+      actions.appendChild(retry);
+    }
+    if (terminal) {
+      const dismiss = el("button", { class: "linkbtn", text: "Done" });
+      dismiss.addEventListener("click", async () => {
+        await send({ type: "DISMISS_PUSH" });
+        $("push-card").hidden = true;
+        showView("listings-select");
+      });
+      actions.appendChild(dismiss);
+    }
+  }
+
+  /**
+   * Stop a push that cannot finish.
+   *
+   * Confirmed first, because it is not reversible in the direction the wording
+   * might suggest: the contacts already delivered stay delivered, and the ones
+   * still owed are simply never offered. Both halves are then shown.
+   */
+  async function cancelPush() {
+    const view = currentPush;
+    const owed = view ? view.totalContacts - view.contactsAccepted : 0;
+    const saved = view ? view.contactsAccepted : 0;
+    const ok = confirm(
+      `Stop saving?\n\n${saved} contact(s) have already been saved and will stay saved. ` +
+        `${owed} have not been sent and will not be saved.\n\nThis does not undo anything.`
+    );
+    if (!ok) return;
+    $("push-cancel").disabled = true;
+    const r = await send({ type: "CANCEL_PUSH" });
+    $("push-cancel").disabled = false;
+    if (r && r.ok) {
+      stopPushPolling();
+      renderPush(r.push);
+      void finishPush();
+      return;
+    }
+    // The only ways this fails are "already finished" and "there is no push",
+    // both of which the next state read will show correctly anyway.
+    const state = await send({ type: "PUSH_STATE" });
+    if (state && state.push) renderPush(state.push);
+  }
+
+  /** Poll while the panel is open. The push does not depend on this running. */
+  function watchPush(view) {
+    renderPush(view);
+    stopPushPolling();
+    if (view.status === "completed" || view.status === "completed_with_failures") {
+      void finishPush();
+      return;
+    }
+    // A hidden panel has nobody to report to. Polling one would be work with no
+    // reader, and the push does not need the panel awake to make progress — so
+    // the polling stops with the panel and starts again when it comes back.
+    document.addEventListener("visibilitychange", onPanelVisibility);
+    self.addEventListener("pagehide", stopPushPolling);
+    pushPoll = setInterval(async () => {
+      const r = await send({ type: "PUSH_STATE" });
+      if (!r || !r.push) {
+        stopPushPolling();
+        return;
+      }
+      renderPush(r.push);
+      if (!r.pushActive) {
+        stopPushPolling();
+        void finishPush();
+      }
+    }, 1000);
+  }
+
+  /** A settled push: show the outcome the worker retained, under the card. */
+  async function finishPush() {
+    const state = await send({ type: "GET_STATE" });
+    if (state && state.ok && state.lastResult) {
+      renderSaveResult(state.lastResult, state.lastResultContext);
+      // The outcome card hides the push card; put it back above it so the
+      // truthful totals and the per-contact detail are read together.
+      $("push-card").hidden = false;
+      $("save-card").hidden = false;
+    }
+  }
+
+  // ---- local export --------------------------------------------------------
+  //
+  // Explicit, operator-triggered, and entirely local. The worker formats the
+  // text; the panel is what saves it, because a Manifest V3 service worker has
+  // no `URL.createObjectURL` and a multi-megabyte `data:` URL is not a download.
+
+  async function downloadCapture(format) {
+    const feedback = $("export-feedback");
+    for (const id of ["export-csv", "export-json"]) $(id).disabled = true;
+    setFeedback(feedback, "Preparing your file…");
+    try {
+      const r = await send({ type: "EXPORT_CAPTURED_CONTACTS", format });
+      if (!r || !r.ok) {
+        setFeedback(
+          feedback,
+          (r && r.message) || "Nothing to download — no contacts are included.",
+          "bad"
+        );
+        return;
+      }
+      const saved = await saveTextFile(r);
+      if (!saved.ok) {
+        setFeedback(feedback, "The download did not start. Nothing was changed.", "bad");
+        return;
+      }
+      setFeedback(
+        feedback,
+        `${r.records} contact(s) written to ${r.filename}. Your capture is untouched.`
+      );
+    } finally {
+      for (const id of ["export-csv", "export-json"]) $(id).disabled = false;
+      syncBatchSaveAction();
+    }
+  }
+
+  /**
+   * Hand the file to Chrome.
+   *
+   * WHY `chrome.downloads` AND NOT `<a download>`. An anchor download is
+   * possible and would need no permission — but it lands the file wherever the
+   * browser's default is, with no dialog unless the operator happens to have
+   * "ask where to save" switched on. `saveAs: true` asks every time, whatever
+   * that setting says.
+   *
+   * That matters here specifically. This file is the operator's own backup of a
+   * capture that may have taken hours to assemble, and it is the thing they
+   * reach for when VMR Outbound is unreachable. Where it lands is a decision
+   * they should get to make, not one silently made for them — so the permission
+   * buys a real, stated, user-facing behaviour rather than convenience.
+   *
+   * There is no silent fallback. A missing API is reported, because a download
+   * the operator asked for and did not get must not look like one that happened.
+   */
+  async function saveTextFile(file) {
+    if (!chrome.downloads || !chrome.downloads.download) {
+      return { ok: false, message: "This browser cannot save the file." };
+    }
+    const blob = new Blob([file.text], { type: file.mime + ";charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    try {
+      await chrome.downloads.download({ url, filename: file.filename, saveAs: true });
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, message: String(e && e.message) };
+    } finally {
+      // Chrome reads the blob AFTER the promise resolves, so revoking
+      // immediately can cancel the very download that was just approved.
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    }
+  }
+
   // ---- shared save action -------------------------------------------------
 
   /**
@@ -399,7 +668,11 @@
 
     const counts = result.counts || {};
     const results = result.results || [];
-    const total = results.length;
+    // How many people the backend reported on, which for a chunked save is the
+    // sum over every chunk. `results.length` is how many detail rows were kept
+    // for display and is deliberately bounded — printing it as the total would
+    // tell an operator who saved 5,000 people that 500 were processed.
+    const total = Number.isFinite(result.resultsSeen) ? result.resultsSeen : results.length;
     const saved = Object.entries(counts)
       .filter(([key]) => key in OUTCOMES)
       .reduce((sum, [, n]) => sum + (Number(n) || 0), 0);
@@ -410,18 +683,38 @@
           ? "Already saved (idempotent)"
           : "Prospect saved";
 
+    // A cancelled push processed everything it is ever going to. Reporting only
+    // that half as a success would let "100 of 100 saved" stand for a save the
+    // operator stopped with 300 people still unsent.
+    const cancelled = result.push && result.push.status === "cancelled";
     state.appendChild(
       callout(
-        "success",
-        headline,
-        result.alreadyReceived
-          ? "This submission had already been received — it was replayed, not duplicated."
-          : "Saved to the VM Prospector workflow."
+        cancelled ? "warning" : "success",
+        cancelled
+          ? `${result.push.contactsAccepted} contact(s) saved · ` +
+            `${result.push.contactsCancelled || 0} not sent · push cancelled`
+          : headline,
+        cancelled
+          ? "Saving was stopped. What had already been saved was kept; the rest was not sent " +
+            "and is not saved."
+          : result.alreadyReceived
+            ? "This submission had already been received — it was replayed, not duplicated."
+            : "Saved to the VM Prospector workflow."
       )
     );
 
     const lines = box({ sunk: true }, [el("span", { class: "eyebrow", text: "What happened" })]);
     let shown = 0;
+    if (result.resultsTruncated) {
+      lines.appendChild(
+        el("p", {
+          class: "p tiny muted",
+          text:
+            `All ${total} were processed. The ${results.length} most recent are listed ` +
+            "individually below; the counts above cover every one.",
+        })
+      );
+    }
     for (const [code, n] of Object.entries(counts)) {
       if (!n || !(code in OUTCOMES)) continue;
       shown += 1;
@@ -631,6 +924,13 @@
     }
 
     const r = await saveHandler();
+    // A batch save is now a durable push: it returns as soon as the job is
+    // written down, long before the contacts are delivered. Painting a final
+    // outcome here would be a lie, so the push card takes over instead.
+    if (r && r.ok && r.push) {
+      watchPush(r.push);
+      return;
+    }
     if (r && r.ok) {
       // The worker returns the context it stored beside the result, so the
       // outcome painted now and the outcome restored after a reopen are placed
@@ -842,7 +1142,6 @@
       const message = wasCancelled
         ? "Stopped before any rows loaded. Nothing was captured, and nothing was sent."
         : map[r.captureStatus] || w.message || "Nothing captured.";
-      renderSkipped(r.skipped, r.skippedCount);
       renderBatch(r.batchView);
       if (!currentBatch || !currentBatch.records.length) {
         $("listings-empty-detail").textContent = message;
@@ -859,53 +1158,12 @@
     parts.push(`+${r.added} added`);
     if (r.collapsed) parts.push(`${r.collapsed} duplicate(s) collapsed`);
     if (r.uncertain) parts.push(`${r.uncertain} uncertain identity`);
-    if (r.skippedCount) {
-      parts.push(`${r.skippedCount} skipped — no company name`);
-    }
     if (r.overLimit) parts.push("batch limit reached — extra rows skipped");
     if (wasCancelled) parts.push("read the page again to load more");
     setFeedback(fb, parts.join(" · "));
-    renderSkipped(r.skipped, r.skippedCount);
     renderBatch(r.batchView);
     showView("listings-select");
     refreshDetect();
-  }
-
-  /**
-   * List the rows this page showed but did not offer, and why (DAT-018 B).
-   * A skipped row is never added to the batch and can never be submitted; the
-   * company is never inferred from headline, school, location or nearby text.
-   *
-   * Presented as a warning box rather than hidden behind the row list: a
-   * skipped row is information the operator needs to trust the count, so it is
-   * never collapsed away and never rolled into the "captured" total.
-   */
-  function renderSkipped(skipped, count) {
-    const card = $("skipped-card");
-    const list = $("skipped-list");
-    if (!card || !list) return;
-    const rows = skipped || [];
-    if (!count) {
-      card.hidden = true;
-      list.textContent = "";
-      return;
-    }
-    card.hidden = false;
-    list.textContent = "";
-    $("skipped-summary").textContent =
-      `${count} visible row${count === 1 ? "" : "s"} skipped: no Company Name on the page. ` +
-      "Nothing was guessed and nothing was submitted for them.";
-    for (const row of rows) {
-      list.appendChild(
-        el("div", { class: "line" }, [
-          el("span", { class: "t" }, [
-            el("span", { class: "mono", text: `row ${row.sourcePosition} · ` }),
-            el("span", { text: row.rawFullName || "(no name read)" }),
-          ]),
-          badge(row.reason, { tone: "warning" }),
-        ])
-      );
-    }
   }
 
   // ---- batch rendering ----------------------------------------------------
@@ -930,6 +1188,12 @@
     const captureBtn = $("capture-btn");
     captureBtn.textContent = hasRows ? "Read this page again" : "Capture visible contacts";
     captureBtn.className = hasRows ? "btn full" : "btn btn-primary full";
+    const exportRow = $("export-row");
+    if (exportRow) {
+      exportRow.hidden = included === 0;
+      $("export-csv").disabled = included === 0;
+      $("export-json").disabled = included === 0;
+    }
     if (shell.getView() === "listings-review" || !currentBatch) {
       setSaveHandler({
         handler: () => send({ type: "SAVE_INCLUDED_CONTACTS" }),
@@ -1200,7 +1464,10 @@
               })
             : badge("Ready", { tone: "success" }),
         ]),
-        kv("Company", rec.companyName, { missing: !rec.companyName, emptyText: "Missing company" }),
+        // A company the page did not show is a gap in the evidence, not a
+        // fault in the capture: the person is captured either way, and the
+        // absence of a company PAGE is not reported at all.
+        kv("Company", rec.companyName, { missing: !rec.companyName, emptyText: "Not shown" }),
         rec.title ? kv("Role", rec.title) : null,
       ]);
       // Every warning is rendered, whatever its class — UI-013 changes how they
@@ -1295,7 +1562,8 @@
 
   function loadPrefsIntoUi(prefs) {
     currentPrefs = prefs;
-    $("max-records").value = prefs.maxRecordsPerBatch || 500;
+    $("max-records").value =
+      prefs.maxRecordsPerBatch || constants.LIMITS.MAX_RECORDS_PER_BATCH;
   }
 
   // ---- the VMR Outbound account link ---------------------------------------
@@ -1564,7 +1832,13 @@
 
   async function saveSettings() {
     const patch = {
-      maxRecordsPerBatch: Math.max(1, Math.min(500, parseInt($("max-records").value, 10) || 500)),
+      maxRecordsPerBatch: Math.max(
+        1,
+        Math.min(
+          constants.LIMITS.MAX_RECORDS_PER_BATCH,
+          parseInt($("max-records").value, 10) || constants.LIMITS.MAX_RECORDS_PER_BATCH
+        )
+      ),
     };
     // Only ever sent from a panel the development gate has unlocked; the worker
     // drops these keys again if the gate is not actually present.
@@ -1675,7 +1949,6 @@
       if (!confirm("Clear the entire capture batch? This cannot be undone.")) return;
       const r = await send({ type: "CLEAR_BATCH" });
       if (r && r.ok) {
-        renderSkipped(null, 0);
         renderBatch(r.batchView);
         showView("listings-select");
       }
@@ -1683,6 +1956,10 @@
     $("select-all").addEventListener("change", (e) => setAllSelected(e.target.checked));
     $("only-issues").addEventListener("change", renderRecords);
     $("save-btn").addEventListener("click", doSave);
+    $("push-cancel").addEventListener("click", cancelPush);
+    $("export-csv").addEventListener("click", () => downloadCapture("csv"));
+    $("export-json").addEventListener("click", () => downloadCapture("json"));
+    $("push-back").addEventListener("click", () => showView(returnView || "listings-select"));
     $("save-settings").addEventListener("click", saveSettings);
     $("settings-close").addEventListener("click", closeSettings);
     $("settings-toggle").addEventListener("click", () => {
@@ -1732,6 +2009,10 @@
       // The context travels with it so the first page detection can tell whether
       // this outcome is still the page the operator is looking at (UI-016).
       if (state.lastResult) renderSaveResult(state.lastResult, state.lastResultContext);
+      // Reopening the panel is one of the ways an interrupted push is noticed.
+      // An unfinished one is shown where it actually got to — never as "done"
+      // because the first chunk was accepted, and never as "nothing happened".
+      if (state.push && state.pushActive) watchPush(state.push);
     }
     refreshPermissionState();
     refreshLabelSuggestions();

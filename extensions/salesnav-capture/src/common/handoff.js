@@ -46,6 +46,12 @@
   // The only workbench destinations the extension will open: the contact-first
   // capture and contact records, the legacy batch/profile pages, and the dev
   // mock receiver's workbench link.
+  // How many per-contact detail rows one sanitized result keeps. A display and
+  // recovery bound, NOT a statement about how many contacts were processed —
+  // see `sanitizeContactSubmissionResult`, which reports both numbers so the two
+  // can never be confused for each other.
+  const MAX_RETAINED_RESULT_DETAILS = 500;
+
   const WORKBENCH_PATH_PREFIXES = [
     "/contact-captures/",
     "/contacts/",
@@ -137,6 +143,10 @@
       if (Number.isFinite(value)) safeCounts[key] = value;
     }
     const results = Array.isArray(b.results) ? b.results : [];
+    // TWO NUMBERS, NEVER ONE. `resultsSeen` is how many people the backend
+    // reported on; `results` is how many detail rows are kept for display. They
+    // are equal for an ordinary submission and deliberately are not for a large
+    // one, and a caller that has only the second will state the wrong total.
     return {
       submissionId: typeof b.submission_id === "string" ? b.submission_id : null,
       clientSubmissionId:
@@ -144,7 +154,7 @@
       alreadyReceived: b.already_received === true,
       receivedAt: typeof b.received_at === "string" ? b.received_at : null,
       counts: safeCounts,
-      results: results.slice(0, 500).map((r) => ({
+      results: results.slice(0, MAX_RETAINED_RESULT_DETAILS).map((r) => ({
         outcome: typeof r.outcome === "string" ? r.outcome : null,
         captureUrl: isOpenableWorkbenchUrl(r.capture_url) ? r.capture_url : null,
         contactUrl: isOpenableWorkbenchUrl(r.contact_url) ? r.contact_url : null,
@@ -170,6 +180,9 @@
               }
             : null,
       })),
+      resultsSeen: results.length,
+      resultsRetained: Math.min(results.length, MAX_RETAINED_RESULT_DETAILS),
+      resultsTruncated: results.length > MAX_RETAINED_RESULT_DETAILS,
       workbenchUrl: isOpenableWorkbenchUrl(b.operator_workbench_url)
         ? b.operator_workbench_url
         : null,
@@ -213,7 +226,12 @@
     client_submission_id_conflict:
       "This submission was already saved with different content. Capture again before saving new content.",
     campaign_invalid: "The selected campaign is invalid or unavailable. Choose a valid campaign and retry.",
-    payload_too_large: "The batch is too large for the backend. Capture fewer records and retry.",
+    // A chunk, not a capture. The extension never sends the whole reviewed set
+    // in one request, so this can only mean one bounded chunk was still refused
+    // — a backend limit lower than the one the chunk planner was built against.
+    payload_too_large:
+      "The backend refused a part of this save as too large. Its request limit is " +
+      "lower than this extension expects — report it; retrying will not help.",
     unauthorized: "The backend refused the request (local access or origin not allowed).",
     timeout: "The backend timed out staging the batch. It may be busy — retry.",
     client_batch_id_conflict: "This batch was already staged with different content. Clear or re-capture the batch before sending new content.",
@@ -230,7 +248,71 @@
       case "invalid_payload":
         return { code: "invalid_payload", headline: "The batch failed local validation before sending.", detail: `${(resp.messages || []).length} issue(s).`, canRetry: false };
       case "payload_too_large":
-        return { code: "payload_too_large", headline: "The batch is too large to send. Capture fewer records.", detail: "", canRetry: false };
+        return {
+          code: "payload_too_large",
+          headline: "A part of this save was too large to send.",
+          detail: "Nothing about the capture can fix it — report it.",
+          canRetry: false,
+        };
+      // The LOGICAL ceiling, refused locally before anything is transmitted.
+      // It names the real number, because "too large" without one leaves the
+      // operator guessing how many rows to remove.
+      case "push_limit_exceeded":
+        return {
+          code: "push_limit_exceeded",
+          headline:
+            resp.limit && resp.count
+              ? `One save may contain up to ${resp.limit} contacts — this capture has ${resp.count}.`
+              : "This capture is larger than one save may contain.",
+          detail: "Nothing was sent. Exclude some rows, or clear and capture again.",
+          canRetry: false,
+        };
+      case "push_in_progress":
+        return {
+          code: "push_in_progress",
+          headline: "This capture is still being saved.",
+          detail: "Wait for it to finish. Nothing has been lost.",
+          canRetry: false,
+        };
+      // Not "already saved" as a verdict on the batch — a verdict per contact.
+      // Some are saved, some were sent without confirmation, and either way
+      // there is nothing here that may legitimately be sent again. Re-offering
+      // a capture id the backend already owns is a 409, not a no-op.
+      case "nothing_to_send":
+        return {
+          code: "nothing_to_send",
+          headline: resp.message || "There is nothing new to save in this capture.",
+          detail:
+            resp.notRetried
+              ? `${resp.notRetried} contact(s) were sent earlier without a confirmed result. ` +
+                "Check VMR Outbound before capturing them again."
+              : "Capture more contacts, or clear this capture, to save again.",
+          canRetry: false,
+        };
+      case "push_cancelled":
+        return {
+          code: "push_cancelled",
+          headline: "The save was cancelled.",
+          detail: "Contacts already saved stayed saved. The rest were not sent.",
+          canRetry: false,
+        };
+      // A record so large that no single request could carry it. Refused at
+      // plan time, named, and never retried — the alternative is a chunk that
+      // fails identically for ever.
+      case "record_too_large":
+        return {
+          code: "record_too_large",
+          headline: "One captured contact was too large to send on its own.",
+          detail: "It was left out and named; every other contact was unaffected.",
+          canRetry: false,
+        };
+      case "chunk_payload_missing":
+        return {
+          code: "chunk_payload_missing",
+          headline: "Part of this save is no longer in local storage.",
+          detail: "Those contacts were not sent. Capture them again to save them.",
+          canRetry: false,
+        };
       case "origin_not_allowed":
         return { code: "origin_not_allowed", headline: "Send target must be loopback (127.0.0.1 / localhost) or an approved VMR deployment.", detail: "", canRetry: false };
       case "permission_denied":
@@ -439,5 +521,6 @@
     sanitizeContactSubmissionResult,
     describeSendError,
     WORKBENCH_PATH_PREFIXES,
+    MAX_RETAINED_RESULT_DETAILS,
   };
 });

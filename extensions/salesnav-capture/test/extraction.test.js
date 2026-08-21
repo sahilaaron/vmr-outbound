@@ -61,14 +61,17 @@ test("missing fields: explicit nulls + missing_field warnings, no guessing", () 
   const r = capture("results-missing-fields.html");
   assert.equal(r.status, CAPTURE_STATUS.OK);
   // The name-less "ghost" row has no anchor and is not fabricated into a record.
-  // Two rows are discovered; DAT-018 B then withholds the one with no company.
+  // Both discovered rows are captured, including the one showing no company.
   assert.equal(r.visibleCount, 2);
-  assert.equal(r.count, 1);
-  assert.equal(r.skippedCount, 1);
-  assert.equal(r.skipped[0].rawFullName, "Jordan Field");
-  assert.equal(r.skipped[0].reason, "missing_company_name");
-  // Skipping one row must not cost the other: Madonna still comes through, with
-  // her genuinely-missing surname reported rather than invented.
+  assert.equal(r.count, 2);
+  const jordan = r.records.find((x) => x.rawFullName === "Jordan Field");
+  assert.ok(jordan, "a row with no company is still a person");
+  assert.equal(jordan.companyName, null);
+  assert.ok(
+    jordan.warnings.some((w) => w.code === WARNINGS.MISSING_FIELD && w.field === "companyName")
+  );
+  // Madonna comes through with her genuinely-missing surname reported rather
+  // than invented.
   const madonna = r.records.find((x) => x.rawFullName === "Madonna");
   assert.ok(madonna, "the remaining valid row must still be captured");
   assert.equal(madonna.lastName, null);
@@ -92,22 +95,19 @@ test("alternate/changed selectors: falls back to structural discovery + class se
   assert.equal(lena.linkedinMemberId, "ACwAAAF9ghi");
 });
 
-test("alternate selectors with no company at all: rows discovered, then withheld", () => {
-  // Structural discovery must still FIND the rows (that is what this fixture
-  // proves); the eligibility gate is what withholds them, not a parse failure.
+test("alternate selectors with no company at all: rows discovered AND captured", () => {
+  // Structural discovery must still FIND the rows, and a company the page never
+  // showed must not remove the people who were on it.
   const r = capture("results-alternate-selectors.html");
   assert.equal(r.status, CAPTURE_STATUS.OK);
   assert.equal(r.visibleCount, 2);
-  assert.equal(r.count, 0);
-  assert.equal(r.skippedCount, 2);
+  assert.equal(r.count, 2);
   assert.deepEqual(
-    r.skipped.map((x) => x.rawFullName),
+    r.records.map((x) => x.rawFullName),
     ["Lena Fischer", "Samuel Adeyemi"]
   );
-  assert.ok(r.skipped.every((x) => x.reason === "missing_company_name"));
-  assert.deepEqual(r.pageWarnings, [
-    { code: "rows_skipped", reason: "missing_company_name", count: 2 },
-  ]);
+  assert.ok(r.records.every((x) => x.companyName === null));
+  assert.deepEqual(r.pageWarnings, []);
 });
 
 test("empty search: reported as empty, never a successful capture", () => {

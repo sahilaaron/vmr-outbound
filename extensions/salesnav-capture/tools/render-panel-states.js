@@ -93,33 +93,6 @@ const STATES = [
     },
   },
   {
-    name: "A1b-listings-skipped-rows",
-    async build() {
-      const p = await createPanel({
-        responses: Object.assign({}, BASE, {
-          DETECT_SURFACE: { ok: true, surface: SURFACES.SALESNAV_PEOPLE_RESULTS, url: LISTING_PAGE.page.url },
-          DETECT_ACTIVE_PAGE: LISTING_PAGE,
-          CAPTURE_ACTIVE_PAGE: {
-            ok: true,
-            captureStatus: "ok",
-            added: 4,
-            collapsed: 1,
-            uncertain: 0,
-            skippedCount: 2,
-            skipped: [
-              { sourcePosition: 3, rawFullName: "Alex Moreau", reason: "no_company_name" },
-              { sourcePosition: 7, rawFullName: null, reason: "no_company_name" },
-            ],
-            batchView: fixtures.batchView(rows()),
-          },
-        }),
-      });
-      await p.flush();
-      await p.click("capture-btn");
-      return p;
-    },
-  },
-  {
     name: "A1c-listings-reading-cancellable",
     async build() {
       // Held mid-pass: the read never resolves, which is the frame in which the
@@ -173,6 +146,46 @@ const STATES = [
       const p = await listingsWithSave(() => new Promise(() => {}));
       await p.click("listings-review-btn");
       p.$("save-btn").dispatchEvent(new p.window.Event("click", { bubbles: true }));
+      await p.flush();
+      return p;
+    },
+  },
+  {
+    // A large save reports itself and lets the operator walk away. The state
+    // exists here because it is the one screen whose whole point is that the
+    // panel is NOT required — a screenshot of it is the promise being made.
+    name: "A4b-push-progress",
+    async build() {
+      const push = {
+        jobId: "job-1",
+        logicalSubmissionId: "sub-1",
+        status: "running",
+        createdAt: "2026-08-20T09:15:04.000Z",
+        updatedAt: "2026-08-20T09:16:20.000Z",
+        totalContacts: 2843,
+        contactsAccepted: 650,
+        contactsFailed: 0,
+        contactsPending: 2193,
+        totalChunks: 29,
+        completedChunks: 7,
+        pendingChunks: 22,
+        failedChunks: 0,
+        retryableChunks: 0,
+        campaignId: null,
+        counts: { submitted: 650, created: 650 },
+        results: [],
+        resultsSeen: 650,
+        resultsRetained: 500,
+        resultsTruncated: true,
+        failures: [],
+        oversized: [],
+        workbenchUrl: null,
+        nextAttemptAt: null,
+      };
+      const p = await listingsWithSave({ ok: true, push });
+      p.responses.PUSH_STATE = { ok: true, push, pushActive: true };
+      await p.click("listings-review-btn");
+      await p.click("save-btn");
       await p.flush();
       return p;
     },
@@ -489,6 +502,10 @@ async function main() {
     const file = path.join(outdir, `${state.name}.html`);
     fs.writeFileSync(file, html, "utf8");
     written.push({ name: state.name, view: panel.view(), file });
+    // Tear the window down. A state with a live progress poll would otherwise
+    // hold the event loop open and this tool would render everything and then
+    // never exit.
+    panel.close();
   }
   process.stdout.write(JSON.stringify({ outdir, states: written }, null, 2) + "\n");
 }

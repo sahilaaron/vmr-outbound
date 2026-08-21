@@ -274,6 +274,170 @@ def test_campaign_selection_waits_for_safe_promotion_then_files_once(
     assert db_session.scalar(select(func.count()).select_from(CampaignContact)) == 1
 
 
+# --- One operator save, delivered as several bounded requests ----------------
+#
+# The extension no longer sends a large reviewed capture as one request. It plans
+# the reviewed set into bounded chunks and posts them here one at a time, each
+# with its own ``client_submission_id`` and a disjoint set of ``client_capture_id``
+# values, all naming the same optional campaign.
+#
+# Nothing in this route changed for that, and these tests are why: the properties
+# the chunked client depends on are the ones the intake already guarantees. They
+# are pinned here so a future change to filing, idempotency or transaction scope
+# cannot quietly break a five-thousand-contact save that looks, from this side,
+# like fifty ordinary ones.
+
+
+def _chunk(base: dict, people: list[tuple[str, str]], campaign_id: str | None) -> dict:
+    """One chunk: a fresh submission id, and one capture per named person."""
+
+    payload = _fresh(base)
+    payload["campaign_id"] = campaign_id
+    template = copy.deepcopy(payload["contacts"][0])
+    contacts = []
+    for handle, full_name in people:
+        capture = copy.deepcopy(template)
+        capture["client_capture_id"] = str(uuid.uuid4())
+        capture["person"]["linkedin_profile_url"] = f"https://www.linkedin.com/in/{handle}"
+        capture["person"]["linkedin_public_identifier"] = handle
+        capture["person"]["full_name"] = full_name
+        capture["person"]["first_name"] = full_name.split()[0]
+        capture["person"]["last_name"] = full_name.split()[-1]
+        contacts.append(capture)
+    payload["contacts"] = contacts
+    return payload
+
+
+def test_a_chunked_save_files_every_contact_into_the_campaign_exactly_once(
+    client: TestClient, enable_contact_capture: None, db_session: Session
+) -> None:
+    campaign = Campaign(name="Chunked capture filing", status=CampaignStatus.DRAFT)
+    db_session.add(campaign)
+    db_session.flush()
+
+    people = [(f"person-{i}", f"Person Number{i}") for i in range(6)]
+    for handle, full_name in people:
+        _seed_contact(
+            db_session,
+            first=full_name.split()[0],
+            last=full_name.split()[-1],
+            domain=f"{handle}.example",
+            linkedin_url=f"https://www.linkedin.com/in/{handle}",
+        )
+
+    chunks = [
+        _chunk(PROFILE_SUBMISSION, people[0:2], str(campaign.id)),
+        _chunk(PROFILE_SUBMISSION, people[2:4], str(campaign.id)),
+        _chunk(PROFILE_SUBMISSION, people[4:6], str(campaign.id)),
+    ]
+    for chunk in chunks:
+        response = _post(client, chunk)
+        assert response.status_code == 201, response.text
+        assert response.json()["counts"]["campaign_filings_applied"] == 2
+
+    # Six people, six memberships. Splitting the operator's save across three
+    # requests must not enrol anybody twice and must not lose the campaign on a
+    # chunk that happened to travel later.
+    assert db_session.scalar(select(func.count()).select_from(CampaignContact)) == 6
+    assert _snapshot_count(db_session) == 6
+    memberships = db_session.scalars(select(CampaignContact)).all()
+    assert {m.campaign_id for m in memberships} == {campaign.id}
+    assert len({m.contact_id for m in memberships}) == 6
+
+
+def test_replaying_one_chunk_leaves_its_neighbours_exactly_as_they_were(
+    client: TestClient, enable_contact_capture: None, db_session: Session
+) -> None:
+    # The case a chunked client cannot avoid: a request commits, the response is
+    # lost in transit, and the retry has to be safe. It carries the SAME
+    # submission id, so the intake replays it instead of committing again.
+    campaign = Campaign(name="Replay safety", status=CampaignStatus.DRAFT)
+    db_session.add(campaign)
+    db_session.flush()
+    people = [(f"replay-{i}", f"Replay Person{i}") for i in range(4)]
+    for handle, full_name in people:
+        _seed_contact(
+            db_session,
+            first=full_name.split()[0],
+            last=full_name.split()[-1],
+            domain=f"{handle}.example",
+            linkedin_url=f"https://www.linkedin.com/in/{handle}",
+        )
+
+    first = _chunk(PROFILE_SUBMISSION, people[0:2], str(campaign.id))
+    second = _chunk(PROFILE_SUBMISSION, people[2:4], str(campaign.id))
+    assert _post(client, first).status_code == 201
+    assert _post(client, second).status_code == 201
+
+    snapshots = _snapshot_count(db_session)
+    contacts = _contact_count(db_session)
+    memberships = db_session.scalar(select(func.count()).select_from(CampaignContact))
+
+    replay = _post(client, first)
+    assert replay.status_code == 200
+    assert replay.json()["already_received"] is True
+    assert _snapshot_count(db_session) == snapshots
+    assert _contact_count(db_session) == contacts
+    assert db_session.scalar(select(func.count()).select_from(CampaignContact)) == memberships
+
+
+def test_a_refused_chunk_does_not_undo_the_chunks_that_were_accepted(
+    client: TestClient, enable_contact_capture: None, db_session: Session
+) -> None:
+    # Partial failure is the normal case at scale, and it must be survivable:
+    # chunk 1 stays saved, chunk 2 is refused on its own terms, and chunk 3 is
+    # still accepted afterwards. Nothing about the refusal is retroactive.
+    people = [(f"partial-{i}", f"Partial Person{i}") for i in range(4)]
+    accepted = _chunk(PROFILE_SUBMISSION, people[0:2], None)
+    assert _post(client, accepted).status_code == 201
+    assert _snapshot_count(db_session) == 2
+
+    broken = _chunk(PROFILE_SUBMISSION, people[2:3], None)
+    broken["contacts"][0]["person"]["linkedin_profile_url"] = "not-a-url"
+    refused = _post(client, broken)
+    assert refused.status_code == 422
+    assert refused.json()["error"] == "validation_failed"
+    assert _snapshot_count(db_session) == 2, "a refused chunk must leave the accepted ones alone"
+
+    later = _chunk(PROFILE_SUBMISSION, people[3:4], None)
+    assert _post(client, later).status_code == 201
+    assert _snapshot_count(db_session) == 3
+
+
+def test_a_chunk_reusing_a_capture_id_from_another_chunk_is_refused(
+    client: TestClient, enable_contact_capture: None, db_session: Session
+) -> None:
+    # The guarantee the client's fixed chunk boundaries rely on. A person must
+    # travel in exactly one chunk; if a client ever sent the same capture id in
+    # two different submissions it would be splitting one person's evidence in
+    # two, and the intake refuses rather than accepting the second copy.
+    people = [(f"boundary-{i}", f"Boundary Person{i}") for i in range(2)]
+    first = _chunk(PROFILE_SUBMISSION, people, None)
+    assert _post(client, first).status_code == 201
+
+    overlapping = _chunk(PROFILE_SUBMISSION, people, None)
+    overlapping["contacts"][0]["client_capture_id"] = first["contacts"][0]["client_capture_id"]
+    response = _post(client, overlapping)
+    assert response.status_code == 409
+    assert response.json()["error"] == "client_capture_id_conflict"
+    assert _snapshot_count(db_session) == 2, "the refused chunk wrote nothing"
+
+
+def test_a_chunk_sized_body_stays_far_inside_the_intake_ceiling(
+    client: TestClient, enable_contact_capture: None
+) -> None:
+    # The client's chunk ceiling is 2 MB against this route's 8 MB limit, so a
+    # chunk cannot be refused for size. This pins the relationship rather than
+    # the arithmetic: if the intake limit is ever lowered below what the
+    # extension plans against, this fails here instead of in an operator's push.
+    settings = get_settings()
+    extension_chunk_max_bytes = 2 * 1024 * 1024
+    assert settings.contact_capture_intake_max_bytes >= extension_chunk_max_bytes * 2, (
+        "the extension plans chunks against this ceiling with headroom; lowering it "
+        "below twice the chunk size would make oversized requests reachable"
+    )
+
+
 def test_malformed_campaign_id_is_rejected(
     client: TestClient, enable_contact_capture: None
 ) -> None:
@@ -398,6 +562,64 @@ def test_salesnav_rows_are_saved_without_a_campaign_and_keep_uncertain_identity(
     assert "no canonical LinkedIn profile URL" in no_url.refresh_summary["skipped_fields"]["*"]
     assert with_url.normalized_profile_url == "https://www.linkedin.com/in/tomoya-okaku"
     assert all(s.capture_mode == cc.CAPTURE_MODE_SALESNAV for s in snapshots.values())
+
+
+def test_a_company_without_a_linkedin_page_is_accepted(
+    client: TestClient, enable_contact_capture: None, db_session: Session
+) -> None:
+    """A company page URL is enrichment, never a condition of intake.
+
+    Most Sales Navigator rows show an employer that has no company page to link
+    to. The extension used to withhold those people entirely; now it sends them,
+    and the contract has to say plainly that it accepts them.
+    """
+
+    payload = _fresh(SALESNAV_SUBMISSION)
+    payload["contacts"] = payload["contacts"][:1]
+    hint = payload["contacts"][0]["current_employment_hint"]
+    hint["company_name"] = "Example Industries"
+    hint["company_linkedin_url"] = None
+    hint["company_linkedin_id"] = None
+
+    response = _post(client, payload)
+    assert response.status_code == 201
+    assert response.json()["counts"]["submitted"] == 1
+    assert _snapshot_count(db_session) == 1
+
+    snapshot = db_session.scalars(select(LinkedInProfileSnapshot)).one()
+    stored = snapshot.payload["current_employment_hint"]
+    # The name survives exactly; the absent URL stays explicitly absent and is
+    # never reconstructed from the name.
+    assert stored["company_name"] == "Example Industries"
+    assert stored["company_linkedin_url"] is None
+    assert stored["company_linkedin_id"] is None
+
+
+def test_a_capture_with_no_company_information_is_accepted(
+    client: TestClient, enable_contact_capture: None, db_session: Session
+) -> None:
+    """No readable employer is a gap in the evidence, not a reason to refuse.
+
+    Identity is what intake requires, and this capture still has one. The
+    employer stays null rather than being invented, and promotion is what stalls
+    on it later — not the capture.
+    """
+
+    payload = _fresh(SALESNAV_SUBMISSION)
+    payload["contacts"] = payload["contacts"][:1]
+    hint = payload["contacts"][0]["current_employment_hint"]
+    hint["company_name"] = None
+    hint["company_linkedin_url"] = None
+    hint["company_linkedin_id"] = None
+
+    response = _post(client, payload)
+    assert response.status_code == 201
+    assert response.json()["counts"]["submitted"] == 1
+
+    snapshot = db_session.scalars(select(LinkedInProfileSnapshot)).one()
+    assert snapshot.payload["current_employment_hint"]["company_name"] is None
+    assert snapshot.payload["person"]["full_name"] == "Dana Whitfield"
+    assert snapshot.salesnav_lead_url == "https://www.linkedin.com/sales/lead/ACwAAAB1x9k"
 
 
 def test_operator_can_exclude_rows_by_simply_not_submitting_them(

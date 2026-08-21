@@ -55,11 +55,18 @@ function createWorker(options) {
         for (const k of Array.isArray(keys) ? keys : [keys]) delete backing[k];
         return Promise.resolve();
       },
+      // Chrome 130+. The extension prefers it because it enumerates keys without
+      // reading megabytes of values; a test can delete it to exercise the
+      // older-browser fallback the manifest's minimum version still allows.
+      getKeys: () => Promise.resolve(Object.keys(backing)),
       setAccessLevel: () => Promise.resolve(),
     };
   }
 
-  const listeners = { message: [], installed: [], startup: [] };
+  const listeners = { message: [], installed: [], startup: [], alarm: [] };
+  // Every alarm the worker created or cleared, so a test can assert that an
+  // unfinished push arms its wake-up and a settled one gives it back.
+  const alarms = { created: [], cleared: [], live: new Set() };
   // Every launchWebAuthFlow the worker attempted, so a test can assert that a
   // restart re-authorized with ZERO prompts rather than merely that it worked.
   const authFlows = [];
@@ -122,15 +129,49 @@ function createWorker(options) {
         }
       },
     },
-    // No `downloads` stub: the extension dropped that permission in #280, and a
-    // stub for an API the manifest no longer requests would let a reintroduced
-    // call pass here and fail in a real browser.
+    // Still no `downloads` stub for the WORKER. The export it produces is text;
+    // the side panel is what saves it, because a Manifest V3 service worker has
+    // no `URL.createObjectURL` and a 15 MB data: URL is not a download path. A
+    // stub here would let a worker-side download call pass in tests and fail in
+    // a real browser.
+    alarms: {
+      create: (name, info) => {
+        alarms.created.push({ name, info });
+        alarms.live.add(name);
+        return Promise.resolve();
+      },
+      clear: (name) => {
+        alarms.cleared.push(name);
+        alarms.live.delete(name);
+        return Promise.resolve(true);
+      },
+      onAlarm: addListener("alarm"),
+    },
     sidePanel: { setPanelBehavior: () => Promise.resolve() },
   };
+
+  // A controllable clock inside the worker's realm.
+  //
+  // A push backs off before retrying, which is correct behaviour and useless to
+  // wait out in a test: sleeping five real seconds to prove a retry reuses its
+  // idempotency key would make the suite slower without making it stricter. The
+  // worker reads the time through `Date`, so the test moves `Date` instead.
+  const RealDate = Date;
+  let clockOffset = 0;
+  class HarnessDate extends RealDate {
+    constructor(...args) {
+      if (args.length === 0) super(RealDate.now() + clockOffset);
+      else super(...args);
+    }
+    static now() {
+      return RealDate.now() + clockOffset;
+    }
+  }
 
   const sandbox = {
     chrome,
     console,
+    Date: HarnessDate,
     setTimeout,
     clearTimeout,
     setInterval,
@@ -178,7 +219,47 @@ function createWorker(options) {
     });
   }
 
-  return { chrome, dispatch, store, sessionStore, tabMessages, injected, authFlows, sandbox };
+  /** Fire the periodic alarm the way Chrome does when the worker is awake. */
+  async function fireAlarm(name) {
+    for (const fn of listeners.alarm) await fn({ name });
+    // Give the un-awaited drive loop the alarm kicks off a chance to finish.
+    await settle();
+  }
+
+  /** Run the install listeners the way Chrome does on install/update. */
+  async function fireInstalled() {
+    for (const fn of listeners.installed) await fn({ reason: "install" });
+    await settle();
+  }
+
+  /** Let every already-queued microtask and timer-free promise chain drain. */
+  function settle(turns) {
+    let chain = Promise.resolve();
+    for (let i = 0; i < (turns || 50); i += 1) chain = chain.then(() => undefined);
+    return chain;
+  }
+
+  /** Move the worker's clock forward, so a scheduled retry becomes due. */
+  function advanceClock(ms) {
+    clockOffset += ms;
+    return clockOffset;
+  }
+
+  return {
+    chrome,
+    dispatch,
+    advanceClock,
+    store,
+    sessionStore,
+    tabMessages,
+    injected,
+    authFlows,
+    alarms,
+    fireAlarm,
+    fireInstalled,
+    settle,
+    sandbox,
+  };
 }
 
 const SALES_TAB = {

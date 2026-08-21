@@ -265,32 +265,69 @@ test("the manifest declares the identity permission the account link needs", () 
     "chrome.identity.launchWebAuthFlow is the whole sign-in path; without this " +
       "permission the extension cannot be linked to an account at all"
   );
-  // And nothing else was widened while adding it. `downloads` left this set in
-  // #280 along with the JSON/CSV export and the archived-draft download; the
-  // extension has no remaining path that saves a file.
+  // The permission set is pinned so it can only grow deliberately. Three were
+  // added for the large capture push and the restored export, and each one is
+  // load-bearing rather than convenient:
+  //
+  //   alarms            the ONLY unattended wake-up a Manifest V3 worker has.
+  //                     A push whose next chunk is waiting out a backoff needs
+  //                     to come back without anybody doing anything; every
+  //                     other wake-up this extension has requires a human.
+  //   unlimitedStorage  a reviewed set of 5,000 contacts plus the chunk copies
+  //                     that make the push recoverable is tens of megabytes,
+  //                     and `storage.local` is capped at 10 MB without it. The
+  //                     alternative is a push that cannot be made durable.
+  //   downloads         the restored local export. It saves a file the operator
+  //                     explicitly asked for and reaches no network.
+  //
+  // None of them widens what the extension can READ, where it can SEND, or who
+  // it can talk to: the host permissions below are unchanged.
   assert.deepEqual(
     [...(manifest.permissions || [])].sort(),
-    ["activeTab", "identity", "scripting", "sidePanel", "storage"],
-    "the permission set must not grow beyond the identity permission"
+    [
+      "activeTab",
+      "alarms",
+      "downloads",
+      "identity",
+      "scripting",
+      "sidePanel",
+      "storage",
+      "unlimitedStorage",
+    ],
+    "the permission set must not grow beyond what the push and the export need"
   );
 });
 
-test("the downloads permission is gone, and so is every caller of it", () => {
-  assert.ok(
-    !(manifest.permissions || []).includes("downloads"),
-    "nothing in the extension writes a file any more; the permission must not be requested"
-  );
+test("the download permission is used by the panel only, and only on a click", () => {
   const worker = fs.readFileSync(path.join(ROOT, "src", "background", "service-worker.js"), "utf8");
   const panel = fs.readFileSync(path.join(ROOT, "src", "sidepanel", "sidepanel.js"), "utf8");
   const html = fs.readFileSync(path.join(ROOT, "src", "sidepanel", "sidepanel.html"), "utf8");
-  for (const [name, source] of [["service worker", worker], ["panel", panel]]) {
-    assert.ok(
-      !/chrome\.downloads/.test(source),
-      `${name} still calls chrome.downloads, which the manifest no longer permits`
-    );
-  }
-  assert.ok(!/EXPORT_BATCH|EXPORT_LEGACY_ARCHIVE/.test(worker + panel), "export messages remain");
-  assert.ok(!/Download JSON|Download CSV|Download archived/i.test(html), "download controls remain");
+  // The WORKER formats the text and never saves a file. It could not if it
+  // wanted to: a Manifest V3 service worker has no `URL.createObjectURL`, so a
+  // download call there would pass review and fail in a real browser.
+  assert.ok(
+    !/chrome\.downloads/.test(worker),
+    "the service worker must not call chrome.downloads"
+  );
+  assert.ok(/chrome\.downloads/.test(panel), "the panel is what saves the file");
+  // The permission is kept for ONE user-facing reason, and the code has to keep
+  // using it or the permission should go. `saveAs` is that reason: the export is
+  // the operator's own backup and where it lands is their decision, which an
+  // `<a download>` cannot ask about unless the browser is already configured to.
+  assert.match(panel, /saveAs: true/, "saveAs is why the permission is held");
+  // No silent fallback: a download the operator asked for and did not get must
+  // not look like one that happened.
+  assert.ok(
+    !/anchor\.download/.test(panel),
+    "an unreachable fallback path implies the permission is optional when it is not"
+  );
+  // And nothing downloads by itself: both entry points are click handlers.
+  assert.match(panel, /\$\("export-csv"\)\.addEventListener\("click"/);
+  assert.match(panel, /\$\("export-json"\)\.addEventListener\("click"/);
+  assert.ok(/Download CSV/.test(html) && /Download JSON/.test(html));
+  // The campaign-era archive download stays gone: it holds drafts reviewed
+  // under a contract this extension no longer speaks.
+  assert.ok(!/EXPORT_LEGACY_ARCHIVE/.test(worker + panel), "the legacy archive export is not back");
 });
 
 test("the account-link endpoints live on the approved hosted origin", () => {
