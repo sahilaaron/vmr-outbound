@@ -341,7 +341,8 @@ Journal retention is bounded: 500M max, 1G kept free, 30-day retention
 
 Application file logs, if the app writes any, go to `/var/log/vmr/` and are
 rotated daily, 14 generations, compressed, `0640 vmr:adm`
-(`/etc/logrotate.d/vmr`). Nginx VMR logs rotate via `/etc/logrotate.d/vmr-nginx`.
+(`/etc/logrotate.d/vmr`). Nginx VMR logs rotate under the `nginx-common` package
+rule, `/etc/logrotate.d/nginx`; VMR installs no logrotate rule of its own for them.
 
 The hardening middleware's request log is one compact JSON object per request on
 the `vmr.http` logger. It never logs query strings, bodies, uploaded
