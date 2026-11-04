@@ -6,7 +6,9 @@ requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
-    "sqlalchemy>=2.0",
+    # 2.1 changes the typing of Select and fails Mypy across app/services; stay on
+    # the 2.0.x line that constraints.txt deploys until the code is migrated.
+    "sqlalchemy>=2.0,<2.1",
     "alembic>=1.13",
     # 3.3.x returns text columns as bytes under some encodings and breaks the
     # SQLAlchemy psycopg dialect; pin to the verified 3.2.x line.
