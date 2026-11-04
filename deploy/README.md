@@ -22,7 +22,6 @@ should ever be given one.
 | `ssh/10-vmr-hardening.conf` | `/etc/ssh/sshd_config.d/10-vmr-hardening.conf` | 0644 root:root |
 | `journald/10-vmr.conf` | `/etc/systemd/journald.conf.d/10-vmr.conf` | 0644 root:root |
 | `logrotate/vmr` | `/etc/logrotate.d/vmr` | 0644 root:root |
-| `logrotate/vmr-nginx` | `/etc/logrotate.d/vmr-nginx` | 0644 root:root |
 | `sbin/vmr-provision` | `/usr/local/sbin/vmr-provision` | 0750 root:root |
 | `sbin/vmr-deploy` | `/usr/local/sbin/vmr-deploy` | 0750 root:root |
 | `sbin/vmr-rollback` | `/usr/local/sbin/vmr-rollback` | 0750 root:root |
@@ -30,6 +29,10 @@ should ever be given one.
 | `sbin/vmr-db-restore` | `/usr/local/sbin/vmr-db-restore` | 0750 root:root |
 | `deploy.conf.example` | `/etc/vmr/deploy.conf` | 0644 root:root |
 | `vmr.env.example` | shape of `/etc/vmr/vmr.env` | 0640 root:vmr — **values never committed** |
+
+VMR's nginx logs rotate under the `nginx-common` package rule,
+`/etc/logrotate.d/nginx`. Do not add a rule for `/var/log/nginx/` here: the
+duplicate log entry makes `logrotate.service` exit 1.
 
 The operational runbook is `docs/STAGING_RUNBOOK.md`.
 
@@ -78,7 +81,7 @@ vmr-provision                       # dry run first, then --execute
 install -m0750 sbin/* /usr/local/sbin/
 install -m0644 systemd/*.service /etc/systemd/system/ && systemctl daemon-reload
 install -m0644 journald/10-vmr.conf /etc/systemd/journald.conf.d/
-install -m0644 logrotate/vmr logrotate/vmr-nginx /etc/logrotate.d/
+install -m0644 logrotate/vmr /etc/logrotate.d/
 install -m0644 nginx/vmr-upgrade-map.conf /etc/nginx/conf.d/
 install -m0644 nginx/vmr-proxy.conf /etc/nginx/snippets/
 install -m0644 nginx/vmr-access.conf.example /etc/nginx/snippets/vmr-access.conf
